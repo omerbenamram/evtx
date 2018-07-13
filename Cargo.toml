@@ -1,0 +1,15 @@
+[package]
+name = "evtx-rs"
+version = "0.1.0"
+authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
+
+[dependencies]
+nom = "4"
+hex-literal = "*"
+crc = "^1.0.0"
+chrono = "0.4"
+time = "*"
+xml-rs = "0.8"
+
+[dev-dependencies]
+pretty_assertions = "*"
