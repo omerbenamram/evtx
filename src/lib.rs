@@ -25,5 +25,5 @@ extern crate core;
 extern crate num_traits;
 
 mod binxml;
-mod hexdump;
 pub mod evtx_parser;
+mod hexdump;

@@ -3,7 +3,6 @@ use nom::{le_u16, le_u32, le_u64, le_u8};
 use time::Duration;
 
 use crc::crc32;
-use std::marker::PhantomData;
 
 #[derive(Debug, PartialEq)]
 struct EVTXHeader {

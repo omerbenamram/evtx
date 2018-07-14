@@ -1,5 +1,6 @@
 use core::mem;
 use indextree::{Arena, NodeId};
+use nom::{le_u16, le_u32, le_u64, le_u8, IResult};
 use num_traits::FromPrimitive;
 
 #[repr(u8)]
@@ -23,15 +24,79 @@ enum BXMLToken {
 }
 
 #[repr(C)]
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug)]
 struct BinXMLFragmentHeader {
     major_version: u8,
     minor_version: u8,
     flags: u8,
 }
 
+#[derive(Debug)]
+pub struct Guid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+impl Guid {
+    fn new(data1: u32, data2: u16, data3: u16, data4: &[u8]) -> Guid {
+        let mut data4_owned = [0; 8];
+        data4_owned.clone_from_slice(&data4[0..8]);
+        Guid {
+            data1,
+            data2,
+            data3,
+            data4: data4_owned,
+        }
+    }
+}
+
+// https://msdn.microsoft.com/en-us/library/windows/desktop/aa373931(v=vs.85).aspx
+fn guid(input: &[u8]) -> IResult<&[u8], Guid> {
+    return do_parse!(
+        input,
+        data1: le_u32
+            >> data2: le_u16
+            >> data3: le_u16
+            >> data4: take!(8)
+            >> (Guid::new(data1, data2, data3, data4))
+    );
+}
+
+#[derive(Debug)]
+struct BinXmlTemplate {
+    template_id: u32,
+    template_offset: u32,
+    next_template_offset: u32,
+    template_guid: Guid,
+    // This includes the size of the fragment header, element and end of file token,
+    // except for the first 33 bytes of the template definition.
+    data_size: u32,
+}
+
+fn binxml_template(input: &[u8]) -> IResult<&[u8], BinXmlTemplate> {
+    return do_parse!(
+        input,
+        take!(1) // Unknown
+       >> template_id: le_u32
+       >> template_offset: le_u32
+       >> next_template_offset: le_u32
+       >> template_guid: guid
+       >> data_size: le_u32 >> (BinXmlTemplate {
+            template_id,
+            template_offset,
+            next_template_offset,
+            template_guid,
+            data_size,
+        })
+    );
+}
+
+#[derive(Debug)]
 enum BinXMLTokens {
     FragmentHeader(BinXMLFragmentHeader),
+    TemplateInstanceToken(BinXmlTemplate),
     OpenStartElementTag,
     AttributeList,
     Attribute,
@@ -47,25 +112,14 @@ enum BinXMLTokens {
     EntityRefToken,
     PITargetToken,
     PIDataToken,
-    TemplateInstanceToken,
     NormalSubstitutionToken,
     OptionalSubstitutionToken,
 }
 
-//struct BXMLTemplate {
-//    data_len: i32,
-//
-//    "dword", "next_offset", 0x0)
-//    "dword", "template_id")
-//    "guid",  "guid", 0x04)  # unsure why this overlaps
-//    "dword", "data_length")
-//}
-
 struct BXMLParseCtx<'a> {
     data: &'a [u8],
     offset: usize,
-    // TODO: should be a pointer to a template instance
-    template: i32,
+    template: Option<&'a BinXmlTemplate>,
     xml: Arena<BinXMLTokens>,
     current_parent: Option<NodeId>,
 }
@@ -75,7 +129,7 @@ impl<'a> BXMLParseCtx<'a> {
         BXMLParseCtx {
             data,
             offset: 0,
-            template: 0,
+            template: None,
             xml: Arena::new(),
             current_parent: None,
         }
@@ -138,7 +192,7 @@ fn visit_start_of_stream(ctx: &mut BXMLParseCtx) {
     ctx.current_parent = Some(root);
 }
 
-fn parse_binxml(data: &[u8]) {
+fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
     let mut ctx = BXMLParseCtx::new(data);
 
     loop {
@@ -166,6 +220,8 @@ fn parse_binxml(data: &[u8]) {
         }
         break;
     }
+
+    ctx.xml
 }
 
 mod tests {
@@ -178,10 +234,7 @@ mod tests {
         let _ = env_logger::try_init().expect("Failed to init logger");
         let sample = include_bytes!("../samples/binxml.dat");
 
-        let test = &sample[0..16];
-        hexdump::print_hexdump(test, 0, 'x');
-        println!("\n{:?}", test);
-
-        parse_binxml(test);
+        let xml = parse_binxml(&sample[..]);
+        println!("{:?}", xml);
     }
 }
