@@ -4,12 +4,21 @@ version = "0.1.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 
 [dependencies]
-nom = "4"
 hex-literal = "*"
 crc = "^1.0.0"
 chrono = "0.4"
 time = "*"
 xml-rs = "0.8"
+xml5ever = "*"
+html5ever = "*"
+num-traits = "^0.2"
+enum-primitive-derive = "^0.1"
+encoding = "0.2.33"
+
+[dependencies.nom]
+version = "^4.0"
+features = ["regexp", "verbose-errors"]
 
 [dev-dependencies]
 pretty_assertions = "*"
+

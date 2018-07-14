@@ -1,23 +1,24 @@
 use chrono::prelude::*;
-use nom::{le_i16, le_i32, le_i64, le_u8};
+use nom::{le_u16, le_u32, le_u64, le_u8};
 use time::Duration;
 
 use crc::crc32;
+use std::marker::PhantomData;
 use xml::reader::{EventReader, XmlEvent};
 
 #[derive(Debug, PartialEq)]
 struct EVTXHeader {
-    oldest_chunk: i64,
-    current_chunk_num: i64,
-    next_record_num: i64,
-    header_size: i32,
-    minor_version: i16,
-    major_version: i16,
-    header_block_size: i16,
-    chunk_count: i16,
+    oldest_chunk: u64,
+    current_chunk_num: u64,
+    next_record_num: u64,
+    header_size: u32,
+    minor_version: u16,
+    major_version: u16,
+    header_block_size: u16,
+    chunk_count: u16,
     flags: HeaderFlags,
     // Checksum is of first 120 bytes of header
-    checksum: i32,
+    checksum: u32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -29,20 +30,20 @@ enum HeaderFlags {
 named!(evtx_header<&[u8], EVTXHeader>,
     do_parse!(
        tag!(b"ElfFile\x00")
-       >> oldest_chunk: le_i64
-       >> current_chunk_num: le_i64
-       >> next_record_num: le_i64
-       >> header_size: le_i32
-       >> minor_version: le_i16
-       >> major_version: le_i16
-       >> header_block_size: le_i16
-       >> chunk_count: le_i16
+       >> oldest_chunk: le_u64
+       >> current_chunk_num: le_u64
+       >> next_record_num: le_u64
+       >> header_size: le_u32
+       >> minor_version: le_u16
+       >> major_version: le_u16
+       >> header_block_size: le_u16
+       >> chunk_count: le_u16
        >> take!(76) // unused
-       >> flags: switch!(le_i32,
+       >> flags: switch!(le_u32,
             1 => value!(HeaderFlags::Dirty) |
             2 => value!(HeaderFlags::Full)
        )
-       >> checksum: le_i32
+       >> checksum: le_u32
        >> take!(4096 - 128) // unused
        >> (EVTXHeader {oldest_chunk, current_chunk_num, next_record_num, header_block_size, minor_version,
                        major_version, header_size, chunk_count, flags, checksum})
@@ -51,82 +52,93 @@ named!(evtx_header<&[u8], EVTXHeader>,
 
 #[derive(Debug, PartialEq)]
 struct EVTXChunkHeader {
-    first_event_record_number: i64,
-    last_event_record_number: i64,
-    first_event_record_id: i64,
-    last_event_record_id: i64,
-    header_size: i32,
-    last_event_record_data_offset: i32,
-    free_space_offset: i32,
-    events_checksum: i32,
-    header_chunk_checksum: i32,
+    first_event_record_number: u64,
+    last_event_record_number: u64,
+    first_event_record_id: u64,
+    last_event_record_id: u64,
+    header_size: u32,
+    last_event_record_data_offset: u32,
+    free_space_offset: u32,
+    events_checksum: u32,
+    header_chunk_checksum: u32,
+    //    For every string a 16 bit hash is calculated. The hash
+    //    value is divided by 64, the number of buckets in the string
+    //    table. The remainder then indicates what hash bucket to use.
+    //    Every bucket contains the 32 bit offset relative to the chunk
+    //    where the string can be found. If a hash collision occurs, the
+    //    offset of the last string will be stored in the bucket. The string
+    //    object will then provide the offset of the preceding string, thus
+    //    building a single-linked list.
+    string_table: Vec<u32>,
+    template_table: Vec<u32>,
 }
 
 named!(evtx_chunk_header<&[u8], EVTXChunkHeader>,
        do_parse!(
           tag!(b"ElfChnk\x00")
-          >> first_event_record_number: le_i64
-          >> last_event_record_number: le_i64
-          >> first_event_record_id: le_i64
-          >> last_event_record_id: le_i64
-          >> header_size: le_i32
-          >> last_event_record_data_offset: le_i32
-          >> free_space_offset: le_i32
-          >> events_checksum: le_i32
+          >> first_event_record_number: le_u64
+          >> last_event_record_number: le_u64
+          >> first_event_record_id: le_u64
+          >> last_event_record_id: le_u64
+          >> header_size: le_u32
+          >> last_event_record_data_offset: le_u32
+          >> free_space_offset: le_u32
+          >> events_checksum: le_u32
           >> take!(64)
           >> take!(4) // flags?
-          >> header_chunk_checksum: le_i32
-          >> take!(4 * 64) // StringTable
-          >> take!(4 * 32) // TemplateTable
+          >> header_chunk_checksum: le_u32
+          >> string_table: count!(le_u32, 64) // StringTable
+          >> template_table: count!(le_u32,  32) // TemplateTable
           >> (EVTXChunkHeader {first_event_record_number, last_event_record_number, first_event_record_id,
                                last_event_record_id, header_size, last_event_record_data_offset, free_space_offset,
-                               events_checksum, header_chunk_checksum})
+                               events_checksum, header_chunk_checksum, template_table, string_table})
        )
 );
 
 #[derive(Debug, PartialEq)]
 struct EVTXRecord<'a> {
-    event_record_id: i64,
+    event_record_id: u64,
     timestamp: DateTime<Utc>,
     data: &'a [u8],
 }
 
 #[derive(Debug, PartialEq)]
 struct FileTime {
-    year: i32,
-    month: i32,
-    day_of_week: i32,
-    day: i32,
-    hour: i32,
-    minute: i32,
-    second: i32,
-    milis: i32,
+    year: u32,
+    month: u32,
+    day_of_week: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    milis: u32,
 }
 
-fn datetime_from_filetime(nanos_since_windows_epoch: i64) -> DateTime<Utc> {
+named!(evtx_record<&[u8], EVTXRecord>,
+       do_parse!(
+          tag!(b"\x2a\x2a\x00\x00")
+          >> size: le_u32
+          >> event_record_id: le_u64
+          >> timestamp: filetime
+          >> data: take!(size)
+          // Size is repeated
+          >> take!(4)
+          >> (EVTXRecord {event_record_id, timestamp, data})
+       )
+);
+
+fn datetime_from_filetime(nanos_since_windows_epoch: u64) -> DateTime<Utc> {
     DateTime::from_utc(
         NaiveDate::from_ymd(1601, 1, 1).and_hms_nano(0, 0, 0, 0)
-            + Duration::microseconds(nanos_since_windows_epoch / 10),
+            + Duration::microseconds((nanos_since_windows_epoch / 10) as i64),
         Utc,
     )
 }
 
 named!(filetime<&[u8], DateTime<Utc>>,
        do_parse!(
-            filetime: le_i64
+            filetime: le_u64
             >> (datetime_from_filetime(filetime))
-       )
-);
-
-named!(evtx_record<&[u8], EVTXRecord>,
-       do_parse!(
-          tag!(b"\x2a\x2a\x00\x00")
-          >> size: le_i32
-          >> event_record_id: le_i64
-          >> timestamp: filetime
-          >> data: take!(size)
-          >> take!(4)
-          >> (EVTXRecord {event_record_id, timestamp, data})
        )
 );
 
@@ -141,7 +153,13 @@ fn indent(size: usize) -> String {
 mod tests {
     #[allow(unused_variables)]
     use super::*;
+    use encoding::all::UTF_16LE;
+    use encoding::DecoderTrap;
+    use encoding::Encoding;
     use hexdump::print_hexdump;
+    use std::char::decode_utf16;
+    use std::fs::File;
+    use std::io::Write;
 
     #[test]
     fn test_parses_evtx_file_handler() {
@@ -161,7 +179,7 @@ mod tests {
                     header_block_size: 4096,
                     chunk_count: 26,
                     flags: HeaderFlags::Dirty,
-                    checksum: crc32::checksum_ieee(&evtx_file[..120]) as i32,
+                    checksum: crc32::checksum_ieee(&evtx_file[..120]),
                 }
             ))
         );
@@ -180,6 +198,13 @@ mod tests {
             .map(|b| *b)
             .collect();
 
+        let utf_16_string: String = UTF_16LE
+            .decode(&evtx_file[4096 + 1565..4096 + 2029], DecoderTrap::Strict)
+            .unwrap();
+
+        println!("{}", utf_16_string);
+        print_hexdump(&evtx_file[4096 + 1565..4096 + 2029], 0, 'C');
+
         assert_eq!(
             evtx_chunk_header(chunk_header),
             Ok((
@@ -192,9 +217,10 @@ mod tests {
                     header_size: 128,
                     last_event_record_data_offset: 64928,
                     free_space_offset: 65376,
-                    events_checksum: -42488155,
-                    header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice())
-                        as i32,
+                    events_checksum: 4252479141,
+                    header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
+                    string_table: vec![],
+                    template_table: vec![],
                 }
             ))
         );
@@ -206,8 +232,7 @@ mod tests {
         let evtx_records = &evtx_file[4096 + 512..];
         let parsed = evtx_record(evtx_records);
 
-        let res = parsed.unwrap();
-        let record = res.1;
+        let (_, record) = parsed.unwrap();
 
         let ts: DateTime<Utc> = DateTime::from_utc(
             NaiveDateTime::new(
@@ -220,32 +245,10 @@ mod tests {
         assert_eq!(record.event_record_id, 1);
         assert_eq!(record.timestamp, ts);
 
-        print_hexdump(record.data, 0, 'x', 2);
+        print_hexdump(record.data, 0, 'x');
 
-        let xml_bytes: Vec<u8> = record.data
-            .iter()
-            .skip(5)
-            .map(|b| *b)
-            .collect();
-
-        let parser = EventReader::new(xml_bytes.as_slice());
-        let mut depth = 0;
-        for e in parser {
-            match e {
-                Ok(XmlEvent::StartElement { name, .. }) => {
-                    println!("{}+{}", indent(depth), name);
-                    depth += 1;
-                }
-                Ok(XmlEvent::EndElement { name }) => {
-                    depth -= 1;
-                    println!("{}-{}", indent(depth), name);
-                }
-                Err(e) => {
-                    println!("Error: {}", e);
-                    break;
-                }
-                _ => {}
-            }
-        }
+        let xml_bytes: Vec<u8> = record.data.iter().map(|b| *b).collect();
+        let mut f = File::create("binxml.dat").unwrap();
+        f.write_all(&xml_bytes).unwrap();
     }
 }
