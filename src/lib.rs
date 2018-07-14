@@ -1,10 +1,14 @@
 #![feature(try_from)]
+#![allow(dead_code)]
 
 #[macro_use]
 extern crate nom;
 
+extern crate indextree;
+
 #[macro_use]
-extern crate hex_literal;
+extern crate log;
+extern crate env_logger;
 
 #[cfg(test)]
 #[macro_use]
@@ -15,14 +19,11 @@ extern crate crc;
 extern crate encoding;
 extern crate time;
 
-extern crate html5ever;
-extern crate xml;
-extern crate xml5ever;
-
 #[macro_use]
 extern crate enum_primitive_derive;
+extern crate core;
 extern crate num_traits;
 
 mod binxml;
-pub mod evtx_parser;
 mod hexdump;
+pub mod evtx_parser;

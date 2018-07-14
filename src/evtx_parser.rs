@@ -4,7 +4,6 @@ use time::Duration;
 
 use crc::crc32;
 use std::marker::PhantomData;
-use xml::reader::{EventReader, XmlEvent};
 
 #[derive(Debug, PartialEq)]
 struct EVTXHeader {
