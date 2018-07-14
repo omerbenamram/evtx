@@ -1,5 +1,5 @@
 use chrono::prelude::*;
-use nom::{le_u16, le_u32, le_u64, le_u8};
+use nom::{le_u16, le_u32, le_u64, IResult};
 use time::Duration;
 
 use crc::crc32;
@@ -25,9 +25,10 @@ enum HeaderFlags {
     Full,
 }
 
-named!(evtx_header<&[u8], EVTXHeader>,
-    do_parse!(
-       tag!(b"ElfFile\x00")
+fn evtx_header(input: &[u8]) -> IResult<&[u8], EVTXHeader> {
+    return do_parse!(
+        input,
+        tag!(b"ElfFile\x00")
        >> oldest_chunk: le_u64
        >> current_chunk_num: le_u64
        >> next_record_num: le_u64
@@ -45,8 +46,8 @@ named!(evtx_header<&[u8], EVTXHeader>,
        >> take!(4096 - 128) // unused
        >> (EVTXHeader {oldest_chunk, current_chunk_num, next_record_num, header_block_size, minor_version,
                        major_version, header_size, chunk_count, flags, checksum})
-   )
-);
+    );
+}
 
 #[derive(Debug, PartialEq)]
 struct EVTXChunkHeader {
@@ -71,9 +72,10 @@ struct EVTXChunkHeader {
     template_table: Vec<u32>,
 }
 
-named!(evtx_chunk_header<&[u8], EVTXChunkHeader>,
-       do_parse!(
-          tag!(b"ElfChnk\x00")
+fn evtx_chunk_header(input: &[u8]) -> IResult<&[u8], EVTXChunkHeader> {
+    return do_parse!(
+        input,
+        tag!(b"ElfChnk\x00")
           >> first_event_record_number: le_u64
           >> last_event_record_number: le_u64
           >> first_event_record_id: le_u64
@@ -90,8 +92,8 @@ named!(evtx_chunk_header<&[u8], EVTXChunkHeader>,
           >> (EVTXChunkHeader {first_event_record_number, last_event_record_number, first_event_record_id,
                                last_event_record_id, header_size, last_event_record_data_offset, free_space_offset,
                                events_checksum, header_chunk_checksum, template_table, string_table})
-       )
-);
+    );
+}
 
 #[derive(Debug, PartialEq)]
 struct EVTXRecord<'a> {
@@ -112,18 +114,22 @@ struct FileTime {
     milis: u32,
 }
 
-named!(evtx_record<&[u8], EVTXRecord>,
-       do_parse!(
-          tag!(b"\x2a\x2a\x00\x00")
+fn evtx_record(input: &[u8]) -> IResult<&[u8], EVTXRecord> {
+    return do_parse!(
+        input,
+        tag!(b"\x2a\x2a\x00\x00")
           >> size: le_u32
           >> event_record_id: le_u64
           >> timestamp: filetime
           >> data: take!(size)
           // Size is repeated
-          >> take!(4)
-          >> (EVTXRecord {event_record_id, timestamp, data})
-       )
-);
+          >> take!(4) >> (EVTXRecord {
+            event_record_id,
+            timestamp,
+            data,
+        })
+    );
+}
 
 fn datetime_from_filetime(nanos_since_windows_epoch: u64) -> DateTime<Utc> {
     DateTime::from_utc(
@@ -133,18 +139,11 @@ fn datetime_from_filetime(nanos_since_windows_epoch: u64) -> DateTime<Utc> {
     )
 }
 
-named!(filetime<&[u8], DateTime<Utc>>,
-       do_parse!(
-            filetime: le_u64
-            >> (datetime_from_filetime(filetime))
-       )
-);
-
-fn indent(size: usize) -> String {
-    const INDENT: &'static str = "    ";
-    (0..size)
-        .map(|_| INDENT)
-        .fold(String::with_capacity(size * INDENT.len()), |r, s| r + s)
+fn filetime(input: &[u8]) -> IResult<&[u8], DateTime<Utc>> {
+    return do_parse!(
+        input,
+        filetime: le_u64 >> (datetime_from_filetime(filetime))
+    );
 }
 
 #[cfg(test)]
@@ -196,6 +195,7 @@ mod tests {
             .map(|b| *b)
             .collect();
 
+        // TODO: This is me playing with UTF-16 string decoding, this code should not be here and I should properly implement string table lookups.
         let utf_16_string: String = UTF_16LE
             .decode(&evtx_file[4096 + 1565..4096 + 2029], DecoderTrap::Strict)
             .unwrap();
