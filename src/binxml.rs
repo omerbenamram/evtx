@@ -12,7 +12,7 @@ trait BinarySize {
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
-enum BXMLToken {
+enum BinXMLToken {
     EndOfStream,
     OpenStartElement,
     CloseStartElement,
@@ -30,24 +30,24 @@ enum BXMLToken {
     StartOfStream,
 }
 
-impl BXMLToken {
-    fn from_u8(byte: u8) -> Option<BXMLToken> {
+impl BinXMLToken {
+    fn from_u8(byte: u8) -> Option<BinXMLToken> {
         match byte {
-            0x00 => Some(BXMLToken::EndOfStream),
-            0x01 | 0x41 => Some(BXMLToken::OpenStartElement),
-            0x02 => Some(BXMLToken::CloseStartElement),
-            0x03 => Some(BXMLToken::CloseEmptyElement),
-            0x04 => Some(BXMLToken::CloseElement),
-            0x05 | 0x45 => Some(BXMLToken::Value),
-            0x06 | 0x46 => Some(BXMLToken::Attribute),
-            0x07 | 0x47 => Some(BXMLToken::CDataSection),
-            0x08 | 0x48 => Some(BXMLToken::EntityReference),
-            0x0a | 0x49 => Some(BXMLToken::ProcessingInstructionTarget),
-            0x0b => Some(BXMLToken::ProcessingInstructionData),
-            0x0c => Some(BXMLToken::TemplateInstance),
-            0x0d => Some(BXMLToken::NormalSubstitution),
-            0x0e => Some(BXMLToken::ConditionalSubstitution),
-            0x0f => Some(BXMLToken::StartOfStream),
+            0x00 => Some(BinXMLToken::EndOfStream),
+            0x01 | 0x41 => Some(BinXMLToken::OpenStartElement),
+            0x02 => Some(BinXMLToken::CloseStartElement),
+            0x03 => Some(BinXMLToken::CloseEmptyElement),
+            0x04 => Some(BinXMLToken::CloseElement),
+            0x05 | 0x45 => Some(BinXMLToken::Value),
+            0x06 | 0x46 => Some(BinXMLToken::Attribute),
+            0x07 | 0x47 => Some(BinXMLToken::CDataSection),
+            0x08 | 0x48 => Some(BinXMLToken::EntityReference),
+            0x0a | 0x49 => Some(BinXMLToken::ProcessingInstructionTarget),
+            0x0b => Some(BinXMLToken::ProcessingInstructionData),
+            0x0c => Some(BinXMLToken::TemplateInstance),
+            0x0d => Some(BinXMLToken::NormalSubstitution),
+            0x0e => Some(BinXMLToken::ConditionalSubstitution),
+            0x0f => Some(BinXMLToken::StartOfStream),
             _ => None,
         }
     }
@@ -294,7 +294,7 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
         let token = data[ctx.offset];
         ctx.offset += 1;
 
-        let token = BXMLToken::from_u8(token)
+        let token = BinXMLToken::from_u8(token)
             .or_else(|| {
                 println!("\n\n");
                 println!("-------------------------------");
@@ -312,21 +312,21 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
             .unwrap();
 
         match token {
-            BXMLToken::EndOfStream => visit_end_of_stream(&mut ctx),
-            BXMLToken::OpenStartElement => visit_open_start_element(&mut ctx),
-            BXMLToken::CloseStartElement => visit_close_start_element(&mut ctx),
-            BXMLToken::CloseEmptyElement => visit_close_empty_element(&mut ctx),
-            BXMLToken::CloseElement => visit_close_element(&mut ctx),
-            BXMLToken::Value => visit_value(&mut ctx),
-            BXMLToken::Attribute => visit_attribute(&mut ctx),
-            BXMLToken::CDataSection => visit_cdata_section(&mut ctx),
-            BXMLToken::EntityReference => visit_entity_reference(&mut ctx),
-            BXMLToken::ProcessingInstructionTarget => visit_processing_instruction_target(&mut ctx),
-            BXMLToken::ProcessingInstructionData => visit_processing_instruction_data(&mut ctx),
-            BXMLToken::TemplateInstance => visit_template_instance(&mut ctx),
-            BXMLToken::NormalSubstitution => visit_normal_substitution(&mut ctx),
-            BXMLToken::ConditionalSubstitution => visit_conditional_substitution(&mut ctx),
-            BXMLToken::StartOfStream => visit_start_of_stream(&mut ctx),
+            BinXMLToken::EndOfStream => visit_end_of_stream(&mut ctx),
+            BinXMLToken::OpenStartElement => visit_open_start_element(&mut ctx),
+            BinXMLToken::CloseStartElement => visit_close_start_element(&mut ctx),
+            BinXMLToken::CloseEmptyElement => visit_close_empty_element(&mut ctx),
+            BinXMLToken::CloseElement => visit_close_element(&mut ctx),
+            BinXMLToken::Value => visit_value(&mut ctx),
+            BinXMLToken::Attribute => visit_attribute(&mut ctx),
+            BinXMLToken::CDataSection => visit_cdata_section(&mut ctx),
+            BinXMLToken::EntityReference => visit_entity_reference(&mut ctx),
+            BinXMLToken::ProcessingInstructionTarget => visit_processing_instruction_target(&mut ctx),
+            BinXMLToken::ProcessingInstructionData => visit_processing_instruction_data(&mut ctx),
+            BinXMLToken::TemplateInstance => visit_template_instance(&mut ctx),
+            BinXMLToken::NormalSubstitution => visit_normal_substitution(&mut ctx),
+            BinXMLToken::ConditionalSubstitution => visit_conditional_substitution(&mut ctx),
+            BinXMLToken::StartOfStream => visit_start_of_stream(&mut ctx),
         }
     }
 
