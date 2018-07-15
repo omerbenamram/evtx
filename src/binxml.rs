@@ -2,7 +2,6 @@ use core::mem;
 use hexdump::print_hexdump;
 use indextree::{Arena, NodeId};
 use nom::{le_u16, le_u32, le_u64, le_u8, IResult};
-use num_traits::FromPrimitive;
 use std::cmp::min;
 use std::fmt;
 use std::fmt::{Debug, Display};
@@ -136,6 +135,7 @@ struct BinXmlTemplate {
 
 impl BinarySize for BinXmlTemplate {
     fn size() -> usize {
+        // Don't forget the skipped (first) byte!!!
         mem::size_of::<BinXmlTemplate>() + 1
     }
 }
@@ -182,7 +182,7 @@ enum BinXMLTokens {
     OptionalSubstitutionToken,
 }
 
-struct BXMLParseCtx<'a> {
+struct BinXMLParseCtx<'a> {
     data: &'a [u8],
     offset: usize,
     template: Option<BinXmlTemplate>,
@@ -190,9 +190,9 @@ struct BXMLParseCtx<'a> {
     current_parent: Option<NodeId>,
 }
 
-impl<'a> BXMLParseCtx<'a> {
-    fn new(data: &'a [u8]) -> BXMLParseCtx {
-        BXMLParseCtx {
+impl<'a> BinXMLParseCtx<'a> {
+    fn new(data: &'a [u8]) -> BinXMLParseCtx {
+        BinXMLParseCtx {
             data,
             offset: 0,
             template: None,
@@ -202,84 +202,92 @@ impl<'a> BXMLParseCtx<'a> {
     }
 }
 
-fn visit_end_of_stream(ctx: &mut BXMLParseCtx) {
+fn visit_end_of_stream(ctx: &mut BinXMLParseCtx) {
     println!("visit_end_of_stream");
     unimplemented!();
 }
-fn visit_open_start_element(ctx: &mut BXMLParseCtx) {
+fn visit_open_start_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_open_start_element");
     unimplemented!();
 }
-fn visit_close_start_element(ctx: &mut BXMLParseCtx) {
+fn visit_close_start_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_start_element");
     unimplemented!();
 }
-fn visit_close_empty_element(ctx: &mut BXMLParseCtx) {
+fn visit_close_empty_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_empty_element");
     unimplemented!();
 }
-fn visit_close_element(ctx: &mut BXMLParseCtx) {
+fn visit_close_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_element");
     unimplemented!();
 }
-fn visit_value(ctx: &mut BXMLParseCtx) {
+fn visit_value(ctx: &mut BinXMLParseCtx) {
     println!("visit_value");
     unimplemented!();
 }
-fn visit_attribute(ctx: &mut BXMLParseCtx) {
+fn visit_attribute(ctx: &mut BinXMLParseCtx) {
     println!("visit_attribute");
     unimplemented!();
 }
-fn visit_cdata_section(ctx: &mut BXMLParseCtx) {
+fn visit_cdata_section(ctx: &mut BinXMLParseCtx) {
     println!("visit_cdata_section");
     unimplemented!();
 }
-fn visit_entity_reference(ctx: &mut BXMLParseCtx) {
+fn visit_entity_reference(ctx: &mut BinXMLParseCtx) {
     println!("visit_entity_reference");
     unimplemented!();
 }
-fn visit_processing_instruction_target(ctx: &mut BXMLParseCtx) {
+fn visit_processing_instruction_target(ctx: &mut BinXMLParseCtx) {
     println!("visit_processing_instruction_target");
     unimplemented!();
 }
-fn visit_processing_instruction_data(ctx: &mut BXMLParseCtx) {
+fn visit_processing_instruction_data(ctx: &mut BinXMLParseCtx) {
     println!("visit_processing_instruction_data");
     unimplemented!();
 }
-fn visit_normal_substitution(ctx: &mut BXMLParseCtx) {
+fn visit_normal_substitution(ctx: &mut BinXMLParseCtx) {
     println!("visit_normal_substitution");
     unimplemented!();
 }
-fn visit_conditional_substitution(ctx: &mut BXMLParseCtx) {
+fn visit_conditional_substitution(ctx: &mut BinXMLParseCtx) {
     println!("visit_conditional_substitution");
     unimplemented!();
 }
 
-fn visit_template_instance(ctx: &mut BXMLParseCtx) {
+fn visit_template_instance(ctx: &mut BinXMLParseCtx) {
     debug!("visit_template_instance");
     let (_, template) = binxml_template(ctx.data).expect("Failed to parse template");
     ctx.template = Some(template);
     println!("{:?}", &ctx.template);
-    // Don't forget the skipped byte!!!
     ctx.offset += BinXmlTemplate::size();
 }
 
-fn visit_start_of_stream(ctx: &mut BXMLParseCtx) {
+fn visit_start_of_stream(ctx: &mut BinXMLParseCtx) {
     debug!("visit_start_of_stream");
+
     // TODO: actually extract this header from stream instead of just creating it.
-    let root = ctx
-        .xml
-        .new_node(BinXMLTokens::FragmentHeader(BinXMLFragmentHeader {
-            major_version: 0x01,
-            minor_version: 0x01,
-            flags: 0x00,
-        }));
-    ctx.current_parent = Some(root);
+    let fragment_header = BinXMLTokens::FragmentHeader(BinXMLFragmentHeader {
+        major_version: 0x01,
+        minor_version: 0x01,
+        flags: 0x00,
+    });
+
+    let node = ctx.xml.new_node(fragment_header);
+
+    match ctx.current_parent {
+        Some(parent) => {
+            parent.append(node, &mut ctx.xml);
+            ctx.current_parent = Some(node);
+        }
+        None => ctx.current_parent = Some(node),
+    }
+
     ctx.offset += mem::size_of::<BinXMLFragmentHeader>();
 }
 
 fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
-    let mut ctx = BXMLParseCtx::new(data);
+    let mut ctx = BinXMLParseCtx::new(data);
 
     // TODO: actually break
     for _ in 0..10 {
