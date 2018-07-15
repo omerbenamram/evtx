@@ -1,5 +1,7 @@
 #![feature(try_from)]
 #![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
 
 #[macro_use]
 extern crate nom;

@@ -1,9 +1,16 @@
 use core::mem;
+use hexdump::print_hexdump;
 use indextree::{Arena, NodeId};
 use nom::{le_u16, le_u32, le_u64, le_u8, IResult};
 use num_traits::FromPrimitive;
+use std::cmp::min;
 use std::fmt;
 use std::fmt::{Debug, Display};
+
+/// Represents how much size should the parser skip for this struct.
+trait BinarySize {
+    fn size() -> usize;
+}
 
 #[repr(u8)]
 #[derive(Primitive, Debug, PartialOrd, PartialEq)]
@@ -100,9 +107,15 @@ struct BinXmlTemplate {
     template_offset: u32,
     next_template_offset: u32,
     template_guid: Guid,
-    // This includes the size of the fragment header, element and end of file token,
+    // This includes the size of the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition.
     data_size: u32,
+}
+
+impl BinarySize for BinXmlTemplate {
+    fn size() -> usize {
+        mem::size_of::<BinXmlTemplate>() + 1
+    }
 }
 
 fn binxml_template(input: &[u8]) -> IResult<&[u8], BinXmlTemplate> {
@@ -113,6 +126,7 @@ fn binxml_template(input: &[u8]) -> IResult<&[u8], BinXmlTemplate> {
        >> template_offset: le_u32
        >> next_template_offset: le_u32
        >> template_guid: guid
+       // Currently this is redundant
        >> data_size: le_u32 >> (BinXmlTemplate {
             template_id,
             template_offset,
@@ -149,7 +163,7 @@ enum BinXMLTokens {
 struct BXMLParseCtx<'a> {
     data: &'a [u8],
     offset: usize,
-    template: Option<&'a BinXmlTemplate>,
+    template: Option<BinXmlTemplate>,
     xml: Arena<BinXMLTokens>,
     current_parent: Option<NodeId>,
 }
@@ -199,19 +213,25 @@ fn visit_processing_instruction_target(ctx: &mut BXMLParseCtx) {
 fn visit_processing_instruction_data(ctx: &mut BXMLParseCtx) {
     println!("visit_processing_instruction_data");
 }
-fn visit_template_instance(ctx: &mut BXMLParseCtx) {
-    println!("visit_template_instance");
-}
 fn visit_normal_substitution(ctx: &mut BXMLParseCtx) {
     println!("visit_normal_substitution");
 }
 fn visit_conditional_substitution(ctx: &mut BXMLParseCtx) {
     println!("visit_conditional_substitution");
 }
+
+fn visit_template_instance(ctx: &mut BXMLParseCtx) {
+    debug!("visit_template_instance");
+    let (_, template) = binxml_template(ctx.data).expect("Failed to parse template");
+    ctx.template = Some(template);
+    println!("{:?}", &ctx.template);
+    // Don't forget the skipped byte!!!
+    ctx.offset += BinXmlTemplate::size();
+}
+
 fn visit_start_of_stream(ctx: &mut BXMLParseCtx) {
     debug!("visit_start_of_stream");
-    // Skip signature
-    ctx.offset += mem::size_of::<BinXMLFragmentHeader>();
+    // TODO: actually extract this header from stream instead of just creating it.
     let root = ctx
         .xml
         .new_node(BinXMLTokens::FragmentHeader(BinXMLFragmentHeader {
@@ -220,15 +240,33 @@ fn visit_start_of_stream(ctx: &mut BXMLParseCtx) {
             flags: 0x00,
         }));
     ctx.current_parent = Some(root);
+    ctx.offset += mem::size_of::<BinXMLFragmentHeader>();
 }
 
 fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
     let mut ctx = BXMLParseCtx::new(data);
 
-    loop {
+    // TODO: actually break
+    for _ in 0..10 {
         let token = data[ctx.offset];
-        let token =
-            BXMLToken::from_u8(token).expect(&format!("{:?} not a valid binxml token", token));
+        ctx.offset += 1;
+
+        let token = BXMLToken::from_u8(token)
+            .or_else(|| {
+                println!("\n\n");
+                println!("-------------------------------");
+                println!("Panicked at offset {}", ctx.offset);
+                println!("{:2x} not a valid binxml token", token);
+
+                let m = (ctx.offset as i32) - 10;
+                let start = if m < 0 { 0 } else { m };
+                print_hexdump(&ctx.data[start as usize..ctx.offset + 100], 0, 'C');
+
+                println!("\n-------------------------------");
+                println!("\n\n");
+                panic!();
+            })
+            .unwrap();
 
         match token {
             BXMLToken::EndOfStream => visit_end_of_stream(&mut ctx),
@@ -245,10 +283,8 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
             BXMLToken::TemplateInstance => visit_template_instance(&mut ctx),
             BXMLToken::NormalSubstitution => visit_normal_substitution(&mut ctx),
             BXMLToken::ConditionalSubstitution => visit_conditional_substitution(&mut ctx),
-            BXMLToken::StartOfStream => visit_start_of_stream(&mut ctx),
-            _ => panic!("Unknown token {:?}", token),
+            BXMLToken::StartOfStream => visit_start_of_stream(&mut ctx)
         }
-        break;
     }
 
     ctx.xml
