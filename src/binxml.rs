@@ -12,24 +12,46 @@ trait BinarySize {
     fn size() -> usize;
 }
 
-#[repr(u8)]
-#[derive(Primitive, Debug, PartialOrd, PartialEq)]
+#[derive(Debug, PartialOrd, PartialEq)]
 enum BXMLToken {
-    EndOfStream = 0x00,
-    OpenStartElement = 0x01,
-    CloseStartElement = 0x02,
-    CloseEmptyElement = 0x03,
-    CloseElement = 0x04,
-    Value = 0x05,
-    Attribute = 0x06,
-    CDataSection = 0x07,
-    EntityReference = 0x08,
-    ProcessingInstructionTarget = 0x0a,
-    ProcessingInstructionData = 0x0b,
-    TemplateInstance = 0xc,
-    NormalSubstitution = 0x0d,
-    ConditionalSubstitution = 0x0e,
-    StartOfStream = 0x0f,
+    EndOfStream,
+    OpenStartElement,
+    CloseStartElement,
+    CloseEmptyElement,
+    CloseElement,
+    Value,
+    Attribute,
+    CDataSection,
+    EntityReference,
+    ProcessingInstructionTarget,
+    ProcessingInstructionData,
+    TemplateInstance,
+    NormalSubstitution,
+    ConditionalSubstitution,
+    StartOfStream,
+}
+
+impl BXMLToken {
+    fn from_u8(byte: u8) -> Option<BXMLToken> {
+        match byte {
+            0x00 => Some(BXMLToken::EndOfStream),
+            0x01 | 0x41 => Some(BXMLToken::OpenStartElement),
+            0x02 => Some(BXMLToken::CloseStartElement),
+            0x03 => Some(BXMLToken::CloseEmptyElement),
+            0x04 => Some(BXMLToken::CloseElement),
+            0x05 | 0x45 => Some(BXMLToken::Value),
+            0x06 | 0x46 => Some(BXMLToken::Attribute),
+            0x07 | 0x47 => Some(BXMLToken::CDataSection),
+            0x08 | 0x48 => Some(BXMLToken::EntityReference),
+            0x0a | 0x49 => Some(BXMLToken::ProcessingInstructionTarget),
+            0x0b => Some(BXMLToken::ProcessingInstructionData),
+            0x0c => Some(BXMLToken::TemplateInstance),
+            0x0d => Some(BXMLToken::NormalSubstitution),
+            0x0e => Some(BXMLToken::ConditionalSubstitution),
+            0x0f => Some(BXMLToken::StartOfStream),
+            _ => None,
+        }
+    }
 }
 
 #[repr(C)]
@@ -182,42 +204,55 @@ impl<'a> BXMLParseCtx<'a> {
 
 fn visit_end_of_stream(ctx: &mut BXMLParseCtx) {
     println!("visit_end_of_stream");
+    unimplemented!();
 }
 fn visit_open_start_element(ctx: &mut BXMLParseCtx) {
     println!("visit_open_start_element");
+    unimplemented!();
 }
 fn visit_close_start_element(ctx: &mut BXMLParseCtx) {
     println!("visit_close_start_element");
+    unimplemented!();
 }
 fn visit_close_empty_element(ctx: &mut BXMLParseCtx) {
     println!("visit_close_empty_element");
+    unimplemented!();
 }
 fn visit_close_element(ctx: &mut BXMLParseCtx) {
     println!("visit_close_element");
+    unimplemented!();
 }
 fn visit_value(ctx: &mut BXMLParseCtx) {
     println!("visit_value");
+    unimplemented!();
 }
 fn visit_attribute(ctx: &mut BXMLParseCtx) {
     println!("visit_attribute");
+    unimplemented!();
 }
 fn visit_cdata_section(ctx: &mut BXMLParseCtx) {
     println!("visit_cdata_section");
+    unimplemented!();
 }
 fn visit_entity_reference(ctx: &mut BXMLParseCtx) {
     println!("visit_entity_reference");
+    unimplemented!();
 }
 fn visit_processing_instruction_target(ctx: &mut BXMLParseCtx) {
     println!("visit_processing_instruction_target");
+    unimplemented!();
 }
 fn visit_processing_instruction_data(ctx: &mut BXMLParseCtx) {
     println!("visit_processing_instruction_data");
+    unimplemented!();
 }
 fn visit_normal_substitution(ctx: &mut BXMLParseCtx) {
     println!("visit_normal_substitution");
+    unimplemented!();
 }
 fn visit_conditional_substitution(ctx: &mut BXMLParseCtx) {
     println!("visit_conditional_substitution");
+    unimplemented!();
 }
 
 fn visit_template_instance(ctx: &mut BXMLParseCtx) {
@@ -283,7 +318,7 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
             BXMLToken::TemplateInstance => visit_template_instance(&mut ctx),
             BXMLToken::NormalSubstitution => visit_normal_substitution(&mut ctx),
             BXMLToken::ConditionalSubstitution => visit_conditional_substitution(&mut ctx),
-            BXMLToken::StartOfStream => visit_start_of_stream(&mut ctx)
+            BXMLToken::StartOfStream => visit_start_of_stream(&mut ctx),
         }
     }
 
