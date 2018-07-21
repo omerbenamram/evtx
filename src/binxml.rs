@@ -175,13 +175,6 @@ impl FromStream for BinXMLTemplate {
         let template_guid = Guid::read(ctx)?;
         let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
 
-        println!(
-            "{}, {}, {}",
-            data_size,
-            template_offset,
-            ctx.cursor.position()
-        );
-
         let element = parse_binxml(&ctx.cursor.get_ref(), (template_offset + 24) as u64);
         let number_of_template_values = ctx.cursor.read_u32::<LittleEndian>()?;
 
@@ -234,36 +227,53 @@ impl FromStream for BinXMLName {
     where
         Self: Sized,
     {
-        let name_offset = ctx.cursor.read_u32::<LittleEndian>()?;
+        // Important!!
+        // The "offset_from_start" refers to the offset where the name struct begins.
+        let offset_from_start_of_chunk = ctx.cursor.read_u32::<LittleEndian>()?;
+        let offset_from_start_of_chunk = offset_from_start_of_chunk as u64;
 
-        // Save position to return to later.
-        let current_position = ctx.cursor.position();
+        let mut rollback = false;
+        let orig_position = ctx.cursor.position();
 
-        //        ctx.cursor.seek(SeekFrom::Start(name_offset as u64))?;
+        // TODO: test this.
+        if offset_from_start_of_chunk != ctx.cursor.position() {
+            debug!("Seeking to {}", offset_from_start_of_chunk);
+            ctx.cursor
+                .seek(SeekFrom::Start(offset_from_start_of_chunk))?;
+            rollback = true;
+        }
 
-        // NameHash
-        let d = ctx.cursor.read_u32::<LittleEndian>()?;
+        let _ = ctx.cursor.read_u32::<LittleEndian>()?;
         let name_hash = ctx.cursor.read_u16::<LittleEndian>()?;
 
         let expected_number_of_characters = ctx.cursor.read_u16::<LittleEndian>()?;
-
-        let new_position = ctx.cursor.position() as usize;
-
-        // TODO: make sure this logic is same (padding?)
-        let bytes_for_utf16_conversion = &ctx.cursor.get_ref()
-            [new_position..(new_position + expected_number_of_characters as usize * 2) as usize];
+        let needed_bytes = (expected_number_of_characters * 2) as u64;
 
         let name: Option<String> = match expected_number_of_characters {
             0 => None,
             _ => {
                 let s = UTF_16LE
-                    .decode(bytes_for_utf16_conversion, DecoderTrap::Strict)
+                    .decode(
+                        &ctx.cursor.get_ref()
+                            [ctx.cursor.position() as usize..(ctx.cursor.position() + needed_bytes) as usize],
+                        DecoderTrap::Strict,
+                    )
                     .expect("Failed to read UTF-16 string");
 
-                assert_eq!(s.len(), expected_number_of_characters as usize);
+                assert_eq!(
+                    s.len(),
+                    expected_number_of_characters as usize,
+                    "UTF-16 string mismatch"
+                );
+
+                ctx.cursor.seek(SeekFrom::Current(needed_bytes as i64))?;
                 Some(s)
             }
         };
+
+        if rollback {
+            ctx.cursor.seek(SeekFrom::Start(orig_position))?;
+        }
 
         println!("{:?}", name);
         // TODO: do i need move the cursor somehow in here?
@@ -285,16 +295,18 @@ impl FromStream for BinXMLOpenElementStartTag {
     {
         // Unused
         ctx.cursor.read_u16::<LittleEndian>()?;
+        dump(ctx, 0);
         let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
-        let position = ctx.cursor.position();
         let name = BinXMLName::read(ctx)?;
-        assert_eq!(ctx.cursor.position(), position + 4);
-        let number_of_attributes = ctx.cursor.read_u32::<LittleEndian>()?;
+        // TODO: This is probably where the code crashes
         let attribute_list_data_size = ctx.cursor.read_u32::<LittleEndian>()?;
+        dump(ctx, 4);
 
-        let attribute_list = match number_of_attributes {
+        println!("{}, {:?}", attribute_list_data_size, name);
+
+        let attribute_list = match attribute_list_data_size {
             0 => None,
-            _ => Some(Vec::with_capacity(number_of_attributes as usize)),
+            _ => Some(Vec::with_capacity(attribute_list_data_size as usize)),
         };
 
         Ok(BinXMLOpenElementStartTag {
@@ -369,9 +381,9 @@ fn visit_end_of_stream(ctx: &mut BinXMLParseCtx) {
     println!("visit_end_of_stream");
 }
 
-fn visit_open_start_element(ctx: &mut BinXMLParseCtx) {
-    debug!("visit start_element");
-    let tag = BinXMLOpenElementStartTag::read(ctx).expect("Failed to parse tag");
+fn visit_open_start_element(ctx: &mut BinXMLParseCtx, tok: &BinXMLToken) {
+    debug!("visit start_element {:?}", tok);
+    let tag = BinXMLOpenElementStartTag::read(ctx).expect("Failed to parse open tag");
     let node = ctx.xml.new_node(BinXMLNodes::OpenStartElementTag(tag));
     ctx.add_node(node);
 }
@@ -472,7 +484,7 @@ fn parse_binxml(data: &[u8], offset: u64) -> BinXML {
                 visit_end_of_stream(&mut ctx);
                 break;
             }
-            BinXMLToken::OpenStartElement(_) => visit_open_start_element(&mut ctx),
+            BinXMLToken::OpenStartElement(_) => visit_open_start_element(&mut ctx, &token),
             BinXMLToken::CloseStartElement => visit_close_start_element(&mut ctx),
             BinXMLToken::CloseEmptyElement => visit_close_empty_element(&mut ctx),
             BinXMLToken::CloseElement => visit_close_element(&mut ctx),
