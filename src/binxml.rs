@@ -267,6 +267,8 @@ impl FromStream for BinXMLName {
                 );
 
                 ctx.cursor.seek(SeekFrom::Current(needed_bytes as i64))?;
+                // TODO: only do this if string is null terminated, not all strings are.
+                ctx.cursor.seek(SeekFrom::Current(2))?;
                 Some(s)
             }
         };
@@ -295,18 +297,15 @@ impl FromStream for BinXMLOpenElementStartTag {
     {
         // Unused
         ctx.cursor.read_u16::<LittleEndian>()?;
-        dump(ctx, 0);
         let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
         let name = BinXMLName::read(ctx)?;
-        // TODO: This is probably where the code crashes
         let attribute_list_data_size = ctx.cursor.read_u32::<LittleEndian>()?;
-        dump(ctx, 4);
 
         println!("{}, {:?}", attribute_list_data_size, name);
 
         let attribute_list = match attribute_list_data_size {
             0 => None,
-            _ => Some(Vec::with_capacity(attribute_list_data_size as usize)),
+            _ => Some(Vec::new()),
         };
 
         Ok(BinXMLOpenElementStartTag {
