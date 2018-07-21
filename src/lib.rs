@@ -6,6 +6,7 @@
 #[macro_use]
 extern crate nom;
 
+extern crate byteorder;
 extern crate indextree;
 
 #[macro_use]
@@ -28,4 +29,5 @@ extern crate num_traits;
 
 mod binxml;
 pub mod evtx_parser;
+mod guid;
 mod hexdump;

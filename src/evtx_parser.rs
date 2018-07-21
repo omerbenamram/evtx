@@ -5,7 +5,7 @@ use time::Duration;
 use crc::crc32;
 
 #[derive(Debug, PartialEq)]
-struct EVTXHeader {
+pub struct EVTXHeader {
     oldest_chunk: u64,
     current_chunk_num: u64,
     next_record_num: u64,
@@ -25,7 +25,7 @@ enum HeaderFlags {
     Full,
 }
 
-fn evtx_header(input: &[u8]) -> IResult<&[u8], EVTXHeader> {
+pub fn evtx_header(input: &[u8]) -> IResult<&[u8], EVTXHeader> {
     return do_parse!(
         input,
         tag!(b"ElfFile\x00")
@@ -50,7 +50,7 @@ fn evtx_header(input: &[u8]) -> IResult<&[u8], EVTXHeader> {
 }
 
 #[derive(Debug, PartialEq)]
-struct EVTXChunkHeader {
+pub struct EVTXChunkHeader {
     first_event_record_number: u64,
     last_event_record_number: u64,
     first_event_record_id: u64,
@@ -72,7 +72,7 @@ struct EVTXChunkHeader {
     template_table: Vec<u32>,
 }
 
-fn evtx_chunk_header(input: &[u8]) -> IResult<&[u8], EVTXChunkHeader> {
+pub fn evtx_chunk_header(input: &[u8]) -> IResult<&[u8], EVTXChunkHeader> {
     return do_parse!(
         input,
         tag!(b"ElfChnk\x00")
@@ -96,7 +96,7 @@ fn evtx_chunk_header(input: &[u8]) -> IResult<&[u8], EVTXChunkHeader> {
 }
 
 #[derive(Debug, PartialEq)]
-struct EVTXRecord<'a> {
+pub struct EVTXRecord<'a> {
     event_record_id: u64,
     timestamp: DateTime<Utc>,
     data: &'a [u8],
