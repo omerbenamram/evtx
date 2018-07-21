@@ -1,20 +1,31 @@
 use core::mem;
 use hexdump::print_hexdump;
 use indextree::{Arena, NodeId};
-use nom::{le_u16, le_u32, le_u64, le_u8, IResult};
+use nom::verbose_errors::Context;
+use nom::{le_u16, le_u32, le_u64, le_u8, Err as NomErr, ErrorKind, IResult};
 use std::cmp::min;
 use std::fmt;
 use std::fmt::{Debug, Display};
 
+use encoding::all::UTF_16LE;
+use encoding::DecoderTrap;
+use encoding::Encoding;
+use std::io::Cursor;
+
 /// Represents how much size should the parser skip for this struct.
 trait BinarySize {
-    fn size() -> usize;
+    fn size(&self) -> usize;
+}
+
+trait FromStream {
+    fn read(ctx: &mut BinXMLParseCtx) -> Self;
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
 enum BinXMLToken {
     EndOfStream,
-    OpenStartElement,
+    // True if has attributes, otherwise false.
+    OpenStartElement(bool),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
@@ -34,7 +45,8 @@ impl BinXMLToken {
     fn from_u8(byte: u8) -> Option<BinXMLToken> {
         match byte {
             0x00 => Some(BinXMLToken::EndOfStream),
-            0x01 | 0x41 => Some(BinXMLToken::OpenStartElement),
+            0x01 => Some(BinXMLToken::OpenStartElement(false)),
+            0x41 => Some(BinXMLToken::OpenStartElement(true)),
             0x02 => Some(BinXMLToken::CloseStartElement),
             0x03 => Some(BinXMLToken::CloseEmptyElement),
             0x04 => Some(BinXMLToken::CloseElement),
@@ -98,6 +110,10 @@ impl Guid {
     }
 }
 
+impl FromStream for Guid {
+
+}
+
 impl Display for Guid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.to_string())
@@ -134,7 +150,7 @@ struct BinXmlTemplate {
 }
 
 impl BinarySize for BinXmlTemplate {
-    fn size() -> usize {
+    fn size(&self) -> usize {
         // Don't forget the skipped (first) byte!!!
         mem::size_of::<BinXmlTemplate>() + 1
     }
@@ -158,14 +174,63 @@ fn binxml_template(input: &[u8]) -> IResult<&[u8], BinXmlTemplate> {
         })
     );
 }
+#[derive(Debug)]
+struct Attribute<'a> {
+    name: &'a str,
+    data: &'a [u8],
+}
+
+impl<'a> Attribute<'a> {
+    fn new() -> Attribute<'a> {
+        input
+    }
+}
 
 #[derive(Debug)]
-enum BinXMLTokens {
+struct BinXMLName {
+    name: String,
+}
+
+#[derive(Debug)]
+struct BinXMLOpenElementStartTag<'a> {
+    data_size: u32,
+    element_name_offset: Option<u32>,
+    attribute_list: Option<Vec<Attribute<'a>>>,
+}
+
+fn utf_16_string(input: &[u8], size: usize) -> IResult<&[u8], String> {
+    match UTF_16LE.decode(&input[..size], DecoderTrap::Strict) {
+        Ok(string) => Ok((&input[size..], string)),
+        Err(_) => Err(NomErr::Error(Context::Code(
+            &input[size..],
+            ErrorKind::Custom(0),
+        ))),
+    }
+}
+
+fn bin_xml_open_elemnt_start_tag<'a>(
+    input: &'a [u8],
+) -> IResult<&[u8], BinXMLOpenElementStartTag<'a>> {
+    return do_parse!(
+        input,
+        take!(2)
+            >> data_size: le_u32
+            >> attribute_list_len: le_u32
+            >> attribute_list: attribute_list >> (BinXMLOpenElementStartTag {
+            data_size,
+            element_name_offset: None,
+            attribute_list: None,
+        })
+    );
+}
+
+#[derive(Debug)]
+enum BinXMLTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
     TemplateInstanceToken(BinXmlTemplate),
-    OpenStartElementTag,
+    OpenStartElementTag(BinXMLOpenElementStartTag<'a>),
     AttributeList,
-    Attribute,
+    Attribute(Attribute<'a>),
     FragmentHeaderToken,
     OpenStartElementToken,
     CloseStartElementToken,
@@ -185,8 +250,9 @@ enum BinXMLTokens {
 struct BinXMLParseCtx<'a> {
     data: &'a [u8],
     offset: usize,
+    cursor: Cursor<&'a [u8]>,
     template: Option<BinXmlTemplate>,
-    xml: Arena<BinXMLTokens>,
+    xml: Arena<BinXMLTokens<'a>>,
     current_parent: Option<NodeId>,
 }
 
@@ -194,6 +260,7 @@ impl<'a> BinXMLParseCtx<'a> {
     fn new(data: &'a [u8]) -> BinXMLParseCtx {
         BinXMLParseCtx {
             data,
+            cursor: Cursor::new(data),
             offset: 0,
             template: None,
             xml: Arena::new(),
@@ -206,50 +273,64 @@ fn visit_end_of_stream(ctx: &mut BinXMLParseCtx) {
     println!("visit_end_of_stream");
     unimplemented!();
 }
+
 fn visit_open_start_element(ctx: &mut BinXMLParseCtx) {
-    println!("visit_open_start_element");
-    unimplemented!();
+    let (_, tag) = bin_xml_open_elemnt_start_tag(ctx.data).expect("Failed to parse tag");
+    println!("{:?}", tag);
+    //    let last_token = ctx.data[ctx.offset - 1];
+    //    dump_and_panic(ctx, last_token);
 }
+
 fn visit_close_start_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_start_element");
     unimplemented!();
 }
+
 fn visit_close_empty_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_empty_element");
     unimplemented!();
 }
+
 fn visit_close_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_element");
     unimplemented!();
 }
+
 fn visit_value(ctx: &mut BinXMLParseCtx) {
     println!("visit_value");
     unimplemented!();
 }
+
 fn visit_attribute(ctx: &mut BinXMLParseCtx) {
     println!("visit_attribute");
     unimplemented!();
 }
+
 fn visit_cdata_section(ctx: &mut BinXMLParseCtx) {
     println!("visit_cdata_section");
     unimplemented!();
 }
+
 fn visit_entity_reference(ctx: &mut BinXMLParseCtx) {
     println!("visit_entity_reference");
     unimplemented!();
 }
+
 fn visit_processing_instruction_target(ctx: &mut BinXMLParseCtx) {
     println!("visit_processing_instruction_target");
     unimplemented!();
 }
+
 fn visit_processing_instruction_data(ctx: &mut BinXMLParseCtx) {
     println!("visit_processing_instruction_data");
     unimplemented!();
 }
+
 fn visit_normal_substitution(ctx: &mut BinXMLParseCtx) {
     println!("visit_normal_substitution");
     unimplemented!();
 }
+
 fn visit_conditional_substitution(ctx: &mut BinXMLParseCtx) {
     println!("visit_conditional_substitution");
     unimplemented!();
@@ -258,15 +339,15 @@ fn visit_conditional_substitution(ctx: &mut BinXMLParseCtx) {
 fn visit_template_instance(ctx: &mut BinXMLParseCtx) {
     debug!("visit_template_instance");
     let (_, template) = binxml_template(ctx.data).expect("Failed to parse template");
+    let sz = &template.size();
     ctx.template = Some(template);
     println!("{:?}", &ctx.template);
-    ctx.offset += BinXmlTemplate::size();
+    ctx.offset += sz;
 }
 
 fn visit_start_of_stream(ctx: &mut BinXMLParseCtx) {
     debug!("visit_start_of_stream");
 
-    // TODO: actually extract this header from stream instead of just creating it.
     let fragment_header = BinXMLTokens::FragmentHeader(BinXMLFragmentHeader {
         major_version: 0x01,
         minor_version: 0x01,
@@ -296,24 +377,14 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
 
         let token = BinXMLToken::from_u8(token)
             .or_else(|| {
-                println!("\n\n");
-                println!("-------------------------------");
-                println!("Panicked at offset {}", ctx.offset);
-                println!("{:2x} not a valid binxml token", token);
-
-                let m = (ctx.offset as i32) - 10;
-                let start = if m < 0 { 0 } else { m };
-                print_hexdump(&ctx.data[start as usize..ctx.offset + 100], 0, 'C');
-
-                println!("\n-------------------------------");
-                println!("\n\n");
-                panic!();
+                dump_and_panic(&mut ctx, token);
+                None
             })
             .unwrap();
 
         match token {
             BinXMLToken::EndOfStream => visit_end_of_stream(&mut ctx),
-            BinXMLToken::OpenStartElement => visit_open_start_element(&mut ctx),
+            BinXMLToken::OpenStartElement(_) => visit_open_start_element(&mut ctx),
             BinXMLToken::CloseStartElement => visit_close_start_element(&mut ctx),
             BinXMLToken::CloseEmptyElement => visit_close_empty_element(&mut ctx),
             BinXMLToken::CloseElement => visit_close_element(&mut ctx),
@@ -321,7 +392,9 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
             BinXMLToken::Attribute => visit_attribute(&mut ctx),
             BinXMLToken::CDataSection => visit_cdata_section(&mut ctx),
             BinXMLToken::EntityReference => visit_entity_reference(&mut ctx),
-            BinXMLToken::ProcessingInstructionTarget => visit_processing_instruction_target(&mut ctx),
+            BinXMLToken::ProcessingInstructionTarget => {
+                visit_processing_instruction_target(&mut ctx)
+            }
             BinXMLToken::ProcessingInstructionData => visit_processing_instruction_data(&mut ctx),
             BinXMLToken::TemplateInstance => visit_template_instance(&mut ctx),
             BinXMLToken::NormalSubstitution => visit_normal_substitution(&mut ctx),
@@ -333,9 +406,23 @@ fn parse_binxml(data: &[u8]) -> Arena<BinXMLTokens> {
     ctx.xml
 }
 
+fn dump_and_panic(mut ctx: &mut BinXMLParseCtx, token: u8) {
+    println!("\n\n");
+    println!("-------------------------------");
+    println!("Panicked at offset {}", ctx.offset);
+    println!("{:2x} not a valid binxml token", token);
+    let m = (ctx.offset as i32) - 10;
+    let start = if m < 0 { 0 } else { m };
+    print_hexdump(&ctx.data[start as usize..ctx.offset + 100], 0, 'C');
+    println!("\n-------------------------------");
+    println!("\n\n");
+    panic!();
+}
+
 mod tests {
     use super::*;
     use hexdump;
+
     extern crate env_logger;
 
     #[test]

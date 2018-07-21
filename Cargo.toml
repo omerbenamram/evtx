@@ -14,6 +14,7 @@ encoding = "0.2.33"
 env_logger = "*"
 log = { version = "^0.4", features = ["max_level_debug", "release_max_level_warn"] }
 indextree = "*"
+byteorder = "1.2.3"
 
 [dependencies.nom]
 version = "^4.0"
