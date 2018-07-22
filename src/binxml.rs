@@ -1,10 +1,8 @@
 use core::mem;
 use hexdump::print_hexdump;
 use indextree::{Arena, NodeId};
-use nom::verbose_errors::Context;
-use nom::{le_u16, le_u32, le_u64, le_u8, Err as NomErr, ErrorKind, IResult};
 use std::cmp::min;
-use std::io::{self, Read, Result, Seek, SeekFrom};
+use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
@@ -13,7 +11,7 @@ use encoding::DecoderTrap;
 use encoding::Encoding;
 use evtx_parser::evtx_chunk_header;
 use guid::Guid;
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
 
 trait FromStream {
@@ -36,44 +34,63 @@ impl FromStream for Guid {
     }
 }
 
+#[derive(Debug, PartialOrd, PartialEq)]
 enum BinXMLValueTypes {
-    BinXmlTokenEOF,
-    BinXmlTokenOpenStartElementTag,
-    BinXmlTokenCloseStartElementTag,
-    BinXmlTokenCloseEmptyElementTag,
-    BinXmlTokenEndElementTag,
-    BinXmlTokenValue,
-    BinXmlTokenAttribute,
-    BinXmlTokenCDATASection,
-    BinXmlTokenCharRef,
-    BinXmlTokenEntityRef,
-    BinXmlTokenPITarget,
-    BinXmlTokenPIData,
-    BinXmlTokenTemplateInstance,
-    BinXmlTokenNormalSubstitution,
-    BinXmlTokenOptionalSubstitution,
-    BinXmlFragmentHeaderToken,
+    NullType,
+    StringType,
+    AnsiStringType,
+    Int8Type,
+    UInt8Type,
+    Int16Type,
+    UInt16Type,
+    Int32Type,
+    UInt32Type,
+    Int64Type,
+    UInt64Type,
+    Real32Type,
+    Real64Type,
+    BoolType,
+    BinaryType,
+    GuidType,
+    SizeTType,
+    FileTimeType,
+    SysTimeType,
+    SidType,
+    HexInt32Type,
+    HexInt64Type,
+    EvtHandle,
+    BinXmlType,
+    EvtXml,
 }
 
 impl BinXMLValueTypes {
     fn from_u8(byte: u8) -> Option<BinXMLValueTypes> {
         match byte {
-            0x00 => Some(BinXMLValueTypes::BinXmlTokenEOF),
-            0x01 | 0x41 => Some(BinXMLValueTypes::BinXmlTokenOpenStartElementTag),
-            0x02 => Some(BinXMLValueTypes::BinXmlTokenCloseStartElementTag),
-            0x03 => Some(BinXMLValueTypes::BinXmlTokenCloseEmptyElementTag),
-            0x04 => Some(BinXMLValueTypes::BinXmlTokenEndElementTag),
-            0x05 | 0x45 => Some(BinXMLValueTypes::BinXmlTokenValue),
-            0x06 | 0x46 => Some(BinXMLValueTypes::BinXmlTokenAttribute),
-            0x07 | 0x47 => Some(BinXMLValueTypes::BinXmlTokenCDATASection),
-            0x08 | 0x48 => Some(BinXMLValueTypes::BinXmlTokenCharRef),
-            0x09 | 0x49 => Some(BinXMLValueTypes::BinXmlTokenEntityRef),
-            0x0a => Some(BinXMLValueTypes::BinXmlTokenPITarget),
-            0x0b => Some(BinXMLValueTypes::BinXmlTokenPIData),
-            0x0c => Some(BinXMLValueTypes::BinXmlTokenTemplateInstance),
-            0x0d => Some(BinXMLValueTypes::BinXmlTokenNormalSubstitution),
-            0x0e => Some(BinXMLValueTypes::BinXmlTokenOptionalSubstitution),
-            0x0f => Some(BinXMLValueTypes::BinXmlFragmentHeaderToken),
+            0x00 => Some(BinXMLValueTypes::NullType),
+            0x01 => Some(BinXMLValueTypes::StringType),
+            0x02 => Some(BinXMLValueTypes::AnsiStringType),
+            0x03 => Some(BinXMLValueTypes::Int8Type),
+            0x04 => Some(BinXMLValueTypes::UInt8Type),
+            0x05 => Some(BinXMLValueTypes::Int16Type),
+            0x06 => Some(BinXMLValueTypes::UInt16Type),
+            0x07 => Some(BinXMLValueTypes::Int32Type),
+            0x08 => Some(BinXMLValueTypes::UInt32Type),
+            0x09 => Some(BinXMLValueTypes::Int64Type),
+            0x0a => Some(BinXMLValueTypes::UInt64Type),
+            0x0b => Some(BinXMLValueTypes::Real32Type),
+            0x0c => Some(BinXMLValueTypes::Real64Type),
+            0x0d => Some(BinXMLValueTypes::BoolType),
+            0x0e => Some(BinXMLValueTypes::BinaryType),
+            0x0f => Some(BinXMLValueTypes::GuidType),
+            0x10 => Some(BinXMLValueTypes::SizeTType),
+            0x11 => Some(BinXMLValueTypes::FileTimeType),
+            0x12 => Some(BinXMLValueTypes::SysTimeType),
+            0x13 => Some(BinXMLValueTypes::SidType),
+            0x14 => Some(BinXMLValueTypes::HexInt32Type),
+            0x15 => Some(BinXMLValueTypes::HexInt64Type),
+            0x20 => Some(BinXMLValueTypes::EvtHandle),
+            0x21 => Some(BinXMLValueTypes::BinXmlType),
+            0x23 => Some(BinXMLValueTypes::EvtXml),
             _ => None,
         }
     }
@@ -147,7 +164,20 @@ impl FromStream for BinXMLFragmentHeader {
     }
 }
 
-struct BinXMLValue {}
+#[derive(Debug)]
+struct BinXMLValueText {
+    raw: String,
+}
+
+impl FromStream for BinXMLValueText {
+    fn read<'a>(stream: &mut Cursor<&[u8]>) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let raw = read_len_prefixed_utf16_string(stream, false)?.expect("Value cannot be empty");
+        Ok(BinXMLValueText { raw })
+    }
+}
 
 #[derive(Debug)]
 struct BinXMLTemplate {
@@ -194,7 +224,6 @@ impl FromStream for BinXMLTemplate {
             });
         }
 
-        println!("{:?}", value_descriptors);
         Ok(BinXMLTemplate {
             template_id,
             template_offset,
@@ -225,6 +254,37 @@ struct BinXMLName {
     name: Option<String>,
 }
 
+fn read_len_prefixed_utf16_string<'a>(
+    stream: &mut Cursor<&'a [u8]>,
+    is_null_terminated: bool,
+) -> Result<Option<String>> {
+    let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
+    let needed_bytes = (expected_number_of_characters * 2) as usize;
+
+    let p = stream.position() as usize;
+    let ref_to_utf16_bytes = &stream.get_ref()[p..p + needed_bytes];
+
+    match expected_number_of_characters {
+        0 => Ok(None),
+        _ => match UTF_16LE.decode(ref_to_utf16_bytes, DecoderTrap::Strict) {
+            Ok(s) => {
+                let mut bytes_to_seek = needed_bytes as i64;
+                if is_null_terminated {
+                    bytes_to_seek += 2;
+                }
+
+                stream.seek(SeekFrom::Current(bytes_to_seek))?;
+                if expected_number_of_characters as usize != s.len() {
+                    return Err(Error::from(ErrorKind::InvalidData));
+                }
+
+                return Ok(Some(s));
+            }
+            Err(s) => Err(Error::from(ErrorKind::InvalidData)),
+        },
+    }
+}
+
 impl FromStream for BinXMLName {
     fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
     where
@@ -248,56 +308,16 @@ impl FromStream for BinXMLName {
         let _ = stream.read_u32::<LittleEndian>()?;
         let name_hash = stream.read_u16::<LittleEndian>()?;
 
-        let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
-        let needed_bytes = (expected_number_of_characters * 2) as u64;
-
-        let name: Option<String> = match expected_number_of_characters {
-            0 => None,
-            _ => {
-                let s = UTF_16LE
-                    .decode(
-                        &stream.get_ref()[stream.position() as usize
-                                              ..(stream.position() + needed_bytes) as usize],
-                        DecoderTrap::Strict,
-                    )
-                    .expect("Failed to read UTF-16 string");
-
-                assert_eq!(
-                    s.len(),
-                    expected_number_of_characters as usize,
-                    "UTF-16 string mismatch"
-                );
-
-                stream.seek(SeekFrom::Current(needed_bytes as i64))?;
-                // TODO: only do this if string is null terminated, not all strings are.
-                stream.seek(SeekFrom::Current(2))?;
-                Some(s)
-            }
-        };
+        let name = read_len_prefixed_utf16_string(stream, true)?;
 
         if rollback {
             stream.seek(SeekFrom::Start(orig_position))?;
         }
 
-        println!("{:?}", name);
         // TODO: do i need move the cursor somehow in here?
         Ok(BinXMLName { name })
     }
 }
-
-struct BinXMLValueText<'a> {
-    raw: Cow<'a, str>,
-}
-
-//impl<'a> FromStream for BinXMLValueText<'a> {
-//    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
-//    where
-//        R: Read,
-//        Self: Sized,
-//    {
-//
-//    }
-//}
 
 #[derive(Debug)]
 struct BinXMLOpenElementStartTag {
@@ -316,8 +336,6 @@ impl FromStream for BinXMLOpenElementStartTag {
         let data_size = stream.read_u32::<LittleEndian>()?;
         let name = BinXMLName::read(stream)?;
         let attribute_list_data_size = stream.read_u32::<LittleEndian>()?;
-
-        println!("{}, {:?}", attribute_list_data_size, name);
 
         let attribute_list = match attribute_list_data_size {
             0 => None,
@@ -344,7 +362,7 @@ enum BinXMLNodes {
     CloseStartElementToken,
     CloseEmptyElementToken,
     CloseElementToken,
-    ValueTextToken,
+    ValueTextToken(BinXMLValueText),
     AttributeToken,
     CDATASectionToken,
     CharRefToken,
@@ -405,7 +423,9 @@ fn visit_open_start_element(ctx: &mut BinXMLParseCtx, tok: &BinXMLToken) {
 
 fn visit_close_start_element(ctx: &mut BinXMLParseCtx) {
     println!("visit_close_start_element");
-    unimplemented!();
+    let node = ctx.current_parent.unwrap();
+    let parent = ctx.xml.get(node).unwrap().parent();
+    ctx.current_parent = parent;
 }
 
 fn visit_close_empty_element(ctx: &mut BinXMLParseCtx) {
@@ -420,12 +440,29 @@ fn visit_close_element(ctx: &mut BinXMLParseCtx) {
 
 fn visit_value(ctx: &mut BinXMLParseCtx) {
     debug!("visit_value");
-    unimplemented!()
+    let value_type_token = ctx.cursor.read_u8().expect("EOF");
+    let value_type = BinXMLValueTypes::from_u8(value_type_token)
+        .or_else(|| {
+            println!("{:2x} not a valid value type", value_type_token);
+            None
+        })
+        .unwrap();
+
+    let value = match value_type {
+        BinXMLValueTypes::StringType => {
+            BinXMLValueText::read(&mut ctx.cursor).expect("Failed to read value")
+        }
+        _ => unimplemented!(),
+    };
+    debug!("visit_value returned {:?}", value);
+    let node = ctx.xml.new_node(BinXMLNodes::ValueTextToken(value));
+    ctx.add_leaf(node);
 }
 
 fn visit_attribute(ctx: &mut BinXMLParseCtx) {
     debug!("visit_attribute");
     let attribute = BinXMLAttribute::read(&mut ctx.cursor).expect("Failed to parse attribute");
+    debug!("visit_attribute returned {:?}", attribute);
     let node = ctx.xml.new_node(BinXMLNodes::Attribute(attribute));
     ctx.add_leaf(node);
 }
@@ -463,8 +500,8 @@ fn visit_conditional_substitution(ctx: &mut BinXMLParseCtx) {
 fn visit_template_instance(ctx: &mut BinXMLParseCtx) {
     debug!("visit_template_instance");
     let template = BinXMLTemplate::read(&mut ctx.cursor).expect("Failed to parse template");
+    debug!("visit_template_instance returned {:?}", template);
     ctx.template = Some(template);
-    println!("{:?}", &ctx.template);
 }
 
 fn visit_start_of_stream(ctx: &mut BinXMLParseCtx) {
@@ -473,11 +510,12 @@ fn visit_start_of_stream(ctx: &mut BinXMLParseCtx) {
     let fragment_header = BinXMLNodes::FragmentHeader(
         BinXMLFragmentHeader::read(&mut ctx.cursor).expect("Failed to read fragment_header"),
     );
+    debug!("visit_start_of_stream returned {:?}", fragment_header);
     let node = ctx.xml.new_node(fragment_header);
     ctx.add_node(node);
 }
 
-pub type BinXML = Arena<BinXMLNodes>;
+type BinXML = Arena<BinXMLNodes>;
 
 fn parse_binxml(data: &[u8], offset: u64) -> BinXML {
     let mut ctx = BinXMLParseCtx::new(data, offset);
@@ -490,7 +528,7 @@ fn parse_binxml(data: &[u8], offset: u64) -> BinXML {
         let token = BinXMLToken::from_u8(token)
             // Unknown token.
             .or_else(|| {
-                println!("{:2x} not a valid binxml token", token);
+                error!("{:2x} not a valid binxml token", token);
                 dump_and_panic(&mut ctx, 10);
                 None
             })
