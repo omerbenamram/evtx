@@ -6,139 +6,13 @@ use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use encoding::all::UTF_16LE;
-use encoding::DecoderTrap;
-use encoding::Encoding;
+use binxml::model::{BinXMLToken, BinXMLValueTypes, FromStream};
+use binxml::utils::read_len_prefixed_utf16_string;
+
 use evtx_parser::evtx_chunk_header;
 use guid::Guid;
 use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
-
-trait FromStream {
-    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
-    where
-        Self: Sized;
-}
-
-impl FromStream for Guid {
-    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        let data1 = stream.read_u32::<LittleEndian>()?;
-        let data2 = stream.read_u16::<LittleEndian>()?;
-        let data3 = stream.read_u16::<LittleEndian>()?;
-        let mut data4 = [0; 8];
-        stream.read_exact(&mut data4)?;
-        Ok(Guid::new(data1, data2, data3, &data4))
-    }
-}
-
-#[derive(Debug, PartialOrd, PartialEq)]
-enum BinXMLValueTypes {
-    NullType,
-    StringType,
-    AnsiStringType,
-    Int8Type,
-    UInt8Type,
-    Int16Type,
-    UInt16Type,
-    Int32Type,
-    UInt32Type,
-    Int64Type,
-    UInt64Type,
-    Real32Type,
-    Real64Type,
-    BoolType,
-    BinaryType,
-    GuidType,
-    SizeTType,
-    FileTimeType,
-    SysTimeType,
-    SidType,
-    HexInt32Type,
-    HexInt64Type,
-    EvtHandle,
-    BinXmlType,
-    EvtXml,
-}
-
-impl BinXMLValueTypes {
-    fn from_u8(byte: u8) -> Option<BinXMLValueTypes> {
-        match byte {
-            0x00 => Some(BinXMLValueTypes::NullType),
-            0x01 => Some(BinXMLValueTypes::StringType),
-            0x02 => Some(BinXMLValueTypes::AnsiStringType),
-            0x03 => Some(BinXMLValueTypes::Int8Type),
-            0x04 => Some(BinXMLValueTypes::UInt8Type),
-            0x05 => Some(BinXMLValueTypes::Int16Type),
-            0x06 => Some(BinXMLValueTypes::UInt16Type),
-            0x07 => Some(BinXMLValueTypes::Int32Type),
-            0x08 => Some(BinXMLValueTypes::UInt32Type),
-            0x09 => Some(BinXMLValueTypes::Int64Type),
-            0x0a => Some(BinXMLValueTypes::UInt64Type),
-            0x0b => Some(BinXMLValueTypes::Real32Type),
-            0x0c => Some(BinXMLValueTypes::Real64Type),
-            0x0d => Some(BinXMLValueTypes::BoolType),
-            0x0e => Some(BinXMLValueTypes::BinaryType),
-            0x0f => Some(BinXMLValueTypes::GuidType),
-            0x10 => Some(BinXMLValueTypes::SizeTType),
-            0x11 => Some(BinXMLValueTypes::FileTimeType),
-            0x12 => Some(BinXMLValueTypes::SysTimeType),
-            0x13 => Some(BinXMLValueTypes::SidType),
-            0x14 => Some(BinXMLValueTypes::HexInt32Type),
-            0x15 => Some(BinXMLValueTypes::HexInt64Type),
-            0x20 => Some(BinXMLValueTypes::EvtHandle),
-            0x21 => Some(BinXMLValueTypes::BinXmlType),
-            0x23 => Some(BinXMLValueTypes::EvtXml),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, PartialOrd, PartialEq)]
-enum BinXMLToken {
-    EndOfStream,
-    // True if has attributes, otherwise false.
-    OpenStartElement(bool),
-    CloseStartElement,
-    CloseEmptyElement,
-    CloseElement,
-    TextValue,
-    Attribute,
-    CDataSection,
-    EntityReference,
-    ProcessingInstructionTarget,
-    ProcessingInstructionData,
-    TemplateInstance,
-    NormalSubstitution,
-    ConditionalSubstitution,
-    StartOfStream,
-}
-
-impl BinXMLToken {
-    fn from_u8(byte: u8) -> Option<BinXMLToken> {
-        match byte {
-            0x00 => Some(BinXMLToken::EndOfStream),
-            0x01 => Some(BinXMLToken::OpenStartElement(false)),
-            0x41 => Some(BinXMLToken::OpenStartElement(true)),
-            0x02 => Some(BinXMLToken::CloseStartElement),
-            0x03 => Some(BinXMLToken::CloseEmptyElement),
-            0x04 => Some(BinXMLToken::CloseElement),
-            0x05 | 0x45 => Some(BinXMLToken::TextValue),
-            0x06 | 0x46 => Some(BinXMLToken::Attribute),
-            0x07 | 0x47 => Some(BinXMLToken::CDataSection),
-            0x08 | 0x48 => Some(BinXMLToken::EntityReference),
-            0x0a | 0x49 => Some(BinXMLToken::ProcessingInstructionTarget),
-            0x0b => Some(BinXMLToken::ProcessingInstructionData),
-            0x0c => Some(BinXMLToken::TemplateInstance),
-            0x0d => Some(BinXMLToken::NormalSubstitution),
-            0x0e => Some(BinXMLToken::ConditionalSubstitution),
-            0x0f => Some(BinXMLToken::StartOfStream),
-            _ => None,
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Debug)]
@@ -252,37 +126,6 @@ impl FromStream for BinXMLAttribute {
 #[derive(Debug)]
 struct BinXMLName {
     name: Option<String>,
-}
-
-fn read_len_prefixed_utf16_string<'a>(
-    stream: &mut Cursor<&'a [u8]>,
-    is_null_terminated: bool,
-) -> Result<Option<String>> {
-    let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
-    let needed_bytes = (expected_number_of_characters * 2) as usize;
-
-    let p = stream.position() as usize;
-    let ref_to_utf16_bytes = &stream.get_ref()[p..p + needed_bytes];
-
-    match expected_number_of_characters {
-        0 => Ok(None),
-        _ => match UTF_16LE.decode(ref_to_utf16_bytes, DecoderTrap::Strict) {
-            Ok(s) => {
-                let mut bytes_to_seek = needed_bytes as i64;
-                if is_null_terminated {
-                    bytes_to_seek += 2;
-                }
-
-                stream.seek(SeekFrom::Current(bytes_to_seek))?;
-                if expected_number_of_characters as usize != s.len() {
-                    return Err(Error::from(ErrorKind::InvalidData));
-                }
-
-                return Ok(Some(s));
-            }
-            Err(s) => Err(Error::from(ErrorKind::InvalidData)),
-        },
-    }
 }
 
 impl FromStream for BinXMLName {
@@ -588,7 +431,7 @@ mod tests {
     #[test]
     fn test_basic_binxml() {
         let _ = env_logger::try_init().expect("Failed to init logger");
-        let evtx_file = include_bytes!("../samples/security.evtx");
+        let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
         let xml = parse_binxml(from_start_of_chunk, 512 + 24);
 
