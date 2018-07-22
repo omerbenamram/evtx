@@ -4,9 +4,9 @@ use indextree::{Arena, NodeId};
 use nom::verbose_errors::Context;
 use nom::{le_u16, le_u32, le_u64, le_u8, Err as NomErr, ErrorKind, IResult};
 use std::cmp::min;
-use std::io::{Read, Result, Seek, SeekFrom};
+use std::io::{self, Read, Result, Seek, SeekFrom};
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use encoding::all::UTF_16LE;
 use encoding::DecoderTrap;
@@ -17,18 +17,21 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 trait FromStream {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self>
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
     where
         Self: Sized;
 }
 
 impl FromStream for Guid {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self> {
-        let data1 = ctx.cursor.read_u32::<LittleEndian>()?;
-        let data2 = ctx.cursor.read_u16::<LittleEndian>()?;
-        let data3 = ctx.cursor.read_u16::<LittleEndian>()?;
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
+    where
+        Self: Sized,
+    {
+        let data1 = stream.read_u32::<LittleEndian>()?;
+        let data2 = stream.read_u16::<LittleEndian>()?;
+        let data3 = stream.read_u16::<LittleEndian>()?;
         let mut data4 = [0; 8];
-        ctx.cursor.read_exact(&mut data4)?;
+        stream.read_exact(&mut data4)?;
         Ok(Guid::new(data1, data2, data3, &data4))
     }
 }
@@ -84,7 +87,7 @@ enum BinXMLToken {
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
-    Value,
+    TextValue,
     Attribute,
     CDataSection,
     EntityReference,
@@ -105,7 +108,7 @@ impl BinXMLToken {
             0x02 => Some(BinXMLToken::CloseStartElement),
             0x03 => Some(BinXMLToken::CloseEmptyElement),
             0x04 => Some(BinXMLToken::CloseElement),
-            0x05 | 0x45 => Some(BinXMLToken::Value),
+            0x05 | 0x45 => Some(BinXMLToken::TextValue),
             0x06 | 0x46 => Some(BinXMLToken::Attribute),
             0x07 | 0x47 => Some(BinXMLToken::CDataSection),
             0x08 | 0x48 => Some(BinXMLToken::EntityReference),
@@ -129,13 +132,13 @@ struct BinXMLFragmentHeader {
 }
 
 impl FromStream for BinXMLFragmentHeader {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self>
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
     where
         Self: Sized,
     {
-        let major_version = ctx.cursor.read_u8()?;
-        let minor_version = ctx.cursor.read_u8()?;
-        let flags = ctx.cursor.read_u8()?;
+        let major_version = stream.read_u8()?;
+        let minor_version = stream.read_u8()?;
+        let flags = stream.read_u8()?;
         Ok(BinXMLFragmentHeader {
             major_version,
             minor_version,
@@ -164,27 +167,27 @@ struct TemplateValueDescriptor {
 }
 
 impl FromStream for BinXMLTemplate {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self>
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
     where
         Self: Sized,
     {
-        ctx.cursor.read_u8()?;
-        let template_id = ctx.cursor.read_u32::<LittleEndian>()?;
-        let template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
-        let next_template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
-        let template_guid = Guid::read(ctx)?;
-        let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
+        stream.read_u8()?;
+        let template_id = stream.read_u32::<LittleEndian>()?;
+        let template_offset = stream.read_u32::<LittleEndian>()?;
+        let next_template_offset = stream.read_u32::<LittleEndian>()?;
+        let template_guid = Guid::read(stream)?;
+        let data_size = stream.read_u32::<LittleEndian>()?;
 
-        let element = parse_binxml(&ctx.cursor.get_ref(), (template_offset + 24) as u64);
-        let number_of_template_values = ctx.cursor.read_u32::<LittleEndian>()?;
+        let element = parse_binxml(&stream.get_ref(), (template_offset + 24) as u64);
+        let number_of_template_values = stream.read_u32::<LittleEndian>()?;
 
         assert_eq!(number_of_template_values, 4);
 
         let mut value_descriptors: Vec<TemplateValueDescriptor> = Vec::new();
         for _ in number_of_template_values.. {
-            let value_size = ctx.cursor.read_u16::<LittleEndian>()?;
-            let value_type = ctx.cursor.read_u8()?;
-            ctx.cursor.read_u8()?;
+            let value_size = stream.read_u16::<LittleEndian>()?;
+            let value_type = stream.read_u8()?;
+            stream.read_u8()?;
             value_descriptors.push(TemplateValueDescriptor {
                 value_size,
                 value_type,
@@ -208,11 +211,11 @@ struct BinXMLAttribute {
 }
 
 impl FromStream for BinXMLAttribute {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self>
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
     where
         Self: Sized,
     {
-        let name = BinXMLName::read(ctx)?;
+        let name = BinXMLName::read(stream)?;
         Ok(BinXMLAttribute { name })
     }
 }
@@ -223,30 +226,29 @@ struct BinXMLName {
 }
 
 impl FromStream for BinXMLName {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self>
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
     where
         Self: Sized,
     {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
-        let offset_from_start_of_chunk = ctx.cursor.read_u32::<LittleEndian>()?;
+        let offset_from_start_of_chunk = stream.read_u32::<LittleEndian>()?;
         let offset_from_start_of_chunk = offset_from_start_of_chunk as u64;
 
         let mut rollback = false;
-        let orig_position = ctx.cursor.position();
+        let orig_position = stream.position();
 
         // TODO: test this.
-        if offset_from_start_of_chunk != ctx.cursor.position() {
+        if offset_from_start_of_chunk != stream.position() {
             debug!("Seeking to {}", offset_from_start_of_chunk);
-            ctx.cursor
-                .seek(SeekFrom::Start(offset_from_start_of_chunk))?;
+            stream.seek(SeekFrom::Start(offset_from_start_of_chunk))?;
             rollback = true;
         }
 
-        let _ = ctx.cursor.read_u32::<LittleEndian>()?;
-        let name_hash = ctx.cursor.read_u16::<LittleEndian>()?;
+        let _ = stream.read_u32::<LittleEndian>()?;
+        let name_hash = stream.read_u16::<LittleEndian>()?;
 
-        let expected_number_of_characters = ctx.cursor.read_u16::<LittleEndian>()?;
+        let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
         let needed_bytes = (expected_number_of_characters * 2) as u64;
 
         let name: Option<String> = match expected_number_of_characters {
@@ -254,8 +256,8 @@ impl FromStream for BinXMLName {
             _ => {
                 let s = UTF_16LE
                     .decode(
-                        &ctx.cursor.get_ref()
-                            [ctx.cursor.position() as usize..(ctx.cursor.position() + needed_bytes) as usize],
+                        &stream.get_ref()[stream.position() as usize
+                                              ..(stream.position() + needed_bytes) as usize],
                         DecoderTrap::Strict,
                     )
                     .expect("Failed to read UTF-16 string");
@@ -266,15 +268,15 @@ impl FromStream for BinXMLName {
                     "UTF-16 string mismatch"
                 );
 
-                ctx.cursor.seek(SeekFrom::Current(needed_bytes as i64))?;
+                stream.seek(SeekFrom::Current(needed_bytes as i64))?;
                 // TODO: only do this if string is null terminated, not all strings are.
-                ctx.cursor.seek(SeekFrom::Current(2))?;
+                stream.seek(SeekFrom::Current(2))?;
                 Some(s)
             }
         };
 
         if rollback {
-            ctx.cursor.seek(SeekFrom::Start(orig_position))?;
+            stream.seek(SeekFrom::Start(orig_position))?;
         }
 
         println!("{:?}", name);
@@ -282,6 +284,20 @@ impl FromStream for BinXMLName {
         Ok(BinXMLName { name })
     }
 }
+
+struct BinXMLValueText<'a> {
+    raw: Cow<'a, str>,
+}
+
+//impl<'a> FromStream for BinXMLValueText<'a> {
+//    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
+//    where
+//        R: Read,
+//        Self: Sized,
+//    {
+//
+//    }
+//}
 
 #[derive(Debug)]
 struct BinXMLOpenElementStartTag {
@@ -291,15 +307,15 @@ struct BinXMLOpenElementStartTag {
 }
 
 impl FromStream for BinXMLOpenElementStartTag {
-    fn read(ctx: &mut BinXMLParseCtx) -> Result<Self>
+    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> Result<Self>
     where
         Self: Sized,
     {
         // Unused
-        ctx.cursor.read_u16::<LittleEndian>()?;
-        let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
-        let name = BinXMLName::read(ctx)?;
-        let attribute_list_data_size = ctx.cursor.read_u32::<LittleEndian>()?;
+        stream.read_u16::<LittleEndian>()?;
+        let data_size = stream.read_u32::<LittleEndian>()?;
+        let name = BinXMLName::read(stream)?;
+        let attribute_list_data_size = stream.read_u32::<LittleEndian>()?;
 
         println!("{}, {:?}", attribute_list_data_size, name);
 
@@ -382,7 +398,7 @@ fn visit_end_of_stream(ctx: &mut BinXMLParseCtx) {
 
 fn visit_open_start_element(ctx: &mut BinXMLParseCtx, tok: &BinXMLToken) {
     debug!("visit start_element {:?}", tok);
-    let tag = BinXMLOpenElementStartTag::read(ctx).expect("Failed to parse open tag");
+    let tag = BinXMLOpenElementStartTag::read(&mut ctx.cursor).expect("Failed to parse open tag");
     let node = ctx.xml.new_node(BinXMLNodes::OpenStartElementTag(tag));
     ctx.add_node(node);
 }
@@ -404,12 +420,14 @@ fn visit_close_element(ctx: &mut BinXMLParseCtx) {
 
 fn visit_value(ctx: &mut BinXMLParseCtx) {
     debug!("visit_value");
-    dump_and_panic(ctx, 5);
+    unimplemented!()
 }
 
 fn visit_attribute(ctx: &mut BinXMLParseCtx) {
-    println!("visit_attribute");
-    unimplemented!();
+    debug!("visit_attribute");
+    let attribute = BinXMLAttribute::read(&mut ctx.cursor).expect("Failed to parse attribute");
+    let node = ctx.xml.new_node(BinXMLNodes::Attribute(attribute));
+    ctx.add_leaf(node);
 }
 
 fn visit_cdata_section(ctx: &mut BinXMLParseCtx) {
@@ -444,7 +462,7 @@ fn visit_conditional_substitution(ctx: &mut BinXMLParseCtx) {
 
 fn visit_template_instance(ctx: &mut BinXMLParseCtx) {
     debug!("visit_template_instance");
-    let template = BinXMLTemplate::read(ctx).expect("Failed to parse template");
+    let template = BinXMLTemplate::read(&mut ctx.cursor).expect("Failed to parse template");
     ctx.template = Some(template);
     println!("{:?}", &ctx.template);
 }
@@ -453,7 +471,7 @@ fn visit_start_of_stream(ctx: &mut BinXMLParseCtx) {
     debug!("visit_start_of_stream");
 
     let fragment_header = BinXMLNodes::FragmentHeader(
-        BinXMLFragmentHeader::read(ctx).expect("Failed to read fragment_header"),
+        BinXMLFragmentHeader::read(&mut ctx.cursor).expect("Failed to read fragment_header"),
     );
     let node = ctx.xml.new_node(fragment_header);
     ctx.add_node(node);
@@ -487,7 +505,7 @@ fn parse_binxml(data: &[u8], offset: u64) -> BinXML {
             BinXMLToken::CloseStartElement => visit_close_start_element(&mut ctx),
             BinXMLToken::CloseEmptyElement => visit_close_empty_element(&mut ctx),
             BinXMLToken::CloseElement => visit_close_element(&mut ctx),
-            BinXMLToken::Value => visit_value(&mut ctx),
+            BinXMLToken::TextValue => visit_value(&mut ctx),
             BinXMLToken::Attribute => visit_attribute(&mut ctx),
             BinXMLToken::CDataSection => visit_cdata_section(&mut ctx),
             BinXMLToken::EntityReference => visit_entity_reference(&mut ctx),
