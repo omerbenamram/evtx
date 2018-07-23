@@ -2,7 +2,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use guid::Guid;
 use std::io::{self, Cursor, Read};
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLValueTypes {
     NullType,
     StringType,
@@ -64,11 +64,11 @@ impl BinXMLValueTypes {
     }
 }
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug)]
 pub enum BinXMLToken {
     EndOfStream,
     // True if has attributes, otherwise false.
-    OpenStartElement(bool),
+    OpenStartElement(OpenStartElementToken),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
@@ -88,8 +88,12 @@ impl BinXMLToken {
     pub fn from_u8(byte: u8) -> Option<BinXMLToken> {
         match byte {
             0x00 => Some(BinXMLToken::EndOfStream),
-            0x01 => Some(BinXMLToken::OpenStartElement(false)),
-            0x41 => Some(BinXMLToken::OpenStartElement(true)),
+            0x01 => Some(BinXMLToken::OpenStartElement(OpenStartElementToken {
+                has_attributes: false,
+            })),
+            0x41 => Some(BinXMLToken::OpenStartElement(OpenStartElementToken {
+                has_attributes: true,
+            })),
             0x02 => Some(BinXMLToken::CloseStartElement),
             0x03 => Some(BinXMLToken::CloseEmptyElement),
             0x04 => Some(BinXMLToken::CloseElement),
@@ -108,22 +112,76 @@ impl BinXMLToken {
     }
 }
 
-pub trait FromStream {
-    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
-    where
-        Self: Sized;
+#[derive(Debug)]
+pub struct OpenStartElementToken {
+    has_attributes: bool,
 }
 
-impl FromStream for Guid {
-    fn read<'a>(stream: &mut Cursor<&'a [u8]>) -> io::Result<Self>
-    where
-        Self: Sized,
-    {
-        let data1 = stream.read_u32::<LittleEndian>()?;
-        let data2 = stream.read_u16::<LittleEndian>()?;
-        let data3 = stream.read_u16::<LittleEndian>()?;
-        let mut data4 = [0; 8];
-        stream.read_exact(&mut data4)?;
-        Ok(Guid::new(data1, data2, data3, &data4))
-    }
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub enum BinXMLParsedNodes {
+    FragmentHeader(BinXMLFragmentHeader),
+    TemplateInstance(BinXMLTemplate),
+    OpenStartElement(BinXMLOpenStartElement),
+    AttributeList,
+    Attribute(BinXMLAttribute),
+    CloseStartElement,
+    CloseEmptyElement,
+    CloseElement,
+    ValueText(BinXMLValueText),
+    CDATASection,
+    CharRef,
+    EntityRef,
+    PITarget,
+    PIData,
+    NormalSubstitution,
+    ConditionalSubstitution,
+    EndOfStream,
+    StartOfStream,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLOpenStartElement {
+    pub data_size: u32,
+    pub name: BinXMLName,
+    pub attribute_list: Option<Vec<BinXMLAttribute>>,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLTemplate {
+    pub template_id: u32,
+    pub template_offset: u32,
+    pub next_template_offset: u32,
+    pub template_guid: Guid,
+    // This includes the size of the fragment header, element and end of file token;
+    // except for the first 33 bytes of the template definition.
+    pub data_size: u32,
+}
+
+#[derive(Debug)]
+pub struct TemplateValueDescriptor {
+    pub value_size: u16,
+    pub value_type: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLFragmentHeader {
+    pub major_version: u8,
+    pub minor_version: u8,
+    pub flags: u8,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLValueText {
+    pub raw: String,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLAttribute {
+    pub name: BinXMLName,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLName {
+    pub name: Option<String>,
 }

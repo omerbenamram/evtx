@@ -2,8 +2,9 @@ use std::fmt;
 use std::fmt::{Debug, Display};
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{Read, Result};
+use std::io::{self, Cursor, Read, Result};
 
+#[derive(PartialOrd, PartialEq, Clone)]
 pub struct Guid {
     data1: u32,
     data2: u16,
@@ -21,6 +22,15 @@ impl Guid {
             data3,
             data4: data4_owned,
         }
+    }
+
+    pub fn from_stream(stream: &mut Cursor<&[u8]>) -> io::Result<Guid> {
+        let data1 = stream.read_u32::<LittleEndian>()?;
+        let data2 = stream.read_u16::<LittleEndian>()?;
+        let data3 = stream.read_u16::<LittleEndian>()?;
+        let mut data4 = [0; 8];
+        stream.read_exact(&mut data4)?;
+        Ok(Guid::new(data1, data2, data3, &data4))
     }
 
     pub fn to_string(&self) -> String {
