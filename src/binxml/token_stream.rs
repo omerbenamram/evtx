@@ -13,6 +13,7 @@ use binxml::model::{BinXMLParsedNodes, BinXMLToken, BinXMLValueTypes};
 use binxml::utils::read_len_prefixed_utf16_string;
 
 use binxml::model::BinXMLOpenStartElement;
+use binxml::model::EndOfStream;
 use binxml::model::TemplateValueDescriptor;
 use evtx_parser::evtx_chunk_header;
 use guid::Guid;
@@ -43,33 +44,51 @@ impl<'a> BinXMLTokenStream<'a> {
             .unwrap();
 
         match token {
-            BinXMLToken::EndOfStream => unimplemented!(),
+            BinXMLToken::EndOfStream => Ok(BinXMLParsedNodes::EndOfStream),
             BinXMLToken::OpenStartElement(_) => Ok(BinXMLParsedNodes::OpenStartElement(
                 self.read_open_start_element()?,
             )),
-            BinXMLToken::CloseStartElement => unimplemented!(),
-            BinXMLToken::CloseEmptyElement => unimplemented!(),
-            BinXMLToken::CloseElement => unimplemented!(),
+            BinXMLToken::CloseStartElement => unimplemented!("BinXMLToken::CloseStartElement"),
+            BinXMLToken::CloseEmptyElement => unimplemented!("BinXMLToken::CloseEmptyElement"),
+            BinXMLToken::CloseElement => unimplemented!("BinXMLToken::CloseElement"),
             BinXMLToken::TextValue => Ok(BinXMLParsedNodes::ValueText(self.read_value_text()?)),
             BinXMLToken::Attribute => Ok(BinXMLParsedNodes::Attribute(self.read_attribute()?)),
-            BinXMLToken::CDataSection => unimplemented!(),
-            BinXMLToken::EntityReference => unimplemented!(),
-            BinXMLToken::ProcessingInstructionTarget => unimplemented!(),
-            BinXMLToken::ProcessingInstructionData => unimplemented!(),
+            BinXMLToken::CDataSection => unimplemented!("BinXMLToken::CDataSection"),
+            BinXMLToken::EntityReference => unimplemented!("BinXMLToken::EntityReference"),
+            BinXMLToken::ProcessingInstructionTarget => {
+                unimplemented!("BinXMLToken::ProcessingInstructionTarget")
+            }
+            BinXMLToken::ProcessingInstructionData => {
+                unimplemented!("BinXMLToken::ProcessingInstructionData")
+            }
             BinXMLToken::TemplateInstance => {
                 Ok(BinXMLParsedNodes::TemplateInstance(self.read_template()?))
             }
-            BinXMLToken::NormalSubstitution => unimplemented!(),
-            BinXMLToken::ConditionalSubstitution => unimplemented!(),
+            BinXMLToken::NormalSubstitution => unimplemented!("BinXMLToken::NormalSubstitution"),
+            BinXMLToken::ConditionalSubstitution => {
+                unimplemented!("BinXMLToken::ConditionalSubstitution")
+            }
             BinXMLToken::StartOfStream => Ok(BinXMLParsedNodes::FragmentHeader(
                 self.read_fragment_header()?,
             )),
         }
     }
 
-    fn read_element_relative_to_chunk_offset(&self, offset: u64) -> io::Result<BinXMLParsedNodes> {
+    fn position_relative_to_chunk_start(&self) -> u64 {
+        self.cursor.position() + 512
+    }
+
+    fn read_element_relative_to_chunk_offset(
+        &mut self,
+        offset: u64,
+    ) -> io::Result<BinXMLParsedNodes> {
+        if offset == self.position_relative_to_chunk_start() {
+            return self.get_next_token();
+        }
+
         let mut temp_cursor = Cursor::new(*self.cursor.get_ref());
-        temp_cursor.seek(SeekFrom::Start(offset + 24))?;
+
+        temp_cursor.seek(SeekFrom::Start(offset))?;
         let mut temp_ctx = BinXMLTokenStream {
             cursor: temp_cursor,
         };
@@ -126,6 +145,7 @@ impl<'a> BinXMLTokenStream<'a> {
     }
 
     fn read_open_start_element(&mut self) -> io::Result<BinXMLOpenStartElement> {
+        debug!("OpenStartElement");
         self.cursor.read_u16::<LittleEndian>()?;
         let data_size = self.cursor.read_u32::<LittleEndian>()?;
         let name = self.read_name()?;
@@ -158,7 +178,7 @@ impl<'a> BinXMLTokenStream<'a> {
             Ok(BinXMLName { name })
         };
 
-        if offset_from_start_of_chunk == self.cursor.position() {
+        if offset_from_start_of_chunk == self.position_relative_to_chunk_start() {
             _read_name(&mut self.cursor)
         } else {
             self.read_relative_to_chunk_offset(offset_from_start_of_chunk, Box::new(_read_name))
@@ -166,6 +186,7 @@ impl<'a> BinXMLTokenStream<'a> {
     }
 
     fn read_template(&mut self) -> io::Result<BinXMLTemplate> {
+        debug!("TemplateInstance");
         self.cursor.read_u8()?;
         let template_id = self.cursor.read_u32::<LittleEndian>()?;
         let template_offset = self.cursor.read_u32::<LittleEndian>()?;
@@ -176,9 +197,16 @@ impl<'a> BinXMLTokenStream<'a> {
 
         // TODO: make sure this works
         let element = self.read_element_relative_to_chunk_offset(template_offset as u64);
+
+        println!("{:?}", element);
+        match element {
+            Ok(BinXMLParsedNodes::EndOfStream) => {}
+            _ => unimplemented!("Only end of stream is expected for now."),
+        }
+
         let number_of_template_values = self.cursor.read_u32::<LittleEndian>()?;
 
-        assert_eq!(number_of_template_values, 4);
+        assert_eq!(number_of_template_values, 4, "Too many elements");
 
         let mut value_descriptors: Vec<TemplateValueDescriptor> = Vec::new();
         for _ in number_of_template_values.. {
@@ -201,17 +229,20 @@ impl<'a> BinXMLTokenStream<'a> {
     }
 
     fn read_attribute(&mut self) -> io::Result<BinXMLAttribute> {
+        debug!("Attribute");
         let name = self.read_name()?;
         Ok(BinXMLAttribute { name })
     }
 
     fn read_value_text(&mut self) -> io::Result<BinXMLValueText> {
+        debug!("TextValue");
         let raw = read_len_prefixed_utf16_string(&mut self.cursor, false)?
             .expect("Value cannot be empty");
         Ok(BinXMLValueText { raw })
     }
 
     fn read_fragment_header(&mut self) -> io::Result<BinXMLFragmentHeader> {
+        debug!("FragmentHeader");
         let major_version = self.cursor.read_u8()?;
         let minor_version = self.cursor.read_u8()?;
         let flags = self.cursor.read_u8()?;
@@ -222,18 +253,6 @@ impl<'a> BinXMLTokenStream<'a> {
         })
     }
 }
-
-//fn parse_binxml<'a, V: Visitor<'a>>(data: &[u8], offset: u64, visitor: &mut V) -> BinXML {
-//    let mut ctx = BinXMLVisitor::new(data, offset);
-//
-//    //    dump(&mut ctx, 0);
-//    // TODO: actually break
-//    for _ in 0..10 {
-//
-//    }
-//
-//    ctx.xml
-//}
 
 mod tests {
     use super::*;

@@ -140,6 +140,9 @@ pub enum BinXMLParsedNodes {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct EndOfStream {}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLOpenStartElement {
     pub data_size: u32,
     pub name: BinXMLName,
