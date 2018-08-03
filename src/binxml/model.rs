@@ -68,12 +68,12 @@ impl BinXMLValueTypes {
 pub enum BinXMLToken {
     EndOfStream,
     // True if has attributes, otherwise false.
-    OpenStartElement(OpenStartElementToken),
+    OpenStartElement(OpenStartElementTokenMeta),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
     TextValue,
-    Attribute,
+    Attribute(AttributeTokenMeta),
     CDataSection,
     EntityReference,
     ProcessingInstructionTarget,
@@ -88,17 +88,22 @@ impl BinXMLToken {
     pub fn from_u8(byte: u8) -> Option<BinXMLToken> {
         match byte {
             0x00 => Some(BinXMLToken::EndOfStream),
-            0x01 => Some(BinXMLToken::OpenStartElement(OpenStartElementToken {
+            0x01 => Some(BinXMLToken::OpenStartElement(OpenStartElementTokenMeta {
                 has_attributes: false,
             })),
-            0x41 => Some(BinXMLToken::OpenStartElement(OpenStartElementToken {
+            0x41 => Some(BinXMLToken::OpenStartElement(OpenStartElementTokenMeta {
                 has_attributes: true,
             })),
             0x02 => Some(BinXMLToken::CloseStartElement),
             0x03 => Some(BinXMLToken::CloseEmptyElement),
             0x04 => Some(BinXMLToken::CloseElement),
             0x05 | 0x45 => Some(BinXMLToken::TextValue),
-            0x06 | 0x46 => Some(BinXMLToken::Attribute),
+            0x06 => Some(BinXMLToken::Attribute(AttributeTokenMeta {
+                more_attributes_expected: false
+            })),
+            0x46 => Some(BinXMLToken::Attribute(AttributeTokenMeta {
+                more_attributes_expected: true
+            })),
             0x07 | 0x47 => Some(BinXMLToken::CDataSection),
             0x08 | 0x48 => Some(BinXMLToken::EntityReference),
             0x0a | 0x49 => Some(BinXMLToken::ProcessingInstructionTarget),
@@ -113,9 +118,15 @@ impl BinXMLToken {
 }
 
 #[derive(Debug)]
-pub struct OpenStartElementToken {
-    has_attributes: bool,
+pub struct OpenStartElementTokenMeta {
+    pub has_attributes: bool,
 }
+
+#[derive(Debug)]
+pub struct AttributeTokenMeta {
+    pub more_attributes_expected: bool,
+}
+
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLParsedNodes {
@@ -182,6 +193,7 @@ pub struct BinXMLValueText {
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLAttribute {
     pub name: BinXMLName,
+    pub data: BinXMLValueText
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

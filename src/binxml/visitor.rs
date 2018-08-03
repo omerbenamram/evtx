@@ -1,5 +1,5 @@
 use binxml::model::BinXMLTemplate;
-use binxml::model::OpenStartElementToken;
+use binxml::model::OpenStartElementTokenMeta;
 use binxml::model::{
     BinXMLAttribute, BinXMLFragmentHeader, BinXMLOpenStartElement, BinXMLParsedNodes,
     BinXMLValueText,
@@ -142,11 +142,3 @@ impl<'a> Visitor<'a> for BinXMLVisitor<'a> {
 }
 
 type BinXML = Arena<BinXMLParsedNodes>;
-
-//fn parse_binxml<'a, V: Visitor<'a>>(data: &[u8], offset: u64, visitor: &mut V) -> BinXML {
-//    let mut ctx = BinXMLVisitor::new(data, offset);
-//
-//    //    dump(&mut ctx, 0);
-//    // TODO: actually break
-//    for token in 0..10 {}
-//}
