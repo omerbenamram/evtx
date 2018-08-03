@@ -9,7 +9,7 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt}
 use binxml::model::{
     BinXMLAttribute, BinXMLFragmentHeader, BinXMLName, BinXMLTemplate, BinXMLValueText,
 };
-use binxml::model::{BinXMLParsedNodes, BinXMLToken, BinXMLValueTypes};
+use binxml::model::{BinXMLParsedNodes, BinXMLToken, BinXMLValue};
 use binxml::utils::read_len_prefixed_utf16_string;
 
 use binxml::model::BinXMLOpenStartElement;
@@ -68,10 +68,12 @@ impl<'a> BinXMLTokenStream<'a> {
                     self.read_open_start_element(token_information.has_attributes)?,
                 ))
             }
-            BinXMLToken::CloseStartElement => unimplemented!("BinXMLToken::CloseStartElement"),
+            BinXMLToken::CloseStartElement => {
+                debug!("Close start element");
+                Ok(BinXMLParsedNodes::CloseStartElement)
+            }
             BinXMLToken::CloseEmptyElement => unimplemented!("BinXMLToken::CloseEmptyElement"),
             BinXMLToken::CloseElement => unimplemented!("BinXMLToken::CloseElement"),
-            BinXMLToken::TextValue => Ok(BinXMLParsedNodes::ValueText(self.read_value_text()?)),
             BinXMLToken::Attribute(token_information) => {
                 Ok(BinXMLParsedNodes::Attribute(self.read_attribute()?))
             }
@@ -93,6 +95,7 @@ impl<'a> BinXMLTokenStream<'a> {
             BinXMLToken::StartOfStream => Ok(BinXMLParsedNodes::FragmentHeader(
                 self.read_fragment_header()?,
             )),
+            _ => panic!("Token {:?} note expected here", token),
         }
     }
 
@@ -126,25 +129,6 @@ impl<'a> BinXMLTokenStream<'a> {
             BinXMLTokenStream::new(&self.chunk.data[offset as usize..], self.chunk, offset);
 
         temp_ctx.read_tokens_until_eof()
-    }
-
-    // TODO: fix my return type!
-    fn parse_value(&mut self) -> io::Result<BinXMLValueText> {
-        let value_type_token = self.cursor.read_u8().expect("EOF");
-        let value_type = BinXMLValueTypes::from_u8(value_type_token)
-            .or_else(|| {
-                println!("{:2x} not a valid value type", value_type_token);
-                None
-            }).unwrap();
-
-        let value = match value_type {
-            BinXMLValueTypes::StringType => self.read_value_text().expect("Failed to read value"),
-            _ => unimplemented!(),
-        };
-
-        debug!("visit_value returned {:?}", value);
-
-        Ok(value)
     }
 
     fn read_relative_to_chunk_offset<T: Sized>(
@@ -196,6 +180,7 @@ impl<'a> BinXMLTokenStream<'a> {
         self.cursor.read_u16::<LittleEndian>()?;
         let data_size = self.cursor.read_u32::<LittleEndian>()?;
         let name = self.read_name()?;
+        debug!("\t Name: {:?}", name);
 
         let attribute_list = match has_attributes {
             true => {
@@ -212,12 +197,13 @@ impl<'a> BinXMLTokenStream<'a> {
                                 if !token_meta.more_attributes_expected {
                                     assert_eq!(
                                         self.cursor.position(),
-                                        initial_position + attribute_list_data_size as u64
+                                        initial_position + attribute_list_data_size as u64,
+                                        "Attribute list not read completely"
                                     );
                                     break;
                                 }
-                            },
-                            _ => self.dump_and_panic(10)
+                            }
+                            _ => self.dump_and_panic(10),
                         }
                     }
                 }
@@ -305,19 +291,10 @@ impl<'a> BinXMLTokenStream<'a> {
     fn read_attribute(&mut self) -> io::Result<BinXMLAttribute> {
         debug!("Attribute at {}", self.cursor.position());
         let name = self.read_name()?;
-        let attribute_data = self.get_next_token()?;
-        debug!("{:?}", attribute_data);
-        Ok(BinXMLAttribute { name, data: attribute_data})
-    }
-
-    fn read_value_text(&mut self) -> io::Result<BinXMLValueText> {
-        debug!("TextValue at {}", self.cursor.position());
-        let value_type = BinXMLValueTypes::from_u8(self.cursor.read_u8()?).unwrap();
-        assert_eq!(value_type, BinXMLValueTypes::StringType, "TextValue must be a StringType");
-
-        let raw = read_len_prefixed_utf16_string(&mut self.cursor, false)?
-            .expect("Value cannot be empty");
-        Ok(BinXMLValueText { raw })
+        debug!("\t Attribute name: {:?}", name);
+        let data = BinXMLValue::read(&mut self.cursor)?;
+        debug!("\t Attribute data: {:?}", data);
+        Ok(BinXMLAttribute { name, data })
     }
 
     fn read_fragment_header(&mut self) -> io::Result<BinXMLFragmentHeader> {
