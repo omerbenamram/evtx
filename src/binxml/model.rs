@@ -1,13 +1,82 @@
 use binxml::utils::read_len_prefixed_utf16_string;
 use byteorder::{LittleEndian, ReadBytesExt};
+use chrono::DateTime;
+use chrono::Utc;
+use evtx::datetime_from_filetime;
+use evtx::FileTime;
 use guid::Guid;
+use std::borrow::Cow;
+use std::fmt::Debug;
 use std::io::{self, Cursor, Read};
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub enum BinXMLValue {
+pub enum BinXMLValueType {
     NullType,
-    StringType(String),
-    AnsiStringType(String),
+    StringType,
+    AnsiStringType,
+    Int8Type,
+    UInt8Type,
+    Int16Type,
+    UInt16Type,
+    Int32Type,
+    UInt32Type,
+    Int64Type,
+    UInt64Type,
+    Real32Type,
+    Real64Type,
+    BoolType,
+    BinaryType,
+    GuidType,
+    SizeTType,
+    FileTimeType,
+    SysTimeType,
+    SidType,
+    HexInt32Type,
+    HexInt64Type,
+    EvtHandle,
+    BinXmlType,
+    EvtXml,
+}
+
+impl BinXMLValueType {
+    pub fn from_u8(byte: u8) -> BinXMLValueType {
+        match byte {
+            0x00 => BinXMLValueType::NullType,
+            0x01 => BinXMLValueType::StringType,
+            0x02 => BinXMLValueType::AnsiStringType,
+            0x03 => BinXMLValueType::Int8Type,
+            0x04 => BinXMLValueType::UInt8Type,
+            0x05 => BinXMLValueType::Int16Type,
+            0x06 => BinXMLValueType::UInt16Type,
+            0x07 => BinXMLValueType::Int32Type,
+            0x08 => BinXMLValueType::UInt32Type,
+            0x09 => BinXMLValueType::Int64Type,
+            0x0a => BinXMLValueType::UInt64Type,
+            0x0b => BinXMLValueType::Real32Type,
+            0x0c => BinXMLValueType::Real64Type,
+            0x0d => BinXMLValueType::BoolType,
+            0x0e => BinXMLValueType::BinaryType,
+            0x0f => BinXMLValueType::GuidType,
+            0x10 => BinXMLValueType::SizeTType,
+            0x11 => BinXMLValueType::FileTimeType,
+            0x12 => BinXMLValueType::SysTimeType,
+            0x13 => BinXMLValueType::SidType,
+            0x14 => BinXMLValueType::HexInt32Type,
+            0x15 => BinXMLValueType::HexInt64Type,
+            0x20 => BinXMLValueType::EvtHandle,
+            0x21 => BinXMLValueType::BinXmlType,
+            0x23 => BinXMLValueType::EvtXml,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub enum BinXMLValue<'a> {
+    NullType,
+    // String may originate in substitution.
+    StringType(Cow<'a, String>),
+    AnsiStringType(Cow<'a, String>),
     Int8Type(i8),
     UInt8Type(u8),
     Int16Type(i16),
@@ -19,69 +88,84 @@ pub enum BinXMLValue {
     Real32Type(f32),
     Real64Type(f64),
     BoolType(bool),
-    // TODO: make generic over lifetime in the future
-//    BinaryType(&'a [u8]),
+    BinaryType(&'a [u8]),
     GuidType(Guid),
     SizeTType(usize),
-    // TODO: check that this is actually i64
-    FileTimeType(i64),
+    FileTimeType(DateTime<Utc>),
     SysTimeType,
     SidType,
     HexInt32Type,
-    HexInt64Type,
+    HexInt64Type(String),
     EvtHandle,
     BinXmlType,
     EvtXml,
 }
 
-impl BinXMLValue {
-    pub fn read(stream: &mut Cursor<&[u8]>) -> io::Result<BinXMLValue> {
-        let token_value = BinXMLToken::from_u8(stream.read_u8()?).expect("Unexpected byte for token");
-        assert_eq!(token_value, BinXMLToken::TextValue, "Token must be 0x5 | 0x45");
-        let value_type = stream.read_u8()?;
-
+impl<'a> BinXMLValue<'a> {
+    pub fn read(
+        value_type: BinXMLValueType,
+        stream: &mut Cursor<&'a [u8]>,
+    ) -> io::Result<BinXMLValue<'a>> {
         match value_type {
-            0x00 => Ok(BinXMLValue::NullType),
-            0x01 => Ok(BinXMLValue::StringType(
+            BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
+            BinXMLValueType::StringType => Ok(BinXMLValue::StringType(Cow::Owned(
                 read_len_prefixed_utf16_string(stream, false)?.expect("String cannot be empty"),
+            ))),
+            //            BinXMLValueType::AnsiStringType => Ok(BinXMLValue::AnsiStringType),
+            BinXMLValueType::Int8Type => Ok(BinXMLValue::Int8Type(stream.read_u8()? as i8)),
+            BinXMLValueType::UInt8Type => Ok(BinXMLValue::UInt8Type(stream.read_u8()?)),
+            BinXMLValueType::Int16Type => Ok(BinXMLValue::Int16Type(
+                stream.read_u16::<LittleEndian>()? as i16,
             )),
-//            0x02 => Ok(BinXMLValue::AnsiStringType),
-            0x03 => Ok(BinXMLValue::Int8Type(stream.read_u8()? as i8)),
-            0x04 => Ok(BinXMLValue::UInt8Type(stream.read_u8()?)),
-            0x05 => Ok(BinXMLValue::Int16Type(stream.read_u16::<LittleEndian>()? as i16)),
-            0x06 => Ok(BinXMLValue::UInt16Type(stream.read_u16::<LittleEndian>()?)),
-            0x07 => Ok(BinXMLValue::Int32Type(stream.read_u32::<LittleEndian>()? as i32)),
-            0x08 => Ok(BinXMLValue::UInt32Type(stream.read_u32::<LittleEndian>()?)),
-            0x09 => Ok(BinXMLValue::Int64Type(stream.read_u64::<LittleEndian>()? as i64)),
-            0x0a => Ok(BinXMLValue::UInt64Type(stream.read_u64::<LittleEndian>()?)),
-//            0x0b => Ok(BinXMLValue::Real32Type),
-//            0x0c => Ok(BinXMLValue::Real64Type),
-//            0x0d => Ok(BinXMLValue::BoolType),
-//            0x0e => Ok(BinXMLValue::BinaryType),
-//            0x0f => Ok(BinXMLValue::GuidType),
-//            0x10 => Ok(BinXMLValue::SizeTType),
-//            0x11 => Ok(BinXMLValue::FileTimeType),
-//            0x12 => Ok(BinXMLValue::SysTimeType),
-//            0x13 => Ok(BinXMLValue::SidType),
-//            0x14 => Ok(BinXMLValue::HexInt32Type),
-//            0x15 => Ok(BinXMLValue::HexInt64Type),
-//            0x20 => Ok(BinXMLValue::EvtHandle),
-//            0x21 => Ok(BinXMLValue::BinXmlType),
-//            0x23 => Ok(BinXMLValue::EvtXml),
-            _ => unimplemented!("{}", value_type),
+            BinXMLValueType::UInt16Type => {
+                Ok(BinXMLValue::UInt16Type(stream.read_u16::<LittleEndian>()?))
+            }
+            BinXMLValueType::Int32Type => Ok(BinXMLValue::Int32Type(
+                stream.read_u32::<LittleEndian>()? as i32,
+            )),
+            BinXMLValueType::UInt32Type => {
+                Ok(BinXMLValue::UInt32Type(stream.read_u32::<LittleEndian>()?))
+            }
+            BinXMLValueType::Int64Type => Ok(BinXMLValue::Int64Type(
+                stream.read_u64::<LittleEndian>()? as i64,
+            )),
+            BinXMLValueType::UInt64Type => {
+                Ok(BinXMLValue::UInt64Type(stream.read_u64::<LittleEndian>()?))
+            }
+            //TODO: implement
+            //            BinXMLValueType::Real32Type => Ok(BinXMLValue::Real32Type),
+            //            BinXMLValueType::Real64Type => Ok(BinXMLValue::Real64Type),
+            //            BinXMLValueType::BoolType => Ok(BinXMLValue::BoolType),
+            //            BinXMLValueType::BinaryType => Ok(BinXMLValue::BinaryType),
+            BinXMLValueType::GuidType => Ok(BinXMLValue::GuidType(Guid::from_stream(stream)?)),
+            //            BinXMLValueType::SizeTType => Ok(BinXMLValue::SizeTType),
+            BinXMLValueType::FileTimeType => Ok(BinXMLValue::FileTimeType(datetime_from_filetime(
+                stream.read_u64::<LittleEndian>()?,
+            ))),
+            //            BinXMLValueType::SysTimeType => Ok(BinXMLValue::SysTimeType),
+            //            BinXMLValueType::SidType => Ok(BinXMLValue::SidType),
+            //            BinXMLValueType::HexInt32Type => Ok(BinXMLValue::HexInt32Type),
+            BinXMLValueType::HexInt64Type => Ok(BinXMLValue::HexInt64Type(format!(
+                "0x{:2x}",
+                stream.read_u64::<LittleEndian>()?
+            ))),
+            //            BinXMLValueType::EvtHandle => Ok(BinXMLValue::EvtHandle),
+            //            BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType),
+            //            BinXMLValueType::EvtXml => Ok(BinXMLValue::EvtXml),
+            _ => unimplemented!("{:?}", value_type),
         }
     }
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
-pub enum BinXMLToken {
+pub enum BinXMLRawToken {
     EndOfStream,
     // True if has attributes, otherwise false.
     OpenStartElement(OpenStartElementTokenMeta),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
-    TextValue,
+    Value,
     Attribute(AttributeTokenMeta),
     CDataSection,
     EntityReference,
@@ -93,34 +177,41 @@ pub enum BinXMLToken {
     StartOfStream,
 }
 
-impl BinXMLToken {
-    pub fn from_u8(byte: u8) -> Option<BinXMLToken> {
+impl BinXMLRawToken {
+    pub fn from_u8(byte: u8) -> Option<BinXMLRawToken> {
         match byte {
-            0x00 => Some(BinXMLToken::EndOfStream),
-            0x01 => Some(BinXMLToken::OpenStartElement(OpenStartElementTokenMeta {
-                has_attributes: false,
-            })),
-            0x41 => Some(BinXMLToken::OpenStartElement(OpenStartElementTokenMeta {
-                has_attributes: true,
-            })),
-            0x02 => Some(BinXMLToken::CloseStartElement),
-            0x03 => Some(BinXMLToken::CloseEmptyElement),
-            0x04 => Some(BinXMLToken::CloseElement),
-            0x05 | 0x45 => Some(BinXMLToken::TextValue),
-            0x06 => Some(BinXMLToken::Attribute(AttributeTokenMeta {
+            0x00 => Some(BinXMLRawToken::EndOfStream),
+            // <Event>
+            0x01 => Some(BinXMLRawToken::OpenStartElement(
+                OpenStartElementTokenMeta {
+                    has_attributes: false,
+                },
+            )),
+            0x41 => Some(BinXMLRawToken::OpenStartElement(
+                OpenStartElementTokenMeta {
+                    has_attributes: true,
+                },
+            )),
+            // Indicates end of start element
+            0x02 => Some(BinXMLRawToken::CloseStartElement),
+            0x03 => Some(BinXMLRawToken::CloseEmptyElement),
+            // </Event>
+            0x04 => Some(BinXMLRawToken::CloseElement),
+            0x05 | 0x45 => Some(BinXMLRawToken::Value),
+            0x06 => Some(BinXMLRawToken::Attribute(AttributeTokenMeta {
                 more_attributes_expected: false,
             })),
-            0x46 => Some(BinXMLToken::Attribute(AttributeTokenMeta {
+            0x46 => Some(BinXMLRawToken::Attribute(AttributeTokenMeta {
                 more_attributes_expected: true,
             })),
-            0x07 | 0x47 => Some(BinXMLToken::CDataSection),
-            0x08 | 0x48 => Some(BinXMLToken::EntityReference),
-            0x0a | 0x49 => Some(BinXMLToken::ProcessingInstructionTarget),
-            0x0b => Some(BinXMLToken::ProcessingInstructionData),
-            0x0c => Some(BinXMLToken::TemplateInstance),
-            0x0d => Some(BinXMLToken::NormalSubstitution),
-            0x0e => Some(BinXMLToken::ConditionalSubstitution),
-            0x0f => Some(BinXMLToken::StartOfStream),
+            0x07 | 0x47 => Some(BinXMLRawToken::CDataSection),
+            0x08 | 0x48 => Some(BinXMLRawToken::EntityReference),
+            0x0a | 0x49 => Some(BinXMLRawToken::ProcessingInstructionTarget),
+            0x0b => Some(BinXMLRawToken::ProcessingInstructionData),
+            0x0c => Some(BinXMLRawToken::TemplateInstance),
+            0x0d => Some(BinXMLRawToken::NormalSubstitution),
+            0x0e => Some(BinXMLRawToken::ConditionalSubstitution),
+            0x0f => Some(BinXMLRawToken::StartOfStream),
             _ => None,
         }
     }
@@ -137,52 +228,60 @@ pub struct AttributeTokenMeta {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub enum BinXMLParsedNodes {
+pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
-    TemplateInstance(BinXMLTemplate),
+    TemplateInstance(BinXMLTemplate<'a>),
     OpenStartElement(BinXMLOpenStartElement),
     AttributeList,
     Attribute(BinXMLAttribute),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
-    ValueText(BinXMLValueText),
+    Value(BinXMLValue<'a>),
     CDATASection,
     CharRef,
     EntityRef,
     PITarget,
     PIData,
-    NormalSubstitution,
-    ConditionalSubstitution,
+    Substitution(TemplateSubstitutionDescriptor),
     EndOfStream,
     StartOfStream,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct EndOfStream {}
-
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLOpenStartElement {
     pub data_size: u32,
     pub name: BinXMLName,
-    pub attribute_list: Option<Vec<BinXMLAttribute>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLTemplate {
+pub struct BinXMLTemplateDefinition<'a> {
     pub template_id: u32,
     pub template_offset: u32,
     pub next_template_offset: u32,
     pub template_guid: Guid,
-    // This includes the size of the fragment header, element and end of file token;
-    // except for the first 33 bytes of the template definition.
     pub data_size: u32,
+    pub element: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLTemplate<'a> {
+    pub definition: BinXMLTemplateDefinition<'a>,
+    pub substitution_array: Vec<BinXMLValue<'a>>,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct TemplateValueDescriptor {
-    pub value_size: u16,
-    pub value_type: u8,
+    pub size: u16,
+    pub value_type: BinXMLValueType,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct TemplateSubstitutionDescriptor {
+    // Zero-based (0 is first replacement)
+    pub substitution_index: u16,
+    pub value_type: BinXMLValueType,
+    pub ignore: bool,
 }
 
 #[repr(C)]
@@ -194,14 +293,8 @@ pub struct BinXMLFragmentHeader {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLValueText {
-    pub raw: String,
-}
-
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLAttribute {
     pub name: BinXMLName,
-    pub data: BinXMLValue
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

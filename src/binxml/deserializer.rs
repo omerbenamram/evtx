@@ -1,0 +1,413 @@
+use core::mem;
+use hexdump::print_hexdump;
+use indextree::{Arena, NodeId};
+use std::cmp::min;
+use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
+
+use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
+
+use binxml::model::{BinXMLAttribute, BinXMLFragmentHeader, BinXMLName, BinXMLTemplateDefinition};
+use binxml::model::{BinXMLDeserializedTokens, BinXMLRawToken, BinXMLValue};
+use binxml::utils::read_len_prefixed_utf16_string;
+
+use binxml::model::BinXMLOpenStartElement;
+use binxml::model::BinXMLTemplate;
+use binxml::model::BinXMLValueType;
+use binxml::model::TemplateSubstitutionDescriptor;
+use binxml::model::TemplateValueDescriptor;
+use binxml::tree_builder::ElementTree;
+use binxml::utils::dump_cursor;
+use binxml::utils::read_utf16_by_size;
+use evtx::evtx_chunk_header;
+use guid::Guid;
+use std::borrow::{Borrow, Cow};
+use std::io::Cursor;
+
+struct ChunkCtx<'a> {
+    data: &'a [u8],
+    record_number: u32,
+}
+
+struct BinXMLDeserializer<'a> {
+    chunk: &'a ChunkCtx<'a>,
+    offset_from_chunk_start: u64,
+    cursor: Cursor<&'a [u8]>,
+    // used for debugging
+    element_depth: u32,
+}
+
+impl<'a> BinXMLDeserializer<'a> {
+    pub fn new(
+        xml_raw: &'a [u8],
+        chunk: &'a ChunkCtx,
+        offset_from_chunk_start: u64,
+    ) -> BinXMLDeserializer<'a> {
+        let cursor = Cursor::new(xml_raw);
+
+        BinXMLDeserializer {
+            chunk,
+            offset_from_chunk_start,
+            cursor,
+            element_depth: 0,
+        }
+    }
+
+    fn read_next_token(&mut self) -> Option<BinXMLRawToken> {
+        let token = self.cursor.read_u8().expect("EOF");
+
+        BinXMLRawToken::from_u8(token)
+            // Unknown token.
+            .or_else(|| {
+                error!("{:2x} not a valid binxml token", token);
+                &self.dump_and_panic(10);
+                None
+            })
+    }
+
+    pub fn get_next_token(&mut self) -> io::Result<BinXMLDeserializedTokens<'a>> {
+        let token = self.read_next_token().unwrap();
+
+        match token {
+            BinXMLRawToken::EndOfStream => {
+                debug!("End of stream");
+                Ok(BinXMLDeserializedTokens::EndOfStream)
+            }
+            BinXMLRawToken::OpenStartElement(token_information) => {
+                // Debug print inside
+                self.element_depth += 1;
+                Ok(BinXMLDeserializedTokens::OpenStartElement(
+                    self.read_open_start_element(token_information.has_attributes)?,
+                ))
+            }
+            BinXMLRawToken::CloseStartElement => {
+                debug!("Close start element");
+                Ok(BinXMLDeserializedTokens::CloseStartElement)
+            }
+            BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
+            BinXMLRawToken::CloseElement => {
+                debug!("Close element");
+                self.element_depth -= 1;
+                Ok(BinXMLDeserializedTokens::CloseElement)
+            }
+            BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(self.read_value()?)),
+            BinXMLRawToken::Attribute(token_information) => {
+                Ok(BinXMLDeserializedTokens::Attribute(self.read_attribute()?))
+            }
+            BinXMLRawToken::CDataSection => unimplemented!("BinXMLToken::CDataSection"),
+            BinXMLRawToken::EntityReference => unimplemented!("BinXMLToken::EntityReference"),
+            BinXMLRawToken::ProcessingInstructionTarget => {
+                unimplemented!("BinXMLToken::ProcessingInstructionTarget")
+            }
+            BinXMLRawToken::ProcessingInstructionData => {
+                unimplemented!("BinXMLToken::ProcessingInstructionData")
+            }
+            BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
+                self.read_template()?,
+            )),
+            BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
+                self.read_substitution(false)?,
+            )),
+            BinXMLRawToken::ConditionalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
+                self.read_substitution(true)?,
+            )),
+            BinXMLRawToken::StartOfStream => Ok(BinXMLDeserializedTokens::FragmentHeader(
+                self.read_fragment_header()?,
+            )),
+            _ => panic!("Token {:?} not expected here", token),
+        }
+    }
+
+    fn position_relative_to_chunk_start(&self) -> u64 {
+        self.cursor.position() + self.offset_from_chunk_start
+    }
+
+    fn read_tokens_until_eof(&mut self) -> io::Result<Vec<BinXMLDeserializedTokens<'a>>> {
+        let mut tokens = vec![];
+
+        loop {
+            let token = self.get_next_token()?;
+            if token != BinXMLDeserializedTokens::EndOfStream {
+                tokens.push(token);
+            } else {
+                break;
+            }
+        }
+
+        Ok(tokens)
+    }
+
+    fn read_substitution(&mut self, optional: bool) -> io::Result<TemplateSubstitutionDescriptor> {
+        debug!(
+            "Substitution at: {}, optional: {}",
+            self.cursor.position(),
+            optional
+        );
+        let substitution_index = self.cursor.read_u16::<LittleEndian>()?;
+        debug!("\t Index: {}", substitution_index);
+        let value_type = BinXMLValueType::from_u8(self.cursor.read_u8()?);
+        debug!("\t Value Type: {:?}", value_type);
+        let ignore = optional && (value_type == BinXMLValueType::NullType);
+        debug!("\t Ignore: {}", ignore);
+
+        Ok(TemplateSubstitutionDescriptor {
+            substitution_index,
+            value_type,
+            ignore,
+        })
+    }
+
+    fn read_value(&mut self) -> io::Result<BinXMLValue<'a>> {
+        debug!(
+            "Value at: {} (0x{:2x})",
+            self.cursor.position(),
+            self.cursor.position() + 24
+        );
+        let value_type = BinXMLValueType::from_u8(self.cursor.read_u8()?);
+        let data = BinXMLValue::read(value_type, &mut self.cursor)?;
+        debug!("\t Data: {:?}", data);
+        Ok(data)
+    }
+
+    fn read_relative_to_chunk_offset<T: Sized>(
+        &mut self,
+        offset: u64,
+        f: Box<Fn(&mut BinXMLDeserializer<'a>) -> io::Result<T>>,
+    ) -> io::Result<T> {
+        if offset == self.position_relative_to_chunk_start() {
+            f(self)
+        } else {
+            let mut temp_ctx =
+                BinXMLDeserializer::new(&self.chunk.data[offset as usize..], &self.chunk, offset);
+            f(&mut temp_ctx)
+        }
+    }
+
+    fn dump_and_panic(&self, lookbehind: i32) {
+        let offset = self.cursor.position();
+        println!("Panicked at offset {} (0x{:2x})", offset, offset + 24);
+        dump_cursor(&self.cursor, lookbehind);
+        panic!();
+    }
+
+    fn read_open_start_element(
+        &mut self,
+        has_attributes: bool,
+    ) -> io::Result<BinXMLOpenStartElement> {
+        debug!(
+            "OpenStartElement at {}, has_attributes: {}",
+            self.cursor.position(),
+            has_attributes
+        );
+        self.cursor.read_u16::<LittleEndian>()?;
+        let data_size = self.cursor.read_u32::<LittleEndian>()?;
+        let name = self.read_name()?;
+        debug!("\t Name: {:?}", name);
+
+        let attribute_list_data_size = match has_attributes {
+            true => self.cursor.read_u32::<LittleEndian>()?,
+            false => 0,
+        };
+        debug!("\t Attributes Data Size: {:?}", attribute_list_data_size);
+
+        // TODO: move this code to tree builder
+        //        let attribute_list = match has_attributes {
+        //            true => {
+        //                debug!("attribute list data_size: {}", attribute_list_data_size);
+        //                let initial_position = self.cursor.position();
+        //                let mut attributes = vec![];
+        //
+        //                loop {
+        //                    if let Some(token) = self.read_next_token() {
+        //                        match token {
+        //                            BinXMLToken::Attribute(token_meta) => {
+        //                                attributes.push(self.read_attribute()?);
+        //                                if !token_meta.more_attributes_expected {
+        //                                    assert_eq!(
+        //                                        self.cursor.position(),
+        //                                        initial_position + attribute_list_data_size as u64,
+        //                                        "Attribute list not read completely"
+        //                                    );
+        //                                    break;
+        //                                }
+        //                            }
+        //                            _ => self.dump_and_panic(10),
+        //                        }
+        //                    }
+        //                }
+        //                Some(attributes)
+        //            }
+        //            false => None,
+        //        };
+
+        Ok(BinXMLOpenStartElement { data_size, name })
+    }
+
+    fn read_name(&mut self) -> io::Result<BinXMLName> {
+        // Important!!
+        // The "offset_from_start" refers to the offset where the name struct begins.
+        let name_offset = self.cursor.read_u32::<LittleEndian>()?;
+        let name_offset = name_offset as u64;
+        // TODO: check string offset cache and return reference to cached value if needed.
+
+        let _read_name = |ctx: &mut BinXMLDeserializer| {
+            let _ = ctx.cursor.read_u32::<LittleEndian>()?;
+            let name_hash = ctx.cursor.read_u16::<LittleEndian>()?;
+
+            let name = read_len_prefixed_utf16_string(&mut ctx.cursor, true)?;
+
+            Ok(BinXMLName { name })
+        };
+
+        self.read_relative_to_chunk_offset(name_offset, box _read_name)
+    }
+
+    fn read_template(&mut self) -> io::Result<BinXMLTemplate<'a>> {
+        debug!("TemplateInstance at {}", self.cursor.position());
+        self.cursor.read_u8()?;
+        let template_id = self.cursor.read_u32::<LittleEndian>()?;
+        let template_definition_data_offset = self.cursor.read_u32::<LittleEndian>()?;
+
+        // TODO: handle caching etc..
+        // Important!!
+        // The "offset_from_start" refers to the offset where the name struct begins.
+        let _read_template_definition = move |ctx: &mut BinXMLDeserializer<'a>| {
+            // Used to assert that we read all data;
+
+            let next_template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
+            let template_guid = Guid::from_stream(&mut ctx.cursor)?;
+            let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
+
+            // Data size includes of the fragment header, element and end of file token;
+            // except for the first 33 bytes of the template definition (above)
+            let start_position = ctx.cursor.position();
+            let element = ctx.read_tokens_until_eof()?;
+
+            assert_eq!(
+                ctx.cursor.position(),
+                start_position + data_size as u64,
+                "Template definition wasn't read completely"
+            );
+
+            Ok(BinXMLTemplateDefinition {
+                template_id,
+                template_offset: template_definition_data_offset,
+                next_template_offset,
+                template_guid,
+                data_size,
+                element,
+            })
+        };
+
+        let template_def = self.read_relative_to_chunk_offset(
+            template_definition_data_offset as u64,
+            box _read_template_definition,
+        )?;
+
+        let number_of_substitutions = self.cursor.read_u32::<LittleEndian>()?;
+        let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
+        for _ in 0..number_of_substitutions {
+            let size = self.cursor.read_u16::<LittleEndian>()?;
+            let value_type = BinXMLValueType::from_u8(self.cursor.read_u8()?);
+            // Empty
+            self.cursor.read_u8()?;
+
+            value_descriptors.push(TemplateValueDescriptor { size, value_type })
+        }
+
+        let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
+
+        for descriptor in value_descriptors {
+            let position = self.cursor.position();
+            debug!("Substitution: {:?}", descriptor.value_type);
+            let value = match descriptor.value_type {
+                BinXMLValueType::StringType => BinXMLValue::StringType(Cow::Owned(
+                    read_utf16_by_size(&mut self.cursor, descriptor.size as u64)?
+                        .expect("String should not be empty"),
+                )),
+                _ => BinXMLValue::read(descriptor.value_type, &mut self.cursor)?,
+            };
+            debug!("\t {:?}", value);
+            // NullType can mean deleted substitution (and data need to be skipped)
+            if value == BinXMLValue::NullType {
+                debug!("\t Skip {}", descriptor.size);
+                self.cursor
+                    .seek(SeekFrom::Current(descriptor.size as i64))?;
+            }
+            assert_eq!(
+                position + descriptor.size as u64,
+                self.cursor.position(),
+                "Read incorrect amount of data"
+            );
+            substitution_array.push(value);
+        }
+
+        Ok(BinXMLTemplate {
+            definition: template_def,
+            substitution_array,
+        })
+    }
+
+    fn read_attribute(&mut self) -> io::Result<BinXMLAttribute> {
+        debug!("Attribute at {}", self.cursor.position());
+        let name = self.read_name()?;
+        debug!("\t Attribute name: {:?}", name);
+        Ok(BinXMLAttribute { name })
+    }
+
+    fn read_fragment_header(&mut self) -> io::Result<BinXMLFragmentHeader> {
+        debug!("FragmentHeader at {}", self.cursor.position());
+        let major_version = self.cursor.read_u8()?;
+        let minor_version = self.cursor.read_u8()?;
+        let flags = self.cursor.read_u8()?;
+        Ok(BinXMLFragmentHeader {
+            major_version,
+            minor_version,
+            flags,
+        })
+    }
+}
+
+mod tests {
+    use super::*;
+    use evtx::evtx_chunk_header;
+    use evtx::evtx_record_header;
+    use hexdump;
+
+    extern crate env_logger;
+
+    #[test]
+    fn test_basic_binxml() {
+        let _ = env_logger::try_init().expect("Failed to init logger");
+        let evtx_file = include_bytes!("../../samples/security.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+        let chunk = ChunkCtx {
+            data: &from_start_of_chunk,
+            record_number: 1,
+        };
+        let mut c = Cursor::new(&from_start_of_chunk[512..]);
+
+        let record_header = evtx_record_header(&mut c).unwrap();
+        let mut token_stream =
+            BinXMLDeserializer::new(&from_start_of_chunk[512 + 24..], &chunk, 512 + 24);
+        let token = token_stream.get_next_token().unwrap();
+
+        assert_eq!(
+            token,
+            BinXMLDeserializedTokens::FragmentHeader(BinXMLFragmentHeader {
+                major_version: 1,
+                minor_version: 1,
+                flags: 0,
+            })
+        );
+
+        let template = token_stream.get_next_token().unwrap();
+        let is_template = match template {
+            BinXMLDeserializedTokens::TemplateInstance(_) => true,
+            _ => false,
+        };
+        assert!(is_template);
+
+        let size2 = token_stream.cursor.read_u32::<LittleEndian>().unwrap();
+        assert_eq!(record_header.data_size, size2);
+    }
+}

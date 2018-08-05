@@ -4,6 +4,7 @@ use encoding::Encoding;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Cursor, Error, ErrorKind, Seek, SeekFrom};
+use hexdump::print_hexdump;
 
 pub fn read_len_prefixed_utf16_string<'a>(
     stream: &mut Cursor<&'a [u8]>,
@@ -24,6 +25,8 @@ pub fn read_len_prefixed_utf16_string<'a>(
                     bytes_to_seek += 2;
                 }
 
+                // We need to seek manually because the UTF-16 reader
+                // does not advance the stream.
                 stream.seek(SeekFrom::Current(bytes_to_seek))?;
                 if expected_number_of_characters as usize != s.len() {
                     return Err(Error::from(ErrorKind::InvalidData));
@@ -34,4 +37,37 @@ pub fn read_len_prefixed_utf16_string<'a>(
             Err(s) => Err(Error::from(ErrorKind::InvalidData)),
         },
     }
+}
+
+pub fn read_utf16_by_size<'a>(
+    stream: &mut Cursor<&'a [u8]>,
+    size: u64,
+) -> io::Result<Option<String>> {
+    let p = stream.position() as usize;
+    let ref_to_utf16_bytes = &stream.get_ref()[p..p + size as usize];
+
+    match size {
+        0 => Ok(None),
+        _ => match UTF_16LE.decode(ref_to_utf16_bytes, DecoderTrap::Strict) {
+            Ok(s) => {
+                // We need to seek manually because the UTF-16 reader
+                // does not advance the stream.
+                stream.seek(SeekFrom::Current(size as i64))?;
+                return Ok(Some(s));
+            }
+            Err(s) => Err(Error::from(ErrorKind::InvalidData)),
+        },
+    }
+}
+
+
+pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
+    let offset = cursor.position();
+    let data = cursor.get_ref();
+    println!("-------------------------------");
+    println!("Current Value {:2X}", data[offset as usize]);
+    let m = (offset as i32) - lookbehind;
+    let start = if m < 0 { 0 } else { m };
+    print_hexdump(&data[start as usize..(offset + 100) as usize], 0, 'C');
+    println!("\n-------------------------------");
 }

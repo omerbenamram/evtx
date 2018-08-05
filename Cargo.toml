@@ -22,4 +22,4 @@ features = ["regexp", "verbose-errors"]
 
 [dev-dependencies]
 pretty_assertions = "*"
-
+maplit = "*"

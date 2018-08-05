@@ -1,13 +1,11 @@
-use binxml::model::BinXMLTemplate;
+use binxml::model::BinXMLTemplateDefinition;
 use binxml::model::OpenStartElementTokenMeta;
-use binxml::model::{
-    BinXMLAttribute, BinXMLFragmentHeader, BinXMLOpenStartElement, BinXMLParsedNodes,
-    BinXMLValueText,
-};
+use binxml::model::{BinXMLAttribute, BinXMLFragmentHeader, BinXMLDeserializedTokens, BinXMLOpenStartElement};
 use hexdump::print_hexdump;
 use indextree::{Arena, NodeId};
 use std::io::{Cursor, Read, Result, Seek, SeekFrom};
 use std::marker::PhantomData;
+use binxml::model::BinXMLValue;
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -15,8 +13,7 @@ pub trait Visitor<'a> {
     fn visit_close_start_element(&mut self) -> ();
     fn visit_close_empty_element(&mut self) -> ();
     fn visit_close_element(&mut self) -> ();
-    // TODO: fix value type! (needs to be enum)
-    fn visit_value(&mut self, value: &'a BinXMLValueText) -> ();
+    fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> ();
     fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute) -> ();
     fn visit_cdata_section(&mut self) -> ();
     fn visit_entity_reference(&mut self) -> ();
@@ -24,18 +21,18 @@ pub trait Visitor<'a> {
     fn visit_processing_instruction_data(&mut self) -> ();
     fn visit_normal_substitution(&mut self) -> ();
     fn visit_conditional_substitution(&mut self) -> ();
-    fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> ();
+    fn visit_template_instance(&mut self, template: &'a BinXMLTemplateDefinition) -> ();
     fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> ();
 }
 
 #[derive(Debug)]
-struct BinXMLVisitor<'a> {
-    template: Option<&'a BinXMLTemplate>,
-    xml: Arena<BinXMLParsedNodes>,
+struct BinXMLTreeBuilder<'a> {
+    template: Option<&'a BinXMLTemplateDefinition<'a>>,
+    xml: Arena<BinXMLDeserializedTokens<'a>>,
     current_parent: Option<NodeId>,
 }
 
-impl<'a> BinXMLVisitor<'a> {
+impl<'a> BinXMLTreeBuilder<'a> {
     fn add_leaf(&mut self, node: NodeId) -> () {
         self.current_parent.unwrap().append(node, &mut self.xml);
     }
@@ -51,16 +48,14 @@ impl<'a> BinXMLVisitor<'a> {
     }
 }
 
-impl<'a> Visitor<'a> for BinXMLVisitor<'a> {
+impl<'a> Visitor<'a> for BinXMLTreeBuilder<'a> {
     fn visit_end_of_stream(&mut self) {
         println!("visit_end_of_stream");
     }
 
     fn visit_open_start_element(&mut self, tag: &'a BinXMLOpenStartElement) {
         debug!("visit start_element {:?}", tag);
-        let node = self
-            .xml
-            .new_node(BinXMLParsedNodes::OpenStartElement(tag.clone()));
+        let node = self.xml.new_node(BinXMLDeserializedTokens::OpenStartElement(tag.clone()));
         self.add_node(node);
     }
 
@@ -81,20 +76,14 @@ impl<'a> Visitor<'a> for BinXMLVisitor<'a> {
         unimplemented!();
     }
 
-    fn visit_value(&mut self, value: &'a BinXMLValueText) -> () {
+    fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> () {
         debug!("visit_value");
-        let node = self
-            .xml
-            .new_node(BinXMLParsedNodes::ValueText(value.clone()));
+        let node = self.xml.new_node(BinXMLDeserializedTokens::Value(value.clone()));
         self.add_leaf(node);
     }
 
     fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute) -> () {
-        debug!("visit_attribute");
-        let node = self
-            .xml
-            .new_node(BinXMLParsedNodes::Attribute(attribute.clone()));
-        self.add_leaf(node);
+        unimplemented!()
     }
 
     fn visit_cdata_section(&mut self) {
@@ -127,7 +116,7 @@ impl<'a> Visitor<'a> for BinXMLVisitor<'a> {
         unimplemented!();
     }
 
-    fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> () {
+    fn visit_template_instance(&mut self, template: &'a BinXMLTemplateDefinition) -> () {
         debug!("visit_template_instance");
         self.template = Some(template);
     }
@@ -136,9 +125,9 @@ impl<'a> Visitor<'a> for BinXMLVisitor<'a> {
         debug!("visit_start_of_stream");
         let node = self
             .xml
-            .new_node(BinXMLParsedNodes::FragmentHeader(header.clone()));
+            .new_node(BinXMLDeserializedTokens::FragmentHeader(header.clone()));
         self.add_node(node);
     }
 }
 
-type BinXML = Arena<BinXMLParsedNodes>;
+pub type ElementTree<'a> = Arena<BinXMLDeserializedTokens<'a>>;
