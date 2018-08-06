@@ -16,11 +16,15 @@ pub fn read_len_prefixed_utf16_string<'a>(
 
     read_utf16_by_size(stream, needed_bytes as u64)
         .and_then(|s| {
-            // Assert correct number of chars read.
             if let Some(string) = s {
                 if string.len() == expected_number_of_characters as usize {
                     return Ok(Some(string));
                 } else {
+                    error!(
+                        "Expected string of length {}, found string of length {}",
+                        string.len(),
+                        expected_number_of_characters
+                    );
                     return Err(Error::from(ErrorKind::InvalidData));
                 }
             }
