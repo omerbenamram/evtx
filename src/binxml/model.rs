@@ -97,64 +97,9 @@ pub enum BinXMLValue<'a> {
     HexInt32Type,
     HexInt64Type(String),
     EvtHandle,
-    BinXmlType,
+    // Because of the recursive type, we instantiate this enum via a method of the Deserializer
+    BinXmlType(Vec<BinXMLDeserializedTokens<'a>>),
     EvtXml,
-}
-
-impl<'a> BinXMLValue<'a> {
-    pub fn read(
-        value_type: BinXMLValueType,
-        stream: &mut Cursor<&'a [u8]>,
-    ) -> io::Result<BinXMLValue<'a>> {
-        match value_type {
-            BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
-            BinXMLValueType::StringType => Ok(BinXMLValue::StringType(Cow::Owned(
-                read_len_prefixed_utf16_string(stream, false)?.expect("String cannot be empty"),
-            ))),
-            //            BinXMLValueType::AnsiStringType => Ok(BinXMLValue::AnsiStringType),
-            BinXMLValueType::Int8Type => Ok(BinXMLValue::Int8Type(stream.read_u8()? as i8)),
-            BinXMLValueType::UInt8Type => Ok(BinXMLValue::UInt8Type(stream.read_u8()?)),
-            BinXMLValueType::Int16Type => Ok(BinXMLValue::Int16Type(
-                stream.read_u16::<LittleEndian>()? as i16,
-            )),
-            BinXMLValueType::UInt16Type => {
-                Ok(BinXMLValue::UInt16Type(stream.read_u16::<LittleEndian>()?))
-            }
-            BinXMLValueType::Int32Type => Ok(BinXMLValue::Int32Type(
-                stream.read_u32::<LittleEndian>()? as i32,
-            )),
-            BinXMLValueType::UInt32Type => {
-                Ok(BinXMLValue::UInt32Type(stream.read_u32::<LittleEndian>()?))
-            }
-            BinXMLValueType::Int64Type => Ok(BinXMLValue::Int64Type(
-                stream.read_u64::<LittleEndian>()? as i64,
-            )),
-            BinXMLValueType::UInt64Type => {
-                Ok(BinXMLValue::UInt64Type(stream.read_u64::<LittleEndian>()?))
-            }
-            //TODO: implement
-            //            BinXMLValueType::Real32Type => Ok(BinXMLValue::Real32Type),
-            //            BinXMLValueType::Real64Type => Ok(BinXMLValue::Real64Type),
-            //            BinXMLValueType::BoolType => Ok(BinXMLValue::BoolType),
-            //            BinXMLValueType::BinaryType => Ok(BinXMLValue::BinaryType),
-            BinXMLValueType::GuidType => Ok(BinXMLValue::GuidType(Guid::from_stream(stream)?)),
-            //            BinXMLValueType::SizeTType => Ok(BinXMLValue::SizeTType),
-            BinXMLValueType::FileTimeType => Ok(BinXMLValue::FileTimeType(datetime_from_filetime(
-                stream.read_u64::<LittleEndian>()?,
-            ))),
-            //            BinXMLValueType::SysTimeType => Ok(BinXMLValue::SysTimeType),
-            //            BinXMLValueType::SidType => Ok(BinXMLValue::SidType),
-            //            BinXMLValueType::HexInt32Type => Ok(BinXMLValue::HexInt32Type),
-            BinXMLValueType::HexInt64Type => Ok(BinXMLValue::HexInt64Type(format!(
-                "0x{:2x}",
-                stream.read_u64::<LittleEndian>()?
-            ))),
-            //            BinXMLValueType::EvtHandle => Ok(BinXMLValue::EvtHandle),
-            //            BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType),
-            //            BinXMLValueType::EvtXml => Ok(BinXMLValue::EvtXml),
-            _ => unimplemented!("{:?}", value_type),
-        }
-    }
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
