@@ -3,8 +3,9 @@ use encoding::DecoderTrap;
 use encoding::Encoding;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use std::io::{self, Cursor, Error, ErrorKind, Seek, SeekFrom};
 use hexdump::print_hexdump;
+use std::cmp::min;
+use std::io::{self, Cursor, Error, ErrorKind, Seek, SeekFrom};
 
 pub fn read_len_prefixed_utf16_string<'a>(
     stream: &mut Cursor<&'a [u8]>,
@@ -60,7 +61,6 @@ pub fn read_utf16_by_size<'a>(
     }
 }
 
-
 pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
     let offset = cursor.position();
     let data = cursor.get_ref();
@@ -68,6 +68,8 @@ pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
     println!("Current Value {:2X}", data[offset as usize]);
     let m = (offset as i32) - lookbehind;
     let start = if m < 0 { 0 } else { m };
-    print_hexdump(&data[start as usize..(offset + 100) as usize], 0, 'C');
+    let end_of_buffer_or_default = min(100, data.len() - offset as usize);
+    let end = offset + end_of_buffer_or_default as u64;
+    print_hexdump(&data[start as usize..end as usize], 0, 'C');
     println!("\n-------------------------------");
 }

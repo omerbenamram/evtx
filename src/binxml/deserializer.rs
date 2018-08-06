@@ -180,7 +180,6 @@ impl<'a> BinXMLDeserializer<'a> {
             BinXMLRawToken::StartOfStream => Ok(BinXMLDeserializedTokens::FragmentHeader(
                 self.read_fragment_header()?,
             )),
-            _ => panic!("Token {:?} not expected here", token),
         }
     }
 
@@ -430,7 +429,7 @@ mod tests {
     extern crate env_logger;
 
     #[test]
-    fn test_basic_binxml() {
+    fn test_reads_one_element() {
         let _ = env_logger::try_init().expect("Failed to init logger");
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
@@ -441,28 +440,31 @@ mod tests {
         let mut cursor = Cursor::new(&from_start_of_chunk[512..]);
 
         let record_header = evtx_record_header(&mut cursor).unwrap();
-        let mut token_stream =
-            BinXMLDeserializer::new(&from_start_of_chunk[512 + 24..], &chunk, 512 + 24);
-        let token = token_stream.get_next_token().unwrap();
 
-        assert_eq!(
-            token,
-            BinXMLDeserializedTokens::FragmentHeader(BinXMLFragmentHeader {
-                major_version: 1,
-                minor_version: 1,
-                flags: 0,
-            })
+        let mut deserializer = BinXMLDeserializer::new(
+            &from_start_of_chunk[512 + 24..(512 + record_header.data_size) as usize],
+            &chunk,
+            512 + 24,
         );
 
-        let template = token_stream.get_next_token().unwrap();
-        let is_template = match template {
+        let element = deserializer.read_element().unwrap();
+        assert_eq!(element.len(), 2, "Element should contain a fragment and a template");
+
+        let is_template = match element[1] {
             BinXMLDeserializedTokens::TemplateInstance(_) => true,
             _ => false,
         };
-        assert!(is_template);
 
-        let size2 = token_stream.cursor.read_u32::<LittleEndian>().unwrap();
-        assert_eq!(record_header.data_size, size2);
+        assert!(is_template, "Element should be a template");
+
+        // Weird zeroes (padding?)
+        let mut zeroes = [0_u8; 3];
+
+        let c = &mut deserializer.cursor;
+        c.take(3).read_exact(&mut zeroes).expect("Failed to read zeroes");
+
+        let copy_of_size = c.read_u32::<LittleEndian>().unwrap();
+        assert_eq!(record_header.data_size, copy_of_size, "Didn't read expected amount of bytes.");
     }
 
     #[test]

@@ -12,6 +12,7 @@ use hexdump::print_hexdump;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
+use binxml::utils::dump_cursor;
 
 #[derive(Debug, PartialEq)]
 pub struct EVTXHeader {
