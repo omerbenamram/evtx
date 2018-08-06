@@ -24,6 +24,7 @@ use guid::Guid;
 use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
 
+//TODO: remove this and merge with EVTXChunkHeader
 struct ChunkCtx<'a> {
     data: &'a [u8],
     record_number: u32,
@@ -68,7 +69,7 @@ impl<'a> BinXMLDeserializer<'a> {
     }
 
     fn read_next_token(&mut self) -> Option<BinXMLRawToken> {
-        let token = self.cursor.read_u8().expect("EOF");
+        let token = self.cursor.read_u8().expect("Unexpected EOF");
 
         BinXMLRawToken::from_u8(token)
             // Unknown token.

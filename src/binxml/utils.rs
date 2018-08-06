@@ -14,30 +14,24 @@ pub fn read_len_prefixed_utf16_string<'a>(
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
     let needed_bytes = (expected_number_of_characters * 2) as usize;
 
-    let p = stream.position() as usize;
-    let ref_to_utf16_bytes = &stream.get_ref()[p..p + needed_bytes];
-
-    match expected_number_of_characters {
-        0 => Ok(None),
-        _ => match UTF_16LE.decode(ref_to_utf16_bytes, DecoderTrap::Strict) {
-            Ok(s) => {
-                let mut bytes_to_seek = needed_bytes as i64;
-                if is_null_terminated {
-                    bytes_to_seek += 2;
-                }
-
-                // We need to seek manually because the UTF-16 reader
-                // does not advance the stream.
-                stream.seek(SeekFrom::Current(bytes_to_seek))?;
-                if expected_number_of_characters as usize != s.len() {
+    read_utf16_by_size(stream, needed_bytes as u64)
+        .and_then(|s| {
+            // Assert correct number of chars read.
+            if let Some(string) = s {
+                if string.len() == expected_number_of_characters as usize {
+                    return Ok(Some(string));
+                } else {
                     return Err(Error::from(ErrorKind::InvalidData));
                 }
-
-                return Ok(Some(s));
             }
-            Err(s) => Err(Error::from(ErrorKind::InvalidData)),
-        },
-    }
+            return Err(Error::from(ErrorKind::InvalidData));
+        }).and_then(|s| {
+            // Seek null terminator if needed (we can't feed it to the decoder)
+            if is_null_terminated {
+                stream.read_u16::<LittleEndian>()?;
+            };
+            Ok(s)
+        })
 }
 
 pub fn read_utf16_by_size<'a>(
