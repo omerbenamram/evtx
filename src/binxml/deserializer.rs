@@ -15,7 +15,6 @@ use binxml::model::BinXMLTemplate;
 use binxml::model::BinXMLValueType;
 use binxml::model::TemplateSubstitutionDescriptor;
 use binxml::model::TemplateValueDescriptor;
-use binxml::tree_builder::ElementTree;
 use binxml::utils::dump_cursor;
 use binxml::utils::read_utf16_by_size;
 use evtx::datetime_from_filetime;
@@ -25,12 +24,12 @@ use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
 
 //TODO: remove this and merge with EVTXChunkHeader
-struct ChunkCtx<'a> {
+pub struct ChunkCtx<'a> {
     data: &'a [u8],
     record_number: u32,
 }
 
-struct BinXMLDeserializer<'a> {
+pub struct BinXMLDeserializer<'a> {
     chunk: &'a ChunkCtx<'a>,
     offset_from_chunk_start: u64,
     cursor: Cursor<&'a [u8]>,
@@ -449,6 +448,7 @@ mod tests {
         );
 
         let element = deserializer.read_element().unwrap();
+        println!("{:?}", element);
         assert_eq!(element.len(), 2, "Element should contain a fragment and a template");
 
         let is_template = match element[1] {

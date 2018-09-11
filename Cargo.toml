@@ -9,12 +9,15 @@ crc = "^1.0.0"
 chrono = "0.4"
 time = "*"
 num-traits = "^0.2"
+num = "0.2.0"
+num-integer = "*"
 enum-primitive-derive = "^0.1"
 encoding = "0.2.33"
 env_logger = "*"
 log = { version = "^0.4", features = ["max_level_debug", "release_max_level_warn"] }
 indextree = "*"
 byteorder = "1.2.3"
+xml-rs = "*"
 
 [dependencies.nom]
 version = "^4.0"

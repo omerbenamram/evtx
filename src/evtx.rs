@@ -182,6 +182,7 @@ pub fn evtx_chunk_header<'a>(input: &mut Cursor<&'a [u8]>) -> io::Result<EVTXChu
             let _ = input.read_u32::<LittleEndian>()?;
             let name_hash = input.read_u16::<LittleEndian>()?;
 
+            // TODO: this should be Cow::Owned
             string_table.insert(
                 name_hash,
                 Rc::new(
@@ -209,6 +210,25 @@ pub fn evtx_chunk_header<'a>(input: &mut Cursor<&'a [u8]>) -> io::Result<EVTXChu
         string_table,
     })
 }
+
+struct RecordIterator<'a> {
+    current: EVTXRecord<'a>,
+    total_number_of_records: i32,
+    current_record_number: i32,
+    binary_stream: &'a mut Cursor<&'a [u8]>
+}
+
+//impl<'a> Iterator for RecordIterator<'a> {
+//    type Item = EVTXRecord<'a>;
+//
+//    fn next(&mut self) -> Option<EVTXRecord<'a>> {
+//        while self.current_record_number <= self.total_number_of_records {
+//            let header = evtx_record_header(self.binary_stream).expect("Invalid header");
+//            let de = BinXMLDeserializer::new()
+//            Ok()
+//        }
+//    }
+//}
 
 fn filetime(input: &[u8]) -> IResult<&[u8], DateTime<Utc>> {
     return do_parse!(

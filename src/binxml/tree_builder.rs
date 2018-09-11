@@ -1,11 +1,17 @@
+use binxml::model::BinXMLTemplate;
 use binxml::model::BinXMLTemplateDefinition;
+use binxml::model::BinXMLValue;
 use binxml::model::OpenStartElementTokenMeta;
-use binxml::model::{BinXMLAttribute, BinXMLFragmentHeader, BinXMLDeserializedTokens, BinXMLOpenStartElement};
+use binxml::model::{
+    BinXMLAttribute, BinXMLDeserializedTokens, BinXMLFragmentHeader, BinXMLOpenStartElement,
+};
+use binxml::owned_model::Element;
 use hexdump::print_hexdump;
 use indextree::{Arena, NodeId};
 use std::io::{Cursor, Read, Result, Seek, SeekFrom};
 use std::marker::PhantomData;
-use binxml::model::BinXMLValue;
+use std::borrow::BorrowMut;
+use num_traits::Num;
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -21,18 +27,18 @@ pub trait Visitor<'a> {
     fn visit_processing_instruction_data(&mut self) -> ();
     fn visit_normal_substitution(&mut self) -> ();
     fn visit_conditional_substitution(&mut self) -> ();
-    fn visit_template_instance(&mut self, template: &'a BinXMLTemplateDefinition) -> ();
+    fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> ();
     fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> ();
 }
 
 #[derive(Debug)]
-struct BinXMLTreeBuilder<'a> {
+struct BinXMLTreeBuilder<'a, N: Num> {
     template: Option<&'a BinXMLTemplateDefinition<'a>>,
-    xml: Arena<BinXMLDeserializedTokens<'a>>,
+    xml: ElementTree<N>,
     current_parent: Option<NodeId>,
 }
 
-impl<'a> BinXMLTreeBuilder<'a> {
+impl<'a, N: Num> BinXMLTreeBuilder<'a, N> {
     fn add_leaf(&mut self, node: NodeId) -> () {
         self.current_parent.unwrap().append(node, &mut self.xml);
     }
@@ -48,15 +54,17 @@ impl<'a> BinXMLTreeBuilder<'a> {
     }
 }
 
-impl<'a> Visitor<'a> for BinXMLTreeBuilder<'a> {
+impl<'a, N: Num> Visitor<'a> for BinXMLTreeBuilder<'a, N> {
     fn visit_end_of_stream(&mut self) {
         println!("visit_end_of_stream");
     }
 
     fn visit_open_start_element(&mut self, tag: &'a BinXMLOpenStartElement) {
         debug!("visit start_element {:?}", tag);
-        let node = self.xml.new_node(BinXMLDeserializedTokens::OpenStartElement(tag.clone()));
-        self.add_node(node);
+//        let node = self
+//            .xml
+//            .new_node(BinXMLDeserializedTokens::OpenStartElement(tag.clone()));
+//        self.add_node(node);
     }
 
     fn visit_close_start_element(&mut self) {
@@ -78,8 +86,10 @@ impl<'a> Visitor<'a> for BinXMLTreeBuilder<'a> {
 
     fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> () {
         debug!("visit_value");
-        let node = self.xml.new_node(BinXMLDeserializedTokens::Value(value.clone()));
-        self.add_leaf(node);
+//        let node = self
+//            .xml
+//            .new_node(BinXMLDeserializedTokens::Value(value.clone()));
+//        self.add_leaf(node);
     }
 
     fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute) -> () {
@@ -116,18 +126,23 @@ impl<'a> Visitor<'a> for BinXMLTreeBuilder<'a> {
         unimplemented!();
     }
 
-    fn visit_template_instance(&mut self, template: &'a BinXMLTemplateDefinition) -> () {
-        debug!("visit_template_instance");
-        self.template = Some(template);
+    fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> () {
+        let elem_unfilled = &template.definition.element;
+        let mut elem_filled = elem_unfilled.clone();
+        let substitutions = &template.substitution_array;
+
+        for (i, sub_elem) in elem_filled.iter_mut().enumerate() {
+            if let BinXMLDeserializedTokens::Substitution(ref data) = sub_elem {
+                *sub_elem = BinXMLDeserializedTokens::Value(
+                    substitutions[data.substitution_index as usize].clone(),
+                )
+            }
+        }
     }
 
     fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> () {
         debug!("visit_start_of_stream");
-        let node = self
-            .xml
-            .new_node(BinXMLDeserializedTokens::FragmentHeader(header.clone()));
-        self.add_node(node);
     }
 }
 
-pub type ElementTree<'a> = Arena<BinXMLDeserializedTokens<'a>>;
+pub type ElementTree<N> = Arena<Element<N>>;

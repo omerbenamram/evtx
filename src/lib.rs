@@ -1,3 +1,4 @@
+#![feature(nll)]
 #![feature(try_from)]
 #![feature(box_syntax)]
 #![allow(dead_code)]
@@ -13,6 +14,7 @@ extern crate maplit;
 
 extern crate byteorder;
 extern crate indextree;
+extern crate xml;
 
 #[macro_use]
 extern crate log;
