@@ -3,12 +3,12 @@ use encoding::DecoderTrap;
 use encoding::Encoding;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use hexdump::print_hexdump;
 use std::cmp::min;
-use std::io::{self, Cursor, Error, ErrorKind, Seek, SeekFrom};
+use std::io::{self, Cursor, Error, ErrorKind, Seek, SeekFrom, Read};
+use utils::print_hexdump;
 
-pub fn read_len_prefixed_utf16_string<'a>(
-    stream: &mut Cursor<&'a [u8]>,
+pub fn read_len_prefixed_utf16_string(
+    stream: &mut Cursor<&[u8]>,
     is_null_terminated: bool,
 ) -> io::Result<Option<String>> {
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
@@ -30,16 +30,16 @@ pub fn read_len_prefixed_utf16_string<'a>(
             }
             return Err(Error::from(ErrorKind::InvalidData));
         }).and_then(|s| {
-            // Seek null terminator if needed (we can't feed it to the decoder)
-            if is_null_terminated {
-                stream.read_u16::<LittleEndian>()?;
-            };
-            Ok(s)
-        })
+        // Seek null terminator if needed (we can't feed it to the decoder)
+        if is_null_terminated {
+            stream.read_u16::<LittleEndian>()?;
+        };
+        Ok(s)
+    })
 }
 
-pub fn read_utf16_by_size<'a>(
-    stream: &mut Cursor<&'a [u8]>,
+pub fn read_utf16_by_size(
+    stream: &mut Cursor<&[u8]>,
     size: u64,
 ) -> io::Result<Option<String>> {
     let p = stream.position() as usize;

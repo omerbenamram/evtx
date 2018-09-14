@@ -1,27 +1,15 @@
-use core::mem;
-use hexdump::print_hexdump;
-use indextree::{Arena, NodeId};
+use std::mem;
 use std::cmp::min;
 use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use binxml::model::{BinXMLAttribute, BinXMLFragmentHeader, BinXMLName, BinXMLTemplateDefinition};
-use binxml::model::{BinXMLDeserializedTokens, BinXMLRawToken, BinXMLValue};
-use binxml::utils::read_len_prefixed_utf16_string;
-
-use binxml::model::BinXMLOpenStartElement;
-use binxml::model::BinXMLTemplate;
-use binxml::model::BinXMLValueType;
-use binxml::model::TemplateSubstitutionDescriptor;
-use binxml::model::TemplateValueDescriptor;
-use binxml::utils::dump_cursor;
-use binxml::utils::read_utf16_by_size;
 use evtx::datetime_from_filetime;
-use evtx::evtx_chunk_header;
 use guid::Guid;
 use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
+use model::*;
+use utils::*;
 
 //TODO: remove this and merge with EVTXChunkHeader
 pub struct ChunkCtx<'a> {
@@ -31,7 +19,9 @@ pub struct ChunkCtx<'a> {
 
 pub struct BinXMLDeserializer<'a> {
     chunk: &'a ChunkCtx<'a>,
+
     offset_from_chunk_start: u64,
+
     cursor: Cursor<&'a [u8]>,
 }
 
@@ -262,36 +252,6 @@ impl<'a> BinXMLDeserializer<'a> {
         };
         debug!("\t Attributes Data Size: {:?}", attribute_list_data_size);
 
-        // TODO: move this code to tree builder
-        //        let attribute_list = match has_attributes {
-        //            true => {
-        //                debug!("attribute list data_size: {}", attribute_list_data_size);
-        //                let initial_position = self.cursor.position();
-        //                let mut attributes = vec![];
-        //
-        //                loop {
-        //                    if let Some(token) = self.read_next_token() {
-        //                        match token {
-        //                            BinXMLToken::Attribute(token_meta) => {
-        //                                attributes.push(self.read_attribute()?);
-        //                                if !token_meta.more_attributes_expected {
-        //                                    assert_eq!(
-        //                                        self.cursor.position(),
-        //                                        initial_position + attribute_list_data_size as u64,
-        //                                        "Attribute list not read completely"
-        //                                    );
-        //                                    break;
-        //                                }
-        //                            }
-        //                            _ => self.dump_and_panic(10),
-        //                        }
-        //                    }
-        //                }
-        //                Some(attributes)
-        //            }
-        //            false => None,
-        //        };
-
         Ok(BinXMLOpenStartElement { data_size, name })
     }
 
@@ -422,21 +382,21 @@ impl<'a> BinXMLDeserializer<'a> {
 
 mod tests {
     use super::*;
-    use evtx::evtx_chunk_header;
     use evtx::evtx_record_header;
-    use hexdump;
 
     extern crate env_logger;
 
     #[test]
     fn test_reads_one_element() {
         let _ = env_logger::try_init().expect("Failed to init logger");
-        let evtx_file = include_bytes!("../../samples/security.evtx");
+        let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
+
         let chunk = ChunkCtx {
             data: &from_start_of_chunk,
             record_number: 1,
         };
+
         let mut cursor = Cursor::new(&from_start_of_chunk[512..]);
 
         let record_header = evtx_record_header(&mut cursor).unwrap();
@@ -471,7 +431,7 @@ mod tests {
     #[test]
     fn test_reads_simple_template_without_substitutions() {
         let _ = env_logger::try_init().expect("Failed to init logger");
-        let evtx_file = include_bytes!("../../samples/security.evtx");
+        let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
         let chunk = ChunkCtx {

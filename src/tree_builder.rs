@@ -12,6 +12,8 @@ use std::io::{Cursor, Read, Result, Seek, SeekFrom};
 use std::marker::PhantomData;
 use std::borrow::BorrowMut;
 use num_traits::Num;
+use xml::{EventWriter, EmitterConfig};
+use std::io::Write;
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -31,47 +33,40 @@ pub trait Visitor<'a> {
     fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> ();
 }
 
-#[derive(Debug)]
-struct BinXMLTreeBuilder<'a, N: Num> {
+struct BinXMLTreeBuilder<'a, W: Write> {
     template: Option<&'a BinXMLTemplateDefinition<'a>>,
-    xml: ElementTree<N>,
-    current_parent: Option<NodeId>,
+    writer: EventWriter<W>,
 }
 
-impl<'a, N: Num> BinXMLTreeBuilder<'a, N> {
-    fn add_leaf(&mut self, node: NodeId) -> () {
-        self.current_parent.unwrap().append(node, &mut self.xml);
-    }
+impl<'a, W: Write> BinXMLTreeBuilder<'a, W> {
+    // TODO: pick up from here - use EventWriter to drive the visitor.
+    // The crucial part is to handle template substitutions.
+    pub fn with_writer(target: W) -> Self {
+        let writer = EmitterConfig::new()
+            .line_separator("\r\n")
+            .perform_indent(true)
+            .normalize_empty_elements(false)
+            .create_writer(target);
 
-    fn add_node(&mut self, node: NodeId) -> () {
-        match self.current_parent {
-            Some(parent) => {
-                parent.append(node, &mut self.xml);
-                self.current_parent = Some(node);
-            }
-            None => self.current_parent = Some(node),
+        BinXMLTreeBuilder {
+            template: None,
+            writer,
         }
     }
 }
 
-impl<'a, N: Num> Visitor<'a> for BinXMLTreeBuilder<'a, N> {
+impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     fn visit_end_of_stream(&mut self) {
         println!("visit_end_of_stream");
     }
 
     fn visit_open_start_element(&mut self, tag: &'a BinXMLOpenStartElement) {
         debug!("visit start_element {:?}", tag);
-//        let node = self
-//            .xml
-//            .new_node(BinXMLDeserializedTokens::OpenStartElement(tag.clone()));
-//        self.add_node(node);
     }
 
     fn visit_close_start_element(&mut self) {
         println!("visit_close_start_element");
-        let node = self.current_parent.unwrap();
-        let parent = self.xml.get(node).unwrap().parent();
-        self.current_parent = parent;
+        unimplemented!();
     }
 
     fn visit_close_empty_element(&mut self) {
@@ -86,10 +81,7 @@ impl<'a, N: Num> Visitor<'a> for BinXMLTreeBuilder<'a, N> {
 
     fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> () {
         debug!("visit_value");
-//        let node = self
-//            .xml
-//            .new_node(BinXMLDeserializedTokens::Value(value.clone()));
-//        self.add_leaf(node);
+        unimplemented!();
     }
 
     fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute) -> () {
@@ -144,5 +136,3 @@ impl<'a, N: Num> Visitor<'a> for BinXMLTreeBuilder<'a, N> {
         debug!("visit_start_of_stream");
     }
 }
-
-pub type ElementTree<N> = Arena<Element<N>>;

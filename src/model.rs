@@ -1,4 +1,4 @@
-use binxml::utils::read_len_prefixed_utf16_string;
+use utils::read_len_prefixed_utf16_string;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::DateTime;
 use chrono::Utc;

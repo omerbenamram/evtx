@@ -5,16 +5,11 @@
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 
-#[macro_use]
-extern crate nom;
-
-#[cfg(test)]
-#[macro_use]
-extern crate maplit;
 
 extern crate byteorder;
-extern crate indextree;
 extern crate xml;
+#[macro_use]
+extern crate failure;
 
 #[macro_use]
 extern crate log;
@@ -22,19 +17,24 @@ extern crate env_logger;
 
 #[cfg(test)]
 #[macro_use]
+extern crate maplit;
+
+#[cfg(test)]
+#[macro_use]
 extern crate pretty_assertions;
+
+#[cfg(test)]
+extern crate itertools;
 
 extern crate chrono;
 extern crate crc;
 extern crate encoding;
 extern crate time;
 
-#[macro_use]
-extern crate enum_primitive_derive;
-extern crate core;
-extern crate num_traits;
-
 mod binxml;
-pub mod evtx;
 mod guid;
-mod hexdump;
+mod utils;
+mod evtx_file_header;
+mod model;
+mod evtx_chunk_header;
+pub mod evtx;
