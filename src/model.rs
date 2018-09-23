@@ -201,8 +201,6 @@ pub struct BinXMLOpenStartElement {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLTemplateDefinition<'a> {
-    pub template_id: u32,
-    pub template_offset: u32,
     pub next_template_offset: u32,
     pub template_guid: Guid,
     pub data_size: u32,
@@ -211,7 +209,7 @@ pub struct BinXMLTemplateDefinition<'a> {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLTemplate<'a> {
-    pub definition: BinXMLTemplateDefinition<'a>,
+    pub definition: &'a BinXMLTemplateDefinition<'a>,
     pub substitution_array: Vec<BinXMLValue<'a>>,
 }
 

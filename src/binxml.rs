@@ -1,20 +1,21 @@
-use std::mem;
 use std::cmp::min;
 use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
+use std::mem;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use evtx::datetime_from_filetime;
+use evtx_chunk_header::EvtxChunkHeader;
 use guid::Guid;
+use model::*;
 use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
-use model::*;
 use utils::*;
 
-//TODO: remove this and merge with EVTXChunkHeader
-pub struct ChunkCtx<'a> {
-    data: &'a [u8],
-    record_number: u32,
+pub struct BinXMLDeserializer<'a> {
+    chunk: &'a EvtxChunkHeader<'a>,
+    offset_from_chunk_start: u64,
+    cursor: Cursor<&'a [u8]>,
 }
 
 pub struct BinXMLDeserializer<'a> {
@@ -28,7 +29,7 @@ pub struct BinXMLDeserializer<'a> {
 impl<'a> BinXMLDeserializer<'a> {
     pub fn new(
         xml_raw: &'a [u8],
-        chunk: &'a ChunkCtx,
+        chunk: &'a EvtxChunkHeader<'a>,
         offset_from_chunk_start: u64,
     ) -> BinXMLDeserializer<'a> {
         let cursor = Cursor::new(xml_raw);
@@ -255,66 +256,39 @@ impl<'a> BinXMLDeserializer<'a> {
         Ok(BinXMLOpenStartElement { data_size, name })
     }
 
-    fn read_name(&mut self) -> io::Result<BinXMLName> {
+    fn read_name(&'a mut self) -> io::Result<BinXMLName> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = self.cursor.read_u32::<LittleEndian>()?;
         let name_offset = name_offset as u64;
         // TODO: check string offset cache and return reference to cached value if needed.
 
-        let _read_name = |ctx: &mut BinXMLDeserializer| {
-            let _ = ctx.cursor.read_u32::<LittleEndian>()?;
-            let name_hash = ctx.cursor.read_u16::<LittleEndian>()?;
-
-            let name = read_len_prefixed_utf16_string(&mut ctx.cursor, true)?;
-
-            Ok(BinXMLName { name })
-        };
-
-        self.read_relative_to_chunk_offset(name_offset, box _read_name)
+        let name = self
+            .read_relative_to_chunk_offset(name_offset, &read_name_from_stream);
+        name
     }
 
-    fn read_template(&mut self) -> io::Result<BinXMLTemplate<'a>> {
+    fn read_template(&'a mut self) -> io::Result<BinXMLTemplate<'a>> {
         debug!("TemplateInstance at {}", self.cursor.position());
         self.cursor.read_u8()?;
         let template_id = self.cursor.read_u32::<LittleEndian>()?;
         let template_definition_data_offset = self.cursor.read_u32::<LittleEndian>()?;
 
-        // TODO: handle caching etc..
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
-        let _read_template_definition = move |ctx: &mut BinXMLDeserializer<'a>| {
-            // Used to assert that we read all data;
 
-            let next_template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
-            let template_guid = Guid::from_stream(&mut ctx.cursor)?;
-            let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
+        let template_table = self.chunk.template_table.clone();
 
-            // Data size includes of the fragment header, element and end of file token;
-            // except for the first 33 bytes of the template definition (above)
-            let start_position = ctx.cursor.position();
-            let element = ctx.read_element()?;
-
-            assert_eq!(
-                ctx.cursor.position(),
-                start_position + data_size as u64,
-                "Template definition wasn't read completely"
-            );
-
-            Ok(BinXMLTemplateDefinition {
-                template_id,
-                template_offset: template_definition_data_offset,
-                next_template_offset,
-                template_guid,
-                data_size,
-                element,
-            })
-        };
-
-        let template_def = self.read_relative_to_chunk_offset(
-            template_definition_data_offset as u64,
-            Box::new(_read_template_definition),
-        )?;
+        //        let template_def = template_table.entry(template_id).or_insert_with(|| {
+        //            self.read_relative_to_chunk_offset(
+        //                template_definition_data_offset as u64,
+        //                &BinXMLDeserializer::read_template_definition
+        //            ).expect(&format!(
+        //                "Failed to read template definition at offset {}",
+        //                template_definition_data_offset
+        //            ))
+        //        });
+        let template_def = template_table.borrow_mut().get(&template_id).unwrap();
 
         let number_of_substitutions = self.cursor.read_u32::<LittleEndian>()?;
         let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
@@ -360,7 +334,29 @@ impl<'a> BinXMLDeserializer<'a> {
         })
     }
 
-    fn read_attribute(&mut self) -> io::Result<BinXMLAttribute> {
+    fn read_template_definition(
+        ctx: &'a mut BinXMLDeserializer<'a>,
+    ) -> io::Result<BinXMLTemplateDefinition<'a>> {
+        let next_template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
+        let template_guid = Guid::from_stream(&mut ctx.cursor)?;
+        let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
+        // Data size includes of the fragment header, element and end of file token;
+        // except for the first 33 bytes of the template definition (above)
+        let start_position = ctx.cursor.position();
+        let element = ctx.read_element()?;
+        assert_eq!(
+            ctx.cursor.position(),
+            start_position + data_size as u64,
+            "Template definition wasn't read completely"
+        );
+        Ok(BinXMLTemplateDefinition {
+            next_template_offset,
+            template_guid,
+            data_size,
+            element,
+        })
+    }
+
         debug!("Attribute at {}", self.cursor.position());
         let name = self.read_name()?;
         debug!("\t Attribute name: {:?}", name);
@@ -392,12 +388,8 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = ChunkCtx {
-            data: &from_start_of_chunk,
-            record_number: 1,
-        };
-
-        let mut cursor = Cursor::new(&from_start_of_chunk[512..]);
+        let mut cursor = Cursor::new(from_start_of_chunk);
+        let chunk = EvtxChunkHeader::from_reader(&mut cursor).unwrap();
 
         let record_header = evtx_record_header(&mut cursor).unwrap();
 
@@ -409,7 +401,11 @@ mod tests {
 
         let element = deserializer.read_element().unwrap();
         println!("{:?}", element);
-        assert_eq!(element.len(), 2, "Element should contain a fragment and a template");
+        assert_eq!(
+            element.len(),
+            2,
+            "Element should contain a fragment and a template"
+        );
 
         let is_template = match element[1] {
             BinXMLDeserializedTokens::TemplateInstance(_) => true,
@@ -422,10 +418,15 @@ mod tests {
         let mut zeroes = [0_u8; 3];
 
         let c = &mut deserializer.cursor;
-        c.take(3).read_exact(&mut zeroes).expect("Failed to read zeroes");
+        c.take(3)
+            .read_exact(&mut zeroes)
+            .expect("Failed to read zeroes");
 
         let copy_of_size = c.read_u32::<LittleEndian>().unwrap();
-        assert_eq!(record_header.data_size, copy_of_size, "Didn't read expected amount of bytes.");
+        assert_eq!(
+            record_header.data_size, copy_of_size,
+            "Didn't read expected amount of bytes."
+        );
     }
 
     #[test]
@@ -434,10 +435,8 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = ChunkCtx {
-            data: &from_start_of_chunk,
-            record_number: 1,
-        };
+        let mut cursor = Cursor::new(from_start_of_chunk);
+        let chunk = EvtxChunkHeader::from_reader(&mut cursor).unwrap();
 
         let template = &from_start_of_chunk[1979..2064];
         let mut d = BinXMLDeserializer::new(template, &chunk, 1979);

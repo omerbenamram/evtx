@@ -6,14 +6,18 @@ use std::io::{Read, Seek, SeekFrom};
 
 use model::BinXMLTemplateDefinition;
 use std::borrow::Cow;
+use std::rc::Rc;
 use std::io::Cursor;
 use utils::*;
+use std::cell::RefCell;
 
 #[derive(Fail, Debug)]
 enum ChunkHeaderParseError {
     #[fail(display = "Expected magic \"ElfChnk\x00\", got {:#?}", magic)]
     WrongHeaderMagic { magic: [u8; 8] },
 }
+
+type TemplateID = u32;
 
 #[derive(Debug, PartialEq)]
 pub struct EvtxChunkHeader<'a> {
@@ -34,8 +38,8 @@ pub struct EvtxChunkHeader<'a> {
     //    offset of the last string will be stored in the bucket. The string
     //    object will then provide the offset of the preceding string, thus
     //    building a single-linked list.
-    string_table: HashMap<u16, Cow<'a, str>>,
-    template_table: HashMap<u32, BinXMLTemplateDefinition<'a>>,
+    pub string_table: HashMap<u16, Cow<'a, str>>,
+    pub template_table: Rc<RefCell<HashMap<TemplateID, BinXMLTemplateDefinition<'a>>>>,
 }
 
 impl<'a> EvtxChunkHeader<'a> {
@@ -89,7 +93,7 @@ impl<'a> EvtxChunkHeader<'a> {
             }
         }
 
-        let template_table = HashMap::new();
+        let template_table = Rc::new(RefCell::new(HashMap::new()));
 
         Ok(EvtxChunkHeader {
             first_event_record_number,
@@ -115,10 +119,6 @@ mod tests {
     use itertools::Itertools;
     use std::hash::Hash;
     use std::io::Cursor;
-
-    //    fn compare_hashmaps<K: Eq + Hash + Ord,V>(a: &HashMap<K, V>, b: &HashMap<K, V>) {
-    //        assert_equal(a.iter().sorted(), b.iter().sorted())
-    //    }
 
     #[test]
     fn test_parses_evtx_chunk_header() {
@@ -147,7 +147,7 @@ mod tests {
             14725 => Cow::Borrowed("ThreadID"),
             52836 => Cow::Borrowed("Level"),
             28554 => Cow::Borrowed("Data"),
-            30542 => Cow::Borrowed("xmlns:"),
+            30542 => Cow::Borrowed("xmlns:auto-ns3"),
             17461 => Cow::Borrowed("UserData"),
             38219 => Cow::Borrowed("Name"),
             3258 => Cow::Borrowed("Event"),
@@ -173,7 +173,7 @@ mod tests {
             events_checksum: 4252479141,
             header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
             string_table: expected_string_table.clone(),
-            template_table: hashmap!{},
+            template_table: Rc::new(RefCell::new(HashMap::new())),
         };
 
         assert_equal(
