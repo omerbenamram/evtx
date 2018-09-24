@@ -5,6 +5,7 @@ use chrono::Utc;
 use evtx::datetime_from_filetime;
 use evtx::FileTime;
 use guid::Guid;
+use std::rc::Rc;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::io::{self, Cursor, Read};
@@ -209,7 +210,7 @@ pub struct BinXMLTemplateDefinition<'a> {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLTemplate<'a> {
-    pub definition: &'a BinXMLTemplateDefinition<'a>,
+    pub definition: Rc<BinXMLTemplateDefinition<'a>>,
     pub substitution_array: Vec<BinXMLValue<'a>>,
 }
 

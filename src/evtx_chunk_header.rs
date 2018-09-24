@@ -39,7 +39,7 @@ pub struct EvtxChunkHeader<'a> {
     //    object will then provide the offset of the preceding string, thus
     //    building a single-linked list.
     pub string_table: HashMap<u16, Cow<'a, str>>,
-    pub template_table: Rc<RefCell<HashMap<TemplateID, BinXMLTemplateDefinition<'a>>>>,
+    pub template_table: RefCell<HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>>,
 }
 
 impl<'a> EvtxChunkHeader<'a> {
@@ -93,7 +93,7 @@ impl<'a> EvtxChunkHeader<'a> {
             }
         }
 
-        let template_table = Rc::new(RefCell::new(HashMap::new()));
+        let template_table = RefCell::new(HashMap::new());
 
         Ok(EvtxChunkHeader {
             first_event_record_number,
@@ -173,7 +173,7 @@ mod tests {
             events_checksum: 4252479141,
             header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
             string_table: expected_string_table.clone(),
-            template_table: Rc::new(RefCell::new(HashMap::new())),
+            template_table: RefCell::new(HashMap::new()),
         };
 
         assert_equal(

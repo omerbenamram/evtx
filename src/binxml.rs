@@ -1,6 +1,7 @@
 use std::cmp::min;
 use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem;
+use std::rc::Rc;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
@@ -18,12 +19,13 @@ pub struct BinXMLDeserializer<'a> {
     cursor: Cursor<&'a [u8]>,
 }
 
-pub struct BinXMLDeserializer<'a> {
-    chunk: &'a ChunkCtx<'a>,
+fn read_name_from_stream(stream: &mut BinXMLDeserializer) -> io::Result<BinXMLName> {
+    let _ = stream.cursor.read_u32::<LittleEndian>()?;
+    let name_hash = stream.cursor.read_u16::<LittleEndian>()?;
 
-    offset_from_chunk_start: u64,
+    let name = read_len_prefixed_utf16_string(&mut stream.cursor, true)?;
 
-    cursor: Cursor<&'a [u8]>,
+    Ok(BinXMLName { name })
 }
 
 impl<'a> BinXMLDeserializer<'a> {
@@ -213,15 +215,18 @@ impl<'a> BinXMLDeserializer<'a> {
     fn read_relative_to_chunk_offset<T: Sized>(
         &mut self,
         offset: u64,
-        f: Box<Fn(&mut BinXMLDeserializer<'a>) -> io::Result<T>>,
+        f: &Fn(&mut BinXMLDeserializer<'a>) -> io::Result<T>,
     ) -> io::Result<T> {
         if offset == self.position_relative_to_chunk_start() {
             f(self)
         } else {
             // Fork a new context at the given offset, and read there.
             // This ensures our state will not be mutated.
-            let mut temp_ctx =
-                BinXMLDeserializer::new(&self.chunk.data[offset as usize..], &self.chunk, offset);
+            let mut temp_ctx = BinXMLDeserializer::new(
+                &self.cursor.get_ref()[offset as usize..],
+                &self.chunk,
+                offset,
+            );
             f(&mut temp_ctx)
         }
     }
@@ -256,39 +261,38 @@ impl<'a> BinXMLDeserializer<'a> {
         Ok(BinXMLOpenStartElement { data_size, name })
     }
 
-    fn read_name(&'a mut self) -> io::Result<BinXMLName> {
+    fn read_name(&mut self) -> io::Result<BinXMLName> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = self.cursor.read_u32::<LittleEndian>()?;
         let name_offset = name_offset as u64;
         // TODO: check string offset cache and return reference to cached value if needed.
 
-        let name = self
-            .read_relative_to_chunk_offset(name_offset, &read_name_from_stream);
-        name
+//        let name = self.read_relative_to_chunk_offset(name_offset, &read_name_from_stream);
+        let name = BinXMLName {
+            name: Some("hello".to_string()),
+        };
+        Ok(name)
     }
 
-    fn read_template(&'a mut self) -> io::Result<BinXMLTemplate<'a>> {
+    fn read_template(&mut self) -> io::Result<BinXMLTemplate<'a>> {
         debug!("TemplateInstance at {}", self.cursor.position());
         self.cursor.read_u8()?;
         let template_id = self.cursor.read_u32::<LittleEndian>()?;
         let template_definition_data_offset = self.cursor.read_u32::<LittleEndian>()?;
 
+        let mut template_table = self.chunk.template_table.borrow_mut();
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
-
-        let template_table = self.chunk.template_table.clone();
-
-        //        let template_def = template_table.entry(template_id).or_insert_with(|| {
-        //            self.read_relative_to_chunk_offset(
-        //                template_definition_data_offset as u64,
-        //                &BinXMLDeserializer::read_template_definition
-        //            ).expect(&format!(
-        //                "Failed to read template definition at offset {}",
-        //                template_definition_data_offset
-        //            ))
-        //        });
-        let template_def = template_table.borrow_mut().get(&template_id).unwrap();
+        let template_def = template_table.entry(template_id).or_insert_with(|| {
+            Rc::new(self.read_relative_to_chunk_offset(
+                template_definition_data_offset as u64,
+                &BinXMLDeserializer::read_template_definition
+            ).expect(&format!(
+                "Failed to read template definition at offset {}",
+                template_definition_data_offset
+            )))
+        }).clone();
 
         let number_of_substitutions = self.cursor.read_u32::<LittleEndian>()?;
         let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
@@ -335,7 +339,7 @@ impl<'a> BinXMLDeserializer<'a> {
     }
 
     fn read_template_definition(
-        ctx: &'a mut BinXMLDeserializer<'a>,
+        ctx: &mut BinXMLDeserializer<'a>,
     ) -> io::Result<BinXMLTemplateDefinition<'a>> {
         let next_template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
         let template_guid = Guid::from_stream(&mut ctx.cursor)?;
@@ -357,6 +361,7 @@ impl<'a> BinXMLDeserializer<'a> {
         })
     }
 
+    fn read_attribute(&mut self) -> io::Result<BinXMLAttribute> {
         debug!("Attribute at {}", self.cursor.position());
         let name = self.read_name()?;
         debug!("\t Attribute name: {:?}", name);
