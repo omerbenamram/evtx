@@ -2,6 +2,7 @@ use std::cmp::min;
 use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use std::mem;
 use std::rc::Rc;
+use std::borrow::BorrowMut;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 
@@ -268,10 +269,7 @@ impl<'a> BinXMLDeserializer<'a> {
         let name_offset = name_offset as u64;
         // TODO: check string offset cache and return reference to cached value if needed.
 
-//        let name = self.read_relative_to_chunk_offset(name_offset, &read_name_from_stream);
-        let name = BinXMLName {
-            name: Some("hello".to_string()),
-        };
+        let name = self.read_relative_to_chunk_offset(name_offset, &read_name_from_stream)?;
         Ok(name)
     }
 

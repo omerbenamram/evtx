@@ -11,31 +11,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use utils::*;
 
-
-
 #[derive(Debug, PartialEq)]
 pub struct EVTXRecord<'a> {
     event_record_id: u64,
     timestamp: DateTime<Utc>,
     data: &'a [u8],
 }
-
-//fn evtx_record(input: &[u8]) -> IResult<&[u8], EVTXRecord> {
-//    return do_parse!(
-//        input,
-//        tag!(b"\x2a\x2a\x00\x00")
-//          >> size: le_u32
-//          >> event_record_id: le_u64
-//          >> timestamp: filetime
-//          >> data: take!(size)
-//          // Size is repeated
-//          >> take!(4) >> (EVTXRecord {
-//            event_record_id,
-//            timestamp,
-//            data,
-//        })
-//    );
-//}
 
 #[derive(Debug, PartialEq)]
 pub struct EVTXRecordHeader {

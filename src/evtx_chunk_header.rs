@@ -75,6 +75,7 @@ impl<'a> EvtxChunkHeader<'a> {
 
         let mut string_table = HashMap::with_capacity(64);
 
+        let original_curosr_position = input.position();
         // Eagerly load Common strings table.
         for offset in common_string_offsets.iter() {
             if *offset > 0 {
@@ -93,6 +94,12 @@ impl<'a> EvtxChunkHeader<'a> {
             }
         }
 
+        input.seek(SeekFrom::Start(original_curosr_position))?;
+
+        // Skip template pointers
+        input.seek(SeekFrom::Current(32 * 4))?;
+
+        // Templates will be evaluated and inserted lazily by the deserializer.
         let template_table = RefCell::new(HashMap::new());
 
         Ok(EvtxChunkHeader {
@@ -181,6 +188,6 @@ mod tests {
             chunk_header.string_table.iter().sorted(),
         );
 
-        //        assert_eq!(chunk_header, expected);
+        assert_eq!(chunk_header, expected);
     }
 }
