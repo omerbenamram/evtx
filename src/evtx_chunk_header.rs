@@ -4,12 +4,14 @@ use failure::Error;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
+use binxml::BinXMLDeserializer;
 use model::BinXMLTemplateDefinition;
 use std::borrow::Cow;
-use std::rc::Rc;
-use std::io::Cursor;
-use utils::*;
 use std::cell::RefCell;
+use std::io::Cursor;
+use std::fmt::{Debug, Formatter};
+use std::rc::Rc;
+use utils::*;
 
 #[derive(Fail, Debug)]
 enum ChunkHeaderParseError {
@@ -19,8 +21,8 @@ enum ChunkHeaderParseError {
 
 type TemplateID = u32;
 
-#[derive(Debug, PartialEq)]
-pub struct EvtxChunkHeader<'a> {
+#[derive(PartialEq)]
+pub struct EvtxChunkHeader {
     first_event_record_number: u64,
     last_event_record_number: u64,
     first_event_record_id: u64,
@@ -30,6 +32,26 @@ pub struct EvtxChunkHeader<'a> {
     free_space_offset: u32,
     events_checksum: u32,
     header_chunk_checksum: u32,
+    // Stored as a vector since arrays implement debug only up to a length of 32 elements.
+    // There should be 64 elements in this vector.
+    strings_offsets: Vec<u32>,
+    template_offsets: [u32; 32],
+}
+
+impl Debug for EvtxChunkHeader {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), ::std::fmt::Error> {
+        fmt.debug_struct("EvtxChunkHeader")
+            .field("first_event_record_number", &self.first_event_record_number)
+            .field("last_event_record_number", &self.last_event_record_number)
+            .field("checksum", &self.header_chunk_checksum)
+            .finish()
+    }
+}
+
+pub struct EvtxChunk<'a> {
+    header: EvtxChunkHeader,
+    cursor: Cursor<&'a [u8]>,
+    pub data: &'a [u8],
     //    For every string a 16 bit hash is calculated. The hash
     //    value is divided by 64, the number of buckets in the string
     //    table. The remainder then indicates what hash bucket to use.
@@ -39,11 +61,60 @@ pub struct EvtxChunkHeader<'a> {
     //    object will then provide the offset of the preceding string, thus
     //    building a single-linked list.
     pub string_table: HashMap<u16, Cow<'a, str>>,
-    pub template_table: RefCell<HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>>,
+    pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
 }
 
-impl<'a> EvtxChunkHeader<'a> {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader<'a>, Error> {
+impl<'a> Debug for EvtxChunk<'a> {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), ::std::fmt::Error> {
+        writeln!(fmt, "\nEvtxChunk")?;
+        writeln!(fmt, "-----------------------")?;
+        writeln!(fmt, "{:#?}", &self.header)?;
+        writeln!(fmt, "{} common strings", self.string_table.len())?;
+        writeln!(fmt, "{} common templates", self.template_table.len())?;
+        Ok(())
+    }
+}
+
+impl<'a> EvtxChunk<'a> {
+    pub fn new(data: &'a [u8]) -> Result<EvtxChunk, Error> {
+        let mut cursor = Cursor::new(data);
+        let header = EvtxChunkHeader::from_reader(&mut cursor)?;
+
+        Ok(EvtxChunk {
+            data,
+            cursor,
+            header,
+            string_table: HashMap::new(),
+            template_table: HashMap::new(),
+        })
+    }
+
+    pub fn populate_cache_tables(&mut self) -> Result<(), Error> {
+        let mut cursor = Cursor::new(self.data);
+
+        for offset in self.header.strings_offsets.iter() {
+            if *offset > 0 {
+                cursor.seek(SeekFrom::Start(*offset as u64))?;
+                let _ = cursor.read_u32::<LittleEndian>()?;
+                let name_hash = cursor.read_u16::<LittleEndian>()?;
+
+                self.string_table.insert(
+                    name_hash,
+                    Cow::Owned(
+                        read_len_prefixed_utf16_string(&mut cursor, false)
+                            .expect("Invalid UTF-16 String")
+                            .expect("String cannot be empty"),
+                    ),
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl EvtxChunkHeader {
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader, Error> {
         let mut magic = [0_u8; 8];
         input.take(8).read_exact(&mut magic)?;
 
@@ -70,37 +141,14 @@ impl<'a> EvtxChunkHeader<'a> {
 
         let header_chunk_checksum = input.read_u32::<LittleEndian>()?;
 
-        let mut common_string_offsets = [0_u32; 64];
-        input.read_u32_into::<LittleEndian>(&mut common_string_offsets)?;
-
-        let mut string_table = HashMap::with_capacity(64);
-
-        let original_curosr_position = input.position();
-        // Eagerly load Common strings table.
-        for offset in common_string_offsets.iter() {
-            if *offset > 0 {
-                input.seek(SeekFrom::Start(*offset as u64))?;
-                let _ = input.read_u32::<LittleEndian>()?;
-                let name_hash = input.read_u16::<LittleEndian>()?;
-
-                string_table.insert(
-                    name_hash,
-                    Cow::Owned(
-                        read_len_prefixed_utf16_string(input, false)
-                            .expect("Invalid UTF-16 String")
-                            .expect("String cannot be empty"),
-                    ),
-                );
-            }
+        let mut strings_offsets = Vec::with_capacity(64);
+        for _ in 0..64 {
+            let offset =  input.read_u32::<LittleEndian>()?;
+            strings_offsets.push(offset);
         }
 
-        input.seek(SeekFrom::Start(original_curosr_position))?;
-
-        // Skip template pointers
-        input.seek(SeekFrom::Current(32 * 4))?;
-
-        // Templates will be evaluated and inserted lazily by the deserializer.
-        let template_table = RefCell::new(HashMap::new());
+        let mut template_offsets = [0_u32; 32];
+        input.read_u32_into::<LittleEndian>(&mut template_offsets)?;
 
         Ok(EvtxChunkHeader {
             first_event_record_number,
@@ -112,8 +160,8 @@ impl<'a> EvtxChunkHeader<'a> {
             free_space_offset,
             events_checksum,
             header_chunk_checksum,
-            template_table,
-            string_table,
+            template_offsets,
+            strings_offsets,
         })
     }
 }
@@ -179,15 +227,19 @@ mod tests {
             free_space_offset: 65376,
             events_checksum: 4252479141,
             header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
-            string_table: expected_string_table.clone(),
-            template_table: RefCell::new(HashMap::new()),
+            strings_offsets: vec![],
+            template_offsets: [0_u32; 32]
         };
 
-        assert_equal(
-            expected_string_table.iter().sorted(),
-            chunk_header.string_table.iter().sorted(),
-        );
-
-        assert_eq!(chunk_header, expected);
+        assert_eq!(chunk_header.first_event_record_number, expected.first_event_record_number);
+        assert_eq!(chunk_header.last_event_record_number, expected.last_event_record_number);
+        assert_eq!(chunk_header.first_event_record_id, expected.first_event_record_id);
+        assert_eq!(chunk_header.last_event_record_id, expected.last_event_record_id);
+        assert_eq!(chunk_header.header_size, expected.header_size);
+        assert_eq!(chunk_header.last_event_record_data_offset, expected.last_event_record_data_offset);
+        assert_eq!(chunk_header.free_space_offset, expected.free_space_offset);
+        assert_eq!(chunk_header.events_checksum, expected.events_checksum);
+        assert!(chunk_header.strings_offsets.len() > 0);
+        assert!(chunk_header.template_offsets.len() > 0);
     }
 }
