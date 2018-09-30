@@ -76,8 +76,8 @@ impl BinXMLValueType {
 pub enum BinXMLValue<'a> {
     NullType,
     // String may originate in substitution.
-    StringType(Cow<'a, String>),
-    AnsiStringType(Cow<'a, String>),
+    StringType(Cow<'a, str>),
+    AnsiStringType(Cow<'a, str>),
     Int8Type(i8),
     UInt8Type(u8),
     Int16Type(i16),
@@ -177,9 +177,9 @@ pub struct AttributeTokenMeta {
 pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
     TemplateInstance(BinXMLTemplate<'a>),
-    OpenStartElement(BinXMLOpenStartElement),
+    OpenStartElement(BinXMLOpenStartElement<'a>),
     AttributeList,
-    Attribute(BinXMLAttribute),
+    Attribute(BinXMLAttribute<'a>),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
@@ -195,9 +195,9 @@ pub enum BinXMLDeserializedTokens<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLOpenStartElement {
+pub struct BinXMLOpenStartElement<'a> {
     pub data_size: u32,
-    pub name: BinXMLName,
+    pub name: Cow<'a, str>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -237,11 +237,15 @@ pub struct BinXMLFragmentHeader {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLAttribute {
-    pub name: BinXMLName,
+pub enum BinXmlAttributeValue<'a> {
+    Text(Cow<'a, str>),
+    Substitution,
+    CharacterEntityReference,
+    EntityReference
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLName {
-    pub name: Option<String>,
+pub struct BinXMLAttribute<'a> {
+    pub name: Cow<'a, str>,
+    pub value: BinXMLValue<'a>
 }

@@ -1,19 +1,30 @@
 use std::borrow::BorrowMut;
 use std::cmp::min;
-use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
 use std::mem;
 use std::rc::Rc;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
+use failure::Error;
 
 use evtx::datetime_from_filetime;
+use evtx_chunk_header::EvtxChunk;
 use evtx_chunk_header::EvtxChunkHeader;
 use guid::Guid;
 use model::*;
 use std::borrow::{Borrow, Cow};
 use std::io::Cursor;
 use utils::*;
-use evtx_chunk_header::EvtxChunk;
+use xml_builder::Visitor;
+
+#[derive(Fail, Debug)]
+enum BinXmlDeserializationError {
+    #[fail(
+        display = "Expected attribute token to follow attribute name at position {}",
+        position
+    )]
+    ExpectedValue { position: u64 },
+}
 
 pub struct BinXMLDeserializer<'a> {
     chunk: &'a EvtxChunk<'a>,
@@ -21,33 +32,30 @@ pub struct BinXMLDeserializer<'a> {
     cursor: Cursor<&'a [u8]>,
 }
 
-pub fn read_name_from_stream(stream: &mut BinXMLDeserializer) -> io::Result<BinXMLName> {
+pub fn read_name_from_stream<'a>(stream: &mut BinXMLDeserializer) -> Result<Cow<'a, str>, Error> {
     let _ = stream.cursor.read_u32::<LittleEndian>()?;
     let name_hash = stream.cursor.read_u16::<LittleEndian>()?;
 
     let name = read_len_prefixed_utf16_string(&mut stream.cursor, true)?;
 
-    Ok(BinXMLName { name })
+    Ok(Cow::Owned(name.unwrap_or_default()))
 }
 
 impl<'a> BinXMLDeserializer<'a> {
-    pub fn new(
-        chunk: &'a EvtxChunk<'a>,
-        offset_from_chunk_start: u64,
-    ) -> BinXMLDeserializer<'a> {
+    pub fn new(chunk: &'a EvtxChunk<'a>, offset_from_chunk_start: u64) -> BinXMLDeserializer<'a> {
         let binxml_data = &chunk.data[offset_from_chunk_start as usize..];
         let cursor = Cursor::new(binxml_data);
 
         BinXMLDeserializer {
             chunk,
             offset_from_chunk_start,
-            cursor
+            cursor,
         }
     }
 
     /// Reads an element from the serialized XML
     /// An Element Begins with a BinXMLFragmentHeader, and ends with an EOF.
-    pub fn read_element(&mut self) -> io::Result<Vec<BinXMLDeserializedTokens<'a>>> {
+    pub fn read_element(&mut self) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
         let mut tokens = vec![];
 
         loop {
@@ -62,6 +70,23 @@ impl<'a> BinXMLDeserializer<'a> {
         Ok(tokens)
     }
 
+    pub fn visit_next(visitor: &impl Visitor<'a>) {
+        unimplemented!();
+    }
+    //
+    //    fn peek_next_token(&mut self) -> Option<BinXMLRawToken> {
+    //        let token = self.cursor.read_u8().expect("Unexpected EOF");
+    //        self.cursor.seek(SeekFrom::Start(self.cursor.position() - 1))?;
+    //
+    //        BinXMLRawToken::from_u8(token)
+    //            // Unknown token.
+    //            .or_else(|| {
+    //                error!("{:2x} not a valid binxml token", token);
+    //                &self.dump_and_panic(10);
+    //                None
+    //            })
+    //    }
+
     fn read_next_token(&mut self) -> Option<BinXMLRawToken> {
         let token = self.cursor.read_u8().expect("Unexpected EOF");
 
@@ -74,14 +99,17 @@ impl<'a> BinXMLDeserializer<'a> {
             })
     }
 
-    fn read_value_from_type(&mut self, value_type: BinXMLValueType) -> io::Result<BinXMLValue<'a>> {
+    fn read_value_from_type(
+        &mut self,
+        value_type: BinXMLValueType,
+    ) -> Result<BinXMLValue<'a>, Error> {
         match value_type {
             BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
             BinXMLValueType::StringType => Ok(BinXMLValue::StringType(Cow::Owned(
                 read_len_prefixed_utf16_string(&mut self.cursor, false)?
                     .expect("String cannot be empty"),
             ))),
-            //            BinXMLValueType::AnsiStringType => Ok(BinXMLValue::AnsiStringType),
+            BinXMLValueType::AnsiStringType => unimplemented!(),
             BinXMLValueType::Int8Type => Ok(BinXMLValue::Int8Type(self.cursor.read_u8()? as i8)),
             BinXMLValueType::UInt8Type => Ok(BinXMLValue::UInt8Type(self.cursor.read_u8()?)),
             BinXMLValueType::Int16Type => Ok(BinXMLValue::Int16Type(
@@ -102,33 +130,32 @@ impl<'a> BinXMLDeserializer<'a> {
             BinXMLValueType::UInt64Type => Ok(BinXMLValue::UInt64Type(
                 self.cursor.read_u64::<LittleEndian>()?,
             )),
-            //TODO: implement
-            //            BinXMLValueType::Real32Type => Ok(BinXMLValue::Real32Type),
-            //            BinXMLValueType::Real64Type => Ok(BinXMLValue::Real64Type),
-            //            BinXMLValueType::BoolType => Ok(BinXMLValue::BoolType),
-            //            BinXMLValueType::BinaryType => Ok(BinXMLValue::BinaryType),
+            BinXMLValueType::Real32Type => unimplemented!(),
+            BinXMLValueType::Real64Type => unimplemented!(),
+            BinXMLValueType::BoolType => unimplemented!(),
+            BinXMLValueType::BinaryType => unimplemented!(),
             BinXMLValueType::GuidType => {
                 Ok(BinXMLValue::GuidType(Guid::from_stream(&mut self.cursor)?))
             }
-            //            BinXMLValueType::SizeTType => Ok(BinXMLValue::SizeTType),
+            BinXMLValueType::SizeTType => unimplemented!(),
             BinXMLValueType::FileTimeType => Ok(BinXMLValue::FileTimeType(datetime_from_filetime(
                 self.cursor.read_u64::<LittleEndian>()?,
             ))),
-            //            BinXMLValueType::SysTimeType => Ok(BinXMLValue::SysTimeType),
-            //            BinXMLValueType::SidType => Ok(BinXMLValue::SidType),
-            //            BinXMLValueType::HexInt32Type => Ok(BinXMLValue::HexInt32Type),
+            BinXMLValueType::SysTimeType => unimplemented!(),
+            BinXMLValueType::SidType => unimplemented!(),
+            BinXMLValueType::HexInt32Type => unimplemented!(),
             BinXMLValueType::HexInt64Type => Ok(BinXMLValue::HexInt64Type(format!(
                 "0x{:2x}",
                 self.cursor.read_u64::<LittleEndian>()?
             ))),
-            //            BinXMLValueType::EvtHandle => Ok(BinXMLValue::EvtHandle),
+            BinXMLValueType::EvtHandle => unimplemented!(),
             BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType(self.read_element()?)),
-            //            BinXMLValueType::EvtXml => Ok(BinXMLValue::EvtXml),
+            BinXMLValueType::EvtXml => unimplemented!(),
             _ => unimplemented!("{:?}", value_type),
         }
     }
 
-    fn get_next_token(&mut self) -> io::Result<BinXMLDeserializedTokens<'a>> {
+    fn get_next_token(&mut self) -> Result<BinXMLDeserializedTokens<'a>, Error> {
         let token = self.read_next_token().unwrap();
 
         match token {
@@ -182,7 +209,10 @@ impl<'a> BinXMLDeserializer<'a> {
         self.cursor.position() + self.offset_from_chunk_start
     }
 
-    fn read_substitution(&mut self, optional: bool) -> io::Result<TemplateSubstitutionDescriptor> {
+    fn read_substitution(
+        &mut self,
+        optional: bool,
+    ) -> Result<TemplateSubstitutionDescriptor, Error> {
         debug!(
             "Substitution at: {}, optional: {}",
             self.cursor.position(),
@@ -202,7 +232,7 @@ impl<'a> BinXMLDeserializer<'a> {
         })
     }
 
-    fn read_value(&mut self) -> io::Result<BinXMLValue<'a>> {
+    fn read_value(&mut self) -> Result<BinXMLValue<'a>, Error> {
         debug!(
             "Value at: {} (0x{:2x})",
             self.cursor.position(),
@@ -217,17 +247,14 @@ impl<'a> BinXMLDeserializer<'a> {
     pub fn read_relative_to_chunk_offset<T: Sized>(
         &mut self,
         offset: u64,
-        f: &Fn(&mut BinXMLDeserializer<'a>) -> io::Result<T>,
-    ) -> io::Result<T> {
+        f: &Fn(&mut BinXMLDeserializer<'a>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
         if offset == self.position_relative_to_chunk_start() {
             f(self)
         } else {
             // Fork a new context at the given offset, and read there.
             // This ensures our state will not be mutated.
-            let mut temp_ctx = BinXMLDeserializer::new(
-                &self.chunk,
-                offset,
-            );
+            let mut temp_ctx = BinXMLDeserializer::new(&self.chunk, offset);
             f(&mut temp_ctx)
         }
     }
@@ -242,7 +269,7 @@ impl<'a> BinXMLDeserializer<'a> {
     fn read_open_start_element(
         &mut self,
         has_attributes: bool,
-    ) -> io::Result<BinXMLOpenStartElement> {
+    ) -> Result<BinXMLOpenStartElement<'a>, Error> {
         debug!(
             "OpenStartElement at {}, has_attributes: {}",
             self.cursor.position(),
@@ -262,7 +289,7 @@ impl<'a> BinXMLDeserializer<'a> {
         Ok(BinXMLOpenStartElement { data_size, name })
     }
 
-    fn read_name(&mut self) -> io::Result<BinXMLName> {
+    fn read_name(&mut self) -> Result<Cow<'a, str>, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = self.cursor.read_u32::<LittleEndian>()?;
@@ -273,7 +300,7 @@ impl<'a> BinXMLDeserializer<'a> {
         Ok(name)
     }
 
-    fn read_template(&mut self) -> io::Result<BinXMLTemplate<'a>> {
+    fn read_template(&mut self) -> Result<BinXMLTemplate<'a>, Error> {
         debug!("TemplateInstance at {}", self.cursor.position());
         self.cursor.read_u8()?;
         let template_id = self.cursor.read_u32::<LittleEndian>()?;
@@ -285,11 +312,13 @@ impl<'a> BinXMLDeserializer<'a> {
             self.read_relative_to_chunk_offset(
                 template_definition_data_offset as u64,
                 &BinXMLDeserializer::read_template_definition,
-            ).expect(&format!(
+            )
+            .expect(&format!(
                 "Failed to read template definition at offset {}",
                 template_definition_data_offset
             )),
-        ).clone();
+        )
+        .clone();
 
         let number_of_substitutions = self.cursor.read_u32::<LittleEndian>()?;
         let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
@@ -337,7 +366,7 @@ impl<'a> BinXMLDeserializer<'a> {
 
     fn read_template_definition(
         ctx: &mut BinXMLDeserializer<'a>,
-    ) -> io::Result<BinXMLTemplateDefinition<'a>> {
+    ) -> Result<BinXMLTemplateDefinition<'a>, Error> {
         let next_template_offset = ctx.cursor.read_u32::<LittleEndian>()?;
         let template_guid = Guid::from_stream(&mut ctx.cursor)?;
         let data_size = ctx.cursor.read_u32::<LittleEndian>()?;
@@ -358,14 +387,21 @@ impl<'a> BinXMLDeserializer<'a> {
         })
     }
 
-    fn read_attribute(&mut self) -> io::Result<BinXMLAttribute> {
+    fn read_attribute(&mut self) -> Result<BinXMLAttribute<'a>, Error> {
         debug!("Attribute at {}", self.cursor.position());
         let name = self.read_name()?;
         debug!("\t Attribute name: {:?}", name);
-        Ok(BinXMLAttribute { name })
+        let value = self.get_next_token()?;
+
+        match value {
+            BinXMLDeserializedTokens::Value(v) => Ok(BinXMLAttribute { name, value: v }),
+            _ => Err(Error::from(BinXmlDeserializationError::ExpectedValue {
+                position: self.position_relative_to_chunk_start(),
+            })),
+        }
     }
 
-    fn read_fragment_header(&mut self) -> io::Result<BinXMLFragmentHeader> {
+    fn read_fragment_header(&mut self) -> Result<BinXMLFragmentHeader, Error> {
         debug!("FragmentHeader at {}", self.cursor.position());
         let major_version = self.cursor.read_u8()?;
         let minor_version = self.cursor.read_u8()?;
@@ -394,10 +430,7 @@ mod tests {
 
         debug!("{:#?}", &chunk);
 
-        let mut deserializer = BinXMLDeserializer::new(
-            &chunk,
-            512 + 24,
-        );
+        let mut deserializer = BinXMLDeserializer::new(&chunk, 512 + 24);
 
         let element = deserializer.read_element().unwrap();
         println!("{:?}", element);
@@ -423,10 +456,10 @@ mod tests {
             .expect("Failed to read zeroes");
 
         let copy_of_size = c.read_u32::<LittleEndian>().unwrap();
-//        assert_eq!(
-//            record_header.data_size, copy_of_size,
-//            "Didn't read expected amount of bytes."
-//        );
+        //        assert_eq!(
+        //            record_header.data_size, copy_of_size,
+        //            "Didn't read expected amount of bytes."
+        //        );
     }
 
     #[test]

@@ -1,19 +1,10 @@
-use binxml::model::BinXMLTemplate;
-use binxml::model::BinXMLTemplateDefinition;
-use binxml::model::BinXMLValue;
-use binxml::model::OpenStartElementTokenMeta;
-use binxml::model::{
-    BinXMLAttribute, BinXMLDeserializedTokens, BinXMLFragmentHeader, BinXMLOpenStartElement,
-};
-use binxml::owned_model::Element;
-use hexdump::print_hexdump;
-use indextree::{Arena, NodeId};
-use std::io::{Cursor, Read, Result, Seek, SeekFrom};
-use std::marker::PhantomData;
-use std::borrow::BorrowMut;
-use num_traits::Num;
-use xml::{EventWriter, EmitterConfig};
-use std::io::Write;
+use model::*;
+use std::io::{Cursor, Read, Result, Seek, SeekFrom, Write};
+use std::mem;
+use xml::name::Name;
+use xml::writer::events::StartElementBuilder;
+use xml::writer::XmlEvent;
+use xml::{EmitterConfig, EventWriter};
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -22,7 +13,7 @@ pub trait Visitor<'a> {
     fn visit_close_empty_element(&mut self) -> ();
     fn visit_close_element(&mut self) -> ();
     fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> ();
-    fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute) -> ();
+    fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute<'a>) -> ();
     fn visit_cdata_section(&mut self) -> ();
     fn visit_entity_reference(&mut self) -> ();
     fn visit_processing_instruction_target(&mut self) -> ();
@@ -36,6 +27,8 @@ pub trait Visitor<'a> {
 struct BinXMLTreeBuilder<'a, W: Write> {
     template: Option<&'a BinXMLTemplateDefinition<'a>>,
     writer: EventWriter<W>,
+
+    current_element: Option<StartElementBuilder<'a>>,
 }
 
 impl<'a, W: Write> BinXMLTreeBuilder<'a, W> {
@@ -51,9 +44,16 @@ impl<'a, W: Write> BinXMLTreeBuilder<'a, W> {
         BinXMLTreeBuilder {
             template: None,
             writer,
+            current_element: None,
         }
     }
 }
+//
+//impl<'a> Into<Name<'a>> for BinXMLName {
+//    fn into(self) -> Name<'a> {
+//        Name
+//    }
+//}
 
 impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     fn visit_end_of_stream(&mut self) {
@@ -61,12 +61,13 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     }
 
     fn visit_open_start_element(&mut self, tag: &'a BinXMLOpenStartElement) {
-        debug!("visit start_element {:?}", tag);
+        let event_builder = XmlEvent::start_element(tag.name.as_ref());
+        self.current_element = Some(event_builder);
     }
 
     fn visit_close_start_element(&mut self) {
-        println!("visit_close_start_element");
-        unimplemented!();
+        let current_elem = self.current_element.take().expect("Invalid state: visit_close_start_element called without calling visit_open_start_element first");
+        self.writer.write(current_elem).expect("Failed to write");
     }
 
     fn visit_close_empty_element(&mut self) {
@@ -84,8 +85,19 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
         unimplemented!();
     }
 
-    fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute) -> () {
-        unimplemented!()
+    fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute<'a>) -> () {
+        let value = match attribute.value {
+            BinXMLValue::StringType(ref s) => s,
+            _ => unimplemented!("Attribute values other than text currently not supported."),
+        };
+
+        // Return ownership to self
+        self.current_element = Some(
+            self.current_element
+                .take()
+                .expect("visit_attribute_called without calling visit_open_start_element first")
+                .attr(attribute.name.as_ref(), value),
+        );
     }
 
     fn visit_cdata_section(&mut self) {
@@ -123,13 +135,7 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
         let mut elem_filled = elem_unfilled.clone();
         let substitutions = &template.substitution_array;
 
-        for (i, sub_elem) in elem_filled.iter_mut().enumerate() {
-            if let BinXMLDeserializedTokens::Substitution(ref data) = sub_elem {
-                *sub_elem = BinXMLDeserializedTokens::Value(
-                    substitutions[data.substitution_index as usize].clone(),
-                )
-            }
-        }
+        ()
     }
 
     fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> () {
