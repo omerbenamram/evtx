@@ -55,7 +55,7 @@ impl<'a> BinXMLDeserializer<'a> {
 
     /// Reads an element from the serialized XML
     /// An Element Begins with a BinXMLFragmentHeader, and ends with an EOF.
-    pub fn read_element(&mut self) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
+    pub fn read_until_end_of_stream(&mut self) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
         let mut tokens = vec![];
 
         loop {
@@ -70,22 +70,29 @@ impl<'a> BinXMLDeserializer<'a> {
         Ok(tokens)
     }
 
-    pub fn visit_next(visitor: &impl Visitor<'a>) {
-        unimplemented!();
+    pub fn visit_next(&mut self, visitor: &mut impl Visitor<'a>) -> Result<(), Error> {
+        let next_token = self.get_next_token()?;
+        self.visit_token(&next_token, visitor);
+        Ok(())
     }
-    //
-    //    fn peek_next_token(&mut self) -> Option<BinXMLRawToken> {
-    //        let token = self.cursor.read_u8().expect("Unexpected EOF");
-    //        self.cursor.seek(SeekFrom::Start(self.cursor.position() - 1))?;
-    //
-    //        BinXMLRawToken::from_u8(token)
-    //            // Unknown token.
-    //            .or_else(|| {
-    //                error!("{:2x} not a valid binxml token", token);
-    //                &self.dump_and_panic(10);
-    //                None
-    //            })
-    //    }
+
+    fn visit_token(&mut self, token: &BinXMLDeserializedTokens, visitor: &mut impl Visitor<'a>) -> Result<(), Error> {
+        match token {
+            // Fill the template
+            BinXMLDeserializedTokens::TemplateInstance(t) => {
+                let template = self.read_until_end_of_stream()?;
+                for e in t.definition.element.iter() {
+                    let replacement = t.substitute_token_if_needed(e);
+                    match replacement {
+                        Replacement::Token(token) => self.visit_token(token, visitor)?,
+                        Replacement::Value(value) => visitor.visit_value(value)
+                    }
+                }
+            },
+            _ => unimplemented!("{:?}", token)
+        }
+        Ok(())
+    }
 
     fn read_next_token(&mut self) -> Option<BinXMLRawToken> {
         let token = self.cursor.read_u8().expect("Unexpected EOF");
@@ -149,7 +156,7 @@ impl<'a> BinXMLDeserializer<'a> {
                 self.cursor.read_u64::<LittleEndian>()?
             ))),
             BinXMLValueType::EvtHandle => unimplemented!(),
-            BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType(self.read_element()?)),
+            BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType(self.read_until_end_of_stream()?)),
             BinXMLValueType::EvtXml => unimplemented!(),
             _ => unimplemented!("{:?}", value_type),
         }
@@ -373,7 +380,7 @@ impl<'a> BinXMLDeserializer<'a> {
         // Data size includes of the fragment header, element and end of file token;
         // except for the first 33 bytes of the template definition (above)
         let start_position = ctx.cursor.position();
-        let element = ctx.read_element()?;
+        let element = ctx.read_until_end_of_stream()?;
         assert_eq!(
             ctx.cursor.position(),
             start_position + data_size as u64,
@@ -391,14 +398,8 @@ impl<'a> BinXMLDeserializer<'a> {
         debug!("Attribute at {}", self.cursor.position());
         let name = self.read_name()?;
         debug!("\t Attribute name: {:?}", name);
-        let value = self.get_next_token()?;
 
-        match value {
-            BinXMLDeserializedTokens::Value(v) => Ok(BinXMLAttribute { name, value: v }),
-            _ => Err(Error::from(BinXmlDeserializationError::ExpectedValue {
-                position: self.position_relative_to_chunk_start(),
-            })),
-        }
+        Ok(BinXMLAttribute { name })
     }
 
     fn read_fragment_header(&mut self) -> Result<BinXMLFragmentHeader, Error> {
@@ -432,7 +433,7 @@ mod tests {
 
         let mut deserializer = BinXMLDeserializer::new(&chunk, 512 + 24);
 
-        let element = deserializer.read_element().unwrap();
+        let element = deserializer.read_until_end_of_stream().unwrap();
         println!("{:?}", element);
         assert_eq!(
             element.len(),
@@ -473,7 +474,7 @@ mod tests {
         let template = &from_start_of_chunk[1979..2064];
         let mut d = BinXMLDeserializer::new(&chunk, 1979);
 
-        let element = d.read_element().unwrap();
+        let element = d.read_until_end_of_stream().unwrap();
         assert_eq!(
             d.position_relative_to_chunk_start(),
             2064,

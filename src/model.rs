@@ -1,14 +1,16 @@
-use utils::read_len_prefixed_utf16_string;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::DateTime;
 use chrono::Utc;
 use evtx::datetime_from_filetime;
 use evtx::FileTime;
 use guid::Guid;
-use std::rc::Rc;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::io::{self, Cursor, Read};
+use std::rc::Rc;
+use utils::read_len_prefixed_utf16_string;
+
+use failure::Error;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLValueType {
@@ -214,6 +216,25 @@ pub struct BinXMLTemplate<'a> {
     pub substitution_array: Vec<BinXMLValue<'a>>,
 }
 
+pub enum Replacement<'a> {
+    Value(&'a BinXMLValue<'a>),
+    Token(&'a BinXMLDeserializedTokens<'a>),
+}
+
+impl<'a> BinXMLTemplate<'a> {
+    pub fn substitute_token_if_needed(&self, token: &'a BinXMLDeserializedTokens) -> Replacement {
+        if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
+            if substitution_descriptor.ignore {
+                return Replacement::Token(token);
+            }
+            return Replacement::Value(
+                &self.substitution_array[substitution_descriptor.substitution_index as usize],
+            );
+        }
+        Replacement::Token(token)
+    }
+}
+
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct TemplateValueDescriptor {
     pub size: u16,
@@ -241,11 +262,10 @@ pub enum BinXmlAttributeValue<'a> {
     Text(Cow<'a, str>),
     Substitution,
     CharacterEntityReference,
-    EntityReference
+    EntityReference,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXMLAttribute<'a> {
     pub name: Cow<'a, str>,
-    pub value: BinXMLValue<'a>
 }

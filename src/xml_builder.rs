@@ -86,17 +86,17 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     }
 
     fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute<'a>) -> () {
-        let value = match attribute.value {
-            BinXMLValue::StringType(ref s) => s,
-            _ => unimplemented!("Attribute values other than text currently not supported."),
-        };
+//        let value = match attribute.value {
+//            BinXMLValue::StringType(ref s) => s,
+//            _ => unimplemented!("Attribute values other than text currently not supported."),
+//        };
 
         // Return ownership to self
         self.current_element = Some(
             self.current_element
                 .take()
                 .expect("visit_attribute_called without calling visit_open_start_element first")
-                .attr(attribute.name.as_ref(), value),
+                .attr(attribute.name.as_ref(), ""),
         );
     }
 
