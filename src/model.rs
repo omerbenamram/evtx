@@ -1,13 +1,13 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use chrono::DateTime;
-use chrono::Utc;
-use evtx::datetime_from_filetime;
-use evtx::FileTime;
+use chrono::{DateTime, Utc};
+use evtx::{datetime_from_filetime, FileTime};
 use guid::Guid;
-use std::borrow::Cow;
-use std::fmt::Debug;
-use std::io::{self, Cursor, Read};
-use std::rc::Rc;
+use std::{
+    borrow::Cow,
+    fmt::Debug,
+    io::{self, Cursor, Read},
+    rc::Rc,
+};
 use utils::read_len_prefixed_utf16_string;
 
 use failure::Error;

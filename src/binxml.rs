@@ -8,8 +8,10 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt}
 use failure::{Context, Error, Fail};
 
 use evtx::datetime_from_filetime;
-use evtx_chunk_header::EvtxChunk;
-use evtx_chunk_header::EvtxChunkHeader;
+use evtx_chunk_header::{
+    EvtxChunk,
+    EvtxChunkHeader
+};
 use guid::Guid;
 use model::*;
 use std::borrow::{Borrow, Cow};

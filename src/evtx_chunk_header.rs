@@ -1,16 +1,17 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Error;
 
-use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
-
 use binxml::BinXMLDeserializer;
 use model::BinXMLTemplateDefinition;
-use std::borrow::Cow;
-use std::cell::RefCell;
-use std::io::Cursor;
-use std::fmt::{Debug, Formatter};
-use std::rc::Rc;
+use std::{
+    borrow::Cow,
+    cell::RefCell,
+    collections::HashMap,
+    fmt::{Debug, Formatter},
+    io::Cursor,
+    io::{Read, Seek, SeekFrom},
+    rc::Rc,
+};
 use utils::*;
 
 #[derive(Fail, Debug)]
@@ -143,7 +144,7 @@ impl EvtxChunkHeader {
 
         let mut strings_offsets = Vec::with_capacity(64);
         for _ in 0..64 {
-            let offset =  input.read_u32::<LittleEndian>()?;
+            let offset = input.read_u32::<LittleEndian>()?;
             strings_offsets.push(offset);
         }
 
@@ -228,15 +229,30 @@ mod tests {
             events_checksum: 4252479141,
             header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
             strings_offsets: vec![],
-            template_offsets: [0_u32; 32]
+            template_offsets: [0_u32; 32],
         };
 
-        assert_eq!(chunk_header.first_event_record_number, expected.first_event_record_number);
-        assert_eq!(chunk_header.last_event_record_number, expected.last_event_record_number);
-        assert_eq!(chunk_header.first_event_record_id, expected.first_event_record_id);
-        assert_eq!(chunk_header.last_event_record_id, expected.last_event_record_id);
+        assert_eq!(
+            chunk_header.first_event_record_number,
+            expected.first_event_record_number
+        );
+        assert_eq!(
+            chunk_header.last_event_record_number,
+            expected.last_event_record_number
+        );
+        assert_eq!(
+            chunk_header.first_event_record_id,
+            expected.first_event_record_id
+        );
+        assert_eq!(
+            chunk_header.last_event_record_id,
+            expected.last_event_record_id
+        );
         assert_eq!(chunk_header.header_size, expected.header_size);
-        assert_eq!(chunk_header.last_event_record_data_offset, expected.last_event_record_data_offset);
+        assert_eq!(
+            chunk_header.last_event_record_data_offset,
+            expected.last_event_record_data_offset
+        );
         assert_eq!(chunk_header.free_space_offset, expected.free_space_offset);
         assert_eq!(chunk_header.events_checksum, expected.events_checksum);
         assert!(chunk_header.strings_offsets.len() > 0);

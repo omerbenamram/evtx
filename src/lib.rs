@@ -1,4 +1,4 @@
-//#![feature(nll)]
+#![feature(nll)]
 #![feature(try_from)]
 #![feature(box_syntax)]
 #![allow(dead_code)]

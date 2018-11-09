@@ -1,10 +1,11 @@
 use model::*;
-use std::io::{Cursor, Read, Result, Seek, SeekFrom, Write};
-use std::mem;
-use xml::name::Name;
-use xml::writer::events::StartElementBuilder;
-use xml::writer::XmlEvent;
-use xml::{EmitterConfig, EventWriter};
+use std::{
+    io::{Cursor, Read, Result, Seek, SeekFrom, Write},
+    mem,
+};
+use xml::{
+    name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
+};
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -86,10 +87,10 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     }
 
     fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute<'a>) -> () {
-//        let value = match attribute.value {
-//            BinXMLValue::StringType(ref s) => s,
-//            _ => unimplemented!("Attribute values other than text currently not supported."),
-//        };
+        //        let value = match attribute.value {
+        //            BinXMLValue::StringType(ref s) => s,
+        //            _ => unimplemented!("Attribute values other than text currently not supported."),
+        //        };
 
         // Return ownership to self
         self.current_element = Some(
