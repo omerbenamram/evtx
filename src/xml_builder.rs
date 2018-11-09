@@ -132,8 +132,8 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     }
 
     fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> () {
-        let elem_unfilled = &template.definition.element;
-        let mut elem_filled = elem_unfilled.clone();
+        let elem_unfilled = &template.definition.tokens;
+        let elem_filled = elem_unfilled.clone();
         let substitutions = &template.substitution_array;
 
         ()

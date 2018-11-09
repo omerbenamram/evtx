@@ -207,7 +207,7 @@ pub struct BinXMLTemplateDefinition<'a> {
     pub next_template_offset: u32,
     pub template_guid: Guid,
     pub data_size: u32,
-    pub element: Vec<BinXMLDeserializedTokens<'a>>,
+    pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

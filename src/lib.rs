@@ -36,6 +36,6 @@ mod guid;
 mod utils;
 mod evtx_file_header;
 mod model;
-mod evtx_chunk_header;
+mod evtx_chunk;
 mod xml_builder;
 pub mod evtx;
