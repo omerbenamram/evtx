@@ -49,9 +49,9 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<W> {
         debug!("visit_open_start_element: {:?}", element);
         let mut event_builder = XmlEvent::start_element(element.name.borrow());
 
-//        for attr in element.attributes.iter() {
-//            event_builder.attr(attr.name.borrow(), &attr.value.borrow());
-//        }
+        for attr in element.attributes.iter() {
+            event_builder = event_builder.attr(attr.name.borrow(), &attr.value.borrow());
+        }
 
         self.writer.write(event_builder).unwrap();
     }

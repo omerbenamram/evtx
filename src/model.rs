@@ -12,6 +12,7 @@ use std::{
 
 use failure::Error;
 use std::collections::HashMap;
+use log::{error, log};
 
 pub type Name<'a> = Cow<'a, str>;
 
@@ -235,20 +236,23 @@ impl<'a> XmlElementBuilder<'a> {
             current_attribute_value: None,
         }
     }
-    pub fn name(&mut self, name: Name<'a>) -> &mut Self {
+    pub fn name(mut self, name: Name<'a>) -> Self {
         self.name = Some(name);
         self
     }
 
-    pub fn attribute_name(&mut self, name: Name<'a>) -> &mut Self {
+    pub fn attribute_name(mut self, name: Name<'a>) -> Self {
         match self.current_attribute_name {
             None => self.current_attribute_name = Some(name),
-            Some(_) => panic!("invalid state, there should not be a name"),
+            Some(name) => {
+                error!("invalid state, overriding name");
+                self.current_attribute_name = Some(name);
+            }
         }
         self
     }
 
-    pub fn attribute_value(&mut self, value: BinXMLValue<'a>) -> &mut Self {
+    pub fn attribute_value(mut self, value: BinXMLValue<'a>) -> Self {
         assert!(
             self.current_attribute_name.is_some(),
             "There should be a name"

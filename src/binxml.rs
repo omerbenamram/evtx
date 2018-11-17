@@ -513,9 +513,11 @@ pub fn parse_tokens<'c: 'r, 'r>(
 ) {
     let mut flat_tokens = vec![];
 
-    for token in tokens.iter() {
-        parse_token(&token, &mut flat_tokens);
+    for token in tokens.into_iter() {
+        parse_token(token, &mut flat_tokens);
     }
+
+    debug!("{:#?}", flat_tokens);
 
     let mut current_element: Option<XmlElementBuilder> = None;
 
@@ -527,54 +529,56 @@ pub fn parse_tokens<'c: 'r, 'r>(
             BinXMLDeserializedTokens::TemplateInstance(_) => {}
             BinXMLDeserializedTokens::AttributeList => {}
             BinXMLDeserializedTokens::Attribute(attr) => {
+                debug!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
                 match current_element.take() {
-                    None => panic!("Bad parser state"),
-                    Some(mut builder) => {
-                        builder.attribute_name(attr.name);
-                        current_element = Some(builder)
+                    None => panic!("attribute - Bad parser state"),
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_name(attr.name));
                     }
                 };
             }
             BinXMLDeserializedTokens::OpenStartElement(elem) => {
-                let mut builder = XmlElementBuilder::new();
-                builder.name(elem.name);
-
-                current_element = Some(builder);
+                debug!("BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}", elem.name);
+                let builder = XmlElementBuilder::new();
+                current_element = Some(builder.name(elem.name));
             }
             BinXMLDeserializedTokens::CloseStartElement => {
+                debug!("BinXMLDeserializedTokens::CloseStartElement");
                 match current_element.take() {
-                    None => panic!("Bad parser state"),
+                    None => panic!("close start - Bad parser state"),
                     Some(builder) => {
                         processed_tokens.push(OwnedModel::OpenElement(builder.finish()))
                     }
                 };
             }
             BinXMLDeserializedTokens::CloseEmptyElement => {
+                debug!("BinXMLDeserializedTokens::CloseEmptyElement");
                 match current_element.take() {
-                    None => panic!("Bad parser state"),
+                    None => panic!("close empty - Bad parser state"),
                     Some(builder) => {
                         processed_tokens.push(OwnedModel::OpenElement(builder.finish()))
                     }
                 };
             }
             BinXMLDeserializedTokens::CloseElement => {
+                debug!("BinXMLDeserializedTokens::CloseElement");
                 match current_element.take() {
-                    None => panic!("Bad parser state"),
+                    None => panic!("close element - Bad parser state"),
                     Some(builder) => processed_tokens.push(OwnedModel::CloseElement),
                 };
             }
             BinXMLDeserializedTokens::Value(value) => {
+                debug!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
                 match current_element.take() {
                     // A string that is not inside any element, yield it
                     None => match value {
-                        BinXMLValue::StringType(cow) => {processed_tokens.push(OwnedModel::String(Cow::Borrowed(cow)));},
+                        BinXMLValue::StringType(cow) => {processed_tokens.push(OwnedModel::String(cow.clone()));},
                         BinXMLValue::EvtXml => panic!("Cannot be an EVTXML value at this point, should have been pre-procecced"),
                         _ => {processed_tokens.push(OwnedModel::String(Cow::Owned(format!("{:?}", value))));}
                     },
                     // A string that is bound to an attribute
-                    Some(mut builder) => {
-                        builder.attribute_value(BinXMLValue::StringType(Cow::Borrowed("test")));
-                        current_element = Some(builder);
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_value(BinXMLValue::StringType(Cow::Borrowed("test"))));
                     },
                 };
             }
@@ -603,18 +607,18 @@ pub fn parse_tokens<'c: 'r, 'r>(
     }
 }
 
-pub fn parse_token<'b, 'c>(
-    token: &'b BinXMLDeserializedTokens<'c>,
-    out: &'b mut Vec<&'b BinXMLDeserializedTokens<'c>>,
+pub fn parse_token<'parent, 'chunk>(
+    token: BinXMLDeserializedTokens<'chunk>,
+    out: &'parent mut Vec<BinXMLDeserializedTokens<'chunk>>,
 ) {
     match token {
-        BinXMLDeserializedTokens::Value(value) => {
+        BinXMLDeserializedTokens::Value(ref value) => {
             if let BinXMLValue::BinXmlType(tokens) = value {
-                for token in tokens {
-                    parse_token(token, out);
+                for token in tokens.into_iter() {
+                    parse_token(token.clone(), out);
                 }
             } else {
-                out.push(token)
+                out.push(token.clone())
             }
         }
         BinXMLDeserializedTokens::TemplateInstance(template) => {
@@ -627,15 +631,15 @@ pub fn parse_token<'b, 'c>(
                             [substitution_descriptor.substitution_index as usize];
 
                         if let BinXMLValue::BinXmlType(tokens) = value {
-                            for token in tokens {
-                                parse_token(token, out)
+                            for token in tokens.into_iter() {
+                                parse_token(token.clone(), out)
                             }
                         } else {
-                            out.push(token);
+                            out.push(token.clone());
                         }
                     }
                 } else {
-                    parse_token(token, out);
+                    parse_token(token.clone(), out);
                 }
             }
         }
