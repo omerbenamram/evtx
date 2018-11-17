@@ -83,7 +83,6 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
             .map_err(BinXmlDeserializationError::unexpected_eof)?;
 
         Ok(BinXMLRawToken::from_u8(token).ok_or_else(|| {
-            self.dump_and_panic(cursor, 100);
             BinXmlDeserializationError::not_a_valid_binxml_token(token)
         })?)
     }
@@ -265,13 +264,6 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
         let data = self.read_value_from_type(cursor, value_type)?;
         debug!("\t Data: {:?}", data);
         Ok(data)
-    }
-
-    pub fn dump_and_panic(&mut self, cursor: &Cursor<&'a [u8]>, lookbehind: i32) {
-        let offset = self.offset_from_chunk_start;
-        println!("Panicked at offset {} (0x{:2x})", offset, offset + 24);
-        dump_cursor(&cursor, lookbehind);
-        panic!();
     }
 
     fn read_open_start_element(
@@ -522,10 +514,10 @@ pub fn parse_token<'a>(
             visitor.visit_open_start_element(&open_start_element)
         }
         BinXMLDeserializedTokens::AttributeList => {}
-        BinXMLDeserializedTokens::Attribute(_) => {}
-        BinXMLDeserializedTokens::CloseStartElement => {}
-        BinXMLDeserializedTokens::CloseEmptyElement => {}
-        BinXMLDeserializedTokens::CloseElement => {}
+        BinXMLDeserializedTokens::Attribute(attribute) => visitor.visit_attribute(attribute),
+        BinXMLDeserializedTokens::CloseStartElement => visitor.visit_close_start_element(),
+        BinXMLDeserializedTokens::CloseEmptyElement => visitor.visit_close_empty_element(),
+        BinXMLDeserializedTokens::CloseElement => visitor.visit_close_element(),
         BinXMLDeserializedTokens::Value(value) => {
             if let BinXMLValue::BinXmlType(tokens) = value {
                 for token in tokens {
@@ -535,14 +527,8 @@ pub fn parse_token<'a>(
                 visitor.visit_value(value);
             }
         }
-        BinXMLDeserializedTokens::CDATASection => {}
-        BinXMLDeserializedTokens::CharRef => {}
-        BinXMLDeserializedTokens::EntityRef => {}
-        BinXMLDeserializedTokens::PITarget => {}
-        BinXMLDeserializedTokens::PIData => {}
-        BinXMLDeserializedTokens::Substitution(_) => {}
-        BinXMLDeserializedTokens::EndOfStream => {}
-        BinXMLDeserializedTokens::StartOfStream => {}
+        BinXMLDeserializedTokens::EndOfStream => visitor.visit_end_of_stream(),
+        BinXMLDeserializedTokens::StartOfStream => visitor.visit_start_of_stream(),
         // Encountered a template, we need to fill the template, replacing values as needed and
         // presenting them to the visitor.
         BinXMLDeserializedTokens::TemplateInstance(template) => {
@@ -567,6 +553,11 @@ pub fn parse_token<'a>(
                 }
             }
         }
+        BinXMLDeserializedTokens::CDATASection => {}
+        BinXMLDeserializedTokens::CharRef => {}
+        BinXMLDeserializedTokens::EntityRef => {}
+        BinXMLDeserializedTokens::PITarget => {}
+        BinXMLDeserializedTokens::PIData => {}
         _ => unimplemented!(),
     }
     Ok(())
@@ -576,6 +567,7 @@ mod tests {
     use super::*;
     use crate::xml_builder::BinXMLTreeBuilder;
     use std::io::stdout;
+    use std::io::Write;
 
     extern crate env_logger;
 
