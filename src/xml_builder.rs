@@ -49,7 +49,8 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_open_start_element(&mut self, tag: &BinXMLOpenStartElement<'a>) {
-        let event_builder = XmlEvent::start_element(tag.name.as_ref());
+//        let event_builder = XmlEvent::start_element(tag.name.as_ref());
+        let event_builder = XmlEvent::start_element("test");
         self.current_element = Some(event_builder);
     }
 
@@ -59,18 +60,15 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_close_empty_element(&mut self) {
-        println!("visit_close_empty_element");
-        unimplemented!();
+        unimplemented!("visit_close_empty_element");
     }
 
     fn visit_close_element(&mut self) {
-        println!("visit_close_element");
-        unimplemented!();
+        unimplemented!("visit_close_element");
     }
 
     fn visit_value(&mut self, value: &BinXMLValue<'a>) -> () {
-        debug!("visit_value");
-        unimplemented!();
+        unimplemented!("visit_value");
     }
 
     fn visit_attribute(&mut self, attribute: &BinXMLAttribute<'a>) -> () {
@@ -79,23 +77,21 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
             self.current_element
                 .take()
                 .expect("visit_attribute_called without calling visit_open_start_element first")
-                .attr(attribute.name.as_ref(), ""),
+//                .attr(attribute.name.as_ref(), ""),
+                .attr("test", ""),
         );
     }
 
     fn visit_cdata_section(&mut self) {
-        println!("visit_cdata_section");
-        unimplemented!();
+        unimplemented!("visit_cdata_section");
     }
 
     fn visit_entity_reference(&mut self) {
-        println!("visit_entity_reference");
-        unimplemented!();
+        unimplemented!("visit_entity_reference");
     }
 
     fn visit_processing_instruction_target(&mut self) {
-        println!("visit_processing_instruction_target");
-        unimplemented!();
+        unimplemented!("visit_processing_instruction_target");
     }
 
     fn visit_processing_instruction_data(&mut self) {

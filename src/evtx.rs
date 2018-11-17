@@ -19,18 +19,22 @@ use std::rc::Rc;
 const EVTX_CHUNK_SIZE: usize = 65536;
 const EVTX_HEADER_SIZE: usize = 4096;
 
-fn parse_evtx<'a, V: Visitor<'a>>(evtx: &'a [u8], visitor: V) {
+fn parse_evtx<'a, V: Visitor<'a> + 'static>(evtx: &'a [u8], visitor: V) {
     let mut cursor = Cursor::new(evtx);
+    println!("hi");
     let header = EvtxFileHeader::from_reader(&mut cursor);
 
+    println!("hi2");
     let chunk = EvtxChunk::new(
         &evtx[EVTX_HEADER_SIZE..EVTX_HEADER_SIZE + EVTX_CHUNK_SIZE],
         visitor,
-    );
+    ).unwrap();
+    println!("hi3");
 
-    for record in chunk {
+    for record in chunk.into_iter() {
         println!("{:?}", record);
     }
+    println!("hi4");
 }
 
 #[cfg(test)]

@@ -1,10 +1,12 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::{format_err, Context, Error, Fail};
 
+use crate::binxml::parse_token;
 use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};
 use crate::utils::*;
+use crate::xml_builder::Visitor;
 use log::{debug, log};
 use std::{
     borrow::Cow,
@@ -15,7 +17,6 @@ use std::{
     io::{Read, Seek, SeekFrom},
     rc::Rc,
 };
-use crate::xml_builder::Visitor;
 
 const EVTX_HEADER_SIZE: usize = 512;
 
@@ -76,10 +77,7 @@ impl<'a> Iterator for IterRecords<'a> {
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
 
         let binxml_data_size = record_header.data_size - 5 - 4 - 4 - 8 - 8;
-        debug!(
-            "Need to deserialize {} bytes of binxml",
-            binxml_data_size
-        );
+        debug!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
             chunk: &mut self.chunk,
             offset_from_chunk_start: self.offset_from_chunk_start + cursor.position(),
@@ -87,8 +85,13 @@ impl<'a> Iterator for IterRecords<'a> {
             data_read_so_far: 0,
         };
 
-        for token in deserializer {
-            token.unwrap();
+        let tokens: Vec<BinXMLDeserializedTokens> = deserializer
+            .into_iter()
+            .filter_map(|t| Some(t.expect("invalid token")))
+            .collect();
+
+        for token in tokens {
+            parse_token(&token, &mut self.chunk.visitor).unwrap();
         }
 
         Some(Ok(EvtxRecord {
@@ -123,7 +126,7 @@ impl<'a> Debug for EvtxChunk<'a> {
 }
 
 impl<'a> EvtxChunk<'a> {
-    pub fn new(data: &'a [u8], visitor: impl Visitor<'a>) -> Result<EvtxChunk, Error> {
+    pub fn new(data: &'a [u8], visitor: impl Visitor<'a> + 'static) -> Result<EvtxChunk, Error> {
         let mut cursor = Cursor::new(data);
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
