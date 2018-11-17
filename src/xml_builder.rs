@@ -8,19 +8,19 @@ use xml::{
     name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
 };
 
-pub trait Visitor<'a, 'b> {
+pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
-    fn visit_open_start_element(&mut self, open_start_element: &'b BinXMLOpenStartElement) -> ();
+    fn visit_open_start_element(&mut self, open_start_element: &BinXMLOpenStartElement) -> ();
     fn visit_close_start_element(&mut self) -> ();
     fn visit_close_empty_element(&mut self) -> ();
     fn visit_close_element(&mut self) -> ();
-    fn visit_value(&mut self, value: &'b BinXMLValue<'a>) -> ();
-    fn visit_attribute(&mut self, attribute: &'b BinXMLAttribute<'a>) -> ();
+    fn visit_value(&mut self, value: &BinXMLValue<'a>) -> ();
+    fn visit_attribute(&mut self, attribute: &BinXMLAttribute<'a>) -> ();
     fn visit_cdata_section(&mut self) -> ();
     fn visit_entity_reference(&mut self) -> ();
     fn visit_processing_instruction_target(&mut self) -> ();
     fn visit_processing_instruction_data(&mut self) -> ();
-    fn visit_start_of_stream(&mut self, header: &'b BinXMLFragmentHeader) -> ();
+    fn visit_start_of_stream(&mut self, header: &BinXMLFragmentHeader) -> ();
 }
 
 pub struct BinXMLTreeBuilder<'a, W: Write> {
@@ -43,12 +43,12 @@ impl<'a, W: Write> BinXMLTreeBuilder<'a, W> {
     }
 }
 
-impl<'a, 'b, W: Write> Visitor<'a, 'b> for BinXMLTreeBuilder<'a, W> {
+impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
     fn visit_end_of_stream(&mut self) {
         println!("visit_end_of_stream");
     }
 
-    fn visit_open_start_element(&mut self, tag: &'b BinXMLOpenStartElement) {
+    fn visit_open_start_element(&mut self, tag: &BinXMLOpenStartElement) {
         let event_builder = XmlEvent::start_element(tag.name.as_ref());
         self.current_element = Some(event_builder);
     }
@@ -68,12 +68,12 @@ impl<'a, 'b, W: Write> Visitor<'a, 'b> for BinXMLTreeBuilder<'a, W> {
         unimplemented!();
     }
 
-    fn visit_value(&mut self, value: &'b BinXMLValue<'a>) -> () {
+    fn visit_value(&mut self, value: &BinXMLValue<'a>) -> () {
         debug!("visit_value");
         unimplemented!();
     }
 
-    fn visit_attribute(&mut self, attribute: &'b BinXMLAttribute<'a>) -> () {
+    fn visit_attribute(&mut self, attribute: &BinXMLAttribute<'a>) -> () {
         // Return ownership to self
         self.current_element = Some(
             self.current_element
@@ -103,7 +103,7 @@ impl<'a, 'b, W: Write> Visitor<'a, 'b> for BinXMLTreeBuilder<'a, W> {
         unimplemented!();
     }
 
-    fn visit_start_of_stream(&mut self, header: &'b BinXMLFragmentHeader) -> () {
+    fn visit_start_of_stream(&mut self, header: &BinXMLFragmentHeader) -> () {
         debug!("visit_start_of_stream");
     }
 }
