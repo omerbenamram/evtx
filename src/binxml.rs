@@ -5,8 +5,8 @@ use std::mem;
 use std::rc::Rc;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{Context, Error, Fail, format_err, bail};
-use log::{debug, log};
+use failure::{bail, format_err, Context, Error, Fail};
+use log::{debug,trace, log};
 
 use crate::{
     evtx_chunk::{EvtxChunk, EvtxChunkHeader},
@@ -40,6 +40,13 @@ impl BinXmlDeserializationError {
         let err = BinXmlDeserializationErrorKind::NotAValidBinXMLToken { token };
         BinXmlDeserializationError::new(Context::new(err))
     }
+
+    pub fn other(context: &'static str) -> Self {
+        let err = BinXmlDeserializationErrorKind::Other {
+            display: context.to_owned(),
+        };
+        BinXmlDeserializationError::new(Context::new(err))
+    }
 }
 
 #[derive(Fail, Debug)]
@@ -53,11 +60,15 @@ pub enum BinXmlDeserializationErrorKind {
     NotAValidBinXMLToken { token: u8 },
     #[fail(display = "Unexpected EOF")]
     UnexpectedEOF,
+    #[fail(display = "{}", display)]
+    Other { display: String },
 }
 
 pub struct BinXmlDeserializer<'a, 'b> {
     pub chunk: &'b mut EvtxChunk<'a>,
     pub offset_from_chunk_start: u64,
+    pub data_size: u32,
+    pub data_read_so_far: u32,
 }
 
 impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
@@ -177,32 +188,39 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
                 cursor.read_u64::<LittleEndian>()?
             ))),
             BinXMLValueType::EvtHandle => unimplemented!(),
-            BinXMLValueType::BinXmlType => {
-                Ok(BinXMLValue::BinXmlType(self.read_until_end_of_stream()?))
-            }
+            BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType(
+                self.read_until_end_of_stream(cursor)
+                    .map_err(|_| format_err!("read_until_end_of_stream_failed"))?,
+            )),
             BinXMLValueType::EvtXml => unimplemented!(),
             _ => unimplemented!("{:?}", value_type),
         }
     }
 
     /// Collects all tokens until end of stream marker, useful for handling templates.
-    fn read_until_end_of_stream(&mut self) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
+    fn read_until_end_of_stream(
+        &mut self,
+        cursor: &mut Cursor<&'a [u8]>,
+    ) -> Result<Vec<BinXMLDeserializedTokens<'a>>, BinXmlDeserializationError> {
         let mut tokens = vec![];
 
         loop {
-            let token = self.next();
+            let token = self.read_next_token(cursor).and_then(|t| {
+                self.token_from_raw(cursor, t)
+                    .map_err(|_| BinXmlDeserializationError::other("token_from_raw failed"))
+            });
+
             match token {
-                None => bail!("Unexpected EOF"),
-                Some(token) => match token {
-                    Err(e) => bail!("Unexpected error {:?}", e),
-                    Ok(token) => {
-                        if token != BinXMLDeserializedTokens::EndOfStream {
-                            tokens.push(token);
-                        } else {
-                            break;
-                        }
+                Err(e) => {
+                    return Err(BinXmlDeserializationError::other("failed"));
+                }
+                Ok(token) => {
+                    if token != BinXMLDeserializedTokens::EndOfStream {
+                        tokens.push(token);
+                    } else {
+                        break;
                     }
-                },
+                }
             }
         }
 
@@ -263,13 +281,12 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
     ) -> Result<BinXMLOpenStartElement<'a>, Error> {
         debug!(
             "OpenStartElement at {}, has_attributes: {}",
-            self.offset_from_chunk_start, has_attributes
+            cursor.position(), has_attributes
         );
         // Reserved
         cursor.read_u16::<LittleEndian>()?;
 
         let data_size = cursor.read_u32::<LittleEndian>()?;
-        debug!("data size: {}, {}", data_size, cursor.position());
         let name = self.read_name(cursor)?;
         debug!("\t Name: {:?}", name);
 
@@ -304,11 +321,18 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
         //            }
         //        };
 
-        debug!("{}", name_offset);
-        let name = {
-            let mut cursor = Cursor::new(self.chunk.data);
+        let name = if name_offset != cursor.position() as u32 {
+            let current_position = cursor.position();
             cursor.seek(SeekFrom::Start(name_offset as u64))?;
-            read_len_prefixed_utf16_string(&mut cursor, true)?.expect("Expected string")
+            let _ = cursor.read_u32::<LittleEndian>()?;
+            let name_hash = cursor.read_u16::<LittleEndian>()?;
+            let name = read_len_prefixed_utf16_string(cursor, true)?.expect("Expected string");
+            cursor.seek(SeekFrom::Start(current_position as u64))?;
+            name
+        } else {
+            let _ = cursor.read_u32::<LittleEndian>()?;
+            let name_hash = cursor.read_u16::<LittleEndian>()?;
+            read_len_prefixed_utf16_string(cursor, true)?.expect("Expected string")
         };
 
         Ok(Cow::Owned(name))
@@ -332,11 +356,18 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
         //            }
         //        };
 
-        let template_def = {
-            let mut temp_cursor =
-                Cursor::new(&self.chunk.data[template_definition_data_offset as usize..]);
-            let template = self.read_template_definition(&mut temp_cursor)?;
-            Rc::new(template)
+        let template_def = if template_definition_data_offset != cursor.position() as u32 {
+            debug!(
+                "Need to seek to offset {} to read template",
+                template_definition_data_offset
+            );
+            let position_before_seek = cursor.position();
+            cursor.seek(SeekFrom::Start(template_definition_data_offset as u64))?;
+            let template_def = Rc::new(self.read_template_definition(cursor)?);
+            cursor.seek(SeekFrom::Start(position_before_seek))?;
+            template_def
+        } else {
+            Rc::new(self.read_template_definition(cursor)?)
         };
 
         let number_of_substitutions = cursor.read_u32::<LittleEndian>()?;
@@ -392,7 +423,10 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
         // Data size includes of the fragment header, element and end of file token;
         // except for the first 33 bytes of the template definition (above)
         let start_position = cursor.position();
-        let element = self.read_until_end_of_stream()?;
+        let element = self
+            .read_until_end_of_stream(cursor)
+            .map_err(|_| format_err!("reading element from template definition failed"))?;
+
         assert_eq!(
             cursor.position(),
             start_position + data_size as u64,
@@ -439,26 +473,38 @@ impl<'a, 'b> Iterator for BinXmlDeserializer<'a, 'b> {
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        debug!("offset_from_chunk_start: {}", self.offset_from_chunk_start);
-        let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
+        trace!("offset_from_chunk_start: {}", self.offset_from_chunk_start);
+
+        let mut cursor = Cursor::new(self.chunk.data);
+        cursor
+            .seek(SeekFrom::Start(self.offset_from_chunk_start))
+            .unwrap();
 
         let token = self.read_next_token(&mut cursor);
-        self.offset_from_chunk_start += cursor.position();
-        debug!("offset_from_chunk_start: {}", self.offset_from_chunk_start);
 
         if let Err(e) = token {
+            let total_read = cursor.position() - self.offset_from_chunk_start;
+            self.offset_from_chunk_start += total_read;
+            self.data_read_so_far += total_read as u32;
+
             return Some(Err(e.inner.into()));
         }
 
         let raw_token = token.unwrap();
 
         // Finished reading
-        if self.chunk.data.len() == self.offset_from_chunk_start as usize {
+        debug!("need to read: {}, read so far: {}", self.data_size, self.data_read_so_far);
+        if self.data_size == self.data_read_so_far {
             return None;
         }
 
         debug!("{:?} at {}", raw_token, self.offset_from_chunk_start);
-        return Some(self.token_from_raw(&mut cursor, raw_token));
+        let token = self.token_from_raw(&mut cursor, raw_token);
+        let total_read = cursor.position() - self.offset_from_chunk_start;
+        self.data_read_so_far += total_read as u32;
+        self.offset_from_chunk_start += total_read;
+
+        return Some(token);
     }
 }
 
@@ -552,8 +598,8 @@ mod tests {
 
         let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
 
-        for record in chunk {
-            record.unwrap();
+        for record in chunk.into_iter().take(1) {
+            println!("{:?}", record);
         }
     }
 

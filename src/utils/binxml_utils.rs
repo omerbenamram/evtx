@@ -5,7 +5,7 @@ use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom},
 };
-use log::{debug, error, log};
+use log::{debug, error, trace, log};
 use crate::utils::print_hexdump;
 
 pub fn read_len_prefixed_utf16_string(
@@ -14,6 +14,7 @@ pub fn read_len_prefixed_utf16_string(
 ) -> io::Result<Option<String>> {
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
     let needed_bytes = (expected_number_of_characters * 2) as usize;
+    trace!("Going to read a string of len {} from stream", expected_number_of_characters);
 
     read_utf16_by_size(stream, needed_bytes as u64)
         .and_then(|s| {

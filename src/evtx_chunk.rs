@@ -1,9 +1,11 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{Context, Error, Fail, format_err};
+use failure::{format_err, Context, Error, Fail};
 
 use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};
+use crate::utils::*;
+use log::{debug, log};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -13,7 +15,6 @@ use std::{
     io::{Read, Seek, SeekFrom},
     rc::Rc,
 };
-use crate::utils::*;
 
 const EVTX_HEADER_SIZE: usize = 512;
 
@@ -72,9 +73,16 @@ impl<'a> Iterator for IterRecords<'a> {
         // TODO: remove unwrap
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
 
+        let binxml_data_size = record_header.data_size - 5 - 4 - 4 - 8 - 8;
+        debug!(
+            "Need to deserialize {} bytes of binxml",
+            binxml_data_size
+        );
         let deserializer = BinXmlDeserializer {
             chunk: &mut self.chunk,
-            offset_from_chunk_start: cursor.position(),
+            offset_from_chunk_start: self.offset_from_chunk_start + cursor.position(),
+            data_size: binxml_data_size,
+            data_read_so_far: 0,
         };
 
         for token in deserializer {
@@ -96,7 +104,7 @@ impl<'a> IntoIterator for EvtxChunk<'a> {
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
         IterRecords {
             chunk: self,
-            offset_from_chunk_start: EVTX_HEADER_SIZE as u64
+            offset_from_chunk_start: EVTX_HEADER_SIZE as u64,
         }
     }
 }
