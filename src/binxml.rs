@@ -513,11 +513,13 @@ pub fn parse_tokens<'c: 'r, 'r>(
 ) {
     let mut flat_tokens = vec![];
 
+    debug!("Raw tokens - {:#?}", tokens);
+
     for token in tokens.into_iter() {
         parse_token(token, &mut flat_tokens);
     }
 
-    debug!("{:#?}", flat_tokens);
+    debug!("Flat tokens -{:#?}", flat_tokens);
 
     let mut current_element: Option<XmlElementBuilder> = None;
 
@@ -635,7 +637,8 @@ pub fn parse_token<'parent, 'chunk>(
                                 parse_token(token.clone(), out)
                             }
                         } else {
-                            out.push(token.clone());
+                            // TODO: FIXME - this should be yielded!
+                            out.push(value.clone());
                         }
                     }
                 } else {
