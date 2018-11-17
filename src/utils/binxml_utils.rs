@@ -5,7 +5,8 @@ use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom},
 };
-use utils::print_hexdump;
+use log::{debug, error, log};
+use crate::utils::print_hexdump;
 
 pub fn read_len_prefixed_utf16_string(
     stream: &mut Cursor<&[u8]>,

@@ -1,9 +1,9 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{Context, Error, Fail};
+use failure::{Context, Error, Fail, format_err};
 
-use binxml::BinXmlDeserializer;
-use evtx_record::{EvtxRecord, EvtxRecordHeader};
-use model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};
+use crate::binxml::BinXmlDeserializer;
+use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
+use crate::model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -13,7 +13,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     rc::Rc,
 };
-use utils::*;
+use crate::utils::*;
 
 const EVTX_HEADER_SIZE: usize = 512;
 

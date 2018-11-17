@@ -5,18 +5,22 @@ use std::mem;
 use std::rc::Rc;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{Context, Error, Fail};
+use failure::{Context, Error, Fail, format_err, bail};
+use log::{debug, log};
 
-use utils::datetime_from_filetime;
-use evtx_chunk::{EvtxChunk, EvtxChunkHeader};
-use guid::Guid;
-use model::*;
+use crate::{
+    evtx_chunk::{EvtxChunk, EvtxChunkHeader},
+    guid::Guid,
+    model::*,
+    utils::datetime_from_filetime,
+    utils::*,
+    xml_builder::Visitor,
+};
+
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::io::Cursor;
-use utils::*;
-use xml_builder::Visitor;
 
 #[derive(Debug)]
 pub struct BinXmlDeserializationError {
@@ -51,7 +55,7 @@ pub enum BinXmlDeserializationErrorKind {
     UnexpectedEOF,
 }
 
-pub struct BinXmlDeserializer<'a,'b> {
+pub struct BinXmlDeserializer<'a, 'b> {
     pub chunk: &'b mut EvtxChunk<'a>,
     pub offset_from_chunk_start: u64,
 }
@@ -259,8 +263,7 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
     ) -> Result<BinXMLOpenStartElement<'a>, Error> {
         debug!(
             "OpenStartElement at {}, has_attributes: {}",
-            self.offset_from_chunk_start,
-            has_attributes
+            self.offset_from_chunk_start, has_attributes
         );
         // Reserved
         cursor.read_u16::<LittleEndian>()?;

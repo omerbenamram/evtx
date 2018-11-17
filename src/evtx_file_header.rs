@@ -1,5 +1,5 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::Error;
+use failure::{Error, Fail};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 #[derive(Fail, Debug)]

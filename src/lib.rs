@@ -5,32 +5,6 @@
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 
-
-extern crate byteorder;
-extern crate xml;
-#[macro_use]
-extern crate failure;
-
-#[macro_use]
-extern crate log;
-extern crate env_logger;
-
-#[cfg(test)]
-#[macro_use]
-extern crate maplit;
-
-#[cfg(test)]
-#[macro_use]
-extern crate pretty_assertions;
-
-#[cfg(test)]
-extern crate itertools;
-
-extern crate chrono;
-extern crate crc;
-extern crate encoding;
-extern crate time;
-
 mod binxml;
 mod guid;
 mod utils;

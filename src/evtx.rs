@@ -4,12 +4,12 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 use time::Duration;
 
-use model::BinXMLTemplateDefinition;
+use crate::model::BinXMLTemplateDefinition;
 use crc::crc32;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
-use utils::*;
+use crate::utils::*;
 
 
 #[cfg(test)]
@@ -22,7 +22,7 @@ mod tests {
     use std::char::decode_utf16;
     use std::fs::File;
     use std::io::Write;
-    use evtx_file_header::HeaderFlags;
+    use crate::evtx_file_header::HeaderFlags;
 
 
 //    #[test]

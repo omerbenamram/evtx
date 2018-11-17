@@ -1,4 +1,4 @@
-use model::*;
+use crate::model::*;
 use std::{
     io::{Cursor, Read, Result, Seek, SeekFrom, Write},
     mem,
@@ -6,6 +6,7 @@ use std::{
 use xml::{
     name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
 };
+use log::{debug, log};
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
