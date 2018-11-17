@@ -216,24 +216,25 @@ pub struct BinXMLTemplate<'a> {
     pub substitution_array: Vec<BinXMLValue<'a>>,
 }
 
-pub enum Replacement<'a> {
-    Value(&'a BinXMLValue<'a>),
-    Token(&'a BinXMLDeserializedTokens<'a>),
+pub enum Replacement<'a, 'b, 't> {
+    Value(&'b BinXMLValue<'a>),
+    Token(&'t BinXMLDeserializedTokens<'a>),
+    Null
 }
 
-impl<'a> BinXMLTemplate<'a> {
-    pub fn substitute_token_if_needed(&self, token: &'a BinXMLDeserializedTokens) -> Replacement {
-        if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-            if substitution_descriptor.ignore {
-                return Replacement::Token(token);
-            }
-            return Replacement::Value(
-                &self.substitution_array[substitution_descriptor.substitution_index as usize],
-            );
-        }
-        Replacement::Token(token)
-    }
-}
+//impl<'a, 'b, 't> BinXMLTemplate<'a> {
+//    pub fn substitute_token_if_needed(&'t self, token: &'b BinXMLDeserializedTokens<'a>) -> Replacement<'a, 'b, 't> {
+//        if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
+//            if substitution_descriptor.ignore {
+//                return Replacement::Null;
+//            }
+//            return Replacement::Value(
+//                &self.substitution_array[substitution_descriptor.substitution_index as usize],
+//            );
+//        }
+//        Replacement::Token(token)
+//    }
+//}
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct TemplateValueDescriptor {

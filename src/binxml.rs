@@ -539,10 +539,14 @@ pub fn parse_token<'a>(
         // presenting them to the visitor.
         BinXMLDeserializedTokens::TemplateInstance(template) => {
             for token in template.definition.tokens.iter() {
-                let replacement = template.substitute_token_if_needed(token);
-                match replacement {
-                    Replacement::Token(token) => parse_token(token, visitor)?,
-                    Replacement::Value(value) => visitor.visit_value(value),
+                if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
+                    if substitution_descriptor.ignore {
+                        continue
+                    } else {
+                        visitor.visit_value(&template.substitution_array[substitution_descriptor.substitution_index as usize]);
+                    }
+                } else {
+                    parse_token(token, visitor);
                 }
             }
         }
