@@ -4,10 +4,11 @@ use std::{
     io::{Cursor, Read, Result, Seek, SeekFrom, Write},
     mem,
 };
-use xml::{
-    name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter
-};
 use xml::common::XmlVersion;
+use xml::{
+    name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
+};
+use std::borrow::Cow;
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -27,6 +28,7 @@ pub trait Visitor<'a> {
 pub struct BinXMLTreeBuilder<'b, W: Write> {
     writer: EventWriter<W>,
     current_element: Option<StartElementBuilder<'b>>,
+    current_attribute_name: Option<Cow<'b, str>>,
 }
 
 impl<'b, W: Write> BinXMLTreeBuilder<'b, W> {
@@ -40,13 +42,14 @@ impl<'b, W: Write> BinXMLTreeBuilder<'b, W> {
         BinXMLTreeBuilder {
             writer,
             current_element: None,
+            current_attribute_name: None,
         }
     }
 }
 
 impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     fn visit_end_of_stream(&mut self) {
-
+        self.writer.write(XmlEvent::end_element()).unwrap();
     }
 
     fn visit_open_start_element(&mut self, tag: &BinXMLOpenStartElement<'a>) {
@@ -65,6 +68,9 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
 
     fn visit_close_empty_element(&mut self) {
         debug!("visit_close_empty_element");
+        self.writer
+            .write(self.current_element.take().expect("It should be here"))
+            .unwrap();
         self.writer.write(XmlEvent::end_element()).unwrap();
     }
 
@@ -74,19 +80,24 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_value(&mut self, value: &BinXMLValue<'a>) -> () {
+        match self.current_attribute_name.take() {
+            Some(attribute) => {
+                self.current_element = Some(
+                    self.current_element
+                        .take()
+                        .expect("It should be here")
+                        .attr(attribute, "a value"),
+                );
+            }
+            None => {}
+        }
         debug!("visit_value {:?}", value);
     }
 
     fn visit_attribute(&mut self, attribute: &BinXMLAttribute<'a>) -> () {
         debug!("visit_attribute: {:?}", attribute);
         // Return ownership to self
-        self.current_element = Some(
-            self.current_element
-                .take()
-                .expect("visit_attribute_called without calling visit_open_start_element first")
-                //                .attr(attribute.name.as_ref(), ""),
-                .attr("test", ""),
-        );
+        self.current_attribute_name = Some(attribute.name.clone());
     }
 
     fn visit_cdata_section(&mut self) {
@@ -106,10 +117,12 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_start_of_stream(&mut self) -> () {
-        self.writer.write(XmlEvent::StartDocument {
-            version: XmlVersion::Version10,
-            encoding: None,
-            standalone: None,
-        }).unwrap();
+        self.writer
+            .write(XmlEvent::StartDocument {
+                version: XmlVersion::Version10,
+                encoding: None,
+                standalone: None,
+            })
+            .unwrap();
     }
 }
