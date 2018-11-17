@@ -65,7 +65,7 @@ pub enum BinXmlDeserializationErrorKind {
 }
 
 pub struct BinXmlDeserializer<'a, 'b> {
-    pub chunk: &'b mut EvtxChunk<'a, 'b>,
+    pub chunk: &'b mut EvtxChunk<'a>,
     pub offset_from_chunk_start: u64,
     pub data_size: u32,
     pub data_read_so_far: u32,
@@ -512,9 +512,9 @@ impl<'a, 'b> Iterator for BinXmlDeserializer<'a, 'b> {
     }
 }
 
-pub fn parse_token<'a, 'b>(
-    token: &'b BinXMLDeserializedTokens<'a>,
-    visitor: &mut Box<Visitor<'a, 'b>>,
+pub fn parse_token<'a>(
+    token: &BinXMLDeserializedTokens<'a>,
+    visitor: &mut Box<Visitor<'a>>,
 ) -> Result<(), Error> {
     match token {
         BinXMLDeserializedTokens::FragmentHeader(fragment) => {}

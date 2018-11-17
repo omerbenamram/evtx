@@ -19,7 +19,7 @@ use std::rc::Rc;
 const EVTX_CHUNK_SIZE: usize = 65536;
 const EVTX_HEADER_SIZE: usize = 4096;
 
-fn parse_evtx<'a, 'b, V: Visitor<'a, 'b>>(evtx: &'a [u8], visitor: V) {
+fn parse_evtx<'a, V: Visitor<'a>>(evtx: &'a [u8], visitor: V) {
     let mut cursor = Cursor::new(evtx);
     let header = EvtxFileHeader::from_reader(&mut cursor);
 

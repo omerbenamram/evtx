@@ -15,6 +15,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     rc::Rc,
 };
+use crate::xml_builder::Visitor;
 
 const EVTX_HEADER_SIZE: usize = 512;
 
@@ -55,6 +56,7 @@ impl Debug for EvtxChunkHeader {
 
 pub struct EvtxChunk<'a> {
     header: EvtxChunkHeader,
+    visitor: Box<Visitor<'a>>,
     pub data: &'a [u8],
     pub string_table: HashMap<Offset, (u16, String)>,
     pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
@@ -121,12 +123,13 @@ impl<'a> Debug for EvtxChunk<'a> {
 }
 
 impl<'a> EvtxChunk<'a> {
-    pub fn new(data: &'a [u8]) -> Result<EvtxChunk, Error> {
+    pub fn new(data: &'a [u8], visitor: impl Visitor<'a>) -> Result<EvtxChunk, Error> {
         let mut cursor = Cursor::new(data);
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
         Ok(EvtxChunk {
             data,
+            visitor: Box::new(visitor),
             header,
             string_table: HashMap::new(),
             template_table: HashMap::new(),
