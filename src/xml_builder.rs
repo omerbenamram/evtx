@@ -1,4 +1,5 @@
 use crate::model::*;
+use log::{debug, log};
 use std::{
     io::{Cursor, Read, Result, Seek, SeekFrom, Write},
     mem,
@@ -6,36 +7,28 @@ use std::{
 use xml::{
     name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
 };
-use log::{debug, log};
 
-pub trait Visitor<'a> {
+pub trait Visitor<'a, 'b> {
     fn visit_end_of_stream(&mut self) -> ();
-    fn visit_open_start_element(&mut self, open_start_element: &'a BinXMLOpenStartElement) -> ();
+    fn visit_open_start_element(&mut self, open_start_element: &'b BinXMLOpenStartElement) -> ();
     fn visit_close_start_element(&mut self) -> ();
     fn visit_close_empty_element(&mut self) -> ();
     fn visit_close_element(&mut self) -> ();
-    fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> ();
-    fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute<'a>) -> ();
+    fn visit_value(&mut self, value: &'b BinXMLValue<'a>) -> ();
+    fn visit_attribute(&mut self, attribute: &'b BinXMLAttribute<'a>) -> ();
     fn visit_cdata_section(&mut self) -> ();
     fn visit_entity_reference(&mut self) -> ();
     fn visit_processing_instruction_target(&mut self) -> ();
     fn visit_processing_instruction_data(&mut self) -> ();
-    fn visit_normal_substitution(&mut self) -> ();
-    fn visit_conditional_substitution(&mut self) -> ();
-    fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> ();
-    fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> ();
+    fn visit_start_of_stream(&mut self, header: &'b BinXMLFragmentHeader) -> ();
 }
 
-struct BinXMLTreeBuilder<'a, W: Write> {
-    template: Option<&'a BinXMLTemplateDefinition<'a>>,
+pub struct BinXMLTreeBuilder<'a, W: Write> {
     writer: EventWriter<W>,
-
     current_element: Option<StartElementBuilder<'a>>,
 }
 
 impl<'a, W: Write> BinXMLTreeBuilder<'a, W> {
-    // TODO: pick up from here - use EventWriter to drive the visitor.
-    // The crucial part is to handle template substitutions.
     pub fn with_writer(target: W) -> Self {
         let writer = EmitterConfig::new()
             .line_separator("\r\n")
@@ -44,25 +37,18 @@ impl<'a, W: Write> BinXMLTreeBuilder<'a, W> {
             .create_writer(target);
 
         BinXMLTreeBuilder {
-            template: None,
             writer,
             current_element: None,
         }
     }
 }
-//
-//impl<'a> Into<Name<'a>> for BinXMLName {
-//    fn into(self) -> Name<'a> {
-//        Name
-//    }
-//}
 
-impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
+impl<'a, 'b, W: Write> Visitor<'a, 'b> for BinXMLTreeBuilder<'a, W> {
     fn visit_end_of_stream(&mut self) {
         println!("visit_end_of_stream");
     }
 
-    fn visit_open_start_element(&mut self, tag: &'a BinXMLOpenStartElement) {
+    fn visit_open_start_element(&mut self, tag: &'b BinXMLOpenStartElement) {
         let event_builder = XmlEvent::start_element(tag.name.as_ref());
         self.current_element = Some(event_builder);
     }
@@ -82,17 +68,12 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
         unimplemented!();
     }
 
-    fn visit_value(&mut self, value: &'a BinXMLValue<'a>) -> () {
+    fn visit_value(&mut self, value: &'b BinXMLValue<'a>) -> () {
         debug!("visit_value");
         unimplemented!();
     }
 
-    fn visit_attribute(&mut self, attribute: &'a BinXMLAttribute<'a>) -> () {
-        //        let value = match attribute.value {
-        //            BinXMLValue::StringType(ref s) => s,
-        //            _ => unimplemented!("Attribute values other than text currently not supported."),
-        //        };
-
+    fn visit_attribute(&mut self, attribute: &'b BinXMLAttribute<'a>) -> () {
         // Return ownership to self
         self.current_element = Some(
             self.current_element
@@ -122,25 +103,7 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<'a, W> {
         unimplemented!();
     }
 
-    fn visit_normal_substitution(&mut self) {
-        println!("visit_normal_substitution");
-        unimplemented!();
-    }
-
-    fn visit_conditional_substitution(&mut self) {
-        println!("visit_conditional_substitution");
-        unimplemented!();
-    }
-
-    fn visit_template_instance(&mut self, template: &'a BinXMLTemplate) -> () {
-        let elem_unfilled = &template.definition.tokens;
-        let elem_filled = elem_unfilled.clone();
-        let substitutions = &template.substitution_array;
-
-        ()
-    }
-
-    fn visit_start_of_stream(&mut self, header: &'a BinXMLFragmentHeader) -> () {
+    fn visit_start_of_stream(&mut self, header: &'b BinXMLFragmentHeader) -> () {
         debug!("visit_start_of_stream");
     }
 }
