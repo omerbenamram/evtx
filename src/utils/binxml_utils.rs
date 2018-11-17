@@ -21,9 +21,10 @@ pub fn read_len_prefixed_utf16_string(
                     return Ok(Some(string));
                 } else {
                     error!(
-                        "Expected string of length {}, found string of length {}",
+                        "Expected string of length {}, found string of length {} - {}",
                         string.len(),
-                        expected_number_of_characters
+                        expected_number_of_characters,
+                        string
                     );
                     return Err(Error::from(ErrorKind::InvalidData));
                 }

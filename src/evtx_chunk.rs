@@ -1,10 +1,9 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::{Context, Error, Fail};
 
-use binxml::BinXMLDeserializer;
-use binxml::IntoTokens;
-use model::BinXMLDeserializedTokens;
-use model::BinXMLTemplateDefinition;
+use binxml::BinXmlDeserializer;
+use evtx_record::{EvtxRecord, EvtxRecordHeader};
+use model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -15,6 +14,8 @@ use std::{
     rc::Rc,
 };
 use utils::*;
+
+const EVTX_HEADER_SIZE: usize = 512;
 
 #[derive(Fail, Debug)]
 enum ChunkHeaderParseErrorKind {
@@ -58,12 +59,44 @@ pub struct EvtxChunk<'a> {
     pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
 }
 
-impl<'a> EvtxChunk<'a> {
-    pub fn deserialize(&mut self) -> IntoTokens<'a> {
-        IntoTokens {
+pub struct IterRecords<'a> {
+    chunk: EvtxChunk<'a>,
+    offset_from_chunk_start: u64,
+}
+
+impl<'a> Iterator for IterRecords<'a> {
+    type Item = Result<EvtxRecord<'a>, Error>;
+
+    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
+        // TODO: remove unwrap
+        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
+
+        let deserializer = BinXmlDeserializer {
+            chunk: &mut self.chunk,
+            offset_from_chunk_start: cursor.position(),
+        };
+
+        for token in deserializer {
+            token.unwrap();
+        }
+
+        Some(Ok(EvtxRecord {
+            event_record_id: record_header.event_record_id,
+            timestamp: record_header.timestamp,
+            data: &[],
+        }))
+    }
+}
+
+impl<'a> IntoIterator for EvtxChunk<'a> {
+    type Item = Result<EvtxRecord<'a>, Error>;
+    type IntoIter = IterRecords<'a>;
+
+    fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
+        IterRecords {
             chunk: self,
-            offset_from_chunk_start: 0,
-            cursor: Cursor::new(self.data)
+            offset_from_chunk_start: EVTX_HEADER_SIZE as u64
         }
     }
 }

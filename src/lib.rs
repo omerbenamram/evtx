@@ -38,4 +38,5 @@ mod evtx_file_header;
 mod model;
 mod evtx_chunk;
 mod xml_builder;
+mod evtx_record;
 pub mod evtx;

@@ -1,6 +1,6 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
-use evtx::{datetime_from_filetime, FileTime};
+use utils::{datetime_from_filetime, FileTime};
 use guid::Guid;
 use std::{
     borrow::Cow,
