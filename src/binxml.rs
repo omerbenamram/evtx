@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::{bail, format_err, Context, Error, Fail};
-use log::{debug,trace, log};
+use log::{debug, log, trace};
 
 use crate::{
     evtx_chunk::{EvtxChunk, EvtxChunkHeader},
@@ -65,7 +65,7 @@ pub enum BinXmlDeserializationErrorKind {
 }
 
 pub struct BinXmlDeserializer<'a, 'b> {
-    pub chunk: &'b mut EvtxChunk<'a>,
+    pub chunk: &'b mut EvtxChunk<'a, 'b>,
     pub offset_from_chunk_start: u64,
     pub data_size: u32,
     pub data_read_so_far: u32,
@@ -281,7 +281,8 @@ impl<'a, 'b> BinXmlDeserializer<'a, 'b> {
     ) -> Result<BinXMLOpenStartElement<'a>, Error> {
         debug!(
             "OpenStartElement at {}, has_attributes: {}",
-            cursor.position(), has_attributes
+            cursor.position(),
+            has_attributes
         );
         // Reserved
         cursor.read_u16::<LittleEndian>()?;
@@ -493,7 +494,10 @@ impl<'a, 'b> Iterator for BinXmlDeserializer<'a, 'b> {
         let raw_token = token.unwrap();
 
         // Finished reading
-        debug!("need to read: {}, read so far: {}", self.data_size, self.data_read_so_far);
+        debug!(
+            "need to read: {}, read so far: {}",
+            self.data_size, self.data_read_so_far
+        );
         if self.data_size == self.data_read_so_far {
             return None;
         }
@@ -508,46 +512,49 @@ impl<'a, 'b> Iterator for BinXmlDeserializer<'a, 'b> {
     }
 }
 
-///// The BinXMLDeserializer struct deserialized a chunk of EVTX data into a stream of elements.
-///// It is used by initializing it with an EvtxChunk.
-///// It yields back a deserialized token stream, while also taking care of substitutions of templates.
-//impl<'a> BinXMLDeserializer<'a> {
-//    pub fn new(chunk: &'a EvtxChunk<'a>, offset_from_chunk_start: u64) -> BinXMLDeserializer<'a> {
-//        let binxml_data = &chunk.data[offset_from_chunk_start as usize..];
-//        let cursor = Cursor::new(binxml_data);
-//
-//        BinXMLDeserializer {
-//            chunk,
-//            offset_from_chunk_start,
-//            cursor,
-//        }
-//    }
-//
-//    fn visit_token(
-//        &mut self,
-//        token: &'a BinXMLDeserializedTokens<'a>,
-//        visitor: &mut impl Visitor<'a>,
-//    ) -> Result<(), Error> {
-//        match token {
-//            // Encountered a template, we need to fill the template, replacing values as needed and
-//            // presenting them to the visitor.
-//            BinXMLDeserializedTokens::TemplateInstance(template) => {
-//                for token in template.definition.tokens.iter() {
-//                    let replacement = template.substitute_token_if_needed(token);
-//                    match replacement {
-//                        Replacement::Token(token) => self.visit_token(token, visitor)?,
-//                        Replacement::Value(value) => visitor.visit_value(value),
-//                    }
-//                }
-//            }
-//            _ => unimplemented!(),
-//        }
-//        Ok(())
-//    }
-//}
+pub fn parse_token<'a, 'b>(
+    token: &'b BinXMLDeserializedTokens<'a>,
+    visitor: &mut Box<Visitor<'a, 'b>>,
+) -> Result<(), Error> {
+    match token {
+        BinXMLDeserializedTokens::FragmentHeader(fragment) => {}
+        BinXMLDeserializedTokens::OpenStartElement(open_start_element) => {
+            visitor.visit_open_start_element(&open_start_element)
+        }
+        BinXMLDeserializedTokens::AttributeList => {}
+        BinXMLDeserializedTokens::Attribute(_) => {}
+        BinXMLDeserializedTokens::CloseStartElement => {}
+        BinXMLDeserializedTokens::CloseEmptyElement => {}
+        BinXMLDeserializedTokens::CloseElement => {}
+        BinXMLDeserializedTokens::Value(_) => {}
+        BinXMLDeserializedTokens::CDATASection => {}
+        BinXMLDeserializedTokens::CharRef => {}
+        BinXMLDeserializedTokens::EntityRef => {}
+        BinXMLDeserializedTokens::PITarget => {}
+        BinXMLDeserializedTokens::PIData => {}
+        BinXMLDeserializedTokens::Substitution(_) => {}
+        BinXMLDeserializedTokens::EndOfStream => {}
+        BinXMLDeserializedTokens::StartOfStream => {}
+        // Encountered a template, we need to fill the template, replacing values as needed and
+        // presenting them to the visitor.
+        BinXMLDeserializedTokens::TemplateInstance(template) => {
+            for token in template.definition.tokens.iter() {
+                let replacement = template.substitute_token_if_needed(token);
+                match replacement {
+                    Replacement::Token(token) => parse_token(token, visitor)?,
+                    Replacement::Value(value) => visitor.visit_value(value),
+                }
+            }
+        }
+        _ => unimplemented!(),
+    }
+    Ok(())
+}
 
 mod tests {
     use super::*;
+    use crate::xml_builder::BinXMLTreeBuilder;
+    use std::io::stdout;
 
     extern crate env_logger;
 
@@ -596,7 +603,8 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
+        let visitor = BinXMLTreeBuilder::with_writer(stdout());
+        let chunk = EvtxChunk::new(&from_start_of_chunk, visitor).unwrap();
 
         for record in chunk.into_iter().take(1) {
             println!("{:?}", record);

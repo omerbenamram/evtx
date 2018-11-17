@@ -1,14 +1,14 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
-use crate::utils::{datetime_from_filetime, FileTime};
 use crate::guid::Guid;
+use crate::utils::read_len_prefixed_utf16_string;
+use crate::utils::{datetime_from_filetime, FileTime};
 use std::{
     borrow::Cow,
     fmt::Debug,
     io::{self, Cursor, Read},
     rc::Rc,
 };
-use crate::utils::read_len_prefixed_utf16_string;
 
 use failure::Error;
 
