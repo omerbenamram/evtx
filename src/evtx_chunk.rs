@@ -90,6 +90,7 @@ impl<'a> Iterator for IterRecords<'a> {
             .filter_map(|t| Some(t.expect("invalid token")))
             .collect();
 
+        parse_tokens(&tokens, &mut self.chunk.visitor);
         for token in tokens {
             parse_token(&token, &mut self.chunk.visitor).unwrap();
         }

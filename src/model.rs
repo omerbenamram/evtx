@@ -11,6 +11,9 @@ use std::{
 };
 
 use failure::Error;
+use std::collections::HashMap;
+
+pub type Name<'a> = Cow<'a, str>;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLValueType {
@@ -216,25 +219,16 @@ pub struct BinXMLTemplate<'a> {
     pub substitution_array: Vec<BinXMLValue<'a>>,
 }
 
-pub enum Replacement<'a, 'b, 't> {
-    Value(&'b BinXMLValue<'a>),
-    Token(&'t BinXMLDeserializedTokens<'a>),
-    Null
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct XmlAttribute<'a> {
+    name: Name<'a>,
+    value: BinXMLValue<'a>
 }
 
-//impl<'a, 'b, 't> BinXMLTemplate<'a> {
-//    pub fn substitute_token_if_needed(&'t self, token: &'b BinXMLDeserializedTokens<'a>) -> Replacement<'a, 'b, 't> {
-//        if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-//            if substitution_descriptor.ignore {
-//                return Replacement::Null;
-//            }
-//            return Replacement::Value(
-//                &self.substitution_array[substitution_descriptor.substitution_index as usize],
-//            );
-//        }
-//        Replacement::Token(token)
-//    }
-//}
+pub struct XmlElement<'a> {
+    pub name: Name<'a>,
+    pub attributes: Vec<XmlAttribute<'a>>
+}
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct TemplateValueDescriptor {

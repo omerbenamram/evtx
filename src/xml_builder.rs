@@ -9,6 +9,8 @@ use xml::{
     name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
 };
 use std::borrow::Cow;
+use core::borrow::Borrow;
+use std::ops::Deref;
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();
@@ -28,7 +30,7 @@ pub trait Visitor<'a> {
 pub struct BinXMLTreeBuilder<'b, W: Write> {
     writer: EventWriter<W>,
     current_element: Option<StartElementBuilder<'b>>,
-    current_attribute_name: Option<Cow<'b, str>>,
+    current_attribute_name: Option<&'b str>,
 }
 
 impl<'b, W: Write> BinXMLTreeBuilder<'b, W> {
@@ -80,13 +82,13 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_value(&mut self, value: &BinXMLValue<'a>) -> () {
-        match self.current_attribute_name.take() {
-            Some(attribute) => {
+        match &self.current_attribute_name {
+            Some(ref attribute) => {
                 self.current_element = Some(
                     self.current_element
                         .take()
                         .expect("It should be here")
-                        .attr(attribute, "a value"),
+                        .attr(attribute.deref(), "a value"),
                 );
             }
             None => {}
@@ -97,7 +99,7 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     fn visit_attribute(&mut self, attribute: &BinXMLAttribute<'a>) -> () {
         debug!("visit_attribute: {:?}", attribute);
         // Return ownership to self
-        self.current_attribute_name = Some(attribute.name.clone());
+        self.current_attribute_name = Some(&*attribute.name);
     }
 
     fn visit_cdata_section(&mut self) {
