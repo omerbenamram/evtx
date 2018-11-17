@@ -1,7 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
-use std::io::{self, Cursor, Read};
 use crate::utils::datetime_from_filetime;
+use std::io::{self, Cursor, Read};
 
 #[derive(Debug, PartialEq)]
 pub struct EvtxRecord<'a> {

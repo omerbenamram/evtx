@@ -17,6 +17,7 @@ use crate::{
     xml_builder::Visitor,
 };
 
+use crate::model::XmlElement;
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::fmt::Display;
@@ -253,7 +254,10 @@ impl<'chunk, 'b> BinXmlDeserializer<'chunk, 'b> {
         })
     }
 
-    fn read_value(&mut self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<BinXMLValue<'chunk>, Error> {
+    fn read_value(
+        &mut self,
+        cursor: &mut Cursor<&'chunk [u8]>,
+    ) -> Result<BinXMLValue<'chunk>, Error> {
         debug!(
             "Value at: {} (0x{:2x})",
             cursor.position(),
@@ -504,42 +508,115 @@ impl<'a, 'b> Iterator for BinXmlDeserializer<'a, 'b> {
 }
 
 pub fn parse_tokens<'c: 'r, 'r>(
-    tokens: &'r Vec<BinXMLDeserializedTokens<'c>>,
+    tokens: Vec<BinXMLDeserializedTokens<'c>>,
     visitor: &mut Box<Visitor<'c>>,
 ) {
-    let is_inside_element = false;
+    let mut flat_tokens = vec![];
 
-    for token in tokens {
-        parse_token(&token, visitor).unwrap();
+    for token in tokens.iter() {
+        parse_token(&token, &mut flat_tokens);
+    }
+
+    let mut current_element: Option<XmlElementBuilder> = None;
+
+    let mut processed_tokens: Vec<OwnedModel> = vec![];
+
+    for token in flat_tokens.into_iter() {
+        match token {
+            BinXMLDeserializedTokens::FragmentHeader(_) => {}
+            BinXMLDeserializedTokens::TemplateInstance(_) => {}
+            BinXMLDeserializedTokens::AttributeList => {}
+            BinXMLDeserializedTokens::Attribute(attr) => {
+                match current_element.take() {
+                    None => panic!("Bad parser state"),
+                    Some(mut builder) => {
+                        builder.attribute_name(attr.name);
+                        current_element = Some(builder)
+                    }
+                };
+            }
+            BinXMLDeserializedTokens::OpenStartElement(elem) => {
+                let mut builder = XmlElementBuilder::new();
+                builder.name(elem.name);
+
+                current_element = Some(builder);
+            }
+            BinXMLDeserializedTokens::CloseStartElement => {
+                match current_element.take() {
+                    None => panic!("Bad parser state"),
+                    Some(builder) => {
+                        processed_tokens.push(OwnedModel::OpenElement(builder.finish()))
+                    }
+                };
+            }
+            BinXMLDeserializedTokens::CloseEmptyElement => {
+                match current_element.take() {
+                    None => panic!("Bad parser state"),
+                    Some(builder) => {
+                        processed_tokens.push(OwnedModel::OpenElement(builder.finish()))
+                    }
+                };
+            }
+            BinXMLDeserializedTokens::CloseElement => {
+                match current_element.take() {
+                    None => panic!("Bad parser state"),
+                    Some(builder) => processed_tokens.push(OwnedModel::CloseElement),
+                };
+            }
+            BinXMLDeserializedTokens::Value(value) => {
+                match current_element.take() {
+                    // A string that is not inside any element, yield it
+                    None => match value {
+                        BinXMLValue::StringType(cow) => {processed_tokens.push(OwnedModel::String(Cow::Borrowed(cow)));},
+                        BinXMLValue::EvtXml => panic!("Cannot be an EVTXML value at this point, should have been pre-procecced"),
+                        _ => {processed_tokens.push(OwnedModel::String(Cow::Owned(format!("{:?}", value))));}
+                    },
+                    // A string that is bound to an attribute
+                    Some(mut builder) => {
+                        builder.attribute_value(BinXMLValue::StringType(Cow::Borrowed("test")));
+                        current_element = Some(builder);
+                    },
+                };
+            }
+            BinXMLDeserializedTokens::CDATASection => {}
+            BinXMLDeserializedTokens::CharRef => {}
+            BinXMLDeserializedTokens::EntityRef => {}
+            BinXMLDeserializedTokens::PITarget => {}
+            BinXMLDeserializedTokens::PIData => {}
+            BinXMLDeserializedTokens::Substitution(_) => {}
+            BinXMLDeserializedTokens::EndOfStream => processed_tokens.push(OwnedModel::EndOfStream),
+            BinXMLDeserializedTokens::StartOfStream => {
+                processed_tokens.push(OwnedModel::StartOfStream)
+            }
+        }
+    }
+    debug!("{:#?}", processed_tokens);
+
+    for owned_token in processed_tokens {
+        match owned_token {
+            OwnedModel::OpenElement(open_elemnt) => visitor.visit_open_start_element(&open_elemnt),
+            OwnedModel::CloseElement => visitor.visit_close_element(),
+            OwnedModel::String(s) => visitor.visit_characters(&s),
+            OwnedModel::EndOfStream => visitor.visit_end_of_stream(),
+            OwnedModel::StartOfStream => visitor.visit_start_of_stream(),
+        }
     }
 }
 
-pub fn parse_token<'c>(
-    token: &BinXMLDeserializedTokens<'c>,
-    visitor: &mut Box<Visitor<'c>>,
-) -> Result<BinXMLDeserializedTokens, Error> {
+pub fn parse_token<'b, 'c>(
+    token: &'b BinXMLDeserializedTokens<'c>,
+    out: &'b mut Vec<&'b BinXMLDeserializedTokens<'c>>,
+) {
     match token {
-        BinXMLDeserializedTokens::FragmentHeader(fragment) => {}
-        BinXMLDeserializedTokens::OpenStartElement(open_start_element) => {
-            visitor.visit_open_start_element(&open_start_element)
-        }
-        BinXMLDeserializedTokens::Attribute(attribute) => return Ok(token),
-        BinXMLDeserializedTokens::CloseStartElement => visitor.visit_close_start_element(),
-        BinXMLDeserializedTokens::CloseEmptyElement => visitor.visit_close_empty_element(),
-        BinXMLDeserializedTokens::CloseElement => visitor.visit_close_element(),
         BinXMLDeserializedTokens::Value(value) => {
             if let BinXMLValue::BinXmlType(tokens) = value {
                 for token in tokens {
-                    parse_token(token, visitor)?;
+                    parse_token(token, out);
                 }
             } else {
-                visitor.visit_value(value);
+                out.push(token)
             }
         }
-        BinXMLDeserializedTokens::EndOfStream => visitor.visit_end_of_stream(),
-        BinXMLDeserializedTokens::StartOfStream => visitor.visit_start_of_stream(),
-        // Encountered a template, we need to fill the template, replacing values as needed and
-        // presenting them to the visitor.
         BinXMLDeserializedTokens::TemplateInstance(template) => {
             for token in template.definition.tokens.iter() {
                 if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
@@ -551,25 +628,19 @@ pub fn parse_token<'c>(
 
                         if let BinXMLValue::BinXmlType(tokens) = value {
                             for token in tokens {
-                                parse_token(token, visitor)?;
+                                parse_token(token, out)
                             }
                         } else {
-                            visitor.visit_value(value);
+                            out.push(token);
                         }
                     }
                 } else {
-                    parse_token(token, visitor)?;
+                    parse_token(token, out);
                 }
             }
         }
-        BinXMLDeserializedTokens::CDATASection => {}
-        BinXMLDeserializedTokens::CharRef => {}
-        BinXMLDeserializedTokens::EntityRef => {}
-        BinXMLDeserializedTokens::PITarget => {}
-        BinXMLDeserializedTokens::PIData => {}
-        _ => unimplemented!(),
+        _ => out.push(token),
     }
-    Ok(())
 }
 
 mod tests {

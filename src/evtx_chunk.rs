@@ -17,6 +17,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     rc::Rc,
 };
+use crate::binxml::parse_tokens;
 
 const EVTX_HEADER_SIZE: usize = 512;
 
@@ -90,10 +91,7 @@ impl<'a> Iterator for IterRecords<'a> {
             .filter_map(|t| Some(t.expect("invalid token")))
             .collect();
 
-        parse_tokens(&tokens, &mut self.chunk.visitor);
-        for token in tokens {
-            parse_token(&token, &mut self.chunk.visitor).unwrap();
-        }
+        parse_tokens(tokens, &mut self.chunk.visitor);
 
         Some(Ok(EvtxRecord {
             event_record_id: record_header.event_record_id,
