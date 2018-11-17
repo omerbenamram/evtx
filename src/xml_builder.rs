@@ -60,15 +60,15 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_close_empty_element(&mut self) {
-        unimplemented!("visit_close_empty_element");
+        println!("visit_close_empty_element");
     }
 
     fn visit_close_element(&mut self) {
-        unimplemented!("visit_close_element");
+        println!("visit_close_element");
     }
 
     fn visit_value(&mut self, value: &BinXMLValue<'a>) -> () {
-        unimplemented!("visit_value");
+        println!("visit_value {:?}", value);
     }
 
     fn visit_attribute(&mut self, attribute: &BinXMLAttribute<'a>) -> () {
@@ -95,8 +95,7 @@ impl<'a: 'b, 'b, W: Write> Visitor<'a> for BinXMLTreeBuilder<'b, W> {
     }
 
     fn visit_processing_instruction_data(&mut self) {
-        println!("visit_processing_instruction_data");
-        unimplemented!();
+        unimplemented!("visit_processing_instruction_data");
     }
 
     fn visit_start_of_stream(&mut self, header: &BinXMLFragmentHeader) -> () {

@@ -526,7 +526,15 @@ pub fn parse_token<'a>(
         BinXMLDeserializedTokens::CloseStartElement => {}
         BinXMLDeserializedTokens::CloseEmptyElement => {}
         BinXMLDeserializedTokens::CloseElement => {}
-        BinXMLDeserializedTokens::Value(_) => {}
+        BinXMLDeserializedTokens::Value(value) => {
+            if let BinXMLValue::BinXmlType(tokens) = value {
+                for token in tokens {
+                    parse_token(token, visitor)?;
+                }
+            } else {
+                visitor.visit_value(value);
+            }
+        }
         BinXMLDeserializedTokens::CDATASection => {}
         BinXMLDeserializedTokens::CharRef => {}
         BinXMLDeserializedTokens::EntityRef => {}
@@ -541,12 +549,21 @@ pub fn parse_token<'a>(
             for token in template.definition.tokens.iter() {
                 if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
                     if substitution_descriptor.ignore {
-                        continue
+                        continue;
                     } else {
-                        visitor.visit_value(&template.substitution_array[substitution_descriptor.substitution_index as usize]);
+                        let value = &template.substitution_array
+                            [substitution_descriptor.substitution_index as usize];
+
+                        if let BinXMLValue::BinXmlType(tokens) = value {
+                            for token in tokens {
+                                parse_token(token, visitor)?;
+                            }
+                        } else {
+                            visitor.visit_value(value);
+                        }
                     }
                 } else {
-                    parse_token(token, visitor);
+                    parse_token(token, visitor)?;
                 }
             }
         }
