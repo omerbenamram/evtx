@@ -512,13 +512,29 @@ pub fn parse_tokens<'c: 'r, 'r>(
     visitor: &mut Box<Visitor<'c>>,
 ) {
     let expanded_tokens = expand_templates(tokens);
-    let mut current_element: Option<XmlElementBuilder> = None;
-    let mut processed_tokens: Vec<OwnedModel> = vec![];
+    let record_model = create_record_model(expanded_tokens);
 
-    for token in expanded_tokens.into_iter() {
+    for owned_token in record_model {
+        match owned_token {
+            OwnedModel::OpenElement(open_elemnt) => visitor.visit_open_start_element(&open_elemnt),
+            OwnedModel::CloseElement => visitor.visit_close_element(),
+            OwnedModel::String(s) => visitor.visit_characters(&s),
+            OwnedModel::EndOfStream => visitor.visit_end_of_stream(),
+            OwnedModel::StartOfStream => visitor.visit_start_of_stream(),
+        }
+    }
+}
+
+pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<OwnedModel> {
+    let mut current_element: Option<XmlElementBuilder> = None;
+    let mut model: Vec<OwnedModel> = vec![];
+
+    for token in tokens {
         match token {
             BinXMLDeserializedTokens::FragmentHeader(_) => {}
-            BinXMLDeserializedTokens::TemplateInstance(_) => {}
+            BinXMLDeserializedTokens::TemplateInstance(_) => {
+                panic!("Call `expand_templates` before calling this function")
+            }
             BinXMLDeserializedTokens::AttributeList => {}
             BinXMLDeserializedTokens::Attribute(attr) => {
                 debug!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
@@ -541,38 +557,39 @@ pub fn parse_tokens<'c: 'r, 'r>(
                 debug!("BinXMLDeserializedTokens::CloseStartElement");
                 match current_element.take() {
                     None => panic!("close start - Bad parser state"),
-                    Some(builder) => {
-                        processed_tokens.push(OwnedModel::OpenElement(builder.finish()))
-                    }
+                    Some(builder) => model.push(OwnedModel::OpenElement(builder.finish())),
                 };
             }
             BinXMLDeserializedTokens::CloseEmptyElement => {
                 debug!("BinXMLDeserializedTokens::CloseEmptyElement");
                 match current_element.take() {
                     None => panic!("close empty - Bad parser state"),
-                    Some(builder) => {
-                        processed_tokens.push(OwnedModel::OpenElement(builder.finish()))
-                    }
+                    Some(builder) => model.push(OwnedModel::OpenElement(builder.finish())),
                 };
             }
             BinXMLDeserializedTokens::CloseElement => {
-                processed_tokens.push(OwnedModel::CloseElement);
+                model.push(OwnedModel::CloseElement);
             }
             BinXMLDeserializedTokens::Value(value) => {
                 debug!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
                 match current_element.take() {
                     // A string that is not inside any element, yield it
                     None => match value {
-                        BinXMLValue::StringType(cow) => {processed_tokens.push(OwnedModel::String(cow.clone()));},
-                        BinXMLValue::EvtXml => panic!("Cannot be an EVTXML value at this point, should have been pre-procecced"),
+                        BinXMLValue::StringType(cow) => {
+                            model.push(OwnedModel::String(cow.clone()));
+                        }
+                        BinXMLValue::EvtXml => {
+                            panic!("Call `expand_templates` before calling this function")
+                        }
                         _ => {
-                            processed_tokens.push(OwnedModel::String(value.into()));
+                            model.push(OwnedModel::String(value.into()));
                         }
                     },
                     // A string that is bound to an attribute
                     Some(builder) => {
-                        current_element = Some(builder.attribute_value(BinXMLValue::StringType(value.into())));
-                    },
+                        current_element =
+                            Some(builder.attribute_value(BinXMLValue::StringType(value.into())));
+                    }
                 };
             }
             BinXMLDeserializedTokens::CDATASection => {}
@@ -580,24 +597,14 @@ pub fn parse_tokens<'c: 'r, 'r>(
             BinXMLDeserializedTokens::EntityRef => {}
             BinXMLDeserializedTokens::PITarget => {}
             BinXMLDeserializedTokens::PIData => {}
-            BinXMLDeserializedTokens::Substitution(_) => {}
-            BinXMLDeserializedTokens::EndOfStream => processed_tokens.push(OwnedModel::EndOfStream),
-            BinXMLDeserializedTokens::StartOfStream => {
-                processed_tokens.push(OwnedModel::StartOfStream)
+            BinXMLDeserializedTokens::Substitution(_) => {
+                panic!("Call `expand_templates` before calling this function")
             }
+            BinXMLDeserializedTokens::EndOfStream => model.push(OwnedModel::EndOfStream),
+            BinXMLDeserializedTokens::StartOfStream => model.push(OwnedModel::StartOfStream),
         }
     }
-    debug!("{:#?}", processed_tokens);
-
-    for owned_token in processed_tokens {
-        match owned_token {
-            OwnedModel::OpenElement(open_elemnt) => visitor.visit_open_start_element(&open_elemnt),
-            OwnedModel::CloseElement => visitor.visit_close_element(),
-            OwnedModel::String(s) => visitor.visit_characters(&s),
-            OwnedModel::EndOfStream => visitor.visit_end_of_stream(),
-            OwnedModel::StartOfStream => visitor.visit_start_of_stream(),
-        }
-    }
+    model
 }
 
 pub fn expand_templates(
@@ -660,45 +667,6 @@ mod tests {
     use std::io::Write;
 
     extern crate env_logger;
-
-    //    #[test]
-    //    fn test_reads_one_element() {
-    //        let _ = env_logger::try_init().expect("Failed to init logger");
-    //        let evtx_file = include_bytes!("../samples/security.evtx");
-    //        let from_start_of_chunk = &evtx_file[4096..];
-    //
-    //        let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
-    //
-    //
-    //        let element = deserializer.read_until_end_of_stream().unwrap();
-    //        println!("{:?}", element);
-    //        assert_eq!(
-    //            element.len(),
-    //            2,
-    //            "Element should contain a fragment and a template"
-    //        );
-    //
-    //        let is_template = match element[1] {
-    //            BinXMLDeserializedTokens::TemplateInstance(_) => true,
-    //            _ => false,
-    //        };
-    //
-    //        assert!(is_template, "Element should be a template");
-    //
-    //        // Weird zeroes (padding?)
-    //        let mut zeroes = [0_u8; 3];
-    //
-    //        let c = &mut deserializer.cursor;
-    //        c.take(3)
-    //            .read_exact(&mut zeroes)
-    //            .expect("Failed to read zeroes");
-    //
-    //        let copy_of_size = c.read_u32::<LittleEndian>().unwrap();
-    //        //        assert_eq!(
-    //        //            record_header.data_size, copy_of_size,
-    //        //            "Didn't read expected amount of bytes."
-    //        //        );
-    //    }
 
     #[test]
     fn test_reads_simple_template_without_substitutions() {
