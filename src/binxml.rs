@@ -511,21 +511,11 @@ pub fn parse_tokens<'c: 'r, 'r>(
     tokens: Vec<BinXMLDeserializedTokens<'c>>,
     visitor: &mut Box<Visitor<'c>>,
 ) {
-    let mut flat_tokens = vec![];
-
-    debug!("Raw tokens - {:#?}", tokens);
-
-    for token in tokens.into_iter() {
-        parse_token(token, &mut flat_tokens);
-    }
-
-    debug!("Flat tokens -{:#?}", flat_tokens);
-
+    let expanded_tokens = expand_templates(tokens);
     let mut current_element: Option<XmlElementBuilder> = None;
-
     let mut processed_tokens: Vec<OwnedModel> = vec![];
 
-    for token in flat_tokens.into_iter() {
+    for token in expanded_tokens.into_iter() {
         match token {
             BinXMLDeserializedTokens::FragmentHeader(_) => {}
             BinXMLDeserializedTokens::TemplateInstance(_) => {}
@@ -540,7 +530,10 @@ pub fn parse_tokens<'c: 'r, 'r>(
                 };
             }
             BinXMLDeserializedTokens::OpenStartElement(elem) => {
-                debug!("BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}", elem.name);
+                debug!(
+                    "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
+                    elem.name
+                );
                 let builder = XmlElementBuilder::new();
                 current_element = Some(builder.name(elem.name));
             }
@@ -563,11 +556,7 @@ pub fn parse_tokens<'c: 'r, 'r>(
                 };
             }
             BinXMLDeserializedTokens::CloseElement => {
-                debug!("BinXMLDeserializedTokens::CloseElement");
-                match current_element.take() {
-                    None => panic!("close element - Bad parser state"),
-                    Some(builder) => processed_tokens.push(OwnedModel::CloseElement),
-                };
+                processed_tokens.push(OwnedModel::CloseElement);
             }
             BinXMLDeserializedTokens::Value(value) => {
                 debug!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
@@ -576,11 +565,13 @@ pub fn parse_tokens<'c: 'r, 'r>(
                     None => match value {
                         BinXMLValue::StringType(cow) => {processed_tokens.push(OwnedModel::String(cow.clone()));},
                         BinXMLValue::EvtXml => panic!("Cannot be an EVTXML value at this point, should have been pre-procecced"),
-                        _ => {processed_tokens.push(OwnedModel::String(Cow::Owned(format!("{:?}", value))));}
+                        _ => {
+                            processed_tokens.push(OwnedModel::String(value.into()));
+                        }
                     },
                     // A string that is bound to an attribute
                     Some(builder) => {
-                        current_element = Some(builder.attribute_value(BinXMLValue::StringType(Cow::Borrowed("test"))));
+                        current_element = Some(builder.attribute_value(BinXMLValue::StringType(value.into())));
                     },
                 };
             }
@@ -609,45 +600,57 @@ pub fn parse_tokens<'c: 'r, 'r>(
     }
 }
 
-pub fn parse_token<'parent, 'chunk>(
-    token: BinXMLDeserializedTokens<'chunk>,
-    out: &'parent mut Vec<BinXMLDeserializedTokens<'chunk>>,
-) {
-    match token {
-        BinXMLDeserializedTokens::Value(ref value) => {
-            if let BinXMLValue::BinXmlType(tokens) = value {
-                for token in tokens.into_iter() {
-                    parse_token(token.clone(), out);
-                }
-            } else {
-                out.push(token.clone())
-            }
-        }
-        BinXMLDeserializedTokens::TemplateInstance(template) => {
-            for token in template.definition.tokens.iter() {
-                if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-                    if substitution_descriptor.ignore {
-                        continue;
-                    } else {
-                        let value = &template.substitution_array
-                            [substitution_descriptor.substitution_index as usize];
+pub fn expand_templates(
+    token_tree: Vec<BinXMLDeserializedTokens>,
+) -> Vec<BinXMLDeserializedTokens> {
+    let mut stack = Vec::new();
 
-                        if let BinXMLValue::BinXmlType(tokens) = value {
-                            for token in tokens.into_iter() {
-                                parse_token(token.clone(), out)
-                            }
-                        } else {
-                            // TODO: FIXME - this should be yielded!
-                            out.push(value.clone());
-                        }
+    fn _expand_templates<'chunk: 'local, 'local>(
+        token: BinXMLDeserializedTokens<'chunk>,
+        stack: &mut Vec<BinXMLDeserializedTokens<'local>>,
+    ) {
+        match token {
+            BinXMLDeserializedTokens::Value(ref value) => {
+                if let BinXMLValue::BinXmlType(tokens) = value {
+                    for token in tokens.into_iter() {
+                        _expand_templates(token.clone(), stack);
                     }
                 } else {
-                    parse_token(token.clone(), out);
+                    stack.push(token)
                 }
             }
+            BinXMLDeserializedTokens::TemplateInstance(template) => {
+                // We have to clone here since the templates **definitions** are shared.
+                for token in template.definition.tokens.iter().cloned() {
+                    if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) =
+                        token
+                    {
+                        if substitution_descriptor.ignore {
+                            continue;
+                        } else {
+                            // TODO: see if we can avoid this copy
+                            let value = &template.substitution_array
+                                [substitution_descriptor.substitution_index as usize];
+
+                            _expand_templates(
+                                BinXMLDeserializedTokens::Value(value.clone()),
+                                stack,
+                            );
+                        }
+                    } else {
+                        _expand_templates(token, stack);
+                    }
+                }
+            }
+            _ => stack.push(token),
         }
-        _ => out.push(token),
     }
+
+    for token in token_tree {
+        _expand_templates(token, &mut stack)
+    }
+
+    stack
 }
 
 mod tests {

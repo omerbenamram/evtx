@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::{format_err, Context, Error, Fail};
 
-use crate::binxml::parse_token;
+use crate::binxml::expand_templates;
 use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};

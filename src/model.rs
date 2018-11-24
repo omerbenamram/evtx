@@ -1,8 +1,8 @@
-use byteorder::{LittleEndian, ReadBytesExt};
-use chrono::{DateTime, Utc};
 use crate::guid::Guid;
 use crate::utils::read_len_prefixed_utf16_string;
 use crate::utils::{datetime_from_filetime, FileTime};
+use byteorder::{LittleEndian, ReadBytesExt};
+use chrono::{DateTime, Utc};
 use std::{
     borrow::Cow,
     fmt::Debug,
@@ -11,8 +11,8 @@ use std::{
 };
 
 use failure::Error;
-use std::collections::HashMap;
 use log::{error, log};
+use std::collections::HashMap;
 
 pub type Name<'a> = Cow<'a, str>;
 
@@ -107,6 +107,42 @@ pub enum BinXMLValue<'a> {
     // Because of the recursive type, we instantiate this enum via a method of the Deserializer
     BinXmlType(Vec<BinXMLDeserializedTokens<'a>>),
     EvtXml,
+}
+
+impl<'a> Into<Cow<'a, str>> for BinXMLValue<'a> {
+    fn into(self) -> Cow<'a, str> {
+        match self {
+            BinXMLValue::NullType => Cow::Borrowed(""),
+            BinXMLValue::StringType(s) => s,
+            BinXMLValue::AnsiStringType(s) => s,
+            BinXMLValue::Int8Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::UInt8Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::Int16Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::UInt16Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::Int32Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::UInt32Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::Int64Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::UInt64Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::Real32Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::Real64Type(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::BoolType(num) => Cow::Owned(num.to_string()),
+            BinXMLValue::BinaryType(bytes) => Cow::Owned(format!("{:?}", bytes)),
+            BinXMLValue::GuidType(guid) => Cow::Owned(guid.to_string()),
+            BinXMLValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
+            BinXMLValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
+            BinXMLValue::SysTimeType => unimplemented!(),
+            BinXMLValue::SidType => unimplemented!(),
+            BinXMLValue::HexInt32Type => unimplemented!(),
+            BinXMLValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),
+            BinXMLValue::EvtHandle => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXMLValue::BinXmlType(_) => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXMLValue::EvtXml => panic!("Unsupported conversion, call `expand_templates` first"),
+        }
+    }
 }
 
 #[derive(Debug, PartialOrd, PartialEq)]
