@@ -22,12 +22,13 @@ fn parse_evtx<'a, V: Visitor<'a> + 'static>(evtx: &'a [u8], visitor: V) {
     let mut cursor = Cursor::new(evtx);
     let header = EvtxFileHeader::from_reader(&mut cursor);
 
+    // TODO: parse all the chunks!
     let chunk = EvtxChunk::new(
         &evtx[EVTX_HEADER_SIZE..EVTX_HEADER_SIZE + EVTX_CHUNK_SIZE],
         visitor,
     ).unwrap();
 
-    for record in chunk.into_iter().take(10) {
+    for record in chunk.into_iter() {
         println!("{:?}", record);
     }
 }

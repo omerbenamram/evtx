@@ -2,6 +2,7 @@ use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt}
 use failure::{format_err, Context, Error, Fail};
 
 use crate::binxml::expand_templates;
+use crate::binxml::parse_tokens;
 use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::deserialized::*;
@@ -17,7 +18,6 @@ use std::{
     io::{Read, Seek, SeekFrom},
     rc::Rc,
 };
-use crate::binxml::parse_tokens;
 
 const EVTX_HEADER_SIZE: usize = 512;
 
@@ -67,18 +67,24 @@ pub struct EvtxChunk<'a> {
 pub struct IterRecords<'a> {
     chunk: EvtxChunk<'a>,
     offset_from_chunk_start: u64,
+    exhausted: bool,
 }
 
 impl<'a> Iterator for IterRecords<'a> {
     type Item = Result<EvtxRecord<'a>, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        if self.exhausted {
+            return None;
+        }
+
         let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
         // TODO: remove unwrap
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
 
+        // TODO: document all the tiny offsets
         let binxml_data_size = record_header.data_size - 5 - 4 - 4 - 8 - 8;
-        debug!("Need to deserialize {} bytes of binxml", binxml_data_size);
+        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
             chunk: &mut self.chunk,
             offset_from_chunk_start: self.offset_from_chunk_start + cursor.position(),
@@ -94,6 +100,10 @@ impl<'a> Iterator for IterRecords<'a> {
         self.offset_from_chunk_start += record_header.data_size as u64;
 
         parse_tokens(tokens, &mut self.chunk.visitor);
+
+        if self.chunk.header.last_event_record_id == record_header.event_record_id {
+            self.exhausted = true;
+        }
 
         Some(Ok(EvtxRecord {
             event_record_id: record_header.event_record_id,
@@ -111,6 +121,7 @@ impl<'a> IntoIterator for EvtxChunk<'a> {
         IterRecords {
             chunk: self,
             offset_from_chunk_start: EVTX_HEADER_SIZE as u64,
+            exhausted: false,
         }
     }
 }

@@ -387,8 +387,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             debug!("Substitution: {:?}", descriptor.value_type);
             let value = match descriptor.value_type {
                 BinXMLValueType::StringType => BinXMLValue::StringType(Cow::Owned(
-                    read_utf16_by_size(cursor, descriptor.size as u64)?
-                        .expect("String should not be empty"),
+                    read_utf16_by_size(cursor, descriptor.size as u64)?.unwrap_or("".to_owned()),
                 )),
                 _ => self.read_value_from_type(cursor, &descriptor.value_type)?,
             };
