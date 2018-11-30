@@ -4,7 +4,7 @@ use failure::{format_err, Context, Error, Fail};
 use crate::binxml::expand_templates;
 use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
-use crate::model::{BinXMLDeserializedTokens, BinXMLTemplateDefinition};
+use crate::model::deserialized::*;
 use crate::utils::*;
 use crate::xml_builder::Visitor;
 use log::{debug, log};

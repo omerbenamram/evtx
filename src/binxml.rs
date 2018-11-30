@@ -11,13 +11,15 @@ use log::{debug, log, trace};
 use crate::{
     evtx_chunk::{EvtxChunk, EvtxChunkHeader},
     guid::Guid,
-    model::*,
     utils::datetime_from_filetime,
     utils::*,
     xml_builder::Visitor,
 };
 
-use crate::model::XmlElement;
+use crate::model::deserialized::*;
+use crate::model::owned::*;
+use crate::model::raw::*;
+
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::fmt::Display;
@@ -65,14 +67,14 @@ pub enum BinXmlDeserializationErrorKind {
     Other { display: String },
 }
 
-pub struct BinXmlDeserializer<'a, 'record> {
-    pub chunk: &'record mut EvtxChunk<'a>,
+pub struct BinXmlDeserializer<'chunk: 'record, 'record> {
+    pub chunk: &'record mut EvtxChunk<'chunk>,
     pub offset_from_chunk_start: u64,
     pub data_size: u32,
     pub data_read_so_far: u32,
 }
 
-impl<'chunk, 'b> BinXmlDeserializer<'chunk, 'b> {
+impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(
@@ -464,8 +466,8 @@ impl<'chunk, 'b> BinXmlDeserializer<'chunk, 'b> {
 }
 
 /// IntoTokens yields ownership of the deserialized XML tokens.
-impl<'a, 'b> Iterator for BinXmlDeserializer<'a, 'b> {
-    type Item = Result<BinXMLDeserializedTokens<'a>, Error>;
+impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> {
+    type Item = Result<BinXMLDeserializedTokens<'chunk>, Error>;
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {

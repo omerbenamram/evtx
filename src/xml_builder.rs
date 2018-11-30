@@ -11,6 +11,7 @@ use xml::common::XmlVersion;
 use xml::{
     name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
 };
+use crate::model::owned::XmlElement;
 
 pub trait Visitor<'a> {
     fn visit_end_of_stream(&mut self) -> ();

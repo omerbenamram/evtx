@@ -13,6 +13,7 @@ use std::{
 use failure::Error;
 use log::{error, log};
 use std::collections::HashMap;
+use std::string::ToString;
 
 pub type Name<'a> = Cow<'a, str>;
 
@@ -145,76 +146,6 @@ impl<'a> Into<Cow<'a, str>> for BinXMLValue<'a> {
     }
 }
 
-#[derive(Debug, PartialOrd, PartialEq)]
-pub enum BinXMLRawToken {
-    EndOfStream,
-    // True if has attributes, otherwise false.
-    OpenStartElement(OpenStartElementTokenMeta),
-    CloseStartElement,
-    CloseEmptyElement,
-    CloseElement,
-    Value,
-    Attribute(AttributeTokenMeta),
-    CDataSection,
-    EntityReference,
-    ProcessingInstructionTarget,
-    ProcessingInstructionData,
-    TemplateInstance,
-    NormalSubstitution,
-    ConditionalSubstitution,
-    StartOfStream,
-}
-
-impl BinXMLRawToken {
-    pub fn from_u8(byte: u8) -> Option<BinXMLRawToken> {
-        match byte {
-            0x00 => Some(BinXMLRawToken::EndOfStream),
-            // <Event>
-            0x01 => Some(BinXMLRawToken::OpenStartElement(
-                OpenStartElementTokenMeta {
-                    has_attributes: false,
-                },
-            )),
-            0x41 => Some(BinXMLRawToken::OpenStartElement(
-                OpenStartElementTokenMeta {
-                    has_attributes: true,
-                },
-            )),
-            // Indicates end of start element
-            0x02 => Some(BinXMLRawToken::CloseStartElement),
-            0x03 => Some(BinXMLRawToken::CloseEmptyElement),
-            // </Event>
-            0x04 => Some(BinXMLRawToken::CloseElement),
-            0x05 | 0x45 => Some(BinXMLRawToken::Value),
-            0x06 => Some(BinXMLRawToken::Attribute(AttributeTokenMeta {
-                more_attributes_expected: false,
-            })),
-            0x46 => Some(BinXMLRawToken::Attribute(AttributeTokenMeta {
-                more_attributes_expected: true,
-            })),
-            0x07 | 0x47 => Some(BinXMLRawToken::CDataSection),
-            0x08 | 0x48 => Some(BinXMLRawToken::EntityReference),
-            0x0a | 0x49 => Some(BinXMLRawToken::ProcessingInstructionTarget),
-            0x0b => Some(BinXMLRawToken::ProcessingInstructionData),
-            0x0c => Some(BinXMLRawToken::TemplateInstance),
-            0x0d => Some(BinXMLRawToken::NormalSubstitution),
-            0x0e => Some(BinXMLRawToken::ConditionalSubstitution),
-            0x0f => Some(BinXMLRawToken::StartOfStream),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, PartialOrd, PartialEq)]
-pub struct OpenStartElementTokenMeta {
-    pub has_attributes: bool,
-}
-
-#[derive(Debug, PartialOrd, PartialEq)]
-pub struct AttributeTokenMeta {
-    pub more_attributes_expected: bool,
-}
-
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
@@ -254,90 +185,6 @@ pub struct BinXMLTemplateDefinition<'a> {
 pub struct BinXMLTemplate<'a> {
     pub definition: Rc<BinXMLTemplateDefinition<'a>>,
     pub substitution_array: Vec<BinXMLValue<'a>>,
-}
-
-pub struct XmlElementBuilder<'a> {
-    name: Option<Name<'a>>,
-    attributes: Vec<XmlAttribute<'a>>,
-    current_attribute_name: Option<Name<'a>>,
-    current_attribute_value: Option<Cow<'a, str>>,
-}
-
-impl<'a> XmlElementBuilder<'a> {
-    pub fn new() -> Self {
-        XmlElementBuilder {
-            name: None,
-            attributes: Vec::new(),
-            current_attribute_name: None,
-            current_attribute_value: None,
-        }
-    }
-    pub fn name(mut self, name: Name<'a>) -> Self {
-        self.name = Some(name);
-        self
-    }
-
-    pub fn attribute_name(mut self, name: Name<'a>) -> Self {
-        match self.current_attribute_name {
-            None => self.current_attribute_name = Some(name),
-            Some(name) => {
-                error!("invalid state, overriding name");
-                self.current_attribute_name = Some(name);
-            }
-        }
-        self
-    }
-
-    pub fn attribute_value(mut self, value: BinXMLValue<'a>) -> Self {
-        assert!(
-            self.current_attribute_name.is_some(),
-            "There should be a name"
-        );
-        match self.current_attribute_value {
-            None => {
-                self.current_attribute_value = Some(match value {
-                    BinXMLValue::StringType(cow) => cow,
-                    _ => Cow::Owned(format!("{:?}", value)),
-                })
-            }
-            Some(_) => panic!("invalid state, there should not be a value"),
-        }
-
-        self.attributes.push(XmlAttribute {
-            name: self.current_attribute_name.take().unwrap(),
-            value: self.current_attribute_value.take().unwrap(),
-        });
-
-        self
-    }
-
-    pub fn finish(self) -> XmlElement<'a> {
-        XmlElement {
-            name: self.name.expect("Element name should be set"),
-            attributes: self.attributes,
-        }
-    }
-}
-
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct XmlAttribute<'a> {
-    pub name: Name<'a>,
-    pub value: Cow<'a, str>,
-}
-
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct XmlElement<'a> {
-    pub name: Name<'a>,
-    pub attributes: Vec<XmlAttribute<'a>>,
-}
-
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub enum OwnedModel<'a> {
-    OpenElement(XmlElement<'a>),
-    CloseElement,
-    String(Cow<'a, str>),
-    EndOfStream,
-    StartOfStream,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

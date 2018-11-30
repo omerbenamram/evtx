@@ -7,7 +7,6 @@ use time::Duration;
 use crate::evtx_chunk::{EvtxChunk, EvtxChunkHeader};
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
-use crate::model::BinXMLTemplateDefinition;
 use crate::utils::*;
 use crate::xml_builder::{BinXMLTreeBuilder, Visitor};
 use crc::crc32;
