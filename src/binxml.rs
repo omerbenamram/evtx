@@ -566,7 +566,10 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<OwnedMo
                 debug!("BinXMLDeserializedTokens::CloseEmptyElement");
                 match current_element.take() {
                     None => panic!("close empty - Bad parser state"),
-                    Some(builder) => model.push(OwnedModel::OpenElement(builder.finish())),
+                    Some(builder) => {
+                        model.push(OwnedModel::OpenElement(builder.finish()));
+                        model.push(OwnedModel::CloseElement);
+                    },
                 };
             }
             BinXMLDeserializedTokens::CloseElement => {

@@ -43,7 +43,7 @@ impl<W: Write> BinXMLTreeBuilder<W> {
 
 impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<W> {
     fn visit_end_of_stream(&mut self) {
-        self.writer.write(XmlEvent::end_element()).unwrap();
+        debug!("visit_end_of_stream");
     }
 
     fn visit_open_start_element(&mut self, element: &XmlElement) {
