@@ -6,6 +6,7 @@ use std::fmt::Display;
 use std::io;
 use std::io::Cursor;
 use std::io::Read;
+use byteorder::BigEndian;
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Sid {
@@ -20,8 +21,9 @@ impl Sid {
     pub fn from_stream(stream: &mut Cursor<&[u8]>) -> io::Result<Sid> {
         let version = stream.read_u8()?;
         let number_of_elements = stream.read_u8()?;
-        let id_high = stream.read_u32::<LittleEndian>()?;
-        let id_low = stream.read_u16::<LittleEndian>()?;
+        // For some reason these values are kept in be order.
+        let id_high = stream.read_u32::<BigEndian>()?;
+        let id_low = stream.read_u16::<BigEndian>()?;
 
         let mut elements = Vec::with_capacity(number_of_elements as usize);
 
