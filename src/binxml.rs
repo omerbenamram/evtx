@@ -20,6 +20,7 @@ use crate::model::deserialized::*;
 use crate::model::owned::*;
 use crate::model::raw::*;
 
+use crate::ntsid::Sid;
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::fmt::Display;
@@ -144,7 +145,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     fn read_value_from_type(
         &mut self,
         cursor: &mut Cursor<&'chunk [u8]>,
-        value_type: BinXMLValueType,
+        value_type: &BinXMLValueType,
     ) -> Result<BinXMLValue<'chunk>, Error> {
         match value_type {
             BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
@@ -182,7 +183,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 cursor.read_u64::<LittleEndian>()?,
             ))),
             BinXMLValueType::SysTimeType => unimplemented!(),
-            BinXMLValueType::SidType => unimplemented!(),
+            BinXMLValueType::SidType => Ok(BinXMLValue::SidType(Sid::from_stream(cursor)?)),
             BinXMLValueType::HexInt32Type => unimplemented!(),
             BinXMLValueType::HexInt64Type => Ok(BinXMLValue::HexInt64Type(format!(
                 "0x{:2x}",
@@ -266,7 +267,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             cursor.position() + 24
         );
         let value_type = BinXMLValueType::from_u8(cursor.read_u8()?);
-        let data = self.read_value_from_type(cursor, value_type)?;
+        let data = self.read_value_from_type(cursor, &value_type)?;
         debug!("\t Data: {:?}", data);
         Ok(data)
     }
@@ -389,7 +390,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                     read_utf16_by_size(cursor, descriptor.size as u64)?
                         .expect("String should not be empty"),
                 )),
-                _ => self.read_value_from_type(cursor, descriptor.value_type)?,
+                _ => self.read_value_from_type(cursor, &descriptor.value_type)?,
             };
             debug!("\t {:?}", value);
             // NullType can mean deleted substitution (and data need to be skipped)
@@ -400,7 +401,11 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             assert_eq!(
                 position + descriptor.size as u64,
                 cursor.position(),
-                "Read incorrect amount of data"
+                "{}",
+                &format!(
+                    "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                    cursor.position(), position + descriptor.size as u64, &descriptor
+                )
             );
             substitution_array.push(value);
         }
@@ -569,7 +574,7 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<OwnedMo
                     Some(builder) => {
                         model.push(OwnedModel::OpenElement(builder.finish()));
                         model.push(OwnedModel::CloseElement);
-                    },
+                    }
                 };
             }
             BinXMLDeserializedTokens::CloseElement => {

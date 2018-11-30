@@ -91,6 +91,8 @@ impl<'a> Iterator for IterRecords<'a> {
             .filter_map(|t| Some(t.expect("invalid token")))
             .collect();
 
+        self.offset_from_chunk_start += record_header.data_size as u64;
+
         parse_tokens(tokens, &mut self.chunk.visitor);
 
         Some(Ok(EvtxRecord {

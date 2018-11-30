@@ -14,6 +14,7 @@ use failure::Error;
 use log::{error, log};
 use std::collections::HashMap;
 use std::string::ToString;
+use crate::ntsid::Sid;
 
 pub type Name<'a> = Cow<'a, str>;
 
@@ -101,7 +102,7 @@ pub enum BinXMLValue<'a> {
     SizeTType(usize),
     FileTimeType(DateTime<Utc>),
     SysTimeType,
-    SidType,
+    SidType(Sid),
     HexInt32Type,
     HexInt64Type(String),
     EvtHandle,
@@ -132,7 +133,7 @@ impl<'a> Into<Cow<'a, str>> for BinXMLValue<'a> {
             BinXMLValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
             BinXMLValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXMLValue::SysTimeType => unimplemented!(),
-            BinXMLValue::SidType => unimplemented!(),
+            BinXMLValue::SidType(sid) => Cow::Owned(sid.to_string()),
             BinXMLValue::HexInt32Type => unimplemented!(),
             BinXMLValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),
             BinXMLValue::EvtHandle => {
