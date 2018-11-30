@@ -8,7 +8,7 @@ use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::deserialized::*;
 use crate::utils::*;
 use crate::xml_builder::Visitor;
-use log::{debug, log};
+use log::{debug, trace, log};
 use std::{
     borrow::Cow,
     cell::RefCell,
