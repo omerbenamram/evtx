@@ -70,7 +70,7 @@ pub enum BinXmlDeserializationErrorKind {
 }
 
 pub struct BinXmlDeserializer<'chunk: 'record, 'record> {
-    pub chunk: &'record mut EvtxChunk<'chunk>,
+    pub chunk: &'record EvtxChunk<'chunk>,
     pub offset_from_chunk_start: u64,
     pub data_size: u32,
     pub data_read_so_far: u32,
@@ -80,7 +80,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLRawToken, BinXmlDeserializationError> {
         let token = cursor
@@ -92,7 +92,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn token_from_raw(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         raw_token: BinXMLRawToken,
     ) -> Result<BinXMLDeserializedTokens<'chunk>, Error> {
@@ -144,7 +144,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_value_from_type(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         value_type: &BinXMLValueType,
     ) -> Result<BinXMLValue<'chunk>, Error> {
@@ -202,7 +202,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
 
     /// Collects all tokens until end of stream marker, useful for handling templates.
     fn read_until_end_of_stream(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<Vec<BinXMLDeserializedTokens<'chunk>>, BinXmlDeserializationError> {
         let mut tokens = vec![];
@@ -235,7 +235,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_substitution(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         optional: bool,
     ) -> Result<TemplateSubstitutionDescriptor, Error> {
@@ -259,7 +259,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_value(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLValue<'chunk>, Error> {
         debug!(
@@ -274,7 +274,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_open_start_element(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         has_attributes: bool,
     ) -> Result<BinXMLOpenStartElement<'chunk>, Error> {
@@ -299,7 +299,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         Ok(BinXMLOpenStartElement { data_size, name })
     }
 
-    fn read_name(&mut self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<Cow<'chunk, str>, Error> {
+    fn read_name(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<Cow<'chunk, str>, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = cursor.read_u32::<LittleEndian>()?;
@@ -339,7 +339,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_template(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLTemplate<'chunk>, Error> {
         debug!("TemplateInstance at {}", cursor.position());
@@ -417,7 +417,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_template_definition(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLTemplateDefinition<'chunk>, Error> {
         let next_template_offset = cursor.read_u32::<LittleEndian>()?;
@@ -444,7 +444,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_attribute(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLAttribute<'chunk>, Error> {
         debug!("Attribute at {}", cursor.position());
@@ -455,7 +455,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     }
 
     fn read_fragment_header(
-        &mut self,
+        &self,
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLFragmentHeader, Error> {
         debug!("FragmentHeader at {}", cursor.position());
@@ -472,13 +472,13 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
 
 /// IntoTokens yields ownership of the deserialized XML tokens.
 impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> {
-    type Item = Result<BinXMLDeserializedTokens<'chunk>, Error>;
+    type Item = Result<BinXMLDeserializedTokens<'record>, Error>;
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         trace!("offset_from_chunk_start: {}", self.offset_from_chunk_start);
 
-        let mut cursor = Cursor::new(self.chunk.data);
+        let mut cursor = Cursor::new(self.chunk.data.as_slice());
         cursor
             .seek(SeekFrom::Start(self.offset_from_chunk_start))
             .unwrap();
@@ -696,7 +696,7 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
+        let chunk = EvtxChunk::new(from_start_of_chunk.to_vec()).unwrap();
 
         for record in chunk.into_iter().take(1) {
             println!("{:?}", record);

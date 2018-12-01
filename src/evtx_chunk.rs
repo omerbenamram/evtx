@@ -61,7 +61,7 @@ pub struct EvtxChunk<'a> {
     header: EvtxChunkHeader,
     // TODO: replace with "output-format"
     //    visitor: &'a Visitor<'a>,
-    pub data: &'a [u8],
+    pub data: Vec<u8>,
     pub string_table: HashMap<Offset, (u16, String)>,
     pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
 }
@@ -94,7 +94,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
-            chunk: &mut self.chunk,
+            chunk: &self.chunk,
             offset_from_chunk_start: self.offset_from_chunk_start + cursor.position(),
             data_size: binxml_data_size,
             data_read_so_far: 0,
@@ -157,8 +157,8 @@ impl<'a> Debug for EvtxChunk<'a> {
 }
 
 impl<'a> EvtxChunk<'a> {
-    pub fn new(data: &'a [u8]) -> Result<EvtxChunk<'a>, Error> {
-        let mut cursor = Cursor::new(data);
+    pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, Error> {
+        let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
         Ok(EvtxChunk {
