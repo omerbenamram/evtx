@@ -12,17 +12,17 @@ enum HeaderParseError {
 
 #[derive(Debug, PartialEq)]
 pub struct EvtxFileHeader {
-    oldest_chunk: u64,
-    current_chunk_num: u64,
-    next_record_num: u64,
-    header_size: u32,
-    minor_version: u16,
-    major_version: u16,
-    header_block_size: u16,
-    chunk_count: u16,
-    flags: HeaderFlags,
+    pub oldest_chunk: u64,
+    pub current_chunk_num: u64,
+    pub next_record_num: u64,
+    pub header_size: u32,
+    pub minor_version: u16,
+    pub major_version: u16,
+    pub header_block_size: u16,
+    pub chunk_count: u16,
+    pub flags: HeaderFlags,
     // Checksum is of first 120 bytes of header
-    checksum: u32,
+    pub checksum: u32,
 }
 
 #[derive(Debug, PartialEq)]

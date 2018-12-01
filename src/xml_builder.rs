@@ -1,19 +1,24 @@
-use core::borrow::Borrow;
+use crate::model::owned::XmlElement;
 use crate::model::*;
-use log::{debug, log};
-use std::borrow::Cow;
-use std::ops::Deref;
+use core::borrow::Borrow;
+use log::{debug, log, trace};
+
 use std::{
-    io::{Cursor, Read, Result, Seek, SeekFrom, Write},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     mem,
 };
+
 use xml::common::XmlVersion;
 use xml::{
     name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
 };
-use crate::model::owned::XmlElement;
 
-pub trait Visitor<'a> {
+use failure::{format_err, Error};
+
+pub trait BinXMLOutput<'a, W: Write> {
+    fn with_writer(target: W) -> Self;
+    fn into_writer(self) -> Result<W, Error>;
+
     fn visit_end_of_stream(&mut self) -> ();
     fn visit_open_start_element(&mut self, open_start_element: &XmlElement<'a>) -> ();
     fn visit_close_element(&mut self) -> ();
@@ -25,29 +30,46 @@ pub trait Visitor<'a> {
     fn visit_start_of_stream(&mut self) -> ();
 }
 
-pub struct BinXMLTreeBuilder<W: Write> {
+pub struct XMLOutput<W: Write> {
     writer: EventWriter<W>,
+    eof_reached: bool,
 }
 
-impl<W: Write> BinXMLTreeBuilder<W> {
-    pub fn with_writer(target: W) -> Self {
+impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
+    fn with_writer(target: W) -> Self {
         let writer = EmitterConfig::new()
             .line_separator("\r\n")
             .perform_indent(true)
             .normalize_empty_elements(false)
             .create_writer(target);
 
-        BinXMLTreeBuilder { writer }
+        XMLOutput {
+            writer,
+            eof_reached: false,
+        }
     }
-}
 
-impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<W> {
+    fn into_writer(self) -> Result<W, Error> {
+        if self.eof_reached {
+            Ok(self.writer.into_inner())
+        } else {
+            Err(format_err!(
+                "Tried to return writer before EOF marked, incomplete output."
+            ))
+        }
+    }
+
     fn visit_end_of_stream(&mut self) {
-        debug!("visit_end_of_stream");
+        trace!("visit_end_of_stream");
+        self.eof_reached = true
     }
 
     fn visit_open_start_element(&mut self, element: &XmlElement) {
-        debug!("visit_open_start_element: {:?}", element);
+        trace!("visit_open_start_element: {:?}", element);
+        if self.eof_reached {
+            return;
+        }
+
         let mut event_builder = XmlEvent::start_element(element.name.borrow());
 
         for attr in element.attributes.iter() {
@@ -58,11 +80,19 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<W> {
     }
 
     fn visit_close_element(&mut self) {
-        debug!("visit_close_element");
+        trace!("visit_close_element");
+        if self.eof_reached {
+            return;
+        }
+
         self.writer.write(XmlEvent::end_element()).unwrap();
     }
 
     fn visit_characters(&mut self, value: &str) -> () {
+        trace!("visit_chars");
+        if self.eof_reached {
+            return;
+        }
         self.writer.write(XmlEvent::characters(value)).unwrap();
     }
 
@@ -83,6 +113,10 @@ impl<'a, W: Write> Visitor<'a> for BinXMLTreeBuilder<W> {
     }
 
     fn visit_start_of_stream(&mut self) -> () {
+        trace!("visit_start_of_stream");
+        if self.eof_reached {
+            return;
+        }
         self.writer
             .write(XmlEvent::StartDocument {
                 version: XmlVersion::Version10,

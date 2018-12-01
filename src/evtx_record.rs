@@ -4,10 +4,10 @@ use crate::utils::datetime_from_filetime;
 use std::io::{self, Cursor, Read};
 
 #[derive(Debug, PartialEq)]
-pub struct EvtxRecord<'a> {
+pub struct EvtxRecord {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
-    pub data: &'a [u8],
+    pub data: String,
 }
 
 #[derive(Debug, PartialEq)]

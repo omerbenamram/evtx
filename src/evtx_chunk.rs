@@ -7,8 +7,9 @@ use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::deserialized::*;
 use crate::utils::*;
-use crate::xml_builder::Visitor;
-use log::{debug, trace, log};
+use crate::xml_builder::BinXMLOutput;
+use crate::xml_builder::XMLOutput;
+use log::{debug, log, trace};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -58,7 +59,8 @@ impl Debug for EvtxChunkHeader {
 
 pub struct EvtxChunk<'a> {
     header: EvtxChunkHeader,
-    visitor: Box<Visitor<'a>>,
+    // TODO: replace with "output-format"
+    //    visitor: &'a Visitor<'a>,
     pub data: &'a [u8],
     pub string_table: HashMap<Offset, (u16, String)>,
     pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
@@ -71,7 +73,7 @@ pub struct IterRecords<'a> {
 }
 
 impl<'a> Iterator for IterRecords<'a> {
-    type Item = Result<EvtxRecord<'a>, Error>;
+    type Item = Result<EvtxRecord, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted {
@@ -79,11 +81,11 @@ impl<'a> Iterator for IterRecords<'a> {
         }
 
         let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
-        // TODO: remove unwrap
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
 
         // TODO: document all the tiny offsets
         let binxml_data_size = record_header.data_size - 5 - 4 - 4 - 8 - 8;
+
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
             chunk: &mut self.chunk,
@@ -92,6 +94,9 @@ impl<'a> Iterator for IterRecords<'a> {
             data_read_so_far: 0,
         };
 
+        let record_buffer = Vec::new();
+        let mut output_builder = XMLOutput::with_writer(record_buffer);
+
         let tokens: Vec<BinXMLDeserializedTokens> = deserializer
             .into_iter()
             .filter_map(|t| Some(t.expect("invalid token")))
@@ -99,7 +104,15 @@ impl<'a> Iterator for IterRecords<'a> {
 
         self.offset_from_chunk_start += record_header.data_size as u64;
 
-        parse_tokens(tokens, &mut self.chunk.visitor);
+        parse_tokens(tokens, &mut output_builder);
+
+        let data = match output_builder.into_writer() {
+            Ok(output) => match String::from_utf8(output) {
+                Ok(s) => s,
+                Err(utf_err) => return Some(Err(format_err!("UTF-8 conversion of output failed"))),
+            },
+            Err(e) => return Some(Err(e)),
+        };
 
         if self.chunk.header.last_event_record_id == record_header.event_record_id {
             self.exhausted = true;
@@ -108,13 +121,13 @@ impl<'a> Iterator for IterRecords<'a> {
         Some(Ok(EvtxRecord {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            data: &[],
+            data,
         }))
     }
 }
 
 impl<'a> IntoIterator for EvtxChunk<'a> {
-    type Item = Result<EvtxRecord<'a>, Error>;
+    type Item = Result<EvtxRecord, Error>;
     type IntoIter = IterRecords<'a>;
 
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
@@ -138,13 +151,12 @@ impl<'a> Debug for EvtxChunk<'a> {
 }
 
 impl<'a> EvtxChunk<'a> {
-    pub fn new(data: &'a [u8], visitor: impl Visitor<'a> + 'static) -> Result<EvtxChunk, Error> {
+    pub fn new(data: &'a [u8]) -> Result<EvtxChunk<'a>, Error> {
         let mut cursor = Cursor::new(data);
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
         Ok(EvtxChunk {
             data,
-            visitor: Box::new(visitor),
             header,
             string_table: HashMap::new(),
             template_table: HashMap::new(),

@@ -13,7 +13,7 @@ use crate::{
     guid::Guid,
     utils::datetime_from_filetime,
     utils::*,
-    xml_builder::Visitor,
+    xml_builder::BinXMLOutput,
 };
 
 use crate::model::deserialized::*;
@@ -25,6 +25,7 @@ use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::io::Cursor;
+use std::io::Write;
 
 #[derive(Debug)]
 pub struct BinXmlDeserializationError {
@@ -513,9 +514,9 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
     }
 }
 
-pub fn parse_tokens<'c: 'r, 'r>(
+pub fn parse_tokens<'c: 'r, 'r, W: Write, T: BinXMLOutput<'c, W>>(
     tokens: Vec<BinXMLDeserializedTokens<'c>>,
-    visitor: &mut Box<Visitor<'c>>,
+    visitor: &'r mut T,
 ) {
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
@@ -671,7 +672,7 @@ pub fn expand_templates(
 
 mod tests {
     use super::*;
-    use crate::xml_builder::BinXMLTreeBuilder;
+    use crate::xml_builder::XMLOutput;
     use std::io::stdout;
     use std::io::Write;
 
@@ -683,8 +684,7 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let visitor = BinXMLTreeBuilder::with_writer(stdout());
-        let chunk = EvtxChunk::new(&from_start_of_chunk, visitor).unwrap();
+        let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
 
         for record in chunk.into_iter().take(1) {
             println!("{:?}", record);
