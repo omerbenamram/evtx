@@ -66,13 +66,19 @@ pub struct EvtxChunk<'a> {
     pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
 }
 
-pub struct IterRecords<'a> {
+pub struct IterChunkRecords<'a> {
     chunk: EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
 }
 
-impl<'a> Iterator for IterRecords<'a> {
+impl<'a> IterChunkRecords<'a> {
+    pub fn exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
+
+impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = Result<EvtxRecord, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
@@ -128,10 +134,10 @@ impl<'a> Iterator for IterRecords<'a> {
 
 impl<'a> IntoIterator for EvtxChunk<'a> {
     type Item = Result<EvtxRecord, Error>;
-    type IntoIter = IterRecords<'a>;
+    type IntoIter = IterChunkRecords<'a>;
 
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
-        IterRecords {
+        IterChunkRecords {
             chunk: self,
             offset_from_chunk_start: EVTX_HEADER_SIZE as u64,
             exhausted: false,

@@ -4,6 +4,9 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 use time::Duration;
 
+use failure::Error;
+
+use crate::evtx_chunk::IterChunkRecords;
 use crate::evtx_chunk::{EvtxChunk, EvtxChunkHeader};
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
@@ -18,22 +21,57 @@ use std::rc::Rc;
 const EVTX_CHUNK_SIZE: usize = 65536;
 const EVTX_HEADER_SIZE: usize = 4096;
 
-fn parse_evtx(evtx: &[u8]) {
-    let mut cursor = Cursor::new(evtx);
-    let header = EvtxFileHeader::from_reader(&mut cursor).unwrap();
+struct IterRecords<'chunk, T: Read + Seek> {
+    header: EvtxFileHeader,
+    evtx_data: T,
+    chunk_number: u16,
+    chunk_iter: IterChunkRecords<'chunk>,
+}
 
-    let mut offset = EVTX_HEADER_SIZE;
+impl<'a, T: Read + Seek> Iterator for IterRecords<'a, T> {
+    type Item = Result<EvtxRecord, Error>;
 
-    for chunk in 0..header.chunk_count {
-        let chunk = EvtxChunk::new(&evtx[offset..offset + EVTX_CHUNK_SIZE]).unwrap();
+    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        // Need to load a new chunk.
+        if self.chunk_iter.exhausted() {
+            let mut chunk = Vec::with_capacity(EVTX_CHUNK_SIZE);
+            self.evtx_data.seek(SeekFrom::Start(
+                (EVTX_HEADER_SIZE + self.chunk_number as usize * EVTX_CHUNK_SIZE) as u64,
+            ));
 
-        println!("Chunk: {:#?}", chunk);
+            self.evtx_data.read_exact(&mut chunk);
 
-        for record in chunk.into_iter() {
-            println!("{:?}", record);
+            let mut cursor = Cursor::new(chunk.as_slice());
+            let with_header = EvtxChunk::new(&chunk).unwrap();
+            self.chunk_iter = with_header.into_iter();
         }
 
-        offset += EVTX_CHUNK_SIZE;
+        self.chunk_iter.next()
+    }
+}
+
+impl<'a> IterRecords<'a, Cursor<Vec<u8>>> {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        let mut borrowing_cursor = Cursor::new(bytes.as_slice());
+
+        let evtx_header = EvtxFileHeader::from_reader(&mut borrowing_cursor)
+            .expect("Failed to read EVTX file header");
+
+        // Allocate the first chunk
+        let mut chunk = Vec::with_capacity(EVTX_CHUNK_SIZE);
+        borrowing_cursor.seek(SeekFrom::Start((EVTX_HEADER_SIZE) as u64));
+        borrowing_cursor.read_exact(&mut chunk);
+
+        let chunk = EvtxChunk::new(&chunk).expect("Failed to read EVTX chunk header");
+
+        let owning_cursor = Cursor::new(bytes);
+
+        IterRecords {
+            header: evtx_header,
+            evtx_data: owning_cursor,
+            chunk_number: 0,
+            chunk_iter: chunk.into_iter(),
+        }
     }
 }
 
@@ -53,7 +91,11 @@ mod tests {
     fn test_parses_record() {
         let _ = env_logger::try_init().expect("Failed to init logger");
         let evtx_file = include_bytes!("../samples/security.evtx");
-        parse_evtx(evtx_file);
+        let records = IterRecords::from_bytes(evtx_file.to_vec());
+
+        for record in records.take(1) {
+            println!("{:?}", record);
+        }
     }
 
     #[test]

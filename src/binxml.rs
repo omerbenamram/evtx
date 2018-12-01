@@ -677,6 +677,18 @@ mod tests {
     use std::io::Write;
 
     extern crate env_logger;
+//
+//    fn get_record<'a>(id: u32) -> (&'a [u8], EvtxChunk<'a>) {
+//        let _ = env_logger::try_init().expect("Failed to init logger");
+//        let evtx_file = include_bytes!("../samples/security.evtx");
+//        let from_start_of_chunk = &evtx_file[4096..];
+//
+//        let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
+//
+//        for record in chunk.into_iter().take(1) {
+//            println!("{:?}", record);
+//        }
+//    }
 
     #[test]
     fn test_reads_simple_template_without_substitutions() {
