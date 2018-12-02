@@ -1,4 +1,5 @@
 use crate::guid::Guid;
+use byteorder::BigEndian;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::fmt;
 use std::fmt::Debug;
@@ -6,7 +7,6 @@ use std::fmt::Display;
 use std::io;
 use std::io::Cursor;
 use std::io::Read;
-use byteorder::BigEndian;
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Sid {

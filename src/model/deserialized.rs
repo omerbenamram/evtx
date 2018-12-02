@@ -10,11 +10,11 @@ use std::{
     rc::Rc,
 };
 
+use crate::ntsid::Sid;
 use failure::Error;
 use log::{error, log};
 use std::collections::HashMap;
 use std::string::ToString;
-use crate::ntsid::Sid;
 
 pub type Name<'a> = Cow<'a, str>;
 

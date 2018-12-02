@@ -14,7 +14,7 @@ byteorder = "1.2.3"
 xml-rs = "*"
 env_logger = "*"
 failure = "*"
-log = { version = "^0.4"}
+log = { version = "^0.4", features=["release_max_level_debug"]}
 
 [dev-dependencies]
 pretty_assertions = "*"

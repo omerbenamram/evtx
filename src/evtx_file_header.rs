@@ -7,7 +7,7 @@ enum HeaderParseError {
     #[fail(display = "Expected magic \"ElfFile\x00\", got {:#?}", magic)]
     WrongHeaderMagic { magic: [u8; 8] },
     #[fail(display = "Unknown flag value: {:#?}", flag)]
-    UnknownFlagValue { flag: u32 }
+    UnknownFlagValue { flag: u32 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -54,7 +54,11 @@ impl EvtxFileHeader {
         let flags = match stream.read_u32::<LittleEndian>()? {
             1_u32 => HeaderFlags::Dirty,
             2_u32 => HeaderFlags::Full,
-            other => return Err(Error::from(HeaderParseError::UnknownFlagValue { flag: other }))
+            other => {
+                return Err(Error::from(HeaderParseError::UnknownFlagValue {
+                    flag: other,
+                }))
+            }
         };
 
         let checksum = stream.read_u32::<LittleEndian>()?;

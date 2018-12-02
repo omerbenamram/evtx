@@ -97,6 +97,7 @@ impl<'a> IterRecords<'a, Cursor<&'a [u8]>> {
 mod tests {
     #[allow(unused_variables)]
     use super::*;
+    use crate::ensure_env_logger_initialized;
     use crate::evtx_file_header::HeaderFlags;
     use encoding::all::UTF_16LE;
     use encoding::DecoderTrap;
@@ -107,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_parses_record() {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        let _ = ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let records = IterRecords::from_bytes(evtx_file);
 
@@ -119,21 +120,21 @@ mod tests {
 
     #[test]
     fn test_parses_records_from_different_chunks() {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        let _ = ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let records = IterRecords::from_bytes(evtx_file);
 
         for (i, record) in records.take(100).enumerate() {
             match record {
                 Ok(r) => assert_eq!(r.event_record_id, i as u64 + 1),
-                Err(e) => println!("Error while reading record {}, {:?}", i, e)
+                Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }
     }
 
     #[test]
     fn test_parses_chunk2() {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        let _ = ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
 
         let chunk = EvtxChunk::new(

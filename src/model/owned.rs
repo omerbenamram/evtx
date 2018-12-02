@@ -1,5 +1,5 @@
-use log::{error, log};
 use crate::model::deserialized::*;
+use log::{error, log};
 use std::borrow::Cow;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
