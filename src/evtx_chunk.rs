@@ -94,7 +94,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
 
         // TODO: document all the tiny offsets
-        let binxml_data_size = record_header.data_size - 4 - 4 - 4 - 8 - 8;
+        let binxml_data_size = record_header.data_size - 4 - 4 - 8 - 8;
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
@@ -119,7 +119,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             }
         }
 
-        self.offset_from_chunk_start += record_header.data_size as u64;
+        self.offset_from_chunk_start += (record_header.data_size + 4) as u64;
 
         parse_tokens(tokens, &mut output_builder);
 
