@@ -76,6 +76,10 @@ impl<'a> IterChunkRecords<'a> {
     pub fn exhausted(&self) -> bool {
         self.exhausted
     }
+
+    pub fn offset_from_chunk_start(&self) -> u64 {
+        self.offset_from_chunk_start
+    }
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
@@ -103,10 +107,14 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let record_buffer = Vec::new();
         let mut output_builder = XMLOutput::with_writer(record_buffer);
 
-        let tokens: Vec<BinXMLDeserializedTokens> = deserializer
-            .into_iter()
-            .filter_map(|t| Some(t.expect("invalid token")))
-            .collect();
+        let mut tokens = vec![];
+
+        for token in deserializer {
+            match token {
+                Ok(token) => tokens.push(token),
+                Err(e) => return Some(Err(e))
+            }
+        }
 
         self.offset_from_chunk_start += record_header.data_size as u64;
 

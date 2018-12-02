@@ -258,10 +258,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         })
     }
 
-    fn read_value(
-        &self,
-        cursor: &mut Cursor<&'chunk [u8]>,
-    ) -> Result<BinXMLValue<'chunk>, Error> {
+    fn read_value(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<BinXMLValue<'chunk>, Error> {
         debug!(
             "Value at: {} (0x{:2x})",
             cursor.position(),
@@ -303,6 +300,11 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = cursor.read_u32::<LittleEndian>()?;
+        trace!("Name at offset: {}", name_offset);
+
+        if name_offset > self.chunk.data.len() as u32 {
+            return Err(format_err!("Invalid offset {}", name_offset));
+        }
         //        let name = match self.chunk.string_table.entry(name_offset) {
         //            Entry::Occupied(ref e) => e.get(),
         //            Entry::Vacant(e) => {
@@ -322,6 +324,11 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         //        };
 
         let name = if name_offset != cursor.position() as u32 {
+            trace!(
+                "Current offset {}, seeking to {}",
+                cursor.position(),
+                name_offset
+            );
             let current_position = cursor.position();
             cursor.seek(SeekFrom::Start(name_offset as u64))?;
             let _ = cursor.read_u32::<LittleEndian>()?;
@@ -330,6 +337,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             cursor.seek(SeekFrom::Start(current_position as u64))?;
             name
         } else {
+            trace!("Name is at current offset");
             let _ = cursor.read_u32::<LittleEndian>()?;
             let name_hash = cursor.read_u16::<LittleEndian>()?;
             read_len_prefixed_utf16_string(cursor, true)?.expect("Expected string")
@@ -495,11 +503,11 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
 
         let raw_token = token.unwrap();
 
-        // Finished reading
         debug!(
             "need to read: {}, read so far: {}",
             self.data_size, self.data_read_so_far
         );
+        // Finished reading
         if self.data_size == self.data_read_so_far {
             return None;
         }
@@ -672,23 +680,81 @@ pub fn expand_templates(
 
 mod tests {
     use super::*;
+    use crate::evtx_record::EvtxRecord;
+    use crate::evtx_record::EvtxRecordHeader;
     use crate::xml_builder::XMLOutput;
     use std::io::stdout;
     use std::io::Write;
+    const EVTX_CHUNK_SIZE: usize = 65536;
+    const EVTX_HEADER_SIZE: usize = 4096;
+    const EVTX_RECORD_HEADER_SIZE: usize = 24;
 
     extern crate env_logger;
-//
-//    fn get_record<'a>(id: u32) -> (&'a [u8], EvtxChunk<'a>) {
-//        let _ = env_logger::try_init().expect("Failed to init logger");
-//        let evtx_file = include_bytes!("../samples/security.evtx");
-//        let from_start_of_chunk = &evtx_file[4096..];
-//
-//        let chunk = EvtxChunk::new(&from_start_of_chunk).unwrap();
-//
-//        for record in chunk.into_iter().take(1) {
-//            println!("{:?}", record);
-//        }
-//    }
+
+    fn get_record(id: u32) -> (Vec<u8>) {
+        let _ = env_logger::try_init().expect("Failed to init logger");
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+
+        let chunk = EvtxChunk::new(from_start_of_chunk.to_vec()).unwrap();
+
+        let mut iter = chunk.into_iter();
+
+        for _ in 0..id - 1 {
+            iter.next();
+        }
+
+        let record_offset = iter.offset_from_chunk_start();
+        let mut record_cursor = Cursor::new(&from_start_of_chunk[record_offset as usize..]);
+        let header = EvtxRecordHeader::from_reader(&mut record_cursor).unwrap();
+        let mut record_data = Vec::with_capacity(header.data_size as usize);
+
+        record_cursor
+            .take(header.data_size as u64)
+            .read_to_end(&mut record_data)
+            .unwrap();
+        record_data
+    }
+
+    #[test]
+    fn test_read_name_bug() {
+        let _ = env_logger::try_init().expect("Failed to init logger");
+        let evtx_file = include_bytes!("../samples/security.evtx");
+
+        let mut cursor = Cursor::new(&evtx_file[EVTX_HEADER_SIZE + EVTX_CHUNK_SIZE..]);
+        let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
+        cursor
+            .borrow_mut()
+            .take(EVTX_CHUNK_SIZE as u64)
+            .read_to_end(&mut chunk_data)
+            .unwrap();
+
+        let chunk = EvtxChunk::new(chunk_data).unwrap();
+        let mut cursor = Cursor::new(chunk.data.as_slice());
+
+        // Seek to bad record position
+        cursor.seek(SeekFrom::Start(3872)).unwrap();
+
+        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
+        let mut data = Vec::with_capacity(record_header.data_size as usize);
+
+        cursor
+            .take(record_header.data_size as u64)
+            .read_to_end(&mut data)
+            .unwrap();
+
+        let deser = BinXmlDeserializer {
+            chunk: &chunk,
+            offset_from_chunk_start: (3872_usize + EVTX_RECORD_HEADER_SIZE) as u64,
+            data_size: record_header.data_size - 4 - 4 - 4 - 8 - 8 - 6,
+            data_read_so_far: 0,
+        };
+
+        let tokens: Vec<BinXMLDeserializedTokens> = deser
+            .into_iter()
+            .filter_map(|t| Some(t.expect("invalid token")))
+            .collect();
+    }
 
     #[test]
     fn test_reads_simple_template_without_substitutions() {

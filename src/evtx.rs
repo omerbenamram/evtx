@@ -1,5 +1,6 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use chrono::prelude::*;
+use log::{info, log};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 use time::Duration;
@@ -37,6 +38,7 @@ impl<'a, T: Read + Seek> Iterator for IterRecords<'a, T> {
         // Need to load a new chunk.
         if self.chunk_iter.exhausted() {
             self.chunk_number += 1;
+            info!("Allocating new chunk {}", self.chunk_number);
 
             let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
             self.evtx_data
@@ -56,6 +58,10 @@ impl<'a, T: Read + Seek> Iterator for IterRecords<'a, T> {
             self.chunk_iter = with_header.into_iter();
         }
 
+        info!(
+            "Yielding record at offset {}",
+            self.chunk_iter.offset_from_chunk_start()
+        );
         self.chunk_iter.next()
     }
 }
@@ -118,11 +124,12 @@ mod tests {
         let records = IterRecords::from_bytes(evtx_file);
 
         for (i, record) in records.take(100).enumerate() {
-            let record = record.unwrap();
-            assert_eq!(record.event_record_id, i as u64 + 1)
+            match record {
+                Ok(r) => assert_eq!(r.event_record_id, i as u64 + 1),
+                Err(e) => println!("Error while reading record {}, {:?}", i, e)
+            }
         }
     }
-
 
     #[test]
     fn test_parses_chunk2() {
