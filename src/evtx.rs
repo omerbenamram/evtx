@@ -107,14 +107,19 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn test_parses_record() {
+    fn test_parses_first_10_records() {
         let _ = ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let records = IterRecords::from_bytes(evtx_file);
 
         for (i, record) in records.take(10).enumerate() {
-            let record = record.unwrap();
-            assert_eq!(record.event_record_id, i as u64 + 1)
+            match record {
+                Ok(r) => {
+                    assert_eq!(r.event_record_id, i as u64 + 1);
+                    println!("{}", r.data);
+                }
+                Err(e) => println!("Error while reading record {}, {:?}", i, e),
+            }
         }
     }
 
@@ -126,7 +131,10 @@ mod tests {
 
         for (i, record) in records.take(100).enumerate() {
             match record {
-                Ok(r) => assert_eq!(r.event_record_id, i as u64 + 1),
+                Ok(r) => {
+                    assert_eq!(r.event_record_id, i as u64 + 1);
+                    println!("{}", r.data);
+                }
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }

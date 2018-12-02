@@ -3,14 +3,14 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
 use std::io::{self, Cursor, Read};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
     pub data: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecordHeader {
     pub data_size: u32,
     pub event_record_id: u64,

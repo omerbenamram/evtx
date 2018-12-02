@@ -430,22 +430,26 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 cursor.position(),
                 name_offset
             );
-            let current_position = cursor.position();
+            let position_before_seek = cursor.position();
             cursor
                 .seek(SeekFrom::Start(name_offset as u64))
-                .map_err(|e| BinXmlDeserializationError::io(e, current_position))?;
+                .map_err(|e| BinXmlDeserializationError::io(e, position_before_seek))?;
             let _ = cursor
                 .read_u32::<LittleEndian>()
-                .map_err(|e| BinXmlDeserializationError::io(e, current_position))?;
+                .map_err(|e| BinXmlDeserializationError::io(e, position_before_seek))?;
             let name_hash = cursor
                 .read_u16::<LittleEndian>()
-                .map_err(|e| BinXmlDeserializationError::io(e, current_position))?;
+                .map_err(|e| BinXmlDeserializationError::io(e, position_before_seek))?;
             let name = read_len_prefixed_utf16_string(cursor, true)
-                .map_err(|e| BinXmlDeserializationError::utf16_decode_error(e, current_position))?
+                .map_err(|e| {
+                    BinXmlDeserializationError::utf16_decode_error(e, position_before_seek)
+                })?
                 .expect("Expected string");
+
             cursor
-                .seek(SeekFrom::Start(current_position as u64))
-                .map_err(|e| BinXmlDeserializationError::io(e, current_position))?;
+                .seek(SeekFrom::Start(position_before_seek as u64))
+                .map_err(|e| BinXmlDeserializationError::io(e, position_before_seek))?;
+
             name
         } else {
             trace!("Name is at current offset");
@@ -468,6 +472,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         cursor: &mut Cursor<&'chunk [u8]>,
     ) -> Result<BinXMLTemplate<'chunk>, BinXmlDeserializationError> {
         debug!("TemplateInstance at {}", cursor.position());
+
         cursor
             .read_u8()
             .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;;
@@ -493,13 +498,17 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 template_definition_data_offset
             );
             let position_before_seek = cursor.position();
+
             cursor
                 .seek(SeekFrom::Start(template_definition_data_offset as u64))
                 .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
+
             let template_def = Rc::new(self.read_template_definition(cursor)?);
+
             cursor
                 .seek(SeekFrom::Start(position_before_seek))
                 .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
+
             template_def
         } else {
             Rc::new(self.read_template_definition(cursor)?)
@@ -640,8 +649,11 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        if self.offset_from_chunk_start == 2784 {
+            println!("2");
+        }
         trace!("offset_from_chunk_start: {}", self.offset_from_chunk_start);
-        debug!(
+        trace!(
             "need to read: {}, read so far: {}",
             self.data_size, self.data_read_so_far
         );
@@ -657,7 +669,7 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
             .seek(SeekFrom::Start(self.offset_from_chunk_start))
             .unwrap();
 
-        let maybe_token = match self.read_next_token(&mut cursor) {
+        let maybe_token_result = match self.read_next_token(&mut cursor) {
             Ok(t) => {
                 debug!("{:?} at {}", t, self.offset_from_chunk_start);
                 let token = self.token_from_raw(&mut cursor, t);
@@ -670,7 +682,7 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
         self.offset_from_chunk_start += total_read;
         self.data_read_so_far += total_read as u32;
 
-        maybe_token
+        maybe_token_result
     }
 }
 

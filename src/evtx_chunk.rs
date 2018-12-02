@@ -9,7 +9,7 @@ use crate::model::deserialized::*;
 use crate::utils::*;
 use crate::xml_builder::BinXMLOutput;
 use crate::xml_builder::XMLOutput;
-use log::{debug, log, trace};
+use log::{info, debug, log, trace};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -91,10 +91,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         }
 
         let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
-        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
 
-        // TODO: document all the tiny offsets
-        let binxml_data_size = record_header.data_size - 4 - 4 - 8 - 8;
+        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
+        info!("Record id - {}", record_header.event_record_id);
+
+        // 24 - header size
+        // 4 - copy of size record size
+        let binxml_data_size = record_header.data_size - 4 - 24;
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
@@ -114,12 +117,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 Ok(token) => tokens.push(token),
                 Err(e) => {
                     dump_cursor(&mut cursor, 10);
+                    self.offset_from_chunk_start += record_header.data_size as u64;
                     return Some(Err(e.into()));
                 }
             }
         }
 
-        self.offset_from_chunk_start += (record_header.data_size + 4) as u64;
+        self.offset_from_chunk_start += record_header.data_size as u64;
 
         parse_tokens(tokens, &mut output_builder);
 
