@@ -129,7 +129,7 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let records = IterRecords::from_bytes(evtx_file);
 
-        for (i, record) in records.take(100).enumerate() {
+        for (i, record) in records.take(1000).enumerate() {
             match record {
                 Ok(r) => {
                     assert_eq!(r.event_record_id, i as u64 + 1);
@@ -151,10 +151,13 @@ mod tests {
         )
         .unwrap();
 
-        println!("Chunk: {:#?}", chunk);
+        println!("Chunk: {:#?}", chunk.header);
 
         for record in chunk.into_iter() {
-            println!("{:?}", record);
+            if let Err(e) = record {
+                println!("{}", e);
+                panic!();
+            }
         }
     }
 }

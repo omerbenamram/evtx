@@ -48,34 +48,34 @@ pub enum BinXMLValueType {
 }
 
 impl BinXMLValueType {
-    pub fn from_u8(byte: u8) -> BinXMLValueType {
+    pub fn from_u8(byte: u8) -> Option<BinXMLValueType> {
         match byte {
-            0x00 => BinXMLValueType::NullType,
-            0x01 => BinXMLValueType::StringType,
-            0x02 => BinXMLValueType::AnsiStringType,
-            0x03 => BinXMLValueType::Int8Type,
-            0x04 => BinXMLValueType::UInt8Type,
-            0x05 => BinXMLValueType::Int16Type,
-            0x06 => BinXMLValueType::UInt16Type,
-            0x07 => BinXMLValueType::Int32Type,
-            0x08 => BinXMLValueType::UInt32Type,
-            0x09 => BinXMLValueType::Int64Type,
-            0x0a => BinXMLValueType::UInt64Type,
-            0x0b => BinXMLValueType::Real32Type,
-            0x0c => BinXMLValueType::Real64Type,
-            0x0d => BinXMLValueType::BoolType,
-            0x0e => BinXMLValueType::BinaryType,
-            0x0f => BinXMLValueType::GuidType,
-            0x10 => BinXMLValueType::SizeTType,
-            0x11 => BinXMLValueType::FileTimeType,
-            0x12 => BinXMLValueType::SysTimeType,
-            0x13 => BinXMLValueType::SidType,
-            0x14 => BinXMLValueType::HexInt32Type,
-            0x15 => BinXMLValueType::HexInt64Type,
-            0x20 => BinXMLValueType::EvtHandle,
-            0x21 => BinXMLValueType::BinXmlType,
-            0x23 => BinXMLValueType::EvtXml,
-            _ => unreachable!(),
+            0x00 => Some(BinXMLValueType::NullType),
+            0x01 => Some(BinXMLValueType::StringType),
+            0x02 => Some(BinXMLValueType::AnsiStringType),
+            0x03 => Some(BinXMLValueType::Int8Type),
+            0x04 => Some(BinXMLValueType::UInt8Type),
+            0x05 => Some(BinXMLValueType::Int16Type),
+            0x06 => Some(BinXMLValueType::UInt16Type),
+            0x07 => Some(BinXMLValueType::Int32Type),
+            0x08 => Some(BinXMLValueType::UInt32Type),
+            0x09 => Some(BinXMLValueType::Int64Type),
+            0x0a => Some(BinXMLValueType::UInt64Type),
+            0x0b => Some(BinXMLValueType::Real32Type),
+            0x0c => Some(BinXMLValueType::Real64Type),
+            0x0d => Some(BinXMLValueType::BoolType),
+            0x0e => Some(BinXMLValueType::BinaryType),
+            0x0f => Some(BinXMLValueType::GuidType),
+            0x10 => Some(BinXMLValueType::SizeTType),
+            0x11 => Some(BinXMLValueType::FileTimeType),
+            0x12 => Some(BinXMLValueType::SysTimeType),
+            0x13 => Some(BinXMLValueType::SidType),
+            0x14 => Some(BinXMLValueType::HexInt32Type),
+            0x15 => Some(BinXMLValueType::HexInt64Type),
+            0x20 => Some(BinXMLValueType::EvtHandle),
+            0x21 => Some(BinXMLValueType::BinXmlType),
+            0x23 => Some(BinXMLValueType::EvtXml),
+            _ => None,
         }
     }
 }
@@ -180,6 +180,11 @@ pub struct BinXMLTemplateDefinition<'a> {
     pub template_guid: Guid,
     pub data_size: u32,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXmlEntityReference<'a> {
+    pub name: Cow<'a, str>
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

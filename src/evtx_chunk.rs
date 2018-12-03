@@ -58,7 +58,7 @@ impl Debug for EvtxChunkHeader {
 }
 
 pub struct EvtxChunk<'a> {
-    header: EvtxChunkHeader,
+    pub header: EvtxChunkHeader,
     // TODO: replace with "output-format"
     //    visitor: &'a Visitor<'a>,
     pub data: Vec<u8>,
@@ -97,7 +97,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         // 24 - header size
         // 4 - copy of size record size
-        let binxml_data_size = record_header.data_size - 4 - 24;
+        let binxml_data_size = record_header.data_size - 24 - 4;
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer {
@@ -116,6 +116,8 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             match token {
                 Ok(token) => tokens.push(token),
                 Err(e) => {
+                    break;
+
                     dump_cursor(&mut cursor, 10);
                     self.offset_from_chunk_start += record_header.data_size as u64;
                     return Some(Err(e.into()));

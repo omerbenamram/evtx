@@ -57,6 +57,10 @@ impl BinXmlDeserializationError {
         BinXmlDeserializationError::new(Context::new(err), offset)
     }
 
+    pub fn not_a_valid_binxml_value_type(token: u8, offset: u64) -> Self {
+        let err = BinXmlDeserializationErrorKind::NotAValidValueType { token };
+        BinXmlDeserializationError::new(Context::new(err), offset)
+    }
     pub fn utf16_decode_error(e: impl Fail, offset: u64) -> Self {
         BinXmlDeserializationError::new(
             Context::new(BinXmlDeserializationErrorKind::UTF16Decode),
@@ -97,6 +101,8 @@ pub enum BinXmlDeserializationErrorKind {
     ExpectedValue { position: u64 },
     #[fail(display = "{:2X} not a valid binxml token", token)]
     NotAValidBinXMLToken { token: u8 },
+    #[fail(display = "{:2X} not a valid binxml token", token)]
+    NotAValidValueType { token: u8 },
     #[fail(display = "Unexpected EOF")]
     UnexpectedEOF,
     #[fail(display = "Failed to decode UTF-16 string")]
@@ -328,11 +334,16 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
 
         debug!("\t Index: {}", substitution_index);
-        let value_type = BinXMLValueType::from_u8(
-            cursor
-                .read_u8()
-                .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?,
-        );
+        let value_type_token = cursor
+            .read_u8()
+            .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
+
+        let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
+            BinXmlDeserializationError::not_a_valid_binxml_value_type(
+                value_type_token,
+                cursor.position(),
+            )
+        })?;
         debug!("\t Value Type: {:?}", value_type);
         let ignore = optional && (value_type == BinXMLValueType::NullType);
         debug!("\t Ignore: {}", ignore);
@@ -353,11 +364,18 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             cursor.position(),
             cursor.position() + 24
         );
-        let value_type = BinXMLValueType::from_u8(
-            cursor
-                .read_u8()
-                .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?,
-        );
+
+        let value_type_token = cursor
+            .read_u8()
+            .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
+
+        let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
+            BinXmlDeserializationError::not_a_valid_binxml_value_type(
+                value_type_token,
+                cursor.position(),
+            )
+        })?;
+
         let data = self.read_value_from_type(cursor, &value_type)?;
         debug!("\t Data: {:?}", data);
         Ok(data)
@@ -524,12 +542,16 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             let size = cursor
                 .read_u16::<LittleEndian>()
                 .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
-            let value_type = BinXMLValueType::from_u8(
-                cursor
-                    .read_u8()
-                    .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?,
-            );
-            // Empty
+            let value_type_token = cursor
+                .read_u8()
+                .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
+
+            let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
+                BinXmlDeserializationError::not_a_valid_binxml_value_type(
+                    value_type_token,
+                    cursor.position(),
+                )
+            })?; // Empty
             cursor
                 .read_u8()
                 .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
@@ -649,13 +671,11 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.offset_from_chunk_start == 2784 {
-            println!("2");
-        }
         trace!("offset_from_chunk_start: {}", self.offset_from_chunk_start);
         trace!(
             "need to read: {}, read so far: {}",
-            self.data_size, self.data_read_so_far
+            self.data_size,
+            self.data_read_so_far
         );
 
         // Finished reading
