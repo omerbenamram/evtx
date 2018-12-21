@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_parses_first_10_records() {
-        let _ = ensure_env_logger_initialized();
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let records = IterRecords::from_bytes(evtx_file);
 
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_parses_records_from_different_chunks() {
-        let _ = ensure_env_logger_initialized();
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let records = IterRecords::from_bytes(evtx_file);
 
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_parses_chunk2() {
-        let _ = ensure_env_logger_initialized();
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
 
         let chunk = EvtxChunk::new(
