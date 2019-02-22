@@ -116,17 +116,17 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             match token {
                 Ok(token) => tokens.push(token),
                 Err(e) => {
-                    error!("Tried to read an invalid token!");
+                    error!("Tried to read an invalid token!, {}", e);
                     break;
 
                     dump_cursor(&mut cursor, 10);
-                    self.offset_from_chunk_start += record_header.data_size as u64;
+                    self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(e.into()));
                 }
             }
         }
 
-        self.offset_from_chunk_start += record_header.data_size as u64;
+        self.offset_from_chunk_start += u64::from(record_header.data_size);
 
         parse_tokens(tokens, &mut output_builder);
 

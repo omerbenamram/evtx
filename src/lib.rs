@@ -5,8 +5,10 @@
 #![allow(unused_variables)]
 #![allow(unused_imports)]
 
-mod binxml;
 pub mod evtx;
+
+mod binxml;
+mod error;
 mod evtx_chunk;
 mod evtx_file_header;
 mod evtx_record;

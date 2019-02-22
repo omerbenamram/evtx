@@ -2,19 +2,19 @@ use std::cmp;
 
 /// Dumps bytes at data to the screen as hex.
 /// Display may be one of:
-/// b        One-byte octal display.
-///          Display the input offset in hexadecimal, followed by sixteen space-separated, three column, zero-filled, bytes of input data, in octal, per line.
+/// b  One-byte octal display.
+///    Display the input offset in hexadecimal, followed by sixteen space-separated, three column, zero-filled, bytes of input data, in octal, per line.
 ///
-/// c        One-byte character display. One-byte character display.
-///          Display the input offset in hexadecimal, followed by sixteen space-separated, three column, space-filled, characters of input data per line.
+/// c  One-byte character display. One-byte character display.
+///    Display the input offset in hexadecimal, followed by sixteen space-separated, three column, space-filled, characters of input data per line.
 ///
-/// C        Canonical hex display.
-///          Display the input offset in hexadecimal, followed by sixteen space-separated, two column, hexadecimal bytes, followed by the same sixteen bytes in %_p format enclosed in ``|'' characters.
+/// C  Canonical hex display.
+///    Display the input offset in hexadecimal, followed by sixteen space-separated, two column, hexadecimal bytes, followed by the same sixteen bytes in %_p format enclosed in ``|'' characters.
 ///
-/// d        Two-byte decimal display.
-/// o        Two-byte octal display.
-/// x        Two-byte hexadecimal display.
-///          Display the input offset in hexadecimal, followed by eight, space separated, four column, zero-filled, two-byte quantities of input data, in hexadecimal, per line.
+/// d  Two-byte decimal display.
+/// o  Two-byte octal display.
+/// x  Two-byte hexadecimal display.
+///    Display the input offset in hexadecimal, followed by eight, space separated, four column, zero-filled, two-byte quantities of input data, in hexadecimal, per line.
 pub fn print_hexdump(data: &[u8], offset: usize, display: char) {
     let mut address = 0;
 
