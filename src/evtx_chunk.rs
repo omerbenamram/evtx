@@ -9,7 +9,7 @@ use crate::model::deserialized::*;
 use crate::utils::*;
 use crate::xml_builder::BinXMLOutput;
 use crate::xml_builder::XMLOutput;
-use log::{info, debug, log, trace};
+use log::{debug, error, info, log, trace};
 use std::{
     borrow::Cow,
     cell::RefCell,
@@ -116,6 +116,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             match token {
                 Ok(token) => tokens.push(token),
                 Err(e) => {
+                    error!("Tried to read an invalid token!");
                     break;
 
                     dump_cursor(&mut cursor, 10);
@@ -257,7 +258,7 @@ mod tests {
         let bytes_for_checksum: Vec<u8> = header_bytes_1
             .iter()
             .chain(header_bytes_2)
-            .map(|b| *b)
+            .cloned()
             .collect();
 
         let mut cursor = Cursor::new(chunk_header);
@@ -271,7 +272,7 @@ mod tests {
             header_size: 128,
             last_event_record_data_offset: 64928,
             free_space_offset: 65376,
-            events_checksum: 4252479141,
+            events_checksum: 4_252_479_141,
             header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
             strings_offsets: [0_u32; 64],
             template_offsets: [0_u32; 32],
@@ -300,7 +301,7 @@ mod tests {
         );
         assert_eq!(chunk_header.free_space_offset, expected.free_space_offset);
         assert_eq!(chunk_header.events_checksum, expected.events_checksum);
-        assert!(chunk_header.strings_offsets.len() > 0);
-        assert!(chunk_header.template_offsets.len() > 0);
+        assert!(!chunk_header.strings_offsets.is_empty());
+        assert!(!chunk_header.template_offsets.is_empty());
     }
 }

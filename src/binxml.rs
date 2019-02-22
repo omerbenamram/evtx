@@ -157,7 +157,9 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 BinXMLDeserializedTokens::Attribute(self.read_attribute(cursor)?),
             ),
             BinXMLRawToken::CDataSection => unimplemented!("BinXMLToken::CDataSection"),
-            BinXMLRawToken::EntityReference => unimplemented!("BinXMLToken::EntityReference"),
+            BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
+                self.read_entity_ref(cursor)?,
+            )),
             BinXMLRawToken::ProcessingInstructionTarget => {
                 unimplemented!("BinXMLToken::ProcessingInstructionTarget")
             }
@@ -277,7 +279,6 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 self.read_until_end_of_stream(cursor)?,
             )),
             BinXMLValueType::EvtXml => unimplemented!(),
-            _ => unimplemented!("{:?}", value_type),
         }
     }
 
@@ -399,15 +400,18 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         let data_size = cursor
             .read_u32::<LittleEndian>()
             .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
+
         let name = self.read_name(cursor)?;
         debug!("\t Name: {:?}", name);
 
-        let attribute_list_data_size = match has_attributes {
-            true => cursor
+        let attribute_list_data_size = if has_attributes {
+            cursor
                 .read_u32::<LittleEndian>()
-                .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?,
-            false => 0,
+                .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?
+        } else {
+            0
         };
+
         debug!("\t Attributes Data Size: {:?}", attribute_list_data_size);
 
         Ok(BinXMLOpenStartElement { data_size, name })
@@ -450,7 +454,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             );
             let position_before_seek = cursor.position();
             cursor
-                .seek(SeekFrom::Start(name_offset as u64))
+                .seek(SeekFrom::Start(u64::from(name_offset)))
                 .map_err(|e| BinXmlDeserializationError::io(e, position_before_seek))?;
             let _ = cursor
                 .read_u32::<LittleEndian>()
@@ -518,7 +522,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             let position_before_seek = cursor.position();
 
             cursor
-                .seek(SeekFrom::Start(template_definition_data_offset as u64))
+                .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
                 .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
 
             let template_def = Rc::new(self.read_template_definition(cursor)?);
@@ -566,11 +570,11 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             debug!("Substitution: {:?}", descriptor.value_type);
             let value = match descriptor.value_type {
                 BinXMLValueType::StringType => BinXMLValue::StringType(Cow::Owned(
-                    read_utf16_by_size(cursor, descriptor.size as u64)
+                    read_utf16_by_size(cursor, u64::from(descriptor.size))
                         .map_err(|e| {
                             BinXmlDeserializationError::utf16_decode_error(e, cursor.position())
                         })?
-                        .unwrap_or("".to_owned()),
+                        .unwrap_or_else(|| "".to_owned()),
                 )),
                 _ => self.read_value_from_type(cursor, &descriptor.value_type)?,
             };
@@ -614,7 +618,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         let data_size = cursor
             .read_u32::<LittleEndian>()
             .map_err(|e| BinXmlDeserializationError::io(e, cursor.position()))?;
-        // Data size includes of the fragment header, element and end of file token;
+        // Data size includes the fragment header, element and end of file token;
         // except for the first 33 bytes of the template definition (above)
         let start_position = cursor.position();
         let element = self.read_until_end_of_stream(cursor)?;
@@ -630,6 +634,17 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             data_size,
             tokens: element,
         })
+    }
+
+    fn read_entity_ref(
+        &self,
+        cursor: &mut Cursor<&'chunk [u8]>,
+    ) -> Result<BinXmlEntityReference<'chunk>, BinXmlDeserializationError> {
+        debug!("EntityReference at {}", cursor.position());
+        let name = self.read_name(cursor)?;
+        debug!("\t name: {:?}", name);
+
+        Ok(BinXmlEntityReference { name })
     }
 
     fn read_attribute(
@@ -679,7 +694,7 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
         );
 
         // Finished reading
-        if self.data_size == self.data_read_so_far {
+        if self.data_read_so_far >= self.data_size {
             return None;
         }
 
@@ -689,20 +704,41 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
             .seek(SeekFrom::Start(self.offset_from_chunk_start))
             .unwrap();
 
-        let maybe_token_result = match self.read_next_token(&mut cursor) {
+        match self.read_next_token(&mut cursor) {
             Ok(t) => {
-                debug!("{:?} at {}", t, self.offset_from_chunk_start);
+                trace!("{:?} at {}", t, self.offset_from_chunk_start);
                 let token = self.token_from_raw(&mut cursor, t);
+                trace!("{:?} position at stream {}", token, cursor.position());
+
+                assert!(
+                    cursor.position() >= self.offset_from_chunk_start,
+                    "Invalid state, cursor position at entering loop {}, now at {}",
+                    self.offset_from_chunk_start,
+                    cursor.position()
+                );
+
+                let total_read = cursor.position() - self.offset_from_chunk_start;
+                self.offset_from_chunk_start += total_read;
+                self.data_read_so_far += total_read as u32;
+
                 Some(token)
             }
-            Err(e) => Some(Err(e)),
-        };
+            Err(e) => {
+                // Curosr might have not been moved if this error was thrown in middle of seek.
+                // So seek all the way to end.
+                assert!(
+                    self.data_size >= self.data_read_so_far,
+                    "Invalid state! read too much data! data_size is {}, read to {}",
+                    self.data_size,
+                    self.data_read_so_far
+                );
+                let total_read = self.data_size - self.data_read_so_far;
+                self.offset_from_chunk_start += total_read as u64;
+                self.data_read_so_far += total_read as u32;
 
-        let total_read = cursor.position() - self.offset_from_chunk_start;
-        self.offset_from_chunk_start += total_read;
-        self.data_read_so_far += total_read as u32;
-
-        maybe_token_result
+                Some(Err(e))
+            }
+        }
     }
 }
 
@@ -798,7 +834,7 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<OwnedMo
             }
             BinXMLDeserializedTokens::CDATASection => {}
             BinXMLDeserializedTokens::CharRef => {}
-            BinXMLDeserializedTokens::EntityRef => {}
+            BinXMLDeserializedTokens::EntityRef(e) => unimplemented!("{}", &format!("{:?}", e)),
             BinXMLDeserializedTokens::PITarget => {}
             BinXMLDeserializedTokens::PIData => {}
             BinXMLDeserializedTokens::Substitution(_) => {
@@ -866,11 +902,13 @@ pub fn expand_templates(
 
 mod tests {
     use super::*;
+    use crate::ensure_env_logger_initialized;
     use crate::evtx_record::EvtxRecord;
     use crate::evtx_record::EvtxRecordHeader;
     use crate::xml_builder::XMLOutput;
     use std::io::stdout;
     use std::io::Write;
+
     const EVTX_CHUNK_SIZE: usize = 65536;
     const EVTX_HEADER_SIZE: usize = 4096;
     const EVTX_RECORD_HEADER_SIZE: usize = 24;
@@ -878,7 +916,7 @@ mod tests {
     extern crate env_logger;
 
     fn get_record(id: u32) -> (Vec<u8>) {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
@@ -904,7 +942,7 @@ mod tests {
 
     #[test]
     fn test_read_name_bug() {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
 
         let mut cursor = Cursor::new(&evtx_file[EVTX_HEADER_SIZE + EVTX_CHUNK_SIZE..]);
@@ -932,7 +970,7 @@ mod tests {
         let deser = BinXmlDeserializer {
             chunk: &chunk,
             offset_from_chunk_start: (3872_usize + EVTX_RECORD_HEADER_SIZE) as u64,
-            data_size: record_header.data_size - 4 - 4 - 8 - 8,
+            data_size: record_header.data_size - 4 - 4 - 4 - 8 - 8,
             data_read_so_far: 0,
         };
 
@@ -949,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_reads_a_single_record() {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
@@ -962,7 +1000,7 @@ mod tests {
 
     #[test]
     fn test_reads_a_ten_records() {
-        let _ = env_logger::try_init().expect("Failed to init logger");
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 

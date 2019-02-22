@@ -34,7 +34,7 @@ pub fn read_len_prefixed_utf16_string(
                     return Err(Error::from(ErrorKind::InvalidData));
                 }
             }
-            return Err(Error::from(ErrorKind::InvalidData));
+            Ok(Some("".to_string()))
         })
         .and_then(|s| {
             // Seek null terminator if needed (we can't feed it to the decoder)

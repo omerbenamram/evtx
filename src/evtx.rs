@@ -95,7 +95,7 @@ impl<'a> IterRecords<'a, Cursor<&'a [u8]>> {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_variables)]
+    #![allow(unused_variables)]
     use super::*;
     use crate::ensure_env_logger_initialized;
     use crate::evtx_file_header::HeaderFlags;

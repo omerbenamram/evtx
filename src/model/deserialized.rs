@@ -160,7 +160,7 @@ pub enum BinXMLDeserializedTokens<'a> {
     Value(BinXMLValue<'a>),
     CDATASection,
     CharRef,
-    EntityRef,
+    EntityRef(BinXmlEntityReference<'a>),
     PITarget,
     PIData,
     Substitution(TemplateSubstitutionDescriptor),

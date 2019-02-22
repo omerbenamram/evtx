@@ -37,7 +37,7 @@ pub fn print_hexdump(data: &[u8], offset: usize, display: char) {
             display,
             number_of_bytes,
         );
-        address = address + 16;
+        address += 16;
     }
 }
 
@@ -45,27 +45,32 @@ fn print_line(line: &[u8], address: usize, display: char, bytes: usize) {
     // print address (ex - 000000d0)
     print!("\n{:08x}:", address);
 
-    let words = match (line.len() % bytes) == 0 {
-        true => line.len() / bytes,
-        false => (line.len() / bytes) + 1,
+    let words = if (line.len() % bytes) == 0 {
+        line.len() / bytes
+    } else {
+        (line.len() / bytes) + 1
     };
 
     for b in 0..words {
         let word = match bytes {
-            1 => line[b] as u16,
-            _ => match line.len() == bytes * b + 1 {
-                true => u16::from_be(((line[bytes * b] as u16) << 8) + 0),
-                false => {
-                    u16::from_be(((line[bytes * b] as u16) << 8) + (line[bytes * b + 1] as u16))
+            1 => u16::from(line[b]),
+            _ => {
+                if line.len() == bytes * b + 1 {
+                    u16::from_be(u16::from(line[bytes * b]) << 8)
+                } else {
+                    u16::from_be((u16::from(line[bytes * b]) << 8) + u16::from(line[bytes * b + 1]))
                 }
-            },
+            }
         };
         match display {
             'b' => print!(" {:03o}", word),
-            'c' => match ((word as u8) as char).is_control() {
-                true => print!(" "),
-                false => print!(" {:03}", (word as u8) as char),
-            },
+            'c' => {
+                if ((word as u8) as char).is_control() {
+                    print!(" ")
+                } else {
+                    print!(" {:03}", (word as u8) as char)
+                }
+            }
             'C' => print!(" {:02x}", word),
             'x' => print!(" {:04x}", word),
             'o' => print!(" {:06o} ", word),
@@ -96,9 +101,10 @@ fn print_line(line: &[u8], address: usize, display: char, bytes: usize) {
         print!("  ");
         for c in line {
             // replace all control chars with dots
-            match (*c as char).is_control() {
-                true => print!("."),
-                false => print!("{}", (*c as char)),
+            if (*c as char).is_control() {
+                print!(".")
+            } else {
+                print!("{}", (*c as char))
             }
         }
     }

@@ -88,7 +88,7 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
         self.writer.write(XmlEvent::end_element()).unwrap();
     }
 
-    fn visit_characters(&mut self, value: &str) -> () {
+    fn visit_characters(&mut self, value: &str) {
         trace!("visit_chars");
         if self.eof_reached {
             return;
@@ -112,7 +112,7 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
         unimplemented!("visit_processing_instruction_data");
     }
 
-    fn visit_start_of_stream(&mut self) -> () {
+    fn visit_start_of_stream(&mut self) {
         trace!("visit_start_of_stream");
         if self.eof_reached {
             return;
