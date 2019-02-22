@@ -4,11 +4,13 @@ use failure::{format_err, Context, Error, Fail};
 use crate::binxml::expand_templates;
 use crate::binxml::parse_tokens;
 use crate::binxml::BinXmlDeserializer;
+use crate::evtx::EVTX_FILE_HEADER_SIZE;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::deserialized::*;
 use crate::utils::*;
 use crate::xml_builder::BinXMLOutput;
 use crate::xml_builder::XMLOutput;
+use crc::crc32;
 use log::{debug, error, info, log, trace};
 use std::{
     borrow::Cow,
@@ -20,7 +22,7 @@ use std::{
     rc::Rc,
 };
 
-const EVTX_HEADER_SIZE: usize = 512;
+const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 #[derive(Fail, Debug)]
 enum ChunkHeaderParseErrorKind {
@@ -32,15 +34,15 @@ type TemplateID = u32;
 type Offset = u32;
 
 pub struct EvtxChunkHeader {
-    first_event_record_number: u64,
-    last_event_record_number: u64,
-    first_event_record_id: u64,
-    last_event_record_id: u64,
-    header_size: u32,
-    last_event_record_data_offset: u32,
-    free_space_offset: u32,
-    events_checksum: u32,
-    header_chunk_checksum: u32,
+    pub first_event_record_number: u64,
+    pub last_event_record_number: u64,
+    pub first_event_record_id: u64,
+    pub last_event_record_id: u64,
+    pub header_size: u32,
+    pub last_event_record_data_offset: u32,
+    pub free_space_offset: u32,
+    pub events_checksum: u32,
+    pub header_chunk_checksum: u32,
     // Stored as a vector since arrays implement debug only up to a length of 32 elements.
     // There should be 64 elements in this vector.
     strings_offsets: [u32; 64],
@@ -95,17 +97,14 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
         info!("Record id - {}", record_header.event_record_id);
 
-        // 24 - header size
-        // 4 - copy of size record size
-        let binxml_data_size = record_header.data_size - 24 - 4;
+        let binxml_data_size = record_header.record_data_data_size();
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
-        let deserializer = BinXmlDeserializer {
-            chunk: &self.chunk,
-            offset_from_chunk_start: self.offset_from_chunk_start + cursor.position(),
-            data_size: binxml_data_size,
-            data_read_so_far: 0,
-        };
+        let deserializer = BinXmlDeserializer::from_chunk_at_offset(
+            &self.chunk,
+            self.offset_from_chunk_start + cursor.position(),
+            binxml_data_size,
+        );
 
         let record_buffer = Vec::new();
         let mut output_builder = XMLOutput::with_writer(record_buffer);
@@ -157,7 +156,7 @@ impl<'a> IntoIterator for EvtxChunk<'a> {
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
         IterChunkRecords {
             chunk: self,
-            offset_from_chunk_start: EVTX_HEADER_SIZE as u64,
+            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
         }
     }
@@ -175,6 +174,7 @@ impl<'a> Debug for EvtxChunk<'a> {
 }
 
 impl<'a> EvtxChunk<'a> {
+    /// Will fail if the data starts with an invalid evtx chunk header.
     pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
@@ -185,6 +185,51 @@ impl<'a> EvtxChunk<'a> {
             string_table: HashMap::new(),
             template_table: HashMap::new(),
         })
+    }
+
+    pub fn validate_data_checksum(&self) -> bool {
+        debug!("Validating data checksum");
+
+        let expected_checksum = self.header.events_checksum;
+
+        let checksum = crc32::checksum_ieee(
+            &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
+        );
+
+        debug!(
+            "Expected checksum: {:?}, found: {:?}",
+            expected_checksum, checksum
+        );
+
+        checksum == expected_checksum
+    }
+
+    pub fn validate_header_checksum(&self) -> bool {
+        debug!("Validating header checksum");
+
+        let expected_checksum = self.header.header_chunk_checksum;
+
+        let header_bytes_1 = &self.data[..120];
+        let header_bytes_2 = &self.data[128..512];
+
+        let bytes_for_checksum: Vec<u8> = header_bytes_1
+            .iter()
+            .chain(header_bytes_2)
+            .cloned()
+            .collect();
+
+        let checksum = crc32::checksum_ieee(bytes_for_checksum.as_slice());
+
+        debug!(
+            "Expected checksum: {:?}, found: {:?}",
+            expected_checksum, checksum
+        );
+
+        checksum == expected_checksum
+    }
+
+    pub fn validate_checksum(&self) -> bool {
+        self.validate_header_checksum() && self.validate_data_checksum()
     }
 }
 
@@ -242,6 +287,9 @@ impl EvtxChunkHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ensure_env_logger_initialized;
+    use crate::evtx::EVTX_CHUNK_SIZE;
+    use crate::evtx::EVTX_FILE_HEADER_SIZE;
     use crc::crc32;
     use itertools::assert_equal;
     use itertools::Itertools;
@@ -250,20 +298,15 @@ mod tests {
 
     #[test]
     fn test_parses_evtx_chunk_header() {
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let chunk_header = &evtx_file[4096..];
-        let header_bytes_1 = &chunk_header[..120];
-        let header_bytes_2 = &chunk_header[128..512];
-
-        let bytes_for_checksum: Vec<u8> = header_bytes_1
-            .iter()
-            .chain(header_bytes_2)
-            .cloned()
-            .collect();
+        let chunk_header =
+            &evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_HEADER_SIZE];
 
         let mut cursor = Cursor::new(chunk_header);
 
         let chunk_header = EvtxChunkHeader::from_reader(&mut cursor).unwrap();
+
         let expected = EvtxChunkHeader {
             first_event_record_number: 1,
             last_event_record_number: 91,
@@ -273,7 +316,7 @@ mod tests {
             last_event_record_data_offset: 64928,
             free_space_offset: 65376,
             events_checksum: 4_252_479_141,
-            header_chunk_checksum: crc32::checksum_ieee(bytes_for_checksum.as_slice()),
+            header_chunk_checksum: 978805790,
             strings_offsets: [0_u32; 64],
             template_offsets: [0_u32; 32],
         };
@@ -301,7 +344,21 @@ mod tests {
         );
         assert_eq!(chunk_header.free_space_offset, expected.free_space_offset);
         assert_eq!(chunk_header.events_checksum, expected.events_checksum);
+        assert_eq!(
+            chunk_header.header_chunk_checksum,
+            expected.header_chunk_checksum
+        );
         assert!(!chunk_header.strings_offsets.is_empty());
         assert!(!chunk_header.template_offsets.is_empty());
+    }
+
+    #[test]
+    fn test_validate_checksum() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let chunk_data = &evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+
+        let chunk = EvtxChunk::new(chunk_data.to_vec()).unwrap();
+        assert!(chunk.validate_checksum());
     }
 }

@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::io::stdout;
 use std::rc::Rc;
 
-const EVTX_CHUNK_SIZE: usize = 65536;
-const EVTX_HEADER_SIZE: usize = 4096;
+pub const EVTX_CHUNK_SIZE: usize = 65536;
+pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
 struct IterRecords<'chunk, T: Read + Seek> {
     header: EvtxFileHeader,
@@ -43,7 +43,7 @@ impl<'a, T: Read + Seek> Iterator for IterRecords<'a, T> {
             let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
             self.evtx_data
                 .seek(SeekFrom::Start(
-                    (EVTX_HEADER_SIZE + self.chunk_number as usize * EVTX_CHUNK_SIZE) as u64,
+                    (EVTX_FILE_HEADER_SIZE + self.chunk_number as usize * EVTX_CHUNK_SIZE) as u64,
                 ))
                 .unwrap();
 
@@ -83,6 +83,8 @@ impl<'a> IterRecords<'a, Cursor<&'a [u8]>> {
             .unwrap();
 
         let chunk = EvtxChunk::new(chunk_data).expect("Failed to read EVTX chunk header");
+
+        assert!(chunk.validate_checksum());
 
         IterRecords {
             header: evtx_header,
@@ -146,10 +148,12 @@ mod tests {
         let evtx_file = include_bytes!("../samples/security.evtx");
 
         let chunk = EvtxChunk::new(
-            evtx_file[EVTX_HEADER_SIZE + EVTX_CHUNK_SIZE..EVTX_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
+            evtx_file[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
         )
         .unwrap();
+
+        assert!(chunk.validate_checksum());
 
         println!("Chunk: {:#?}", chunk.header);
 

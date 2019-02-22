@@ -28,14 +28,27 @@ use std::io::Cursor;
 use std::io::Write;
 
 pub struct BinXmlDeserializer<'chunk: 'record, 'record> {
-    pub chunk: &'record EvtxChunk<'chunk>,
-    pub offset_from_chunk_start: u64,
+    chunk: &'record EvtxChunk<'chunk>,
+    offset_from_chunk_start: u64,
     // data_size is canonically u32 in the header.
-    pub data_size: u32,
-    pub data_read_so_far: u32,
+    data_size: u32,
+    data_read_so_far: u32,
 }
 
 impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
+    pub fn from_chunk_at_offset(
+        chunk: &'record EvtxChunk<'chunk>,
+        offset_from_chunk_starts: u64,
+        expected_data_size: u32,
+    ) -> Self {
+        BinXmlDeserializer {
+            chunk,
+            offset_from_chunk_start: offset_from_chunk_starts,
+            data_size: expected_data_size,
+            data_read_so_far: 0,
+        }
+    }
+
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<BinXMLRawToken, Error> {
