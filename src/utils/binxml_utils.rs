@@ -56,7 +56,7 @@ pub fn read_utf16_by_size(stream: &mut Cursor<&[u8]>, size: u64) -> io::Result<O
                 // We need to seek manually because the UTF-16 reader
                 // does not advance the stream.
                 stream.seek(SeekFrom::Current(size as i64))?;
-                return Ok(Some(s));
+                Ok(Some(s))
             }
             Err(s) => Err(Error::from(ErrorKind::InvalidData)),
         },

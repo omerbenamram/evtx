@@ -153,13 +153,6 @@ mod tests {
     #![allow(unused_variables)]
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use crate::evtx_file_header::HeaderFlags;
-    use encoding::all::UTF_16LE;
-    use encoding::DecoderTrap;
-    use encoding::Encoding;
-    use std::char::decode_utf16;
-    use std::fs::File;
-    use std::io::Write;
 
     #[test]
     fn test_parses_first_10_records() {

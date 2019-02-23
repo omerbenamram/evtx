@@ -1,18 +1,11 @@
-use std::borrow::BorrowMut;
-use std::cmp::min;
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
-use std::mem;
+use std::io::{self, Seek, SeekFrom};
 use std::rc::Rc;
 
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{bail, format_err, Context, Fail};
+use byteorder::{LittleEndian, ReadBytesExt};
 use log::{debug, log, trace};
 
 use crate::{
-    evtx_chunk::{EvtxChunk, EvtxChunkHeader},
-    guid::Guid,
-    utils::datetime_from_filetime,
-    utils::*,
+    evtx_chunk::EvtxChunk, guid::Guid, utils::datetime_from_filetime, utils::*,
     xml_builder::BinXMLOutput,
 };
 
@@ -21,9 +14,7 @@ use crate::model::deserialized::*;
 use crate::model::owned::*;
 use crate::model::raw::*;
 use crate::ntsid::Sid;
-use std::borrow::{Borrow, Cow};
-use std::collections::hash_map::Entry;
-use std::fmt::{self, Display, Formatter};
+use std::borrow::Cow;
 use std::io::Cursor;
 use std::io::Write;
 
@@ -807,17 +798,13 @@ pub fn expand_templates(
 mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use crate::evtx_record::EvtxRecord;
     use crate::evtx_record::EvtxRecordHeader;
-    use crate::xml_builder::XMLOutput;
-    use std::io::stdout;
-    use std::io::Write;
+    use std::borrow::BorrowMut;
+    use std::io::Read;
 
     const EVTX_CHUNK_SIZE: usize = 65536;
     const EVTX_HEADER_SIZE: usize = 4096;
     const EVTX_RECORD_HEADER_SIZE: usize = 24;
-
-    extern crate env_logger;
 
     fn get_record(id: u32) -> (Vec<u8>) {
         ensure_env_logger_initialized();

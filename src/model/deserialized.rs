@@ -1,19 +1,8 @@
 use crate::guid::Guid;
-use crate::utils::read_len_prefixed_utf16_string;
-use crate::utils::{datetime_from_filetime, FileTime};
-use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
-use std::{
-    borrow::Cow,
-    fmt::Debug,
-    io::{self, Cursor, Read},
-    rc::Rc,
-};
+use std::{borrow::Cow, rc::Rc};
 
 use crate::ntsid::Sid;
-use failure::Error;
-use log::{error, log};
-use std::collections::HashMap;
 use std::string::ToString;
 
 pub type Name<'a> = Cow<'a, str>;
@@ -184,7 +173,7 @@ pub struct BinXMLTemplateDefinition<'a> {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXmlEntityReference<'a> {
-    pub name: Cow<'a, str>
+    pub name: Cow<'a, str>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

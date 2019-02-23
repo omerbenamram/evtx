@@ -1,17 +1,11 @@
 use crate::model::owned::XmlElement;
-use crate::model::*;
 use core::borrow::Borrow;
 use log::{debug, log, trace};
 
-use std::{
-    io::{Cursor, Read, Seek, SeekFrom, Write},
-    mem,
-};
+use std::{io::Write, mem};
 
 use xml::common::XmlVersion;
-use xml::{
-    name::Name, writer::events::StartElementBuilder, writer::XmlEvent, EmitterConfig, EventWriter,
-};
+use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
 
 use failure::{format_err, Error};
 
