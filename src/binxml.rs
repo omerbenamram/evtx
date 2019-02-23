@@ -10,6 +10,8 @@ use crate::{
 };
 
 use crate::error::Error;
+use crate::evtx_chunk::Offset;
+use crate::evtx_chunk::StringHash;
 use crate::model::deserialized::*;
 use crate::model::owned::*;
 use crate::model::raw::*;
@@ -42,6 +44,17 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         }
     }
 
+    /// This logic is static since it is also used in initializing the string cache.
+    pub fn read_name_and_hash(cursor: &mut Cursor<&'chunk [u8]>) -> Result<StringHash, Error> {
+        let _ = try_read!(cursor, u32);
+        let name_hash = try_read!(cursor, u16);
+        let name = read_len_prefixed_utf16_string(cursor, true)
+            .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
+            .expect("Expected string");
+
+        Ok((name, name_hash))
+    }
+
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<BinXMLRawToken, Error> {
@@ -57,7 +70,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         raw_token: BinXMLRawToken,
-    ) -> Result<BinXMLDeserializedTokens<'chunk>, Error> {
+    ) -> Result<BinXMLDeserializedTokens<'record>, Error> {
         match raw_token {
             BinXMLRawToken::EndOfStream => Ok(BinXMLDeserializedTokens::EndOfStream),
             BinXMLRawToken::OpenStartElement(token_information) => {
@@ -102,7 +115,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         value_type: &BinXMLValueType,
-    ) -> Result<BinXMLValue<'chunk>, Error> {
+    ) -> Result<BinXMLValue<'record>, Error> {
         match value_type {
             BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
             BinXMLValueType::StringType => Ok(BinXMLValue::StringType(Cow::Owned(
@@ -158,7 +171,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     fn read_until_end_of_stream(
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
-    ) -> Result<Vec<BinXMLDeserializedTokens<'chunk>>, Error> {
+    ) -> Result<Vec<BinXMLDeserializedTokens<'record>>, Error> {
         let mut tokens = vec![];
 
         loop {
@@ -205,7 +218,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         })
     }
 
-    fn read_value(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<BinXMLValue<'chunk>, Error> {
+    fn read_value(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<BinXMLValue<'record>, Error> {
         let value_type_token = try_read!(cursor, u8);
         let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
             Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
@@ -219,7 +232,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
         has_attributes: bool,
-    ) -> Result<BinXMLOpenStartElement<'chunk>, Error> {
+    ) -> Result<BinXMLOpenStartElement<'record>, Error> {
         // Reserved
         let _ = try_read!(cursor, u16);
         let data_size = try_read!(cursor, u32);
@@ -234,13 +247,12 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         Ok(BinXMLOpenStartElement { data_size, name })
     }
 
-    fn read_name(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<Cow<'chunk, str>, Error> {
-        // Important!!
-        // The "offset_from_start" refers to the offset where the name struct begins.
-        let name_offset = try_read!(cursor, u32);
-        trace!("Name at offset: {}", name_offset);
-
-        let name = if name_offset != cursor.position() as u32 {
+    fn inner_read_name(
+        &self,
+        name_offset: Offset,
+        cursor: &mut Cursor<&'chunk [u8]>,
+    ) -> Result<StringHash, Error> {
+        if name_offset != cursor.position() as u32 {
             trace!(
                 "Current offset {}, seeking to {}",
                 cursor.position(),
@@ -251,26 +263,20 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 .seek(SeekFrom::Start(u64::from(name_offset)))
                 .map_err(|e| Error::io(e, position_before_seek))?;
 
-            let _ = try_read!(cursor, u32);
-            let name_hash = try_read!(cursor, u16);
-            let name = read_len_prefixed_utf16_string(cursor, true)
-                .map_err(|e| Error::utf16_decode_error(e, position_before_seek))?
-                .expect("Expected string");
+            let (name, hash) = BinXmlDeserializer::read_name_and_hash(cursor)?;
 
             trace!("Restoring cursor to {}", position_before_seek);
             cursor
                 .seek(SeekFrom::Start(position_before_seek as u64))
                 .map_err(|e| Error::io(e, position_before_seek))?;
 
-            name
+            Ok((name, hash))
         } else {
             trace!("Name is at current offset");
-            let _ = try_read!(cursor, u32);
-            let name_hash = try_read!(cursor, u16);
-            read_len_prefixed_utf16_string(cursor, true)
-                .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-                .expect("Expected string")
-        };
+            let (name, hash) = BinXmlDeserializer::read_name_and_hash(cursor)?;
+            Ok((name, hash))
+        }
+    }
 
         Ok(Cow::Owned(name))
     }
@@ -278,7 +284,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     fn read_template(
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
-    ) -> Result<BinXMLTemplate<'chunk>, Error> {
+    ) -> Result<BinXMLTemplate<'record>, Error> {
         debug!("TemplateInstance at {}", cursor.position());
 
         let _ = try_read!(cursor, u8);
@@ -371,7 +377,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     fn read_template_definition(
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
-    ) -> Result<BinXMLTemplateDefinition<'chunk>, Error> {
+    ) -> Result<BinXMLTemplateDefinition<'record>, Error> {
         let next_template_offset = cursor
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::io(e, cursor.position()))?;
@@ -402,7 +408,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     fn read_entity_ref(
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
-    ) -> Result<BinXmlEntityReference<'chunk>, Error> {
+    ) -> Result<BinXmlEntityReference<'record>, Error> {
         debug!("EntityReference at {}", cursor.position());
         let name = self.read_name(cursor)?;
         debug!("\t name: {:?}", name);
@@ -413,7 +419,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     fn read_attribute(
         &self,
         cursor: &mut Cursor<&'chunk [u8]>,
-    ) -> Result<BinXMLAttribute<'chunk>, Error> {
+    ) -> Result<BinXMLAttribute<'record>, Error> {
         let name = self.read_name(cursor)?;
 
         Ok(BinXMLAttribute { name })
@@ -501,9 +507,9 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
     }
 }
 
-pub fn parse_tokens<'c: 'r, 'r, W: Write, T: BinXMLOutput<'c, W>>(
-    tokens: Vec<BinXMLDeserializedTokens<'c>>,
-    visitor: &'r mut T,
+pub fn parse_tokens<'chunk: 'record, 'record, W: Write, T: BinXMLOutput<'chunk, W>>(
+    tokens: Vec<BinXMLDeserializedTokens<'chunk>>,
+    visitor: &'record mut T,
 ) {
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);

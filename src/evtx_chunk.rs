@@ -32,8 +32,10 @@ enum ChunkHeaderParseErrorKind {
     WrongHeaderMagic { magic: [u8; 8] },
 }
 
-type TemplateID = u32;
-type Offset = u32;
+pub type TemplateID = u32;
+pub type Offset = u32;
+
+pub type StringHash = (String, u16);
 
 pub struct EvtxChunkHeader {
     pub first_event_record_number: u64,
@@ -67,8 +69,94 @@ pub struct EvtxChunk<'a> {
     // TODO: replace with "output-format"
     //    visitor: &'a Visitor<'a>,
     pub data: Vec<u8>,
-    pub string_table: HashMap<Offset, (u16, String)>,
+    pub string_table: HashMap<Offset, StringHash>,
     pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
+}
+
+impl<'a> EvtxChunk<'a> {
+    /// Will fail if the data starts with an invalid evtx chunk header.
+    pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, Error> {
+        let mut cursor = Cursor::new(data.as_slice());
+        let header = EvtxChunkHeader::from_reader(&mut cursor)?;
+
+        let mut string_table = HashMap::new();
+
+        EvtxChunk::populate_string_cache(&data, &header.strings_offsets, &mut string_table)?;
+
+        Ok(EvtxChunk {
+            data,
+            header,
+            string_table,
+            template_table: HashMap::new(),
+        })
+    }
+
+    pub fn get_string_and_hash(&self, offset: Offset) -> Option<&StringHash> {
+        self.string_table.get(&offset)
+    }
+
+    fn populate_string_cache(
+        data: &[u8],
+        offsets: &[Offset],
+        map: &mut HashMap<Offset, StringHash>,
+    ) -> Result<(), Error> {
+        let mut cursor = Cursor::new(data);
+        for offset in offsets.iter().filter(|&&offset| offset > 0) {
+            dbg!(offset);
+            cursor.seek(SeekFrom::Start(*offset as u64))?;
+            map.insert(
+                *offset,
+                BinXmlDeserializer::read_name_and_hash(&mut cursor)?,
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_data_checksum(&self) -> bool {
+        debug!("Validating data checksum");
+
+        let expected_checksum = self.header.events_checksum;
+
+        let checksum = crc32::checksum_ieee(
+            &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
+        );
+
+        debug!(
+            "Expected checksum: {:?}, found: {:?}",
+            expected_checksum, checksum
+        );
+
+        checksum == expected_checksum
+    }
+
+    pub fn validate_header_checksum(&self) -> bool {
+        debug!("Validating header checksum");
+
+        let expected_checksum = self.header.header_chunk_checksum;
+
+        let header_bytes_1 = &self.data[..120];
+        let header_bytes_2 = &self.data[128..512];
+
+        let bytes_for_checksum: Vec<u8> = header_bytes_1
+            .iter()
+            .chain(header_bytes_2)
+            .cloned()
+            .collect();
+
+        let checksum = crc32::checksum_ieee(bytes_for_checksum.as_slice());
+
+        debug!(
+            "Expected checksum: {:?}, found: {:?}",
+            expected_checksum, checksum
+        );
+
+        checksum == expected_checksum
+    }
+
+    pub fn validate_checksum(&self) -> bool {
+        self.validate_header_checksum() && self.validate_data_checksum()
+    }
 }
 
 pub struct IterChunkRecords<'a> {
@@ -181,66 +269,6 @@ impl<'a> Debug for EvtxChunk<'a> {
         writeln!(fmt, "{} common strings", self.string_table.len())?;
         writeln!(fmt, "{} common templates", self.template_table.len())?;
         Ok(())
-    }
-}
-
-impl<'a> EvtxChunk<'a> {
-    /// Will fail if the data starts with an invalid evtx chunk header.
-    pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, Error> {
-        let mut cursor = Cursor::new(data.as_slice());
-        let header = EvtxChunkHeader::from_reader(&mut cursor)?;
-
-        Ok(EvtxChunk {
-            data,
-            header,
-            string_table: HashMap::new(),
-            template_table: HashMap::new(),
-        })
-    }
-
-    pub fn validate_data_checksum(&self) -> bool {
-        debug!("Validating data checksum");
-
-        let expected_checksum = self.header.events_checksum;
-
-        let checksum = crc32::checksum_ieee(
-            &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
-        );
-
-        debug!(
-            "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, checksum
-        );
-
-        checksum == expected_checksum
-    }
-
-    pub fn validate_header_checksum(&self) -> bool {
-        debug!("Validating header checksum");
-
-        let expected_checksum = self.header.header_chunk_checksum;
-
-        let header_bytes_1 = &self.data[..120];
-        let header_bytes_2 = &self.data[128..512];
-
-        let bytes_for_checksum: Vec<u8> = header_bytes_1
-            .iter()
-            .chain(header_bytes_2)
-            .cloned()
-            .collect();
-
-        let checksum = crc32::checksum_ieee(bytes_for_checksum.as_slice());
-
-        debug!(
-            "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, checksum
-        );
-
-        checksum == expected_checksum
-    }
-
-    pub fn validate_checksum(&self) -> bool {
-        self.validate_header_checksum() && self.validate_data_checksum()
     }
 }
 

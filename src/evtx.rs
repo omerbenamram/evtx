@@ -202,7 +202,7 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        println!("Chunk: {:#?}", chunk.header);
+        println!("Chunk: {:#?}", chunk);
 
         for record in chunk.into_iter() {
             if let Err(e) = record {
