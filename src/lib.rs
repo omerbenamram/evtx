@@ -1,5 +1,9 @@
 pub mod evtx;
 
+// This needs to come first!
+#[macro_use]
+mod macros;
+
 mod binxml;
 mod error;
 mod evtx_chunk;
@@ -9,6 +13,7 @@ mod guid;
 mod model;
 mod ntsid;
 mod utils;
+
 mod xml_builder;
 
 // For tests, we only initialize logging once.

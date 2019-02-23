@@ -92,7 +92,7 @@ pub enum BinXMLValue<'a> {
     FileTimeType(DateTime<Utc>),
     SysTimeType,
     SidType(Sid),
-    HexInt32Type,
+    HexInt32Type(String),
     HexInt64Type(String),
     EvtHandle,
     // Because of the recursive type, we instantiate this enum via a method of the Deserializer
@@ -123,7 +123,7 @@ impl<'a> Into<Cow<'a, str>> for BinXMLValue<'a> {
             BinXMLValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXMLValue::SysTimeType => unimplemented!("SysTimeType"),
             BinXMLValue::SidType(sid) => Cow::Owned(sid.to_string()),
-            BinXMLValue::HexInt32Type => unimplemented!("HexInt32Type"),
+            BinXMLValue::HexInt32Type(hex_string) => Cow::Owned(hex_string),
             BinXMLValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),
             BinXMLValue::EvtHandle => {
                 panic!("Unsupported conversion, call `expand_templates` first")
