@@ -132,9 +132,9 @@ impl<'a> Into<Cow<'a, str>> for BinXMLValue<'a> {
             BinXMLValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXMLValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
             BinXMLValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
-            BinXMLValue::SysTimeType => unimplemented!(),
+            BinXMLValue::SysTimeType => unimplemented!("SysTimeType"),
             BinXMLValue::SidType(sid) => Cow::Owned(sid.to_string()),
-            BinXMLValue::HexInt32Type => unimplemented!(),
+            BinXMLValue::HexInt32Type => unimplemented!("HexInt32Type"),
             BinXMLValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),
             BinXMLValue::EvtHandle => {
                 panic!("Unsupported conversion, call `expand_templates` first")

@@ -22,7 +22,7 @@ use std::{
     rc::Rc,
 };
 
-use log::{Level, log_enabled};
+use log::{log_enabled, Level};
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -91,7 +91,9 @@ impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = Result<EvtxRecord, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.exhausted {
+        if self.exhausted
+            || self.offset_from_chunk_start >= self.chunk.header.free_space_offset as u64
+        {
             return None;
         }
 

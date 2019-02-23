@@ -36,6 +36,14 @@ pub struct BinXmlDeserializer<'chunk: 'record, 'record> {
     eof: bool,
 }
 
+//macro_rules! try_read {
+//    ($cursor: ident, $method: ident) => {
+//        $cursor
+//            .$method::<LittleEndian>()
+//            .map_err(|e| Error::io(e, $cursor.position()))?;
+//    };
+//}
+
 impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
     pub fn from_chunk_at_offset(
         chunk: &'record EvtxChunk<'chunk>,
@@ -160,39 +168,44 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                     .read_u64::<LittleEndian>()
                     .map_err(|e| Error::io(e, cursor.position()))?,
             )),
-            BinXMLValueType::Real32Type => unimplemented!(),
-            BinXMLValueType::Real64Type => unimplemented!(),
-            BinXMLValueType::BoolType => unimplemented!(),
-            BinXMLValueType::BinaryType => unimplemented!(),
+            BinXMLValueType::Real32Type => unimplemented!("Real32Type"),
+            BinXMLValueType::Real64Type => unimplemented!("Real64Type"),
+            BinXMLValueType::BoolType => unimplemented!("BoolType"),
+            BinXMLValueType::BinaryType => unimplemented!("BinaryType"),
             BinXMLValueType::GuidType => {
                 Ok(BinXMLValue::GuidType(Guid::from_stream(cursor).map_err(
                     |e| Error::other("Failed to read GUID from stream", cursor.position()),
                 )?))
             }
-            BinXMLValueType::SizeTType => unimplemented!(),
+            BinXMLValueType::SizeTType => unimplemented!("SizeTType"),
             BinXMLValueType::FileTimeType => Ok(BinXMLValue::FileTimeType(datetime_from_filetime(
                 cursor
                     .read_u64::<LittleEndian>()
                     .map_err(|e| Error::io(e, cursor.position()))?,
             ))),
-            BinXMLValueType::SysTimeType => unimplemented!(),
+            BinXMLValueType::SysTimeType => unimplemented!("SysTimeType"),
             BinXMLValueType::SidType => {
                 Ok(BinXMLValue::SidType(Sid::from_stream(cursor).map_err(
                     |_| Error::other("Failed to read NTSID from stream", cursor.position()),
                 )?))
             }
-            BinXMLValueType::HexInt32Type => unimplemented!(),
+            BinXMLValueType::HexInt32Type => Ok(BinXMLValue::HexInt64Type(format!(
+                "0x{:2x}",
+                cursor
+                    .read_u32::<LittleEndian>()
+                    .map_err(|e| Error::io(e, cursor.position()))?
+            ))),
             BinXMLValueType::HexInt64Type => Ok(BinXMLValue::HexInt64Type(format!(
                 "0x{:2x}",
                 cursor
                     .read_u64::<LittleEndian>()
                     .map_err(|e| Error::io(e, cursor.position()))?
             ))),
-            BinXMLValueType::EvtHandle => unimplemented!(),
+            BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => Ok(BinXMLValue::BinXmlType(
                 self.read_until_end_of_stream(cursor)?,
             )),
-            BinXMLValueType::EvtXml => unimplemented!(),
+            BinXMLValueType::EvtXml => unimplemented!("EvtXml"),
         }
     }
 
@@ -252,6 +265,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
             Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
         })?;
+
         debug!("\t Value Type: {:?}", value_type);
         let ignore = optional && (value_type == BinXMLValueType::NullType);
         debug!("\t Ignore: {}", ignore);
@@ -424,6 +438,8 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             Rc::new(self.read_template_definition(cursor)?)
         };
 
+        trace!("{:?}", template_def);
+
         let number_of_substitutions = cursor
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::io(e, cursor.position()))?;
@@ -447,6 +463,8 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
 
             value_descriptors.push(TemplateValueDescriptor { size, value_type })
         }
+
+        trace!("{:?}", value_descriptors);
 
         let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
 

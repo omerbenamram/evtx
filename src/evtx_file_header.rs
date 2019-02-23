@@ -12,9 +12,9 @@ enum HeaderParseError {
 
 #[derive(Debug, PartialEq)]
 pub struct EvtxFileHeader {
-    pub oldest_chunk: u64,
-    pub current_chunk_num: u64,
-    pub next_record_num: u64,
+    pub first_chunk_number: u64,
+    pub last_chunk_number: u64,
+    pub next_record_id: u64,
     pub header_size: u32,
     pub minor_version: u16,
     pub major_version: u16,
@@ -32,7 +32,7 @@ pub enum HeaderFlags {
 }
 
 impl EvtxFileHeader {
-    pub fn from_reader(stream: &mut Cursor<&[u8]>) -> Result<EvtxFileHeader, Error> {
+    pub fn from_reader<T: Read + Seek>(stream: &mut T) -> Result<EvtxFileHeader, Error> {
         let mut magic = [0_u8; 8];
         stream.take(8).read_exact(&mut magic)?;
 
@@ -65,9 +65,9 @@ impl EvtxFileHeader {
         // unused
         stream.seek(SeekFrom::Current(4096 - 128))?;
         Ok(EvtxFileHeader {
-            oldest_chunk,
-            current_chunk_num,
-            next_record_num,
+            first_chunk_number: oldest_chunk,
+            last_chunk_number: current_chunk_num,
+            next_record_id: next_record_num,
             header_block_size,
             minor_version,
             major_version,
@@ -93,9 +93,9 @@ mod tests {
         assert_eq!(
             parsing_result,
             EvtxFileHeader {
-                oldest_chunk: 0,
-                current_chunk_num: 25,
-                next_record_num: 2226,
+                first_chunk_number: 0,
+                last_chunk_number: 25,
+                next_record_id: 2226,
                 header_size: 128,
                 minor_version: 1,
                 major_version: 3,

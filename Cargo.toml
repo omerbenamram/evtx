@@ -15,6 +15,10 @@ xml-rs = "0.8.0"
 env_logger = "0.6.0"
 failure = "0.1.5"
 log = { version = "^0.4", features=["release_max_level_debug"]}
+clap = "*"
+memmap = "0.7.0"
+owning_ref = "*"
+stable_deref_trait = "1.1.1"
 
 [dev-dependencies]
 pretty_assertions = "0.6.1"
