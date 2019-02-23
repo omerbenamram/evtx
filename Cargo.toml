@@ -24,3 +24,9 @@ stable_deref_trait = "1.1.1"
 pretty_assertions = "0.6.1"
 maplit = "1.0.1"
 itertools = "0.8.0"
+criterion = "0.2"
+
+[[bench]]
+name = "benchmark"
+path = "./src/benches/benchmark.rs"
+harness = false
