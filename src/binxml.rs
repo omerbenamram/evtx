@@ -46,13 +46,21 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
 
     /// This logic is static since it is also used in initializing the string cache.
     pub fn read_name_and_hash(cursor: &mut Cursor<&'chunk [u8]>) -> Result<StringHash, Error> {
+        let position_before_read = cursor.position();
+
         let _ = try_read!(cursor, u32);
         let name_hash = try_read!(cursor, u16);
         let name = read_len_prefixed_utf16_string(cursor, true)
             .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
             .expect("Expected string");
 
-        Ok((name, name_hash))
+        let position_after_read = cursor.position();
+
+        Ok((
+            name,
+            name_hash,
+            (position_after_read - position_before_read) as u16,
+        ))
     }
 
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
@@ -263,21 +271,36 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 .seek(SeekFrom::Start(u64::from(name_offset)))
                 .map_err(|e| Error::io(e, position_before_seek))?;
 
-            let (name, hash) = BinXmlDeserializer::read_name_and_hash(cursor)?;
+            let (name, hash, n_bytes_read) = BinXmlDeserializer::read_name_and_hash(cursor)?;
 
             trace!("Restoring cursor to {}", position_before_seek);
             cursor
                 .seek(SeekFrom::Start(position_before_seek as u64))
                 .map_err(|e| Error::io(e, position_before_seek))?;
 
-            Ok((name, hash))
+            Ok((name, hash, n_bytes_read))
         } else {
             trace!("Name is at current offset");
-            let (name, hash) = BinXmlDeserializer::read_name_and_hash(cursor)?;
-            Ok((name, hash))
+            let (name, hash, n_bytes_read) = BinXmlDeserializer::read_name_and_hash(cursor)?;
+            Ok((name, hash, n_bytes_read))
         }
     }
 
+    fn read_name(&self, cursor: &mut Cursor<&'chunk [u8]>) -> Result<Cow<'record, str>, Error> {
+        // Important!!
+        // The "offset_from_start" refers to the offset where the name struct begins.
+        let name_offset = try_read!(cursor, u32);
+
+        if let Some((name, _, n_bytes_read)) = self.chunk.get_string_and_hash(name_offset) {
+            if name_offset == cursor.position() as u32 {
+                cursor
+                    .seek(SeekFrom::Current(*n_bytes_read as i64))
+                    .map_err(|e| Error::io(e, cursor.position()))?;
+            }
+            return Ok(Cow::Borrowed(name));
+        }
+
+        let (name, _, _) = self.inner_read_name(name_offset, cursor)?;
         Ok(Cow::Owned(name))
     }
 

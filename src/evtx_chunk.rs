@@ -1,10 +1,8 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::{format_err, Context, Error, Fail};
 
-use crate::binxml::expand_templates;
 use crate::binxml::parse_tokens;
 use crate::binxml::BinXmlDeserializer;
-use crate::evtx::EVTX_FILE_HEADER_SIZE;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::model::deserialized::*;
 use crate::utils::*;
@@ -35,7 +33,7 @@ enum ChunkHeaderParseErrorKind {
 pub type TemplateID = u32;
 pub type Offset = u32;
 
-pub type StringHash = (String, u16);
+pub type StringHash = (String, u16, u16);
 
 pub struct EvtxChunkHeader {
     pub first_event_record_number: u64,
@@ -102,7 +100,6 @@ impl<'a> EvtxChunk<'a> {
     ) -> Result<(), Error> {
         let mut cursor = Cursor::new(data);
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            dbg!(offset);
             cursor.seek(SeekFrom::Start(*offset as u64))?;
             map.insert(
                 *offset,
