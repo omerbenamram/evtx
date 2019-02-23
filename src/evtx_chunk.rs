@@ -22,6 +22,8 @@ use std::{
     rc::Rc,
 };
 
+use log::{Level, log_enabled};
+
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 #[derive(Fail, Debug)]
@@ -55,6 +57,7 @@ impl Debug for EvtxChunkHeader {
             .field("first_event_record_number", &self.first_event_record_number)
             .field("last_event_record_number", &self.last_event_record_number)
             .field("checksum", &self.header_chunk_checksum)
+            .field("free_space_offset", &self.free_space_offset)
             .finish()
     }
 }
@@ -96,16 +99,18 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
         info!("Record id - {}", record_header.event_record_id);
+        debug!("Record header - {:?}", record_header);
 
-        let binxml_data_size = record_header.record_data_data_size();
+        let binxml_data_size = record_header.record_data_size();
 
-        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+        debug!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer::from_chunk_at_offset(
             &self.chunk,
             self.offset_from_chunk_start + cursor.position(),
             binxml_data_size,
         );
 
+        // Setup a buffer to receive XML output.
         let record_buffer = Vec::new();
         let mut output_builder = XMLOutput::with_writer(record_buffer);
 
@@ -116,9 +121,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 Ok(token) => tokens.push(token),
                 Err(e) => {
                     error!("Tried to read an invalid token!, {}", e);
-                    break;
 
-                    dump_cursor(&mut cursor, 10);
+                    if log::log_enabled!(Level::Debug) {
+                        let mut cursor = Cursor::new(self.chunk.data.as_slice());
+                        cursor.seek(SeekFrom::Start(e.offset())).unwrap();
+                        dump_cursor(&mut cursor, 10);
+                    }
+
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(e.into()));
                 }

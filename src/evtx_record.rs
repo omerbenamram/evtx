@@ -34,7 +34,7 @@ impl EvtxRecordHeader {
         })
     }
 
-    pub fn record_data_data_size(&self) -> u32 {
+    pub fn record_data_size(&self) -> u32 {
         // 24 - record header size
         // 4 - copy of size record size
         self.data_size - 24 - 4

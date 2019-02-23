@@ -33,6 +33,7 @@ pub struct BinXmlDeserializer<'chunk: 'record, 'record> {
     // data_size is canonically u32 in the header.
     data_size: u32,
     data_read_so_far: u32,
+    eof: bool,
 }
 
 impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
@@ -46,6 +47,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
             offset_from_chunk_start: offset_from_chunk_starts,
             data_size: expected_data_size,
             data_read_so_far: 0,
+            eof: false,
         }
     }
 
@@ -362,6 +364,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
                 .map_err(|e| Error::utf16_decode_error(e, position_before_seek))?
                 .expect("Expected string");
 
+            trace!("Restoring cursor to {}", position_before_seek);
             cursor
                 .seek(SeekFrom::Start(position_before_seek as u64))
                 .map_err(|e| Error::io(e, position_before_seek))?;
@@ -398,15 +401,6 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
         let template_definition_data_offset = cursor
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::io(e, cursor.position()))?;
-
-        //        let template_def = match self.chunk.template_table.entry(template_id) {
-        //            Entry::Occupied(e) => e.get(),
-        //            Entry::Vacant(e) => {
-        //                let position = cursor.position();
-        //                let template = self.read_template_definition()?;
-        //                e.insert(Rc::new(template))
-        //            }
-        //        };
 
         let template_def = if template_definition_data_offset != cursor.position() as u32 {
             debug!(
@@ -458,7 +452,7 @@ impl<'chunk: 'record, 'record> BinXmlDeserializer<'chunk, 'record> {
 
         for descriptor in value_descriptors {
             let position = cursor.position();
-            debug!("Substitution: {:?}", descriptor.value_type);
+            debug!("Substitution: {:?} at {}", descriptor.value_type, position);
             let value = match descriptor.value_type {
                 BinXMLValueType::StringType => BinXMLValue::StringType(Cow::Owned(
                     read_utf16_by_size(cursor, u64::from(descriptor.size))
@@ -582,7 +576,7 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
         );
 
         // Finished reading
-        if self.data_read_so_far >= self.data_size {
+        if (self.data_read_so_far >= self.data_size) || self.eof {
             return None;
         }
 
@@ -594,6 +588,10 @@ impl<'chunk: 'record, 'record> Iterator for BinXmlDeserializer<'chunk, 'record> 
 
         match self.read_next_token(&mut cursor) {
             Ok(t) => {
+                if let BinXMLRawToken::EndOfStream = t {
+                    self.eof = true;
+                }
+
                 trace!("{:?} at {}", t, self.offset_from_chunk_start);
                 let token = self.token_from_raw(&mut cursor, t);
                 trace!("{:?} position at stream {}", token, cursor.position());
@@ -855,12 +853,11 @@ mod tests {
             .read_to_end(&mut data)
             .unwrap();
 
-        let deser = BinXmlDeserializer {
-            chunk: &chunk,
-            offset_from_chunk_start: (3872_usize + EVTX_RECORD_HEADER_SIZE) as u64,
-            data_size: record_header.data_size - 4 - 4 - 4 - 8 - 8,
-            data_read_so_far: 0,
-        };
+        let deser = BinXmlDeserializer::from_chunk_at_offset(
+            &chunk,
+            (3872_usize + EVTX_RECORD_HEADER_SIZE) as u64,
+            record_header.data_size - 4 - 4 - 4 - 8 - 8,
+        );
 
         for token in deser {
             if let Err(e) = token {

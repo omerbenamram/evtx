@@ -37,6 +37,7 @@ impl Error {
         Error { inner: ctx, offset }
     }
 
+    /// Error offset (relative to chunk start)
     pub fn offset(&self) -> u64 {
         self.offset
     }
