@@ -20,6 +20,8 @@ fn process_100_records(buffer: &'static [u8]) {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let evtx_file = include_bytes!("../../samples/security.evtx");
+    // ~11ms before strings cache
+    // ~9ms after strings cache
     c.bench_function("read 100 records", move |b| {
         b.iter(|| process_100_records(evtx_file))
     });
