@@ -1,5 +1,3 @@
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use chrono::prelude::*;
 use log::{info, log};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
@@ -7,13 +5,11 @@ use time::Duration;
 
 use failure::Error;
 
+use crate::evtx_chunk::EvtxChunk;
 use crate::evtx_chunk::IterChunkRecords;
-use crate::evtx_chunk::{EvtxChunk, EvtxChunkHeader};
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
-use crate::utils::*;
-use crate::xml_builder::{BinXMLOutput, XMLOutput};
-use core::borrow::Borrow;
+
 use core::borrow::BorrowMut;
 use crc::crc32;
 use memmap::{self, Mmap, MmapOptions};

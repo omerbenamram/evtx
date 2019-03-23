@@ -1,3 +1,4 @@
+use crate::evtx::ReadSeek;
 use crate::guid::Guid;
 use byteorder::BigEndian;
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -18,7 +19,7 @@ pub struct Sid {
 }
 
 impl Sid {
-    pub fn from_stream(stream: &mut Cursor<&[u8]>) -> io::Result<Sid> {
+    pub fn from_stream<S: ReadSeek>(stream: S) -> io::Result<Sid> {
         let version = stream.read_u8()?;
         let number_of_elements = stream.read_u8()?;
         // For some reason these values are kept in be order.

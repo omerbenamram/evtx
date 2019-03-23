@@ -1,18 +1,13 @@
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{format_err, Context, Error, Fail};
+use failure::{self, format_err, Context, Fail};
 
-use crate::binxml::parse_tokens;
-use crate::binxml::BinXmlDeserializer;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
-use crate::model::deserialized::*;
 use crate::utils::*;
-use crate::xml_builder::BinXMLOutput;
-use crate::xml_builder::XMLOutput;
+use crate::xml_output::BinXMLOutput;
+use crate::xml_output::XMLOutput;
 use crc::crc32;
 use log::{debug, error, info, log, trace};
 use std::{
-    borrow::Cow,
-    cell::RefCell,
     collections::HashMap,
     fmt::{Debug, Formatter},
     io::Cursor,
@@ -20,6 +15,10 @@ use std::{
     rc::Rc,
 };
 
+use crate::binxml::assemble::parse_tokens;
+use crate::binxml::deserializer::BinXmlDeserializer;
+use crate::string_cache::StringCache;
+use crate::template_cache::TemplateCache;
 use log::{log_enabled, Level};
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
@@ -29,11 +28,6 @@ enum ChunkHeaderParseErrorKind {
     #[fail(display = "Expected magic \"ElfChnk\x00\", got {:#?}", magic)]
     WrongHeaderMagic { magic: [u8; 8] },
 }
-
-pub type TemplateID = u32;
-pub type Offset = u32;
-
-pub type StringHash = (String, u16, u16);
 
 pub struct EvtxChunkHeader {
     pub first_event_record_number: u64,
@@ -64,50 +58,26 @@ impl Debug for EvtxChunkHeader {
 
 pub struct EvtxChunk<'a> {
     pub header: EvtxChunkHeader,
-    // TODO: replace with "output-format"
-    //    visitor: &'a Visitor<'a>,
     pub data: Vec<u8>,
-    pub string_table: HashMap<Offset, StringHash>,
-    pub template_table: HashMap<TemplateID, Rc<BinXMLTemplateDefinition<'a>>>,
+    pub string_cache: StringCache,
+    pub template_table: TemplateCache<'a>,
 }
 
 impl<'a> EvtxChunk<'a> {
     /// Will fail if the data starts with an invalid evtx chunk header.
-    pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, Error> {
+    pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, failure::Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let mut string_table = HashMap::new();
-
-        EvtxChunk::populate_string_cache(&data, &header.strings_offsets, &mut string_table)?;
+        let mut string_table = StringCache::new();
+        string_table.populate(&data, &header.strings_offsets)?;
 
         Ok(EvtxChunk {
             data,
             header,
-            string_table,
+            string_cache: string_table,
             template_table: HashMap::new(),
         })
-    }
-
-    pub fn get_string_and_hash(&self, offset: Offset) -> Option<&StringHash> {
-        self.string_table.get(&offset)
-    }
-
-    fn populate_string_cache(
-        data: &[u8],
-        offsets: &[Offset],
-        map: &mut HashMap<Offset, StringHash>,
-    ) -> Result<(), Error> {
-        let mut cursor = Cursor::new(data);
-        for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor.seek(SeekFrom::Start(*offset as u64))?;
-            map.insert(
-                *offset,
-                BinXmlDeserializer::read_name_and_hash(&mut cursor)?,
-            );
-        }
-
-        Ok(())
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -160,6 +130,7 @@ pub struct IterChunkRecords<'a> {
     chunk: EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
+    templates_cache_init: bool,
 }
 
 impl<'a> IterChunkRecords<'a> {
@@ -173,9 +144,17 @@ impl<'a> IterChunkRecords<'a> {
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = Result<EvtxRecord, Error>;
+    type Item = Result<EvtxRecord, failure::Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        if !self.templates_cache_init {
+            self.chunk.template_table.populate(
+                &self.chunk,
+                &self.chunk.data,
+                &self.chunk.header.template_offsets,
+            );
+        }
+
         if self.exhausted
             || self.offset_from_chunk_start >= self.chunk.header.free_space_offset as u64
         {
@@ -246,7 +225,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 }
 
 impl<'a> IntoIterator for EvtxChunk<'a> {
-    type Item = Result<EvtxRecord, Error>;
+    type Item = Result<EvtxRecord, failure::Error>;
     type IntoIter = IterChunkRecords<'a>;
 
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
@@ -254,6 +233,7 @@ impl<'a> IntoIterator for EvtxChunk<'a> {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
+            templates_cache_init: false,
         }
     }
 }
@@ -263,14 +243,14 @@ impl<'a> Debug for EvtxChunk<'a> {
         writeln!(fmt, "\nEvtxChunk")?;
         writeln!(fmt, "-----------------------")?;
         writeln!(fmt, "{:#?}", &self.header)?;
-        writeln!(fmt, "{} common strings", self.string_table.len())?;
+        writeln!(fmt, "{} common strings", self.string_cache.len())?;
         writeln!(fmt, "{} common templates", self.template_table.len())?;
         Ok(())
     }
 }
 
 impl EvtxChunkHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader, Error> {
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader, failure::Error> {
         let mut magic = [0_u8; 8];
         input.take(8).read_exact(&mut magic)?;
 

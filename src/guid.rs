@@ -1,9 +1,9 @@
 use std::{
     fmt::{self, Debug, Display},
-    io::{self, Cursor, Read, Result},
+    io::{self, Cursor, Read},
 };
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Guid {

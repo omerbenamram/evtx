@@ -1,7 +1,7 @@
 use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
 
 use crate::utils::print_hexdump;
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use log::{debug, error, log, trace};
 use std::{
     cmp::min,

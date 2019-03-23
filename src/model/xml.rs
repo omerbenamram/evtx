@@ -1,9 +1,11 @@
+use crate::binxml::value_variant::BinXMLValue;
 use crate::model::deserialized::*;
 use log::{error, log};
 use std::borrow::Cow;
+use xml::name::Name;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub enum OwnedModel<'a> {
+pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
     String(Cow<'a, str>),

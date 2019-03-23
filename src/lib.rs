@@ -1,5 +1,7 @@
 #![allow(dead_code)]
+#![allow(unused_imports)]
 #![allow(unused_variables)]
+#![feature(seek_convenience)]
 
 pub mod evtx;
 
@@ -15,9 +17,13 @@ mod evtx_record;
 mod guid;
 mod model;
 mod ntsid;
+mod string_cache;
+mod template_cache;
 mod utils;
 
-mod xml_builder;
+mod xml_output;
+
+pub type Offset = u32;
 
 // For tests, we only initialize logging once.
 use std::sync::{Once, ONCE_INIT};

@@ -1,8 +1,8 @@
-use crate::model::owned::XmlElement;
+use crate::model::xml::XmlElement;
 use core::borrow::Borrow;
-use log::{debug, log, trace};
+use log::trace;
 
-use std::{io::Write, mem};
+use std::io::Write;
 
 use xml::common::XmlVersion;
 use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
@@ -29,6 +29,7 @@ pub struct XMLOutput<W: Write> {
     eof_reached: bool,
 }
 
+/// Adapter between binxml XmlModel type and rust-xml output stream.
 impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
     fn with_writer(target: W) -> Self {
         let writer = EmitterConfig::new()
