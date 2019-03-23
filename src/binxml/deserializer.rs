@@ -55,7 +55,7 @@ pub struct IterTokens<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
 }
 
 pub struct BinXmlDeserializer<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
-    data: &'c T,
+    data: &'r T,
     ctx: ParsingContext<'r, 'c>,
 }
 
@@ -65,7 +65,7 @@ where
     T: AsRef<[u8]> + 'c,
 {
     pub fn init(
-        data: &'c T,
+        data: &'r T,
         start_offset: u64,
         string_cache: &'r StringCache,
         template_cache: &'r TemplateCache<'c>,
@@ -79,14 +79,14 @@ where
         BinXmlDeserializer { data, ctx }
     }
 
-    pub fn from_ctx(data: &'c T, ctx: &ParsingContext<'r, 'c>) -> Self {
+    pub fn from_ctx(data: &'r T, ctx: &ParsingContext<'r, 'c>) -> Self {
         BinXmlDeserializer {
             data,
             ctx: ctx.clone(),
         }
     }
 
-    pub fn init_without_cache(data: &'c T, start_offset: u64) -> Self {
+    pub fn init_without_cache(data: &'r T, start_offset: u64) -> Self {
         let ctx = ParsingContext {
             offset: start_offset,
             string_cache: None,
