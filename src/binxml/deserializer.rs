@@ -33,7 +33,7 @@ pub struct BinXmlDeserializer<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
 
 // Alias that will make it easier to change context type if needed.
 pub type Context<'a, 'b> = ParsingContext<'a, 'b>;
-pub type CursorBorrow<'c, T> = Cursor<&'c T>;
+pub type CursorBorrow<'a, 'c, T> = &'a mut Cursor<&'c T>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsingContext<'r, 'c: 'r> {
@@ -129,7 +129,7 @@ where
 impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> IterTokens<'r, 'c, T> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
-    fn read_next_token(&self, cursor: &mut CursorBorrow<'c, T>) -> Result<BinXMLRawToken, Error> {
+    fn read_next_token(&self, cursor: CursorBorrow<'_, 'c, T>) -> Result<BinXMLRawToken, Error> {
         let token = cursor
             .read_u8()
             .map_err(|e| Error::unexpected_eof(e, cursor.stream_position().unwrap()))?;
@@ -141,7 +141,7 @@ impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> IterTokens<'r, 'c, T> {
 
     fn visit_token(
         &self,
-        cursor: &mut CursorBorrow<'c, T>,
+        cursor: CursorBorrow<'_, 'c, T>,
         ctx: Context<'r, 'c>,
         raw_token: BinXMLRawToken,
     ) -> Result<BinXMLDeserializedTokens<'r>, Error> {

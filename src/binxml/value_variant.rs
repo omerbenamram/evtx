@@ -107,7 +107,7 @@ impl BinXMLValueType {
 
 impl<'r, 'c: 'r> BinXmlValue<'r> {
     pub fn from_binxml_stream<T: AsRef<[u8]> + 'c>(
-        cursor: &mut CursorBorrow<'c, T>,
+        cursor: CursorBorrow<'_, 'c, T>,
         ctx: Context<'r, 'c>,
     ) -> Result<BinXmlValue<'r>, Error> {
         let value_type_token = try_read!(cursor, u8);
@@ -126,7 +126,7 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
 
     pub fn deserialize_value_type<T: AsRef<[u8]> + 'c>(
         value_type: &BinXMLValueType,
-        cursor: &mut CursorBorrow<'c, T>,
+        cursor: CursorBorrow<'_, 'c, T>,
         ctx: Context<'r, 'c>,
     ) -> Result<BinXmlValue<'r>, Error> {
         match value_type {
