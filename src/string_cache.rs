@@ -7,6 +7,7 @@ pub type StringHash = u16;
 
 pub type CachedString = (String, StringHash, Offset);
 
+#[derive(Debug)]
 pub struct StringCache(HashMap<Offset, CachedString>);
 
 impl StringCache {

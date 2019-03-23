@@ -17,8 +17,8 @@ pub type StringHashOffset = (String, u16, Offset);
 
 impl<'a> BinXmlName<'a> {
     pub fn from_binxml_stream(
-        cursor: &mut Cursor<&'a [u8]>,
-        ctx: &'a ParsingContext,
+        cursor: &'a mut Cursor<&'a [u8]>,
+        ctx: &'a ParsingContext<'a>,
     ) -> Result<Self, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.

@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::ParsingContext;
+use crate::binxml::deserializer::{BinXmlDeserializer, ParsingContext};
 use crate::error::Error;
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
@@ -105,8 +105,8 @@ impl BinXMLValueType {
 
 impl<'a> BinXMLValue<'a> {
     pub fn from_binxml_stream(
-        cursor: &mut Cursor<&'a [u8]>,
-        ctx: &ParsingContext,
+        cursor: &'a mut Cursor<&'a [u8]>,
+        ctx: &ParsingContext<'a>,
     ) -> Result<Self, Error> {
         let value_type_token = try_read!(cursor, u8);
 
@@ -114,14 +114,15 @@ impl<'a> BinXMLValue<'a> {
             Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
         })?;
 
-        let data = Self::deserialize_value_type(&value_type, cursor)?;
+        let data = Self::deserialize_value_type(&value_type, cursor, ctx)?;
 
         Ok(data)
     }
 
     pub fn deserialize_value_type(
         value_type: &BinXMLValueType,
-        cursor: &mut Cursor<&'a [u8]>,
+        cursor: &'a mut Cursor<&'a [u8]>,
+        ctx: &ParsingContext<'a>,
     ) -> Result<BinXMLValue<'a>, Error> {
         match value_type {
             BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
@@ -168,7 +169,13 @@ impl<'a> BinXMLValue<'a> {
             ))),
             BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => {
-                Ok(BinXMLValue::BinXmlType(read_until_end_of_stream(cursor)?))
+                let deser_temp = BinXmlDeserializer::from_ctx(cursor, &ctx);
+                let mut tokens = vec![];
+                for token in deser_temp.iter_tokens(None) {
+                    tokens.push(token?);
+                }
+
+                Ok(BinXMLValue::BinXmlType(tokens))
             }
             BinXMLValueType::EvtXml => unimplemented!("EvtXml"),
         }
