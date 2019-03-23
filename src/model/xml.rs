@@ -1,5 +1,5 @@
 use crate::binxml::name::BinXmlName;
-use crate::binxml::value_variant::BinXMLValue;
+use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::*;
 use log::{error, log};
 use std::borrow::Cow;
@@ -47,7 +47,7 @@ impl<'a> XmlElementBuilder<'a> {
         self
     }
 
-    pub fn attribute_value(mut self, value: BinXMLValue<'a>) -> Self {
+    pub fn attribute_value(mut self, value: BinXmlValue<'a>) -> Self {
         assert!(
             self.current_attribute_name.is_some(),
             "There should be a name"
@@ -55,7 +55,7 @@ impl<'a> XmlElementBuilder<'a> {
         match self.current_attribute_value {
             None => {
                 self.current_attribute_value = Some(match value {
-                    BinXMLValue::StringType(cow) => cow,
+                    BinXmlValue::StringType(cow) => cow,
                     _ => Cow::Owned(format!("{:?}", value)),
                 })
             }

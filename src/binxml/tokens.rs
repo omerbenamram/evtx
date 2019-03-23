@@ -3,9 +3,9 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use crate::{error::Error, guid::Guid, model::deserialized::*};
 use std::io::Cursor;
 
-use crate::binxml::deserializer::{BinXmlDeserializer, ParsingContext};
+use crate::binxml::deserializer::{BinXmlDeserializer, Context, ParsingContext};
 use crate::binxml::name::BinXmlName;
-use crate::binxml::value_variant::{BinXMLValue, BinXMLValueType};
+use crate::binxml::value_variant::{BinXMLValueType, BinXmlValue};
 use crate::evtx::ReadSeek;
 use crate::utils::{read_len_prefixed_utf16_string, read_utf16_by_size};
 use log::{debug, log, trace};
@@ -14,10 +14,10 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::rc::Rc;
 
-pub fn read_template<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &'a mut T,
-    ctx: Rc<ParsingContext<'a, 'b>>,
-) -> Result<BinXmlTemplate<'a>, Error> {
+pub fn read_template<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
+    ctx: Context<'r, 'c>,
+) -> Result<BinXmlTemplate<'r>, Error> {
     debug!(
         "TemplateInstance at {}",
         cursor.stream_position().expect("Failed to tell position")
@@ -81,11 +81,11 @@ pub fn read_template<'a, 'b: 'a, T: ReadSeek + 'b>(
     for descriptor in value_descriptors {
         let position = cursor.stream_position().expect("Failed to tell position");
         debug!("Substitution: {:?} at {}", descriptor.value_type, position);
-        let value = BinXMLValue::deserialize_value_type(&descriptor.value_type, cursor, ctx)?;
+        let value = BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, ctx)?;
 
         debug!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
-        if value == BinXMLValue::NullType {
+        if value == BinXmlValue::NullType {
             debug!("\t Skip {}", descriptor.size);
             cursor
                 .seek(SeekFrom::Current(i64::from(descriptor.size)))
@@ -109,9 +109,9 @@ pub fn read_template<'a, 'b: 'a, T: ReadSeek + 'b>(
     })
 }
 
-pub fn read_template_definition<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &'a mut T,
-) -> Result<BinXMLTemplateDefinition<'a>, Error> {
+pub fn read_template_definition<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
+) -> Result<BinXMLTemplateDefinition<'r>, Error> {
     let next_template_offset = try_read!(cursor, u32);
 
     let template_guid = Guid::from_stream(cursor).map_err(|e| {
@@ -126,7 +126,7 @@ pub fn read_template_definition<'a, 'b: 'a, T: ReadSeek + 'b>(
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
     let start_position = cursor.stream_position().expect("Failed to tell position");
-    let de = BinXmlDeserializer::init_without_cache(cursor, start_position);
+    let de = BinXmlDeserializer::init_without_cache(cursor.get_ref(), start_position);
 
     let mut tokens = vec![];
     for token in de.iter_tokens(Some(data_size)) {
@@ -141,10 +141,10 @@ pub fn read_template_definition<'a, 'b: 'a, T: ReadSeek + 'b>(
     })
 }
 
-pub fn read_entity_ref<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &'a mut T,
-    ctx: Rc<ParsingContext<'a, 'b>>,
-) -> Result<BinXmlEntityReference<'a>, Error> {
+pub fn read_entity_ref<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
+    ctx: Context<'r, 'c>,
+) -> Result<BinXmlEntityReference<'r>, Error> {
     debug!(
         "EntityReference at {}",
         cursor.stream_position().expect("Failed to tell position")
@@ -155,17 +155,17 @@ pub fn read_entity_ref<'a, 'b: 'a, T: ReadSeek + 'b>(
     Ok(BinXmlEntityReference { name })
 }
 
-pub fn read_attribute<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &'a mut T,
-    ctx: Rc<ParsingContext<'a, 'b>>,
-) -> Result<BinXMLAttribute<'a>, Error> {
+pub fn read_attribute<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
+    ctx: Context<'r, 'c>,
+) -> Result<BinXMLAttribute<'r>, Error> {
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
 
     Ok(BinXMLAttribute { name })
 }
 
-pub fn read_fragment_header<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &mut T,
+pub fn read_fragment_header<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
 ) -> Result<BinXMLFragmentHeader, Error> {
     debug!(
         "FragmentHeader at {}",
@@ -181,8 +181,8 @@ pub fn read_fragment_header<'a, 'b: 'a, T: ReadSeek + 'b>(
     })
 }
 
-pub fn read_substitution<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &mut T,
+pub fn read_substitution<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
     optional: bool,
 ) -> Result<TemplateSubstitutionDescriptor, Error> {
     let substitution_index = try_read!(cursor, u16);
@@ -204,11 +204,11 @@ pub fn read_substitution<'a, 'b: 'a, T: ReadSeek + 'b>(
     })
 }
 
-pub fn read_open_start_element<'a, 'b: 'a, T: ReadSeek + 'b>(
-    cursor: &'a mut T,
-    ctx: Rc<ParsingContext<'a, 'b>>,
+pub fn read_open_start_element<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
+    cursor: &mut Cursor<T>,
+    ctx: Context<'r, 'c>,
     has_attributes: bool,
-) -> Result<BinXMLOpenStartElement<'a>, Error> {
+) -> Result<BinXMLOpenStartElement<'r>, Error> {
     // Reserved
     let _ = try_read!(cursor, u16);
     let data_size = try_read!(cursor, u32);

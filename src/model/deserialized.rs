@@ -1,7 +1,7 @@
 use crate::binxml::name::BinXmlName;
 use crate::guid::Guid;
 
-use crate::binxml::value_variant::{BinXMLValue, BinXMLValueType};
+use crate::binxml::value_variant::{BinXMLValueType, BinXmlValue};
 use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -14,7 +14,7 @@ pub enum BinXMLDeserializedTokens<'a> {
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
-    Value(BinXMLValue<'a>),
+    Value(BinXmlValue<'a>),
     CDATASection,
     CharRef,
     EntityRef(BinXmlEntityReference<'a>),
@@ -47,7 +47,7 @@ pub struct BinXmlEntityReference<'a> {
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXmlTemplate<'a> {
     pub definition: Rc<BinXMLTemplateDefinition<'a>>,
-    pub substitution_array: Vec<BinXMLValue<'a>>,
+    pub substitution_array: Vec<BinXmlValue<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

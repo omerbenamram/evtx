@@ -1,4 +1,4 @@
-use crate::binxml::value_variant::BinXMLValue;
+use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXMLOutput;
@@ -76,10 +76,10 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                 match current_element.take() {
                     // A string that is not inside any element, yield it
                     None => match value {
-                        BinXMLValue::StringType(cow) => {
+                        BinXmlValue::StringType(cow) => {
                             model.push(XmlModel::String(cow.clone()));
                         }
-                        BinXMLValue::EvtXml => {
+                        BinXmlValue::EvtXml => {
                             panic!("Call `expand_templates` before calling this function")
                         }
                         _ => {
@@ -89,7 +89,7 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                     // A string that is bound to an attribute
                     Some(builder) => {
                         current_element =
-                            Some(builder.attribute_value(BinXMLValue::StringType(value.into())));
+                            Some(builder.attribute_value(BinXmlValue::StringType(value.into())));
                     }
                 };
             }
@@ -119,7 +119,7 @@ pub fn expand_templates(
     ) {
         match token {
             BinXMLDeserializedTokens::Value(ref value) => {
-                if let BinXMLValue::BinXmlType(tokens) = value {
+                if let BinXmlValue::BinXmlType(tokens) = value {
                     for token in tokens.iter() {
                         _expand_templates(token.clone(), stack);
                     }
