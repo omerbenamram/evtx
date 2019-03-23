@@ -33,6 +33,7 @@ pub struct BinXmlDeserializer<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
 
 // Alias that will make it easier to change context type if needed.
 pub type Context<'a, 'b> = ParsingContext<'a, 'b>;
+pub type CursorBorrow<'c, T> = Cursor<&'c T>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsingContext<'r, 'c: 'r> {
@@ -50,9 +51,9 @@ impl<'r, 'c: 'r> ParsingContext<'r, 'c> {
     }
 }
 
-pub struct IterTokens<'a, 'b: 'a, T: AsRef<[u8]> + 'b> {
-    data: Cursor<T>,
-    ctx: Context<'a, 'b>,
+pub struct IterTokens<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
+    data: &'r T,
+    ctx: Context<'r, 'c>,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
@@ -116,7 +117,7 @@ where
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> IterTokens<'r, 'c, T> {
         IterTokens {
-            data: self.data,
+            data: self.data.get_ref(),
             ctx: self.ctx,
             data_size,
             data_read_so_far: 0,
@@ -128,7 +129,7 @@ where
 impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> IterTokens<'r, 'c, T> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
-    fn read_next_token(&self, cursor: &mut Cursor<T>) -> Result<BinXMLRawToken, Error> {
+    fn read_next_token(&self, cursor: &mut CursorBorrow<'c, T>) -> Result<BinXMLRawToken, Error> {
         let token = cursor
             .read_u8()
             .map_err(|e| Error::unexpected_eof(e, cursor.stream_position().unwrap()))?;
@@ -140,7 +141,7 @@ impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> IterTokens<'r, 'c, T> {
 
     fn visit_token(
         &self,
-        cursor: &mut Cursor<T>,
+        cursor: &mut CursorBorrow<'c, T>,
         ctx: Context<'r, 'c>,
         raw_token: BinXMLRawToken,
     ) -> Result<BinXMLDeserializedTokens<'r>, Error> {
@@ -192,7 +193,8 @@ impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> Iterator for IterTokens<'r, 'c, T> {
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut cursor = &mut self.data;
+        let mut cursor = Cursor::new(self.data);
+
         let mut offset_from_chunk_start = cursor.stream_position().expect("Tell failed");
 
         trace!("offset_from_chunk_start: {}", offset_from_chunk_start);

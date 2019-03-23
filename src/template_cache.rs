@@ -19,10 +19,10 @@ impl<'r, 'c: 'r> TemplateCache<'c> {
         TemplateCache(HashMap::new())
     }
 
-    pub fn populate(
+    pub fn populate<T: AsRef<[u8]> + 'c>(
         &mut self,
         chunk: &'r EvtxChunk<'c>,
-        data: &'c [u8],
+        data: &'c T,
         offsets: &[Offset],
     ) -> Result<(), failure::Error> {
         let mut cursor = Cursor::new(data);
@@ -30,8 +30,8 @@ impl<'r, 'c: 'r> TemplateCache<'c> {
             cursor.seek(SeekFrom::Start(*offset as u64))?;
             let deser = BinXmlDeserializer::init_without_cache(&chunk.data, u64::from(*offset));
 
-            self.0
-                .insert(*offset, read_template_definition(&mut cursor)?);
+            let definition = read_template_definition(&mut cursor)?;
+            self.0.insert(*offset, definition);
         }
 
         Ok(())

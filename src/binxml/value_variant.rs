@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Context, ParsingContext};
+use crate::binxml::deserializer::{BinXmlDeserializer, Context, CursorBorrow, ParsingContext};
 use crate::error::Error;
 use crate::evtx::ReadSeek;
 use crate::guid::Guid;
@@ -107,7 +107,7 @@ impl BinXMLValueType {
 
 impl<'r, 'c: 'r> BinXmlValue<'r> {
     pub fn from_binxml_stream<T: AsRef<[u8]> + 'c>(
-        cursor: &mut Cursor<T>,
+        cursor: &mut CursorBorrow<'c, T>,
         ctx: Context<'r, 'c>,
     ) -> Result<BinXmlValue<'r>, Error> {
         let value_type_token = try_read!(cursor, u8);
@@ -126,7 +126,7 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
 
     pub fn deserialize_value_type<T: AsRef<[u8]> + 'c>(
         value_type: &BinXMLValueType,
-        cursor: &mut Cursor<T>,
+        cursor: &mut CursorBorrow<'c, T>,
         ctx: Context<'r, 'c>,
     ) -> Result<BinXmlValue<'r>, Error> {
         match value_type {
