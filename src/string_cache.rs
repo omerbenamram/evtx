@@ -30,4 +30,8 @@ impl StringCache {
     pub fn get_string_and_hash(&self, offset: Offset) -> Option<&CachedString> {
         self.0.get(&offset)
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }

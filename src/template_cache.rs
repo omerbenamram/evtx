@@ -21,7 +21,7 @@ impl<'a> TemplateCache<'a> {
 
     pub fn populate(
         &mut self,
-        chunk: &EvtxChunk<'a>,
+        chunk: &'a EvtxChunk<'a>,
         data: &'a [u8],
         offsets: &[Offset],
     ) -> Result<(), failure::Error> {
@@ -35,5 +35,9 @@ impl<'a> TemplateCache<'a> {
         }
 
         Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 }
