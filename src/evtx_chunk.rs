@@ -76,7 +76,7 @@ impl<'a> EvtxChunk<'a> {
             data,
             header,
             string_cache: string_table,
-            template_table: HashMap::new(),
+            template_table: TemplateCache::new(),
         })
     }
 
@@ -121,6 +121,10 @@ impl<'a> EvtxChunk<'a> {
         checksum == expected_checksum
     }
 
+    pub fn cursor(&'a self) -> Cursor<&'a [u8]> {
+        Cursor::new(&self.data)
+    }
+
     pub fn validate_checksum(&self) -> bool {
         self.validate_header_checksum() && self.validate_data_checksum()
     }
@@ -147,14 +151,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = Result<EvtxRecord, failure::Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if !self.templates_cache_init {
-            self.chunk.template_table.populate(
-                &self.chunk,
-                &self.chunk.data,
-                &self.chunk.header.template_offsets,
-            );
-        }
-
         if self.exhausted
             || self.offset_from_chunk_start >= self.chunk.header.free_space_offset as u64
         {
@@ -170,10 +166,11 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let binxml_data_size = record_header.record_data_size();
 
         debug!("Need to deserialize {} bytes of binxml", binxml_data_size);
-        let deserializer = BinXmlDeserializer::from_chunk_at_offset(
-            &self.chunk,
+        let deserializer = BinXmlDeserializer::init(
+            Cursor::new(&self.chunk.data),
             self.offset_from_chunk_start + cursor.position(),
-            binxml_data_size,
+            &self.chunk.string_cache,
+            &self.chunk.template_table,
         );
 
         // Setup a buffer to receive XML output.
@@ -182,7 +179,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         let mut tokens = vec![];
 
-        for token in deserializer {
+        for token in deserializer.iter_tokens(Some(binxml_data_size)) {
             match token {
                 Ok(token) => tokens.push(token),
                 Err(e) => {
@@ -190,7 +187,11 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
                     if log::log_enabled!(Level::Debug) {
                         let mut cursor = Cursor::new(self.chunk.data.as_slice());
-                        cursor.seek(SeekFrom::Start(e.offset())).unwrap();
+                        cursor
+                            .seek(SeekFrom::Start(
+                                e.offset().expect("Err to have offset information"),
+                            ))
+                            .unwrap();
                         dump_cursor(&mut cursor, 10);
                     }
 

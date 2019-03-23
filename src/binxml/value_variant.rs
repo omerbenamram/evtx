@@ -2,6 +2,7 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::binxml::deserializer::{BinXmlDeserializer, ParsingContext};
 use crate::error::Error;
+use crate::evtx::ReadSeek;
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
@@ -9,6 +10,7 @@ use crate::utils::{datetime_from_filetime, read_len_prefixed_utf16_string};
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
 use std::io::Cursor;
+use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLValue<'a> {
@@ -103,15 +105,18 @@ impl BinXMLValueType {
     }
 }
 
-impl<'a> BinXMLValue<'a> {
-    pub fn from_binxml_stream(
-        cursor: &'a mut Cursor<&'a [u8]>,
-        ctx: &ParsingContext<'a>,
+impl<'a, 'b: 'a> BinXMLValue<'a> {
+    pub fn from_binxml_stream<T: ReadSeek + 'b>(
+        cursor: &'a mut T,
+        ctx: Rc<ParsingContext<'a, 'b>>,
     ) -> Result<Self, Error> {
         let value_type_token = try_read!(cursor, u8);
 
         let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
-            Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
+            Error::not_a_valid_binxml_value_type(
+                value_type_token,
+                cursor.stream_position().expect("Tell failed"),
+            )
         })?;
 
         let data = Self::deserialize_value_type(&value_type, cursor, ctx)?;
@@ -119,16 +124,18 @@ impl<'a> BinXMLValue<'a> {
         Ok(data)
     }
 
-    pub fn deserialize_value_type(
+    pub fn deserialize_value_type<T: ReadSeek + 'a>(
         value_type: &BinXMLValueType,
-        cursor: &'a mut Cursor<&'a [u8]>,
-        ctx: &ParsingContext<'a>,
+        cursor: &'a mut T,
+        ctx: Rc<ParsingContext<'a, 'b>>,
     ) -> Result<BinXMLValue<'a>, Error> {
         match value_type {
             BinXMLValueType::NullType => Ok(BinXMLValue::NullType),
             BinXMLValueType::StringType => Ok(BinXMLValue::StringType(Cow::Owned(
                 read_len_prefixed_utf16_string(cursor, false)
-                    .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
+                    .map_err(|e| {
+                        Error::utf16_decode_error(e, cursor.stream_position().expect("Tell failed"))
+                    })?
                     .unwrap_or("".to_owned()),
             ))),
             BinXMLValueType::AnsiStringType => unimplemented!(),
@@ -144,21 +151,27 @@ impl<'a> BinXMLValue<'a> {
             BinXMLValueType::Real64Type => unimplemented!("Real64Type"),
             BinXMLValueType::BoolType => unimplemented!("BoolType"),
             BinXMLValueType::BinaryType => unimplemented!("BinaryType"),
-            BinXMLValueType::GuidType => {
-                Ok(BinXMLValue::GuidType(Guid::from_stream(cursor).map_err(
-                    |e| Error::other("Failed to read GUID from stream", cursor.position()),
-                )?))
-            }
+            BinXMLValueType::GuidType => Ok(BinXMLValue::GuidType(
+                Guid::from_stream(cursor).map_err(|e| {
+                    Error::other(
+                        "Failed to read GUID from stream",
+                        cursor.stream_position().expect("Tell failed"),
+                    )
+                })?,
+            )),
             BinXMLValueType::SizeTType => unimplemented!("SizeTType"),
             BinXMLValueType::FileTimeType => Ok(BinXMLValue::FileTimeType(datetime_from_filetime(
                 try_read!(cursor, u64),
             ))),
             BinXMLValueType::SysTimeType => unimplemented!("SysTimeType"),
-            BinXMLValueType::SidType => {
-                Ok(BinXMLValue::SidType(Sid::from_stream(cursor).map_err(
-                    |_| Error::other("Failed to read NTSID from stream", cursor.position()),
-                )?))
-            }
+            BinXMLValueType::SidType => Ok(BinXMLValue::SidType(
+                Sid::from_stream(cursor).map_err(|_| {
+                    Error::other(
+                        "Failed to read NTSID from stream",
+                        cursor.stream_position().expect("Tell failed"),
+                    )
+                })?,
+            )),
             BinXMLValueType::HexInt32Type => Ok(BinXMLValue::HexInt32Type(format!(
                 "0x{:2x}",
                 try_read!(cursor, i32)
@@ -169,7 +182,7 @@ impl<'a> BinXMLValue<'a> {
             ))),
             BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => {
-                let deser_temp = BinXmlDeserializer::from_ctx(cursor, &ctx);
+                let deser_temp = BinXmlDeserializer::from_ctx(cursor, ctx);
                 let mut tokens = vec![];
                 for token in deser_temp.iter_tokens(None) {
                     tokens.push(token?);
