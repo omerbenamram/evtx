@@ -26,24 +26,19 @@ use std::io::Cursor;
 use std::rc::Rc;
 use std::sync::RwLock;
 
-pub struct BinXmlDeserializer<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
-    data: Cursor<T>,
-    ctx: ParsingContext<'r, 'c>,
-}
-
 // Alias that will make it easier to change context type if needed.
 pub type Context<'a, 'b> = ParsingContext<'a, 'b>;
-pub type CursorBorrow<'a, 'c, T> = &'a mut Cursor<&'c T>;
 
+pub type CursorBorrow<'a, 'c, T> = &'a mut Cursor<&'c T>;
 #[derive(Clone, Debug)]
-pub(crate) struct ParsingContext<'r, 'c: 'r> {
+pub struct ParsingContext<'r, 'c: 'r> {
     offset: u64,
     string_cache: Option<&'r StringCache>,
     template_cache: Option<&'r TemplateCache<'c>>,
 }
 
 impl<'r, 'c: 'r> ParsingContext<'r, 'c> {
-    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&CachedString> {
+    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&'r CachedString> {
         match self.string_cache {
             Some(cache) => cache.get_string_and_hash(offset),
             None => None,
@@ -59,13 +54,18 @@ pub struct IterTokens<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
     eof: bool,
 }
 
+pub struct BinXmlDeserializer<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
+    data: &'c T,
+    ctx: ParsingContext<'r, 'c>,
+}
+
 impl<'r, 'c, T> BinXmlDeserializer<'r, 'c, T>
 where
     'c: 'r,
     T: AsRef<[u8]> + 'c,
 {
     pub fn init(
-        data: T,
+        data: &'c T,
         start_offset: u64,
         string_cache: &'r StringCache,
         template_cache: &'r TemplateCache<'c>,
@@ -76,48 +76,30 @@ where
             template_cache: Some(template_cache),
         };
 
-        BinXmlDeserializer {
-            data: Cursor::new(data),
-            ctx,
-        }
+        BinXmlDeserializer { data, ctx }
     }
 
-    pub fn from_ctx(data: T, ctx: &ParsingContext<'r, 'c>) -> Self {
+    pub fn from_ctx(data: &'c T, ctx: &ParsingContext<'r, 'c>) -> Self {
         BinXmlDeserializer {
-            data: Cursor::new(data),
+            data,
             ctx: ctx.clone(),
         }
     }
 
-    pub fn init_without_cache(data: T, start_offset: u64) -> Self {
+    pub fn init_without_cache(data: &'c T, start_offset: u64) -> Self {
         let ctx = ParsingContext {
             offset: start_offset,
             string_cache: None,
             template_cache: None,
         };
 
-        BinXmlDeserializer {
-            data: Cursor::new(data),
-            ctx,
-        }
-    }
-
-    pub fn wrap_cursor(mut cursor: Cursor<T>) -> Self {
-        let offset = cursor.stream_position().expect("Tell failed");
-
-        let ctx = ParsingContext {
-            offset,
-            string_cache: None,
-            template_cache: None,
-        };
-
-        BinXmlDeserializer { data: cursor, ctx }
+        BinXmlDeserializer { data, ctx }
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> IterTokens<'r, 'c, T> {
         IterTokens {
-            data: self.data.get_ref(),
+            data: self.data,
             ctx: self.ctx,
             data_size,
             data_read_so_far: 0,

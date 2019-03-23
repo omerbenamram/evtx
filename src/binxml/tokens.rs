@@ -81,7 +81,8 @@ pub fn read_template<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
     for descriptor in value_descriptors {
         let position = cursor.stream_position().expect("Failed to tell position");
         debug!("Substitution: {:?} at {}", descriptor.value_type, position);
-        let value = BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, ctx)?;
+        let value =
+            BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, ctx.clone())?;
 
         debug!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)

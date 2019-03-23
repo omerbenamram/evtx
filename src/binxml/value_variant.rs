@@ -165,7 +165,7 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
             ))),
             BinXMLValueType::SysTimeType => unimplemented!("SysTimeType"),
             BinXMLValueType::SidType => Ok(BinXmlValue::SidType(
-                Sid::from_stream(cursor).map_err(|_| {
+                Sid::from_stream(cursor).map_err(|e| {
                     Error::other(
                         "Failed to read NTSID from stream",
                         cursor.stream_position().expect("Tell failed"),
@@ -182,13 +182,14 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
             ))),
             BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => {
-                let deser_temp = BinXmlDeserializer::from_ctx(cursor.get_ref(), &ctx);
-                let mut tokens = vec![];
-                for token in deser_temp.iter_tokens(None) {
-                    tokens.push(token?);
-                }
-
-                Ok(BinXmlValue::BinXmlType(tokens))
+                //                let deser_temp = BinXmlDeserializer::from_ctx(cursor.get_ref(), &ctx);
+                //                let mut tokens = vec![];
+                //                for token in deser_temp.iter_tokens(None) {
+                //                    tokens.push(token?);
+                //                }
+                //
+                //                Ok(BinXmlValue::BinXmlType(tokens))
+                unimplemented!()
             }
             BinXMLValueType::EvtXml => unimplemented!("EvtXml"),
         }
