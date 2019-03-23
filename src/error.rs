@@ -8,7 +8,7 @@ use failure::{Backtrace, Context, Fail};
 #[derive(Fail, Debug)]
 pub struct Error {
     inner: Context<ErrorKind>,
-    offset: u64,
+    offset: Option<u64>,
 }
 
 #[derive(Fail, Debug)]
@@ -33,48 +33,54 @@ pub enum ErrorKind {
 }
 
 impl Error {
-    pub fn new(ctx: Context<ErrorKind>, offset: u64) -> Error {
+    pub fn new(ctx: Context<ErrorKind>, offset: Option<u64>) -> Error {
         Error { inner: ctx, offset }
     }
 
     /// Error offset (relative to chunk start)
-    pub fn offset(&self) -> u64 {
+    pub fn offset(&self) -> Option<u64> {
         self.offset
     }
 
     pub(crate) fn unexpected_eof(e: impl Fail, offset: u64) -> Self {
-        Error::new(e.context(ErrorKind::UnexpectedEOF), offset)
+        Error::new(e.context(ErrorKind::UnexpectedEOF), Some(offset))
     }
 
-    pub(crate) fn io(e: io::Error, offset: u64) -> Self {
-        Error::new(e.context(ErrorKind::IO), offset)
+    pub(crate) fn io(e: io::Error) -> Self {
+        Error::new(e.context(ErrorKind::IO), None)
     }
 
     pub(crate) fn not_a_valid_binxml_token(token: u8, offset: u64) -> Self {
         let err = ErrorKind::NotAValidBinXMLToken { token };
-        Error::new(Context::new(err), offset)
+        Error::new(Context::new(err), Some(offset))
     }
 
     pub(crate) fn not_a_valid_binxml_value_type(token: u8, offset: u64) -> Self {
         let err = ErrorKind::NotAValidValueType { token };
-        Error::new(Context::new(err), offset)
+        Error::new(Context::new(err), Some(offset))
     }
     pub(crate) fn utf16_decode_error(e: impl Fail, offset: u64) -> Self {
-        Error::new(Context::new(ErrorKind::UTF16Decode), offset)
+        Error::new(Context::new(ErrorKind::UTF16Decode), Some(offset))
     }
 
     pub(crate) fn other(context: &'static str, offset: u64) -> Self {
         let err = ErrorKind::Other {
             display: context.to_owned(),
         };
-        Error::new(Context::new(err), offset)
+        Error::new(Context::new(err), Some(offset))
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error::io(e)
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         let repr = format!(
-            "Error occurred during serialization at offset {} - {}",
+            "Error occurred during serialization at offset {:?} - {}",
             self.offset, self.inner
         );
         f.write_str(&repr)?;

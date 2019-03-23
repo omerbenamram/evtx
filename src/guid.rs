@@ -3,6 +3,7 @@ use std::{
     io::{self, Cursor, Read},
 };
 
+use crate::evtx::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 #[derive(PartialOrd, PartialEq, Clone)]
@@ -25,7 +26,7 @@ impl Guid {
         }
     }
 
-    pub fn from_stream(stream: &mut Cursor<&[u8]>) -> io::Result<Guid> {
+    pub fn from_stream<T: ReadSeek>(stream: &mut T) -> io::Result<Guid> {
         let data1 = stream.read_u32::<LittleEndian>()?;
         let data2 = stream.read_u16::<LittleEndian>()?;
         let data3 = stream.read_u16::<LittleEndian>()?;

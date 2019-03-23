@@ -1,5 +1,6 @@
 use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
 
+use crate::evtx::ReadSeek;
 use crate::utils::print_hexdump;
 use byteorder::{ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
 use log::{debug, error, log, trace};
@@ -8,8 +9,8 @@ use std::{
     io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom},
 };
 
-pub fn read_len_prefixed_utf16_string(
-    stream: &mut Cursor<&[u8]>,
+pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
+    stream: &mut T,
     is_null_terminated: bool,
 ) -> io::Result<Option<String>> {
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
@@ -45,19 +46,16 @@ pub fn read_len_prefixed_utf16_string(
         })
 }
 
-pub fn read_utf16_by_size(stream: &mut Cursor<&[u8]>, size: u64) -> io::Result<Option<String>> {
-    let p = stream.position() as usize;
-    let ref_to_utf16_bytes = &stream.get_ref()[p..p + size as usize];
+pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<Option<String>> {
+    let p = stream.stream_position()? as usize;
+
+    let mut buffer = vec![0; size as usize];
+    let ref_to_utf16_bytes = stream.read_exact(&mut buffer);
 
     match size {
         0 => Ok(None),
-        _ => match UTF_16LE.decode(ref_to_utf16_bytes, DecoderTrap::Strict) {
-            Ok(s) => {
-                // We need to seek manually because the UTF-16 reader
-                // does not advance the stream.
-                stream.seek(SeekFrom::Current(size as i64))?;
-                Ok(Some(s))
-            }
+        _ => match UTF_16LE.decode(&mut buffer, DecoderTrap::Strict) {
+            Ok(s) => Ok(Some(s)),
             Err(s) => Err(Error::from(ErrorKind::InvalidData)),
         },
     }
