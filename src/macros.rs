@@ -1,5 +1,4 @@
 use crate::error::Error;
-pub(crate) use byteorder::{LittleEndian, ReadBytesExt};
 
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
 macro_rules! try_read {

@@ -1,3 +1,5 @@
+pub use byteorder::{LittleEndian, ReadBytesExt};
+
 use crate::{error::Error, guid::Guid, model::deserialized::*};
 use std::io::Cursor;
 

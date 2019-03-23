@@ -1,15 +1,16 @@
+pub use byteorder::{LittleEndian, ReadBytesExt};
+
 use crate::binxml::deserializer::ParsingContext;
 use crate::error::Error;
 use crate::evtx::ReadSeek;
 use crate::utils::read_len_prefixed_utf16_string;
 use crate::Offset;
-use byteorder::LittleEndian;
 use failure::Fail;
 use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub struct BinXmlName<'a>(Cow<'a, str>);
 
 pub type StringHashOffset = (String, u16, Offset);
@@ -17,7 +18,7 @@ pub type StringHashOffset = (String, u16, Offset);
 impl<'a> BinXmlName<'a> {
     pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: &ParsingContext,
+        ctx: &'a ParsingContext,
     ) -> Result<Self, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
@@ -50,7 +51,11 @@ impl<'a> BinXmlName<'a> {
 
         let position_after_read = cursor.position();
 
-        Ok((name, name_hash, position_after_read - position_before_read))
+        Ok((
+            name,
+            name_hash,
+            (position_after_read - position_before_read) as Offset,
+        ))
     }
 
     /// Reads a `BinXmlName` from a given offset, seeks if needed.

@@ -1,7 +1,7 @@
-use std::io::{Seek, SeekFrom};
-
 use byteorder::{LittleEndian, ReadBytesExt};
+
 use log::{debug, log, trace};
+use std::io::{Seek, SeekFrom};
 
 use crate::binxml::value_variant::BinXMLValue;
 use crate::string_cache::CachedString;

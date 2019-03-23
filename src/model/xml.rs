@@ -1,8 +1,10 @@
+use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXMLValue;
 use crate::model::deserialized::*;
 use log::{error, log};
 use std::borrow::Cow;
-use xml::name::Name;
+
+type Name<'a> = BinXmlName<'a>;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum XmlModel<'a> {

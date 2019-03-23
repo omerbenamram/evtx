@@ -31,8 +31,7 @@ impl<'a> TemplateCache<'a> {
                 .map_err(|e| Error::other("Failed to read GUID from stream", cursor.position()))?;
             let data_size = try_read!(cursor, u32);
 
-            let deser =
-                BinXmlDeserializer::from_chunk_at_offset(&chunk, u64::from(*offset), data_size);
+            let deser = BinXmlDeserializer::init_without_cache(&mut cursor, u64::from(*offset));
 
             self.0
                 .insert(*offset, deser.read_template_definition(&mut cursor)?);

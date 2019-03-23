@@ -1,7 +1,8 @@
-use log::{log, debug};
-use crate::model::deserialized::{BinXMLDeserializedTokens, BinXMLValue};
-use crate::xml_output::BinXMLOutput;
+use crate::binxml::value_variant::BinXMLValue;
+use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::xml::{XmlElementBuilder, XmlModel};
+use crate::xml_output::BinXMLOutput;
+use log::{debug, log};
 use std::io::Write;
 
 pub fn parse_tokens<'chunk: 'record, 'record, W: Write, T: BinXMLOutput<'chunk, W>>(
@@ -13,9 +14,7 @@ pub fn parse_tokens<'chunk: 'record, 'record, W: Write, T: BinXMLOutput<'chunk, 
 
     for owned_token in record_model {
         match owned_token {
-            XmlModel::OpenElement(open_element) => {
-                visitor.visit_open_start_element(&open_element)
-            }
+            XmlModel::OpenElement(open_element) => visitor.visit_open_start_element(&open_element),
             XmlModel::CloseElement => visitor.visit_close_element(),
             XmlModel::String(s) => visitor.visit_characters(&s),
             XmlModel::EndOfStream => visitor.visit_end_of_stream(),
