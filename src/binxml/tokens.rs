@@ -111,8 +111,8 @@ pub fn read_template<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
 }
 
 pub fn read_template_definition<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
-) -> Result<BinXMLTemplateDefinition<'r>, Error> {
+    cursor: &'r mut Cursor<&'c T>,
+) -> Result<BinXMLTemplateDefinition<'c>, Error> {
     let next_template_offset = try_read!(cursor, u32);
 
     let template_guid = Guid::from_stream(cursor).map_err(|e| {
@@ -127,7 +127,8 @@ pub fn read_template_definition<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
     let start_position = cursor.stream_position().expect("Failed to tell position");
-    let de = BinXmlDeserializer::init_without_cache(cursor.get_ref(), start_position);
+    let data = *cursor.get_ref();
+    let de = BinXmlDeserializer::init_without_cache(data, start_position);
 
     let mut tokens = vec![];
     for token in de.iter_tokens(Some(data_size)) {

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
-#![feature(seek_convenience)]
+//#![feature(seek_convenience)]
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 pub mod evtx;
