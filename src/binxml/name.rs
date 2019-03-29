@@ -18,9 +18,9 @@ pub struct BinXmlName<'a>(Cow<'a, str>);
 
 pub type StringHashOffset = (String, u16, Offset);
 
-impl<'r, 'c: 'r> BinXmlName<'c> {
+impl<'c> BinXmlName<'c> {
     pub fn from_binxml_stream(
-        cursor: &'r mut Cursor<&'c [u8]>,
+        cursor: &mut Cursor<&'c [u8]>,
         ctx: Context<'c>,
     ) -> Result<BinXmlName<'c>, Error> {
         // Important!!
@@ -41,7 +41,7 @@ impl<'r, 'c: 'r> BinXmlName<'c> {
     }
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
-    pub fn from_stream<T: ReadSeek + 'c>(cursor: &mut T) -> Result<StringHashOffset, Error> {
+    pub fn from_stream(cursor: &mut Cursor<&'c [u8]>) -> Result<StringHashOffset, Error> {
         let position_before_read = cursor.stream_position()?;
 
         let _ = try_read!(cursor, u32);
@@ -63,7 +63,7 @@ impl<'r, 'c: 'r> BinXmlName<'c> {
 
     /// Reads a `BinXmlName` from a given offset, seeks if needed.
     fn from_stream_at_offset(
-        cursor: &'r mut Cursor<&'c [u8]>,
+        cursor: &mut Cursor<&'c [u8]>,
         offset: Offset,
     ) -> Result<StringHashOffset, Error> {
         if offset != cursor.stream_position()? as u32 {

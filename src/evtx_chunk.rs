@@ -121,10 +121,6 @@ impl<'a> EvtxChunk<'a> {
         checksum == expected_checksum
     }
 
-    pub fn cursor(&'a self) -> Cursor<&'a [u8]> {
-        Cursor::new(&self.data)
-    }
-
     pub fn validate_checksum(&self) -> bool {
         self.validate_header_checksum() && self.validate_data_checksum()
     }

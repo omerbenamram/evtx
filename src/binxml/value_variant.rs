@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context, CursorBorrow};
+use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context};
 use crate::error::Error;
 use crate::evtx::ReadSeek;
 use crate::guid::Guid;
@@ -105,9 +105,9 @@ impl BinXMLValueType {
     }
 }
 
-impl<'r, 'c: 'r> BinXmlValue<'r> {
-    pub fn from_binxml_stream<T: AsRef<[u8]> + 'c>(
-        cursor: &'r mut Cursor<&'c T>,
+impl<'c> BinXmlValue<'c> {
+    pub fn from_binxml_stream(
+        cursor: &mut Cursor<&'c [u8]>,
         ctx: Context<'c>,
     ) -> Result<BinXmlValue<'c>, Error> {
         let value_type_token = try_read!(cursor, u8);
@@ -124,9 +124,9 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
         Ok(data)
     }
 
-    pub fn deserialize_value_type<T: AsRef<[u8]> + 'c>(
+    pub fn deserialize_value_type(
         value_type: &BinXMLValueType,
-        cursor: CursorBorrow<'r, 'c, T>,
+        cursor: &mut Cursor<&'c [u8]>,
         ctx: Context<'c>,
     ) -> Result<BinXmlValue<'c>, Error> {
         match value_type {
@@ -199,8 +199,8 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
     }
 }
 
-impl<'a> Into<Cow<'a, str>> for BinXmlValue<'a> {
-    fn into(self) -> Cow<'a, str> {
+impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
+    fn into(self) -> Cow<'c, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
             BinXmlValue::StringType(s) => s,
