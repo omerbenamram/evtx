@@ -175,12 +175,10 @@ impl<'c> IterTokens<'c> {
     }
 }
 
-impl<'c> Iterator for IterTokens<'c> {
-    type Item = Result<BinXMLDeserializedTokens<'c>, Error>;
 
-    /// yields tokens from the chunk, will return once the chunk is finished.
-    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut cursor = self.cursor.borrow_mut();
+impl<'c> IterTokens<'c> {
+    fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'c>, Error>> {
+        let mut cursor = self.cursor.clone();
         let mut offset_from_chunk_start = cursor.stream_position().expect("Tell failed");
 
         trace!("offset_from_chunk_start: {}", offset_from_chunk_start);
@@ -249,6 +247,16 @@ impl<'c> Iterator for IterTokens<'c> {
             }
         }
     }
+}
+
+impl<'c> Iterator for IterTokens<'c> {
+    type Item = Result<BinXMLDeserializedTokens<'c>, Error>;
+
+    /// yields tokens from the chunk, will return once the chunk is finished.
+    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        self.inner_next()
+    }
+
 }
 
 mod tests {
