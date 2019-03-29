@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Context, CursorBorrow, ParsingContext};
+use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context, CursorBorrow};
 use crate::error::Error;
 use crate::evtx::ReadSeek;
 use crate::guid::Guid;
@@ -107,9 +107,9 @@ impl BinXMLValueType {
 
 impl<'r, 'c: 'r> BinXmlValue<'r> {
     pub fn from_binxml_stream<T: AsRef<[u8]> + 'c>(
-        cursor: CursorBorrow<'_, 'c, T>,
-        ctx: Context<'r, 'c>,
-    ) -> Result<BinXmlValue<'r>, Error> {
+        cursor: &'r mut Cursor<&'c T>,
+        ctx: Context<'c>,
+    ) -> Result<BinXmlValue<'c>, Error> {
         let value_type_token = try_read!(cursor, u8);
 
         let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
@@ -119,16 +119,16 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
             )
         })?;
 
-        let data = Self::deserialize_value_type(&value_type, cursor, ctx)?;
+        let data = Self::deserialize_value_type(&value_type, cursor, Rc::clone(&ctx))?;
 
         Ok(data)
     }
 
     pub fn deserialize_value_type<T: AsRef<[u8]> + 'c>(
         value_type: &BinXMLValueType,
-        cursor: CursorBorrow<'_, 'c, T>,
-        ctx: Context<'r, 'c>,
-    ) -> Result<BinXmlValue<'r>, Error> {
+        cursor: CursorBorrow<'r, 'c, T>,
+        ctx: Context<'c>,
+    ) -> Result<BinXmlValue<'c>, Error> {
         match value_type {
             BinXMLValueType::NullType => Ok(BinXmlValue::NullType),
             BinXMLValueType::StringType => Ok(BinXmlValue::StringType(Cow::Owned(
@@ -182,14 +182,17 @@ impl<'r, 'c: 'r> BinXmlValue<'r> {
             ))),
             BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => {
-                //                let deser_temp = BinXmlDeserializer::from_ctx(cursor.get_ref(), &ctx);
-                //                let mut tokens = vec![];
-                //                for token in deser_temp.iter_tokens(None) {
-                //                    tokens.push(token?);
-                //                }
-                //
-                //                Ok(BinXmlValue::BinXmlType(tokens))
-                unimplemented!()
+                let data = *cursor.get_ref();
+                let deser_temp = BinXmlDeserializer::init_without_cache(
+                    data,
+                    cursor.stream_position().map_err(Error::io)?,
+                );
+                let mut tokens = vec![];
+                for token in deser_temp.iter_tokens(None) {
+                    tokens.push(token?);
+                }
+
+                Ok(BinXmlValue::BinXmlType(tokens))
             }
             BinXMLValueType::EvtXml => unimplemented!("EvtXml"),
         }

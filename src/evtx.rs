@@ -27,11 +27,7 @@ pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
 // Inspired by https://github.com/mitsuhiko/unbox/src/formats/cab.rs
 // Armin Ronacher is a genius.
-pub trait ReadSeek: Read + Seek {
-    fn stream_position(&mut self) -> io::Result<u64> {
-        self.seek(SeekFrom::Current(0))
-    }
-}
+pub trait ReadSeek: Read + Seek {}
 
 impl<T: Read + Seek> ReadSeek for T {}
 

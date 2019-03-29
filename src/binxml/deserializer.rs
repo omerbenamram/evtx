@@ -6,6 +6,7 @@ use std::io::{Seek, SeekFrom};
 use crate::binxml::tokens::read_open_start_element;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::string_cache::CachedString;
+use crate::template_cache::CachedTemplate;
 use crate::{
     binxml::tokens::{
         read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
@@ -27,28 +28,34 @@ use std::rc::Rc;
 use std::sync::RwLock;
 
 // Alias that will make it easier to change context type if needed.
-pub type Context<'a, 'b> = ParsingContext<'a, 'b>;
+pub type Context<'b> = Rc<Cache<'b>>;
 
 pub type CursorBorrow<'a, 'c, T> = &'a mut Cursor<&'c T>;
+
 #[derive(Clone, Debug)]
-pub struct ParsingContext<'r, 'c: 'r> {
+pub struct Cache<'c> {
     offset: u64,
-    string_cache: Option<&'r StringCache>,
-    template_cache: Option<&'r TemplateCache<'c>>,
+    string_cache: Option<&'c StringCache>,
+    template_cache: Option<&'c TemplateCache<'c>>,
 }
 
-impl<'r, 'c: 'r> ParsingContext<'r, 'c> {
-    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&'r CachedString> {
+impl<'c> Cache<'c> {
+    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&'c CachedString> {
         match self.string_cache {
             Some(cache) => cache.get_string_and_hash(offset),
             None => None,
         }
     }
+
+    pub fn cached_template_at_offset(&'c self, offset: Offset) -> Option<&CachedTemplate<'c>> {
+        None
+    }
 }
 
 pub struct IterTokens<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
-    data: &'r T,
-    ctx: Context<'r, 'c>,
+    offset: u64,
+    data: Cursor<&'r T>,
+    ctx: Context<'c>,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
@@ -56,7 +63,7 @@ pub struct IterTokens<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
 
 pub struct BinXmlDeserializer<'r, 'c: 'r, T: AsRef<[u8]> + 'c> {
     data: &'r T,
-    ctx: ParsingContext<'r, 'c>,
+    ctx: Context<'c>,
 }
 
 impl<'r, 'c, T> BinXmlDeserializer<'r, 'c, T>
@@ -67,31 +74,34 @@ where
     pub fn init(
         data: &'r T,
         start_offset: u64,
-        string_cache: &'r StringCache,
-        template_cache: &'r TemplateCache<'c>,
+        string_cache: &'c StringCache,
+        template_cache: &'c TemplateCache<'c>,
     ) -> Self {
-        let ctx = ParsingContext {
+        let ctx = Cache {
             offset: start_offset,
             string_cache: Some(string_cache),
             template_cache: Some(template_cache),
         };
 
-        BinXmlDeserializer { data, ctx }
-    }
-
-    pub fn from_ctx(data: &'r T, ctx: &ParsingContext<'r, 'c>) -> Self {
         BinXmlDeserializer {
             data,
-            ctx: ctx.clone(),
+            ctx: Rc::new(ctx),
+        }
+    }
+
+    pub fn from_ctx(data: &'r T, ctx: Context<'c>) -> Self {
+        BinXmlDeserializer {
+            data,
+            ctx: Rc::clone(&ctx),
         }
     }
 
     pub fn init_without_cache(data: &'r T, start_offset: u64) -> Self {
-        let ctx = ParsingContext {
+        let ctx = Rc::new(Cache {
             offset: start_offset,
             string_cache: None,
             template_cache: None,
-        };
+        });
 
         BinXmlDeserializer { data, ctx }
     }
@@ -99,8 +109,9 @@ where
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> IterTokens<'r, 'c, T> {
         IterTokens {
-            data: self.data,
-            ctx: self.ctx,
+            offset: self.ctx.offset,
+            data: Cursor::new(self.data),
+            ctx: Rc::clone(&self.ctx),
             data_size,
             data_read_so_far: 0,
             eof: false,
@@ -111,7 +122,7 @@ where
 impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> IterTokens<'r, 'c, T> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
-    fn read_next_token(&self, cursor: CursorBorrow<'_, 'c, T>) -> Result<BinXMLRawToken, Error> {
+    fn read_next_token(&self, cursor: CursorBorrow<'r, 'c, T>) -> Result<BinXMLRawToken, Error> {
         let token = cursor
             .read_u8()
             .map_err(|e| Error::unexpected_eof(e, cursor.stream_position().unwrap()))?;
@@ -123,10 +134,10 @@ impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> IterTokens<'r, 'c, T> {
 
     fn visit_token(
         &self,
-        cursor: CursorBorrow<'_, 'c, T>,
-        ctx: Context<'r, 'c>,
+        cursor: CursorBorrow<'r, 'c, T>,
+        ctx: Context<'c>,
         raw_token: BinXMLRawToken,
-    ) -> Result<BinXMLDeserializedTokens<'r>, Error> {
+    ) -> Result<BinXMLDeserializedTokens<'c>, Error> {
         match raw_token {
             BinXMLRawToken::EndOfStream => Ok(BinXMLDeserializedTokens::EndOfStream),
             BinXMLRawToken::OpenStartElement(token_information) => {
@@ -175,8 +186,7 @@ impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> Iterator for IterTokens<'r, 'c, T> {
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut cursor = Cursor::new(self.data);
-
+        let mut cursor = self.data.borrow_mut();
         let mut offset_from_chunk_start = cursor.stream_position().expect("Tell failed");
 
         trace!("offset_from_chunk_start: {}", offset_from_chunk_start);
@@ -204,7 +214,7 @@ impl<'r, 'c: 'r, T: AsRef<[u8]> + 'c> Iterator for IterTokens<'r, 'c, T> {
                 }
 
                 trace!("{:?} at {}", t, offset_from_chunk_start);
-                let token = self.visit_token(&mut cursor, self.ctx.clone(), t);
+                let token = self.visit_token(&mut cursor, Rc::clone(&self.ctx), t);
                 trace!(
                     "{:?} position at stream {}",
                     token,

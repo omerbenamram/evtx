@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{Context, ParsingContext};
+use crate::binxml::deserializer::{Cache, Context};
 use crate::error::Error;
 use crate::evtx::ReadSeek;
 use crate::utils::read_len_prefixed_utf16_string;
@@ -18,11 +18,11 @@ pub struct BinXmlName<'a>(Cow<'a, str>);
 
 pub type StringHashOffset = (String, u16, Offset);
 
-impl<'r, 'c: 'r> BinXmlName<'r> {
-    pub fn from_binxml_stream<T: ReadSeek + 'c>(
-        cursor: &mut T,
-        ctx: Context<'r, 'c>,
-    ) -> Result<Self, Error> {
+impl<'r, 'c: 'r> BinXmlName<'c> {
+    pub fn from_binxml_stream(
+        cursor: &'r mut Cursor<&'c [u8]>,
+        ctx: Context<'c>,
+    ) -> Result<BinXmlName<'c>, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = try_read!(cursor, u32);
@@ -62,8 +62,8 @@ impl<'r, 'c: 'r> BinXmlName<'r> {
     }
 
     /// Reads a `BinXmlName` from a given offset, seeks if needed.
-    fn from_stream_at_offset<T: ReadSeek + 'c>(
-        cursor: &mut T,
+    fn from_stream_at_offset(
+        cursor: &'r mut Cursor<&'c [u8]>,
         offset: Offset,
     ) -> Result<StringHashOffset, Error> {
         if offset != cursor.stream_position()? as u32 {

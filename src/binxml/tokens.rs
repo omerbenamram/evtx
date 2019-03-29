@@ -3,7 +3,7 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use crate::{error::Error, guid::Guid, model::deserialized::*};
 use std::io::Cursor;
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Context, CursorBorrow, ParsingContext};
+use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context, CursorBorrow};
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXMLValueType, BinXmlValue};
 use crate::evtx::ReadSeek;
@@ -15,9 +15,9 @@ use std::io::SeekFrom;
 use std::rc::Rc;
 
 pub fn read_template<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
-    ctx: Context<'r, 'c>,
-) -> Result<BinXmlTemplate<'r>, Error> {
+    cursor: CursorBorrow<'r, 'c, T>,
+    ctx: Context<'c>,
+) -> Result<BinXmlTemplate<'c>, Error> {
     debug!(
         "TemplateInstance at {}",
         cursor.stream_position().expect("Failed to tell position")
@@ -82,7 +82,7 @@ pub fn read_template<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
         let position = cursor.stream_position().expect("Failed to tell position");
         debug!("Substitution: {:?} at {}", descriptor.value_type, position);
         let value =
-            BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, ctx.clone())?;
+            BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, Rc::clone(&ctx))?;
 
         debug!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
@@ -144,9 +144,9 @@ pub fn read_template_definition<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
 }
 
 pub fn read_entity_ref<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
-    ctx: Context<'r, 'c>,
-) -> Result<BinXmlEntityReference<'r>, Error> {
+    cursor: CursorBorrow<'r, 'c, T>,
+    ctx: Context<'c>,
+) -> Result<BinXmlEntityReference<'c>, Error> {
     debug!(
         "EntityReference at {}",
         cursor.stream_position().expect("Failed to tell position")
@@ -158,16 +158,16 @@ pub fn read_entity_ref<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
 }
 
 pub fn read_attribute<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
-    ctx: Context<'r, 'c>,
-) -> Result<BinXMLAttribute<'r>, Error> {
+    cursor: CursorBorrow<'r, 'c, T>,
+    ctx: Context<'c>,
+) -> Result<BinXMLAttribute<'c>, Error> {
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
 
     Ok(BinXMLAttribute { name })
 }
 
 pub fn read_fragment_header<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
+    cursor: CursorBorrow<'r, 'c, T>,
 ) -> Result<BinXMLFragmentHeader, Error> {
     debug!(
         "FragmentHeader at {}",
@@ -184,7 +184,7 @@ pub fn read_fragment_header<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
 }
 
 pub fn read_substitution<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
+    cursor: CursorBorrow<'r, 'c, T>,
     optional: bool,
 ) -> Result<TemplateSubstitutionDescriptor, Error> {
     let substitution_index = try_read!(cursor, u16);
@@ -207,10 +207,10 @@ pub fn read_substitution<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
 }
 
 pub fn read_open_start_element<'r, 'c: 'r, T: AsRef<[u8]> + 'c>(
-    cursor: CursorBorrow<'_, 'c, T>,
-    ctx: Context<'r, 'c>,
+    cursor: CursorBorrow<'r, 'c, T>,
+    ctx: Context<'c>,
     has_attributes: bool,
-) -> Result<BinXMLOpenStartElement<'r>, Error> {
+) -> Result<BinXMLOpenStartElement<'c>, Error> {
     // Reserved
     let _ = try_read!(cursor, u16);
     let data_size = try_read!(cursor, u32);
