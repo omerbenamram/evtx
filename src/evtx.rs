@@ -1,27 +1,18 @@
-use log::{debug, info, log};
-use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{IntoIterator, Iterator};
-use time::Duration;
-
-use failure::Error;
-
-use crate::evtx_chunk::IterChunkRecords;
-use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
+use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
-
 use core::borrow::BorrowMut;
-use crc::crc32;
-use memmap::{self, Mmap, MmapOptions};
+use failure::Error;
+use log::{debug, info};
+use memmap::{self, Mmap};
+
 use owning_ref::OwningRef;
-use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::stdout;
-use std::mem;
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
+use std::iter::{IntoIterator, Iterator};
+
 use std::ops::Deref;
 use std::path::Path;
-use std::rc::Rc;
 use std::vec::IntoIter;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;

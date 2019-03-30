@@ -2,8 +2,8 @@ use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
 
 use crate::evtx::ReadSeek;
 use crate::utils::print_hexdump;
-use byteorder::{ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use log::{debug, error, log, trace};
+use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
+use log::{error, trace};
 use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom},

@@ -2,12 +2,12 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXMLOutput;
-use log::{debug, log, trace};
+use log::trace;
 use std::io::Write;
 
-pub fn parse_tokens<'chunk: 'record, 'record, W: Write, T: BinXMLOutput<'chunk, W>>(
-    tokens: Vec<BinXMLDeserializedTokens<'chunk>>,
-    visitor: &'record mut T,
+pub fn parse_tokens<'c, W: Write, T: BinXMLOutput<'c, W>>(
+    tokens: Vec<BinXMLDeserializedTokens<'c>>,
+    visitor: &mut T,
 ) {
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
@@ -113,9 +113,9 @@ pub fn expand_templates(
 ) -> Vec<BinXMLDeserializedTokens> {
     let mut stack = Vec::new();
 
-    fn _expand_templates<'chunk: 'local, 'local>(
-        token: BinXMLDeserializedTokens<'chunk>,
-        stack: &mut Vec<BinXMLDeserializedTokens<'local>>,
+    fn _expand_templates<'c>(
+        token: BinXMLDeserializedTokens<'c>,
+        stack: &mut Vec<BinXMLDeserializedTokens<'c>>,
     ) {
         match token {
             BinXMLDeserializedTokens::Value(ref value) => {

@@ -1,6 +1,6 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::ReadBytesExt;
 
-use log::{debug, log, trace};
+use log::trace;
 use std::io::{Seek, SeekFrom};
 
 use crate::binxml::tokens::read_open_start_element;
@@ -12,22 +12,15 @@ use crate::{
         read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
     },
     error::Error,
-    evtx::ReadSeek,
-    guid::Guid,
-    model::{deserialized::*, raw::*, xml::*},
+    model::{deserialized::*, raw::*},
     string_cache::StringCache,
     template_cache::TemplateCache,
-    utils::datetime_from_filetime,
-    utils::*,
-    xml_output::BinXMLOutput,
     Offset,
 };
-use core::borrow::BorrowMut;
-use std::borrow::Cow;
+
 use std::io::Cursor;
 use std::mem;
 use std::rc::Rc;
-use std::sync::RwLock;
 
 // Alias that will make it easier to change context type if needed.
 pub type Context<'b> = Rc<Cache<'b>>;
