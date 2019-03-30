@@ -99,12 +99,17 @@ impl<'c> BinXmlDeserializer<'c> {
 
     /// Returns a tuple of the tokens.
     pub fn read_binxml_fragment(
-        data: &'c [u8],
-        offset: u64,
+        cursor: &mut Cursor<&'c [u8]>,
         ctx: Context<'c>,
         data_size: Option<u32>,
-    ) -> Result<(Vec<BinXMLDeserializedTokens<'c>>, u32), Error> {
-        let de = BinXmlDeserializer { data, offset, ctx };
+    ) -> Result<Vec<BinXMLDeserializedTokens<'c>>, Error> {
+        let offset = cursor.position();
+
+        let de = BinXmlDeserializer {
+            data: *cursor.get_ref(),
+            offset,
+            ctx,
+        };
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size);
@@ -122,10 +127,9 @@ impl<'c> BinXmlDeserializer<'c> {
             total_bytes_read += iterator.data_read_so_far;
         }
 
-        match data_size {
-            Some(sz) => Ok((tokens, sz)),
-            None => Ok((tokens, total_bytes_read)),
-        }
+        cursor.seek(SeekFrom::Current(i64::from(total_bytes_read)))?;
+
+        Ok(tokens)
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.

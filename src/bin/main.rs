@@ -25,12 +25,11 @@ fn main() {
         .value_of("input")
         .expect("This is a required argument");
 
-
     let parser = EvtxParser::from_path(fp).unwrap();
     for record in parser.records() {
         match record {
             Ok(r) => println!("{}", r.data),
-            Err(e) => eprintln!("{}", e)
+            Err(e) => eprintln!("{}", e),
         }
     }
 }

@@ -171,18 +171,8 @@ impl<'c> BinXmlValue<'c> {
             ))),
             BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => {
-                //                let deser_temp = BinXmlDeserializer::from_ctx(data, ctx);
-                let data = *cursor.get_ref();
-                let (tokens, seek) = BinXmlDeserializer::read_binxml_fragment(
-                    data,
-                    cursor.position(),
-                    Rc::clone(&ctx),
-                    None,
-                )?;
-
-                cursor
-                    .seek(SeekFrom::Current(i64::from(seek)))
-                    .map_err(Error::io)?;
+                let tokens =
+                    BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), None)?;
 
                 Ok(BinXmlValue::BinXmlType(tokens))
             }

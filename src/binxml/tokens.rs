@@ -31,15 +31,11 @@ pub fn read_template<'c>(
         );
         let position_before_seek = cursor.position();
 
-        cursor
-            .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
-            .map_err(Error::io)?;
+        cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
 
         let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
 
-        cursor
-            .seek(SeekFrom::Start(position_before_seek))
-            .map_err(Error::io)?;
+        cursor.seek(SeekFrom::Start(position_before_seek))?;
 
         template_def
     } else {
@@ -80,9 +76,7 @@ pub fn read_template<'c>(
         // NullType can mean deleted substitution (and data need to be skipped)
         if value == BinXmlValue::NullType {
             debug!("\t Skip {}", descriptor.size);
-            cursor
-                .seek(SeekFrom::Current(i64::from(descriptor.size)))
-                .map_err(Error::io)?;
+            cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
         }
         assert_eq!(
             position + u64::from(descriptor.size),
@@ -117,16 +111,8 @@ pub fn read_template_definition<'c>(
     // except for the first 33 bytes of the template definition (above)
     let start_position = cursor.position();
     let data = *cursor.get_ref();
-    let (tokens, seek) = BinXmlDeserializer::read_binxml_fragment(
-        data,
-        cursor.position(),
-        Rc::clone(&ctx),
-        Some(data_size),
-    )?;
-
-    cursor
-        .seek(SeekFrom::Current(i64::from(seek)))
-        .map_err(Error::io)?;
+    let tokens =
+        BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), Some(data_size))?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
