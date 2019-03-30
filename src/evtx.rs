@@ -163,7 +163,7 @@ mod tests {
                     assert_eq!(r.event_record_id, i as u64 + 1);
                     println!("{}", r.data);
                 }
-                Err(e) => println!("Error while reading record {}, {:?}", i, e),
+                Err(e) => panic!("Error while reading record {}, {:?}", i, e),
             }
         }
     }

@@ -24,6 +24,7 @@ use crate::{
 };
 use core::borrow::BorrowMut;
 use std::io::Cursor;
+use std::mem;
 use std::rc::Rc;
 use std::sync::RwLock;
 
@@ -51,7 +52,6 @@ impl<'c> Cache<'c> {
 }
 
 pub struct IterTokens<'c> {
-    offset: u64,
     cursor: Cursor<&'c [u8]>,
     ctx: Context<'c>,
     data_size: Option<u32>,
@@ -102,9 +102,11 @@ impl<'c> BinXmlDeserializer<'c> {
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> IterTokens<'c> {
+        let mut cursor = Cursor::new(self.data);
+        cursor.seek(SeekFrom::Start(self.ctx.offset)).unwrap();
+
         IterTokens {
-            offset: self.ctx.offset,
-            cursor: Cursor::new(self.data),
+            cursor,
             ctx: Rc::clone(&self.ctx),
             data_size,
             data_read_so_far: 0,
@@ -175,11 +177,10 @@ impl<'c> IterTokens<'c> {
     }
 }
 
-
 impl<'c> IterTokens<'c> {
     fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'c>, Error>> {
         let mut cursor = self.cursor.clone();
-        let mut offset_from_chunk_start = cursor.stream_position().expect("Tell failed");
+        let offset_from_chunk_start = cursor.stream_position().expect("Tell failed");
 
         trace!("offset_from_chunk_start: {}", offset_from_chunk_start);
         trace!(
@@ -190,26 +191,31 @@ impl<'c> IterTokens<'c> {
 
         // Finished reading
         match (self.data_size, self.eof) {
-            (_, true) => return None,
+            (_, true) => {
+                trace!("Finished reading - EOF reached");
+                return None;
+            }
             (Some(sz), _) => {
                 if self.data_read_so_far >= sz {
+                    trace!("Finished reading - end of data");
                     return None;
                 }
             }
             _ => {}
         }
 
-        match self.read_next_token(&mut cursor) {
+        let yield_value = match self.read_next_token(&mut cursor) {
             Ok(t) => {
                 if let BinXMLRawToken::EndOfStream = t {
                     self.eof = true;
                 }
-
                 trace!("{:?} at {}", t, offset_from_chunk_start);
-                let token = self.visit_token(&mut cursor, Rc::clone(&self.ctx), t);
+                let deserialized_token_result =
+                    self.visit_token(&mut cursor, Rc::clone(&self.ctx), t);
+
                 trace!(
                     "{:?} position at stream {}",
-                    token,
+                    deserialized_token_result,
                     cursor.stream_position().unwrap()
                 );
 
@@ -220,11 +226,7 @@ impl<'c> IterTokens<'c> {
                     cursor.stream_position().unwrap()
                 );
 
-                let total_read = cursor.stream_position().unwrap() - offset_from_chunk_start;
-                offset_from_chunk_start += total_read;
-                self.data_read_so_far += total_read as u32;
-
-                Some(token)
+                Some(deserialized_token_result)
             }
             Err(e) => {
                 // Cursor might have not been moved if this error was thrown in middle of seek.
@@ -239,13 +241,14 @@ impl<'c> IterTokens<'c> {
                     self.data_size,
                     self.data_read_so_far
                 );
-
-                let total_read = cursor.stream_position().unwrap() - offset_from_chunk_start;
-                self.data_read_so_far += total_read as u32;
-
                 Some(Err(e))
             }
-        }
+        };
+        let total_read = cursor.stream_position().unwrap() - offset_from_chunk_start;
+        self.data_read_so_far += total_read as u32;
+
+        mem::swap(&mut self.cursor, &mut cursor);
+        yield_value
     }
 }
 
@@ -256,7 +259,6 @@ impl<'c> Iterator for IterTokens<'c> {
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         self.inner_next()
     }
-
 }
 
 mod tests {

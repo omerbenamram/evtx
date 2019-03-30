@@ -177,7 +177,10 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         for token in deserializer.iter_tokens(Some(binxml_data_size)) {
             match token {
-                Ok(token) => tokens.push(token),
+                Ok(token) => {
+                    trace!("successfully read {:?}", token);
+                    tokens.push(token)
+                }
                 Err(e) => {
                     error!("Tried to read an invalid token!, {}", e);
 
