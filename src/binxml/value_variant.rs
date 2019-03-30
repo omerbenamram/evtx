@@ -62,7 +62,7 @@ pub enum BinXmlValue<'a> {
     SidArrayType,
     HexInt32ArrayType,
     HexInt64ArrayType,
-    EvtHaArrayndle,
+    EvtArrayHandle,
     BinXmlArrayType,
     EvtXmlArrayType,
 }
