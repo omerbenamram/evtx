@@ -1,31 +1,37 @@
-#![feature(try_from)]
 #![allow(dead_code)]
-#![allow(unused_variables)]
 #![allow(unused_imports)]
+#![allow(unused_variables)]
+pub use byteorder::{LittleEndian, ReadBytesExt};
 
+pub mod evtx;
+
+// This needs to come first!
 #[macro_use]
-extern crate nom;
-
-extern crate indextree;
-
-#[macro_use]
-extern crate log;
-extern crate env_logger;
-
-#[cfg(test)]
-#[macro_use]
-extern crate pretty_assertions;
-
-extern crate chrono;
-extern crate crc;
-extern crate encoding;
-extern crate time;
-
-#[macro_use]
-extern crate enum_primitive_derive;
-extern crate core;
-extern crate num_traits;
+mod macros;
 
 mod binxml;
-pub mod evtx_parser;
-mod hexdump;
+mod error;
+mod evtx_chunk;
+mod evtx_file_header;
+mod evtx_record;
+mod guid;
+mod model;
+mod ntsid;
+mod string_cache;
+mod template_cache;
+mod utils;
+
+mod xml_output;
+
+pub type Offset = u32;
+
+// For tests, we only initialize logging once.
+use std::sync::{Once, ONCE_INIT};
+
+static LOGGER_INIT: Once = ONCE_INIT;
+
+// Rust runs the tests concurrently, so unless we synchronize logging access
+// it will crash when attempting to run `cargo test` with some logging facilities.
+pub fn ensure_env_logger_initialized() {
+    LOGGER_INIT.call_once(|| env_logger::init());
+}
