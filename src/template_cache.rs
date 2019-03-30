@@ -1,4 +1,4 @@
-use crate::binxml::deserializer::BinXmlDeserializer;
+use crate::binxml::deserializer::{BinXmlDeserializer, Context};
 use crate::binxml::tokens::read_template_definition;
 use crate::error::Error;
 use crate::evtx_chunk::EvtxChunk;
@@ -28,9 +28,7 @@ impl<'c> TemplateCache<'c> {
         let mut cursor = Cursor::new(data);
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             cursor.seek(SeekFrom::Start(*offset as u64))?;
-            let deser = BinXmlDeserializer::init_without_cache(&chunk.data, u64::from(*offset));
-
-            let definition = read_template_definition(&mut cursor)?;
+            let definition = read_template_definition(&mut cursor, Context::default())?;
             self.0.insert(*offset, definition);
         }
 

@@ -16,7 +16,12 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
     let needed_bytes = (expected_number_of_characters * 2) as usize;
     trace!(
-        "Going to read a string of len {} from stream",
+        "Going to read a{}string of len {} from stream",
+        if is_null_terminated {
+            " null terminated "
+        } else {
+            " "
+        },
         expected_number_of_characters
     );
 
@@ -28,8 +33,8 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
                 } else {
                     error!(
                         "Expected string of length {}, found string of length {} - {}",
-                        string.len(),
                         expected_number_of_characters,
+                        string.len(),
                         string
                     );
                     return Err(Error::from(ErrorKind::InvalidData));
@@ -47,7 +52,7 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
 }
 
 pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<Option<String>> {
-    let p = stream.stream_position()? as usize;
+    let p = stream.tell()? as usize;
 
     let mut buffer = vec![0; size as usize];
     let ref_to_utf16_bytes = stream.read_exact(&mut buffer);

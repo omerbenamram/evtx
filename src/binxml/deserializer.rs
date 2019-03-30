@@ -23,6 +23,7 @@ use crate::{
     Offset,
 };
 use core::borrow::BorrowMut;
+use std::borrow::Cow;
 use std::io::Cursor;
 use std::mem;
 use std::rc::Rc;
@@ -31,9 +32,8 @@ use std::sync::RwLock;
 // Alias that will make it easier to change context type if needed.
 pub type Context<'b> = Rc<Cache<'b>>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Cache<'c> {
-    offset: u64,
     string_cache: Option<&'c StringCache>,
     template_cache: Option<&'c TemplateCache<'c>>,
 }
@@ -61,6 +61,7 @@ pub struct IterTokens<'c> {
 
 pub struct BinXmlDeserializer<'c> {
     data: &'c [u8],
+    offset: u64,
     ctx: Context<'c>,
 }
 
@@ -72,38 +73,65 @@ impl<'c> BinXmlDeserializer<'c> {
         template_cache: &'c TemplateCache<'c>,
     ) -> Self {
         let ctx = Cache {
-            offset: start_offset,
             string_cache: Some(string_cache),
             template_cache: Some(template_cache),
         };
 
         BinXmlDeserializer {
             data,
+            offset: start_offset,
             ctx: Rc::new(ctx),
-        }
-    }
-
-    pub fn from_ctx(data: &'c [u8], ctx: Context<'c>) -> Self {
-        BinXmlDeserializer {
-            data,
-            ctx: Rc::clone(&ctx),
         }
     }
 
     pub fn init_without_cache(data: &'c [u8], start_offset: u64) -> Self {
         let ctx = Rc::new(Cache {
-            offset: start_offset,
             string_cache: None,
             template_cache: None,
         });
 
-        BinXmlDeserializer { data, ctx }
+        BinXmlDeserializer {
+            data,
+            offset: start_offset,
+            ctx,
+        }
+    }
+
+    /// Returns a tuple of the tokens.
+    pub fn read_binxml_fragment(
+        data: &'c [u8],
+        offset: u64,
+        ctx: Context<'c>,
+        data_size: Option<u32>,
+    ) -> Result<(Vec<BinXMLDeserializedTokens<'c>>, u32), Error> {
+        let de = BinXmlDeserializer { data, offset, ctx };
+
+        let mut tokens = vec![];
+        let mut iterator = de.iter_tokens(data_size);
+
+        let mut total_bytes_read = 0;
+
+        loop {
+            let token = iterator.next();
+            if let Some(t) = token {
+                tokens.push(t?);
+            } else {
+                break;
+            }
+
+            total_bytes_read += iterator.data_read_so_far;
+        }
+
+        match data_size {
+            Some(sz) => Ok((tokens, sz)),
+            None => Ok((tokens, total_bytes_read)),
+        }
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> IterTokens<'c> {
         let mut cursor = Cursor::new(self.data);
-        cursor.seek(SeekFrom::Start(self.ctx.offset)).unwrap();
+        cursor.seek(SeekFrom::Start(self.offset)).unwrap();
 
         IterTokens {
             cursor,
@@ -121,11 +149,10 @@ impl<'c> IterTokens<'c> {
     fn read_next_token(&self, cursor: &mut Cursor<&'c [u8]>) -> Result<BinXMLRawToken, Error> {
         let token = cursor
             .read_u8()
-            .map_err(|e| Error::unexpected_eof(e, cursor.stream_position().unwrap()))?;
+            .map_err(|e| Error::unexpected_eof(e, cursor.position()))?;
 
-        Ok(BinXMLRawToken::from_u8(token).ok_or_else(|| {
-            Error::not_a_valid_binxml_token(token, cursor.stream_position().unwrap())
-        })?)
+        Ok(BinXMLRawToken::from_u8(token)
+            .ok_or_else(|| Error::not_a_valid_binxml_token(token, cursor.position()))?)
     }
 
     fn visit_token(
@@ -180,7 +207,7 @@ impl<'c> IterTokens<'c> {
 impl<'c> IterTokens<'c> {
     fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'c>, Error>> {
         let mut cursor = self.cursor.clone();
-        let offset_from_chunk_start = cursor.stream_position().expect("Tell failed");
+        let offset_from_chunk_start = cursor.position();
 
         trace!("offset_from_chunk_start: {}", offset_from_chunk_start);
         trace!(
@@ -216,14 +243,14 @@ impl<'c> IterTokens<'c> {
                 trace!(
                     "{:?} position at stream {}",
                     deserialized_token_result,
-                    cursor.stream_position().unwrap()
+                    cursor.position()
                 );
 
                 debug_assert!(
-                    cursor.stream_position().unwrap() >= offset_from_chunk_start,
+                    cursor.position() >= offset_from_chunk_start,
                     "Invalid state, cursor position at entering loop {}, now at {}",
                     offset_from_chunk_start,
-                    cursor.stream_position().unwrap()
+                    cursor.position()
                 );
 
                 Some(deserialized_token_result)
@@ -244,7 +271,7 @@ impl<'c> IterTokens<'c> {
                 Some(Err(e))
             }
         };
-        let total_read = cursor.stream_position().unwrap() - offset_from_chunk_start;
+        let total_read = cursor.position() - offset_from_chunk_start;
         self.data_read_so_far += total_read as u32;
 
         mem::swap(&mut self.cursor, &mut cursor);

@@ -9,7 +9,7 @@ use crate::ntsid::Sid;
 use crate::utils::{datetime_from_filetime, read_len_prefixed_utf16_string};
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
-use std::io::{Cursor, Seek};
+use std::io::{Cursor, Seek, SeekFrom};
 use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -113,10 +113,7 @@ impl<'c> BinXmlValue<'c> {
         let value_type_token = try_read!(cursor, u8);
 
         let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
-            Error::not_a_valid_binxml_value_type(
-                value_type_token,
-                cursor.stream_position().expect("Tell failed"),
-            )
+            Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
         })?;
 
         let data = Self::deserialize_value_type(&value_type, cursor, Rc::clone(&ctx))?;
@@ -133,9 +130,7 @@ impl<'c> BinXmlValue<'c> {
             BinXMLValueType::NullType => Ok(BinXmlValue::NullType),
             BinXMLValueType::StringType => Ok(BinXmlValue::StringType(Cow::Owned(
                 read_len_prefixed_utf16_string(cursor, false)
-                    .map_err(|e| {
-                        Error::utf16_decode_error(e, cursor.stream_position().expect("Tell failed"))
-                    })?
+                    .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
                     .unwrap_or("".to_owned()),
             ))),
             BinXMLValueType::AnsiStringType => unimplemented!(),
@@ -151,27 +146,21 @@ impl<'c> BinXmlValue<'c> {
             BinXMLValueType::Real64Type => unimplemented!("Real64Type"),
             BinXMLValueType::BoolType => unimplemented!("BoolType"),
             BinXMLValueType::BinaryType => unimplemented!("BinaryType"),
-            BinXMLValueType::GuidType => Ok(BinXmlValue::GuidType(
-                Guid::from_stream(cursor).map_err(|e| {
-                    Error::other(
-                        "Failed to read GUID from stream",
-                        cursor.stream_position().expect("Tell failed"),
-                    )
-                })?,
-            )),
+            BinXMLValueType::GuidType => {
+                Ok(BinXmlValue::GuidType(Guid::from_stream(cursor).map_err(
+                    |e| Error::other("Failed to read GUID from stream", cursor.position()),
+                )?))
+            }
             BinXMLValueType::SizeTType => unimplemented!("SizeTType"),
             BinXMLValueType::FileTimeType => Ok(BinXmlValue::FileTimeType(datetime_from_filetime(
                 try_read!(cursor, u64),
             ))),
             BinXMLValueType::SysTimeType => unimplemented!("SysTimeType"),
-            BinXMLValueType::SidType => Ok(BinXmlValue::SidType(
-                Sid::from_stream(cursor).map_err(|e| {
-                    Error::other(
-                        "Failed to read NTSID from stream",
-                        cursor.stream_position().expect("Tell failed"),
-                    )
-                })?,
-            )),
+            BinXMLValueType::SidType => {
+                Ok(BinXmlValue::SidType(Sid::from_stream(cursor).map_err(
+                    |e| Error::other("Failed to read NTSID from stream", cursor.position()),
+                )?))
+            }
             BinXMLValueType::HexInt32Type => Ok(BinXmlValue::HexInt32Type(format!(
                 "0x{:2x}",
                 try_read!(cursor, i32)
@@ -182,15 +171,18 @@ impl<'c> BinXmlValue<'c> {
             ))),
             BinXMLValueType::EvtHandle => unimplemented!("EvtHandle"),
             BinXMLValueType::BinXmlType => {
+                //                let deser_temp = BinXmlDeserializer::from_ctx(data, ctx);
                 let data = *cursor.get_ref();
-                let deser_temp = BinXmlDeserializer::init_without_cache(
+                let (tokens, seek) = BinXmlDeserializer::read_binxml_fragment(
                     data,
-                    cursor.stream_position().map_err(Error::io)?,
-                );
-                let mut tokens = vec![];
-                for token in deser_temp.iter_tokens(None) {
-                    tokens.push(token?);
-                }
+                    cursor.position(),
+                    Rc::clone(&ctx),
+                    None,
+                )?;
+
+                cursor
+                    .seek(SeekFrom::Current(i64::from(seek)))
+                    .map_err(Error::io)?;
 
                 Ok(BinXmlValue::BinXmlType(tokens))
             }

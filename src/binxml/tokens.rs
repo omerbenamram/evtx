@@ -18,29 +18,24 @@ pub fn read_template<'c>(
     cursor: &mut Cursor<&'c [u8]>,
     ctx: Context<'c>,
 ) -> Result<BinXmlTemplate<'c>, Error> {
-    debug!(
-        "TemplateInstance at {}",
-        cursor.stream_position().expect("Failed to tell position")
-    );
+    debug!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8);
     let template_id = try_read!(cursor, u32);
     let template_definition_data_offset = try_read!(cursor, u32);
 
-    let template_def = if template_definition_data_offset
-        != cursor.stream_position().expect("Failed to tell position") as u32
-    {
+    let template_def = if template_definition_data_offset != cursor.position() as u32 {
         debug!(
             "Need to seek to offset {} to read template",
             template_definition_data_offset
         );
-        let position_before_seek = cursor.stream_position().expect("Failed to tell position");
+        let position_before_seek = cursor.position();
 
         cursor
             .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
             .map_err(Error::io)?;
 
-        let template_def = Rc::new(read_template_definition(cursor)?);
+        let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
 
         cursor
             .seek(SeekFrom::Start(position_before_seek))
@@ -48,7 +43,7 @@ pub fn read_template<'c>(
 
         template_def
     } else {
-        Rc::new(read_template_definition(cursor)?)
+        Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?)
     };
 
     trace!("{:?}", template_def);
@@ -62,10 +57,7 @@ pub fn read_template<'c>(
         let value_type_token = try_read!(cursor, u8);
 
         let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
-            Error::not_a_valid_binxml_value_type(
-                value_type_token,
-                cursor.stream_position().expect("Failed to tell position"),
-            )
+            Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
         })?;
 
         // Empty
@@ -79,7 +71,7 @@ pub fn read_template<'c>(
     let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
 
     for descriptor in value_descriptors {
-        let position = cursor.stream_position().expect("Failed to tell position");
+        let position = cursor.position();
         debug!("Substitution: {:?} at {}", descriptor.value_type, position);
         let value =
             BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, Rc::clone(&ctx))?;
@@ -94,11 +86,11 @@ pub fn read_template<'c>(
         }
         assert_eq!(
             position + u64::from(descriptor.size),
-            cursor.stream_position().expect("Failed to tell position"),
+            cursor.position(),
             "{}",
             &format!(
                 "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                cursor.stream_position().expect("Failed to tell position"), position + u64::from(descriptor.size), &descriptor
+                cursor.position(), position + u64::from(descriptor.size), &descriptor
             )
         );
         substitution_array.push(value);
@@ -112,28 +104,29 @@ pub fn read_template<'c>(
 
 pub fn read_template_definition<'c>(
     cursor: &mut Cursor<&'c [u8]>,
+    ctx: Context<'c>,
 ) -> Result<BinXMLTemplateDefinition<'c>, Error> {
     let next_template_offset = try_read!(cursor, u32);
 
-    let template_guid = Guid::from_stream(cursor).map_err(|e| {
-        Error::other(
-            "Failed to read GUID from stream",
-            cursor.stream_position().expect("Failed to tell position"),
-        )
-    })?;
+    let template_guid = Guid::from_stream(cursor)
+        .map_err(|e| Error::other("Failed to read GUID from stream", cursor.position()))?;
 
     let data_size = try_read!(cursor, u32);
 
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
-    let start_position = cursor.stream_position().expect("Failed to tell position");
+    let start_position = cursor.position();
     let data = *cursor.get_ref();
-    let de = BinXmlDeserializer::init_without_cache(data, start_position);
+    let (tokens, seek) = BinXmlDeserializer::read_binxml_fragment(
+        data,
+        cursor.position(),
+        Rc::clone(&ctx),
+        Some(data_size),
+    )?;
 
-    let mut tokens = vec![];
-    for token in de.iter_tokens(Some(data_size)) {
-        tokens.push(token?);
-    }
+    cursor
+        .seek(SeekFrom::Current(i64::from(seek)))
+        .map_err(Error::io)?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
@@ -147,10 +140,7 @@ pub fn read_entity_ref<'c>(
     cursor: &mut Cursor<&'c [u8]>,
     ctx: Context<'c>,
 ) -> Result<BinXmlEntityReference<'c>, Error> {
-    debug!(
-        "EntityReference at {}",
-        cursor.stream_position().expect("Failed to tell position")
-    );
+    debug!("EntityReference at {}", cursor.position());
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
     debug!("\t name: {:?}", name);
 
@@ -167,10 +157,7 @@ pub fn read_attribute<'c>(
 }
 
 pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragmentHeader, Error> {
-    debug!(
-        "FragmentHeader at {}",
-        cursor.stream_position().expect("Failed to tell position")
-    );
+    debug!("FragmentHeader at {}", cursor.position());
     let major_version = try_read!(cursor, u8);
     let minor_version = try_read!(cursor, u8);
     let flags = try_read!(cursor, u8);
@@ -188,12 +175,8 @@ pub fn read_substitution(
     let substitution_index = try_read!(cursor, u16);
     let value_type_token = try_read!(cursor, u8);
 
-    let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
-        Error::not_a_valid_binxml_value_type(
-            value_type_token,
-            cursor.stream_position().expect("Failed to tell position"),
-        )
-    })?;
+    let value_type = BinXMLValueType::from_u8(value_type_token)
+        .ok_or_else(|| Error::not_a_valid_binxml_value_type(value_type_token, cursor.position()))?;
 
     let ignore = optional && (value_type == BinXMLValueType::NullType);
 

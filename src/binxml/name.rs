@@ -30,7 +30,7 @@ impl<'c> BinXmlName<'c> {
         // If name is cached, read it and seek ahead if needed.
         if let Some((name, _, n_bytes_read)) = ctx.cached_string_at_offset(name_offset) {
             // Seek if needed
-            if name_offset == cursor.stream_position()? as u32 {
+            if name_offset == cursor.position() as u32 {
                 cursor.seek(SeekFrom::Current(*n_bytes_read as i64))?;
             }
             return Ok(BinXmlName(Cow::Borrowed(name)));
@@ -42,17 +42,15 @@ impl<'c> BinXmlName<'c> {
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
     pub fn from_stream(cursor: &mut Cursor<&'c [u8]>) -> Result<StringHashOffset, Error> {
-        let position_before_read = cursor.stream_position()?;
+        let position_before_read = cursor.position();
 
         let _ = try_read!(cursor, u32);
         let name_hash = try_read!(cursor, u16);
         let name = read_len_prefixed_utf16_string(cursor, true)
-            .map_err(|e| {
-                Error::utf16_decode_error(e, cursor.stream_position().expect("Failed to tell"))
-            })?
+            .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
             .expect("Expected string");
 
-        let position_after_read = cursor.stream_position()?;
+        let position_after_read = cursor.position();
 
         Ok((
             name,
@@ -66,13 +64,13 @@ impl<'c> BinXmlName<'c> {
         cursor: &mut Cursor<&'c [u8]>,
         offset: Offset,
     ) -> Result<StringHashOffset, Error> {
-        if offset != cursor.stream_position()? as u32 {
+        if offset != cursor.position() as u32 {
             trace!(
                 "Current offset {}, seeking to {}",
-                cursor.stream_position()?,
+                cursor.position(),
                 offset
             );
-            let position_before_seek = cursor.stream_position()?;
+            let position_before_seek = cursor.position();
             cursor.seek(SeekFrom::Start(u64::from(offset)))?;
 
             let (name, hash, n_bytes_read) = Self::from_stream(cursor)?;
