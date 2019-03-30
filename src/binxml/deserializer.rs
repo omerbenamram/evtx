@@ -46,8 +46,11 @@ impl<'c> Cache<'c> {
         }
     }
 
-    pub fn cached_template_at_offset(&'c self, offset: Offset) -> Option<&CachedTemplate<'c>> {
-        None
+    pub fn cached_template_at_offset(&self, offset: Offset) -> Option<CachedTemplate<'c>> {
+        match self.template_cache {
+            Some(cache) => cache.get_template(offset),
+            None => None,
+        }
     }
 }
 

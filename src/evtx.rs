@@ -167,6 +167,25 @@ mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
 
+    fn process_100_records(buffer: &'static [u8]) {
+        let parser = EvtxParser::from_buffer(buffer);
+
+        for (i, record) in parser.records().take(100).enumerate() {
+            match record {
+                Ok(r) => {
+                    assert_eq!(r.event_record_id, i as u64 + 1);
+                }
+                Err(e) => println!("Error while reading record {}, {:?}", i, e),
+            }
+        }
+    }
+
+    #[test]
+    fn test_process_100_records() {
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        process_100_records(evtx_file);
+    }
+
     #[test]
     fn test_parses_first_10_records() {
         ensure_env_logger_initialized();

@@ -19,7 +19,6 @@ impl StringCache {
     pub fn populate(&mut self, data: &[u8], offsets: &[Offset]) -> Result<(), failure::Error> {
         let mut cursor = Cursor::new(data);
 
-        info!("Initializaing string cache");
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             cursor.seek(SeekFrom::Start(*offset as u64))?;
             self.0

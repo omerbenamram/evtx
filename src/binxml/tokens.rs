@@ -24,25 +24,39 @@ pub fn read_template<'c>(
     let template_id = try_read!(cursor, u32);
     let template_definition_data_offset = try_read!(cursor, u32);
 
-    let template_def = if template_definition_data_offset != cursor.position() as u32 {
-        debug!(
-            "Need to seek to offset {} to read template",
-            template_definition_data_offset
-        );
-        let position_before_seek = cursor.position();
+    // If name is cached, read it and seek ahead if needed.
+    let template_def =
+        if let Some(definition) = ctx.cached_template_at_offset(template_definition_data_offset) {
+            // Seek if needed
+            debug!(
+                "{} Got cached template from offset {}",
+                cursor.position(),
+                template_definition_data_offset
+            );
+            // 33 is template definition data size, we've read 9 bytes so far.
+            if template_definition_data_offset == cursor.position() as u32 {
+                cursor.seek(SeekFrom::Current(definition.data_size as i64 + (33 - 9)))?;
+            }
+            Rc::clone(&definition)
+        } else {
+            if template_definition_data_offset != cursor.position() as u32 {
+                debug!(
+                    "Need to seek to offset {} to read template",
+                    template_definition_data_offset
+                );
+                let position_before_seek = cursor.position();
 
-        cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
+                cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
 
-        let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
+                let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
 
-        cursor.seek(SeekFrom::Start(position_before_seek))?;
+                cursor.seek(SeekFrom::Start(position_before_seek))?;
 
-        template_def
-    } else {
-        Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?)
-    };
-
-    trace!("{:?}", template_def);
+                template_def
+            } else {
+                Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?)
+            }
+        };
 
     let number_of_substitutions = try_read!(cursor, u32);
 
@@ -120,7 +134,6 @@ pub fn read_template_definition<'c>(
 
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
-    let start_position = cursor.position();
     let data = *cursor.get_ref();
     let tokens =
         BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), Some(data_size))?;
@@ -154,7 +167,6 @@ pub fn read_attribute<'c>(
 }
 
 pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragmentHeader, Error> {
-    debug!("FragmentHeader at {}", cursor.position());
     let major_version = try_read!(cursor, u8);
     let minor_version = try_read!(cursor, u8);
     let flags = try_read!(cursor, u8);
