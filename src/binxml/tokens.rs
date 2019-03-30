@@ -257,7 +257,7 @@ mod test {
     use crate::binxml::value_variant::BinXmlValueType::*;
     use crate::model::deserialized::BinXMLDeserializedTokens::*;
     use crate::model::deserialized::*;
-    use pretty_assertions::{assert_eq};
+    use pretty_assertions::assert_eq;
 
     use crate::binxml::deserializer::Context;
     use crate::binxml::tokens::read_template_definition;

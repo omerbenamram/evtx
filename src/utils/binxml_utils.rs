@@ -1,6 +1,6 @@
 use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
 
-use crate::evtx::ReadSeek;
+use crate::evtx_parser::ReadSeek;
 use crate::utils::print_hexdump;
 use byteorder::{LittleEndian, ReadBytesExt};
 use log::{error, trace};

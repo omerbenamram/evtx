@@ -1,8 +1,6 @@
 use std::fmt;
 use std::io;
 
-
-
 use failure::{Context, Fail};
 
 #[derive(Fail, Debug)]

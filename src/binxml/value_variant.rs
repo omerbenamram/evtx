@@ -9,7 +9,7 @@ use crate::ntsid::Sid;
 use crate::utils::{datetime_from_filetime, read_len_prefixed_utf16_string};
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
-use std::io::{Cursor};
+use std::io::Cursor;
 use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

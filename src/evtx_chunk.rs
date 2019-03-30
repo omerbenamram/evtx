@@ -309,8 +309,8 @@ impl EvtxChunkHeader {
 mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use crate::evtx::EVTX_CHUNK_SIZE;
-    use crate::evtx::EVTX_FILE_HEADER_SIZE;
+    use crate::evtx_parser::EVTX_CHUNK_SIZE;
+    use crate::evtx_parser::EVTX_FILE_HEADER_SIZE;
 
     use std::io::Cursor;
 

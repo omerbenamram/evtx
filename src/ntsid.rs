@@ -1,4 +1,4 @@
-use crate::evtx::ReadSeek;
+use crate::evtx_parser::ReadSeek;
 
 use byteorder::BigEndian;
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -6,8 +6,6 @@ use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::io;
-
-
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Sid {

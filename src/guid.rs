@@ -1,7 +1,7 @@
 use std::fmt::{self, Debug, Display};
 use std::io;
 
-use crate::evtx::ReadSeek;
+use crate::evtx_parser::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 #[derive(PartialOrd, PartialEq, Clone)]

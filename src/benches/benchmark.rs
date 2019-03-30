@@ -1,9 +1,9 @@
 #[macro_use]
 extern crate criterion;
-extern crate evtx_rs;
+extern crate evtx;
 
 use criterion::Criterion;
-use evtx_rs::evtx::EvtxParser;
+use evtx::EvtxParser;
 
 // first chunk has 90 records
 fn process_90_records(buffer: &'static [u8]) {

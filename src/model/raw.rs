@@ -1,7 +1,3 @@
-
-
-
-
 #[derive(Debug, PartialOrd, PartialEq)]
 pub enum BinXMLRawToken {
     EndOfStream,

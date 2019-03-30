@@ -1,11 +1,10 @@
 [package]
-name = "evtx-rs"
+name = "evtx"
 version = "0.1.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-hex-literal = "0.1.2"
 crc = "1.8.1"
 chrono = "0.4.6"
 time = "0.1.42"
@@ -22,8 +21,6 @@ stable_deref_trait = "1.1.1"
 
 [dev-dependencies]
 pretty_assertions = "0.6.1"
-maplit = "1.0.1"
-itertools = "0.8.0"
 criterion = "0.2"
 
 [[bench]]

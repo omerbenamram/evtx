@@ -1,7 +1,5 @@
-use crate::binxml::deserializer::{Context};
+use crate::binxml::deserializer::Context;
 use crate::binxml::tokens::read_template_definition;
-
-
 
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::Offset;

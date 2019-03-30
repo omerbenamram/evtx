@@ -1,9 +1,9 @@
-extern crate evtx_rs;
+extern crate evtx;
 
 use clap::App;
 use clap::Arg;
 
-use evtx_rs::evtx::EvtxParser;
+use evtx::EvtxParser;
 
 fn main() {
     env_logger::init();

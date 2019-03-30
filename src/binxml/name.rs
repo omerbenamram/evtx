@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{Context};
+use crate::binxml::deserializer::Context;
 use crate::error::Error;
 
 use crate::utils::read_len_prefixed_utf16_string;
