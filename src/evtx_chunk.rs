@@ -135,9 +135,9 @@ impl<'a> EvtxChunk<'a> {
         let mut string_table = StringCache::new();
         let mut template_table = TemplateCache::new();
 
-        info!("Initializaing string cache");
+        info!("Initializing string cache");
         string_table.populate(&data, &header.strings_offsets)?;
-        info!("Initializaing template cache");
+        info!("Initializing template cache");
         template_table.populate(&data, &header.template_offsets)?;
 
         Ok(EvtxChunk {
