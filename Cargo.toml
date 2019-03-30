@@ -1,5 +1,13 @@
 [package]
 name = "evtx"
+description = "A Fast (and safe) parser for the Windows XML Event Log (EVTX) format"
+
+# These URLs point to more information about the package. These are
+# intended to be webviews of the relevant data, not necessarily compatible
+# with VCS tools and the like.
+homepage = "https://github.com/omerbenamram/EVTX"
+repository = "https://github.com/omerbenamram/EVTX"
+
 version = "0.1.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
