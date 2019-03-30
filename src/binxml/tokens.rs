@@ -498,7 +498,6 @@ mod test {
                     ignore: false,
                 }),
                 CloseElement,
-                // TODO: is the EndOfStream a part of this template?
                 EndOfStream,
             ],
         };
