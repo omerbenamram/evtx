@@ -69,8 +69,19 @@ pub fn read_template<'c>(
     for descriptor in value_descriptors {
         let position = cursor.position();
         debug!("Substitution: {:?} at {}", descriptor.value_type, position);
-        let value =
-            BinXmlValue::deserialize_value_type(&descriptor.value_type, cursor, Rc::clone(&ctx))?;
+        let value = match descriptor.value_type {
+            // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
+            BinXMLValueType::StringType => BinXmlValue::StringType(Cow::Owned(
+                read_utf16_by_size(cursor, u64::from(descriptor.size))
+                    .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
+                    .unwrap_or_else(|| "".to_owned()),
+            )),
+            _ => BinXmlValue::deserialize_value_type(
+                &descriptor.value_type,
+                cursor,
+                Rc::clone(&ctx),
+            )?,
+        };
 
         debug!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
