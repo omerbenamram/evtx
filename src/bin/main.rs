@@ -28,7 +28,7 @@ fn main() {
     let parser = EvtxParser::from_path(fp).unwrap();
     for record in parser.records() {
         match record {
-            Ok(r) => println!("{}", r.data),
+            Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
             Err(e) => eprintln!("{}", e),
         }
     }

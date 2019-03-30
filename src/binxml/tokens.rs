@@ -18,7 +18,7 @@ pub fn read_template<'c>(
     cursor: &mut Cursor<&'c [u8]>,
     ctx: Context<'c>,
 ) -> Result<BinXmlTemplate<'c>, Error> {
-    debug!("TemplateInstance at {}", cursor.position());
+    trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8);
     let template_id = try_read!(cursor, u32);
@@ -28,7 +28,7 @@ pub fn read_template<'c>(
     let template_def =
         if let Some(definition) = ctx.cached_template_at_offset(template_definition_data_offset) {
             // Seek if needed
-            debug!(
+            trace!(
                 "{} Got cached template from offset {}",
                 cursor.position(),
                 template_definition_data_offset
@@ -40,7 +40,7 @@ pub fn read_template<'c>(
             Rc::clone(&definition)
         } else {
             if template_definition_data_offset != cursor.position() as u32 {
-                debug!(
+                trace!(
                     "Need to seek to offset {} to read template",
                     template_definition_data_offset
                 );
@@ -82,7 +82,7 @@ pub fn read_template<'c>(
 
     for descriptor in value_descriptors {
         let position = cursor.position();
-        debug!("Substitution: {:?} at {}", descriptor.value_type, position);
+        trace!("Substitution: {:?} at {}", descriptor.value_type, position);
         let value = match descriptor.value_type {
             // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
             BinXMLValueType::StringType => BinXmlValue::StringType(Cow::Owned(
@@ -97,10 +97,10 @@ pub fn read_template<'c>(
             )?,
         };
 
-        debug!("\t {:?}", value);
+        trace!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
         if value == BinXmlValue::NullType {
-            debug!("\t Skip {}", descriptor.size);
+            trace!("\t Skip {}", descriptor.size);
             cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
         }
         assert_eq!(
@@ -150,9 +150,9 @@ pub fn read_entity_ref<'c>(
     cursor: &mut Cursor<&'c [u8]>,
     ctx: Context<'c>,
 ) -> Result<BinXmlEntityReference<'c>, Error> {
-    debug!("EntityReference at {}", cursor.position());
+    trace!("EntityReference at {}", cursor.position());
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
-    debug!("\t name: {:?}", name);
+    trace!("\t name: {:?}", name);
 
     Ok(BinXmlEntityReference { name })
 }

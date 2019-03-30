@@ -2,7 +2,7 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXMLOutput;
-use log::{debug, log};
+use log::{debug, log, trace};
 use std::io::Write;
 
 pub fn parse_tokens<'chunk: 'record, 'record, W: Write, T: BinXMLOutput<'chunk, W>>(
@@ -35,7 +35,7 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
             }
             BinXMLDeserializedTokens::AttributeList => {}
             BinXMLDeserializedTokens::Attribute(attr) => {
-                debug!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
+                trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
                 match current_element.take() {
                     None => panic!("attribute - Bad parser state"),
                     Some(builder) => {
@@ -44,7 +44,7 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                 };
             }
             BinXMLDeserializedTokens::OpenStartElement(elem) => {
-                debug!(
+                trace!(
                     "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
                     elem.name
                 );
@@ -52,14 +52,14 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                 current_element = Some(builder.name(elem.name));
             }
             BinXMLDeserializedTokens::CloseStartElement => {
-                debug!("BinXMLDeserializedTokens::CloseStartElement");
+                trace!("BinXMLDeserializedTokens::CloseStartElement");
                 match current_element.take() {
                     None => panic!("close start - Bad parser state"),
                     Some(builder) => model.push(XmlModel::OpenElement(builder.finish())),
                 };
             }
             BinXMLDeserializedTokens::CloseEmptyElement => {
-                debug!("BinXMLDeserializedTokens::CloseEmptyElement");
+                trace!("BinXMLDeserializedTokens::CloseEmptyElement");
                 match current_element.take() {
                     None => panic!("close empty - Bad parser state"),
                     Some(builder) => {
@@ -72,7 +72,7 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                 model.push(XmlModel::CloseElement);
             }
             BinXMLDeserializedTokens::Value(value) => {
-                debug!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
+                trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
                 match current_element.take() {
                     // A string that is not inside any element, yield it
                     None => match value {

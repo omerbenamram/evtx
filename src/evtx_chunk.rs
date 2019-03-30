@@ -184,7 +184,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         let binxml_data_size = record_header.record_data_size();
 
-        debug!("Need to deserialize {} bytes of binxml", binxml_data_size);
+        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer::init(
             &self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),

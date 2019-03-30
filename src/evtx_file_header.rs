@@ -52,6 +52,7 @@ impl EvtxFileHeader {
         // unused
         stream.seek(SeekFrom::Current(76))?;
         let flags = match stream.read_u32::<LittleEndian>()? {
+            0_u32 => HeaderFlags::Dirty,
             1_u32 => HeaderFlags::Dirty,
             2_u32 => HeaderFlags::Full,
             other => {

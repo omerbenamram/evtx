@@ -1,4 +1,4 @@
-use log::{info, log};
+use log::{debug, info, log};
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 use time::Duration;
@@ -88,7 +88,9 @@ impl<T: ReadSeek> IterRecords<T> {
         let evtx_header =
             EvtxFileHeader::from_reader(&mut read_seek).expect("Failed to read EVTX file header");
 
+        debug!("EVTX Header: {:#?}", evtx_header);
         // Allocate the first chunk
+        info!("Allocating initial chunk");
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
 
         read_seek
@@ -98,7 +100,8 @@ impl<T: ReadSeek> IterRecords<T> {
             .unwrap();
 
         let chunk = EvtxChunkData::new(chunk_data).expect("Failed to read EVTX chunk header");
-        assert!(chunk.validate_checksum());
+        debug!("EVTX Chunk 0 Header: {:#?}", chunk.header);
+        assert!(chunk.validate_checksum(), "Invalid checksum");
 
         let allocated_records: Vec<Result<EvtxRecord, failure::Error>> =
             chunk.parse().into_iter().collect();
@@ -124,15 +127,15 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
     type Item = Result<EvtxRecord, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        // If the next chunk is going to be more than the chunk count (which is 1 based)
-        if self.chunk_number >= self.header.chunk_count - 1 {
-            return None;
-        }
-
         let next = self.chunk_records.next();
 
         // Need to load a new chunk.
         if next.is_none() {
+            // If the next chunk is going to be more than the chunk count (which is 1 based)
+            if self.chunk_number + 1 == self.header.chunk_count {
+                return None;
+            }
+
             self.chunk_number += 1;
             info!("Allocating new chunk {}", self.chunk_number);
 

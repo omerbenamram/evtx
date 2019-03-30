@@ -23,6 +23,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let evtx_file = include_bytes!("../../samples/security.evtx");
     // ~11ms before strings cache
     // ~9ms after strings cache
+    // ~8ms with cached templates as well
     c.bench_function("read 90 records", move |b| {
         b.iter(|| process_90_records(evtx_file))
     });
