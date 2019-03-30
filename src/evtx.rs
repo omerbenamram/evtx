@@ -22,6 +22,7 @@ use std::mem;
 use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
+use std::vec::IntoIter;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -77,12 +78,12 @@ impl EvtxParser {
         }
     }
 
-    pub fn records<'a>(self) -> IterRecords<'a, Box<dyn ReadSeek>> {
+    pub fn records(self) -> IterRecords<Box<dyn ReadSeek>> {
         IterRecords::from(self.data)
     }
 }
 
-impl<'a, T: ReadSeek + 'a> IterRecords<'a, T> {
+impl<T: ReadSeek> IterRecords<T> {
     pub fn from(mut read_seek: T) -> Self {
         let evtx_header =
             EvtxFileHeader::from_reader(&mut read_seek).expect("Failed to read EVTX file header");
@@ -97,28 +98,29 @@ impl<'a, T: ReadSeek + 'a> IterRecords<'a, T> {
             .unwrap();
 
         let chunk = EvtxChunkData::new(chunk_data).expect("Failed to read EVTX chunk header");
-
         assert!(chunk.validate_checksum());
+
+        let allocated_records: Vec<Result<EvtxRecord, failure::Error>> =
+            chunk.parse().into_iter().collect();
+        let records = allocated_records.into_iter();
 
         IterRecords {
             header: evtx_header,
             evtx_data: read_seek,
             chunk_number: 0,
-            chunk_data: chunk,
-            chunk_iter: chunk.parse().into_iter(),
+            chunk_records: records,
         }
     }
 }
 
-pub struct IterRecords<'chunk, T: ReadSeek + 'chunk> {
+pub struct IterRecords<T: ReadSeek> {
     header: EvtxFileHeader,
     evtx_data: T,
     chunk_number: u16,
-    chunk_data: EvtxChunkData,
-    chunk_iter: IterChunkRecords<'chunk>,
+    chunk_records: IntoIter<Result<EvtxRecord, failure::Error>>,
 }
 
-impl<'a, T: ReadSeek> Iterator for IterRecords<'a, T> {
+impl<T: ReadSeek> Iterator for IterRecords<T> {
     type Item = Result<EvtxRecord, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
@@ -127,8 +129,10 @@ impl<'a, T: ReadSeek> Iterator for IterRecords<'a, T> {
             return None;
         }
 
+        let next = self.chunk_records.next();
+
         // Need to load a new chunk.
-        if self.chunk_iter.exhausted() {
+        if next.is_none() {
             self.chunk_number += 1;
             info!("Allocating new chunk {}", self.chunk_number);
 
@@ -146,17 +150,13 @@ impl<'a, T: ReadSeek> Iterator for IterRecords<'a, T> {
                 .unwrap();
 
             let chunk_data = EvtxChunkData::new(chunk_data).unwrap();
-
-            mem::replace(&mut self.chunk_data, chunk_data);
-
-            self.chunk_iter = self.chunk_data.parse().into_iter();
+            let allocated_records: Vec<Result<EvtxRecord, failure::Error>> =
+                chunk_data.parse().into_iter().collect();
+            let records = allocated_records.into_iter();
+            self.chunk_records = records;
         }
 
-        info!(
-            "Yielding record at offset {}",
-            self.chunk_iter.offset_from_chunk_start()
-        );
-        self.chunk_iter.next()
+        next
     }
 }
 
@@ -176,7 +176,11 @@ mod tests {
         for (i, record) in parser.records().take(10).enumerate() {
             match record {
                 Ok(r) => {
-                    assert_eq!(r.event_record_id, i as u64 + 1);
+                    assert_eq!(
+                        r.event_record_id,
+                        i as u64 + 1,
+                        "Parser is skipping records!"
+                    );
                     println!("{}", r.data);
                 }
                 Err(e) => panic!("Error while reading record {}, {:?}", i, e),

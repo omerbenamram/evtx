@@ -130,7 +130,7 @@ impl<'a> EvtxChunk<'a> {
         data: &'a [u8],
         header: &'a EvtxChunkHeader,
     ) -> Result<EvtxChunk<'a>, failure::Error> {
-        let mut cursor = Cursor::new(data);
+        let cursor = Cursor::new(data);
 
         let mut string_table = StringCache::new();
         let mut template_table = TemplateCache::new();
