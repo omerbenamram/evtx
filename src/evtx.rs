@@ -170,10 +170,10 @@ mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
 
-    fn process_100_records(buffer: &'static [u8]) {
+    fn process_90_records(buffer: &'static [u8]) {
         let parser = EvtxParser::from_buffer(buffer);
 
-        for (i, record) in parser.records().take(100).enumerate() {
+        for (i, record) in parser.records().take(90).enumerate() {
             match record {
                 Ok(r) => {
                     assert_eq!(r.event_record_id, i as u64 + 1);
@@ -183,10 +183,31 @@ mod tests {
         }
     }
 
+    // For clion profiler
     #[test]
-    fn test_process_100_records() {
+    fn test_process_single_chunk() {
         let evtx_file = include_bytes!("../samples/security.evtx");
-        process_100_records(evtx_file);
+        process_90_records(evtx_file);
+    }
+
+    #[test]
+    fn test_sample_2() {
+        let evtx_file = include_bytes!("../samples/system.evtx");
+        let parser = EvtxParser::from_buffer(evtx_file);
+
+        for (i, record) in parser.records().take(10).enumerate() {
+            match record {
+                Ok(r) => {
+                    assert_eq!(
+                        r.event_record_id,
+                        i as u64 + 1,
+                        "Parser is skipping records!"
+                    );
+                    println!("{}", r.data);
+                }
+                Err(e) => panic!("Error while reading record {}, {:?}", i, e),
+            }
+        }
     }
 
     #[test]

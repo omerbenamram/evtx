@@ -1,11 +1,11 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::{error::Error, guid::Guid, model::deserialized::*};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context};
 use crate::binxml::name::BinXmlName;
-use crate::binxml::value_variant::{BinXMLValueType, BinXmlValue};
+use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::evtx::ReadSeek;
 use crate::utils::{read_len_prefixed_utf16_string, read_utf16_by_size};
 use log::{debug, log, trace};
@@ -66,7 +66,7 @@ pub fn read_template<'c>(
         let size = try_read!(cursor, u16);
         let value_type_token = try_read!(cursor, u8);
 
-        let value_type = BinXMLValueType::from_u8(value_type_token).ok_or_else(|| {
+        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
             Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
         })?;
 
@@ -85,11 +85,47 @@ pub fn read_template<'c>(
         trace!("Substitution: {:?} at {}", descriptor.value_type, position);
         let value = match descriptor.value_type {
             // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
-            BinXMLValueType::StringType => BinXmlValue::StringType(Cow::Owned(
+            BinXmlValueType::StringType => BinXmlValue::StringType(Cow::Owned(
                 read_utf16_by_size(cursor, u64::from(descriptor.size))
                     .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
                     .unwrap_or_else(|| "".to_owned()),
             )),
+            BinXmlValueType::AnsiStringType => {
+                let mut bytes = vec![0; descriptor.size as usize];
+                cursor.read_exact(&mut bytes)?;
+
+                BinXmlValue::AnsiStringType(Cow::Owned(
+                    String::from_utf8(bytes).expect("Should be valid bytes"),
+                ))
+            }
+            BinXmlValueType::StringArrayType => {
+                let mut data = vec![0; descriptor.size as usize];
+                cursor.read_exact(&mut data)?;
+
+                let mut local_cursor = Cursor::new(&data);
+                let mut array = vec![];
+
+                loop {
+                    if cursor.position() >= data.len() as u64 {
+                        break;
+                    }
+
+                    let s = read_len_prefixed_utf16_string(&mut local_cursor, false)
+                        .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
+                        .unwrap_or("".to_owned());
+
+                    array.push(Cow::Owned(s));
+                }
+                BinXmlValue::StringArrayType(array)
+            }
+            BinXmlValueType::BinaryType => {
+                let data = *cursor.get_ref();
+                let bytes = &data[cursor.position() as usize
+                    ..(cursor.position() + u64::from(descriptor.size)) as usize];
+
+                cursor.seek(SeekFrom::Current(descriptor.size as i64))?;
+                BinXmlValue::BinaryType(bytes)
+            }
             _ => BinXmlValue::deserialize_value_type(
                 &descriptor.value_type,
                 cursor,
@@ -184,10 +220,10 @@ pub fn read_substitution(
     let substitution_index = try_read!(cursor, u16);
     let value_type_token = try_read!(cursor, u8);
 
-    let value_type = BinXMLValueType::from_u8(value_type_token)
+    let value_type = BinXmlValueType::from_u8(value_type_token)
         .ok_or_else(|| Error::not_a_valid_binxml_value_type(value_type_token, cursor.position()))?;
 
-    let ignore = optional && (value_type == BinXMLValueType::NullType);
+    let ignore = optional && (value_type == BinXmlValueType::NullType);
 
     Ok(TemplateSubstitutionDescriptor {
         substitution_index,
@@ -218,7 +254,7 @@ pub fn read_open_start_element<'c>(
 #[cfg(test)]
 mod test {
     use crate::binxml::name::BinXmlName;
-    use crate::binxml::value_variant::BinXMLValueType::*;
+    use crate::binxml::value_variant::BinXmlValueType::*;
     use crate::model::deserialized::BinXMLDeserializedTokens::*;
     use crate::model::deserialized::*;
     use pretty_assertions::{assert_eq, assert_ne};

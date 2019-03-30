@@ -1,7 +1,7 @@
 use crate::binxml::name::BinXmlName;
 use crate::guid::Guid;
 
-use crate::binxml::value_variant::{BinXMLValueType, BinXmlValue};
+use crate::binxml::value_variant::{BinXmlValueType, BinXmlValue};
 use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -53,14 +53,14 @@ pub struct BinXmlTemplate<'a> {
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct TemplateValueDescriptor {
     pub size: u16,
-    pub value_type: BinXMLValueType,
+    pub value_type: BinXmlValueType,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct TemplateSubstitutionDescriptor {
     // Zero-based (0 is first replacement)
     pub substitution_index: u16,
-    pub value_type: BinXMLValueType,
+    pub value_type: BinXmlValueType,
     pub ignore: bool,
 }
 

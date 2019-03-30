@@ -63,9 +63,9 @@ impl Error {
         Error::new(Context::new(ErrorKind::UTF16Decode), Some(offset))
     }
 
-    pub(crate) fn other(context: &'static str, offset: u64) -> Self {
+    pub(crate) fn other(context: impl AsRef<str>, offset: u64) -> Self {
         let err = ErrorKind::Other {
-            display: context.to_owned(),
+            display: context.as_ref().to_owned(),
         };
         Error::new(Context::new(err), Some(offset))
     }
