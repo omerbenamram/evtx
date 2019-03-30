@@ -10,6 +10,11 @@ version = "0.1.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2018"
 
+exclude = [
+    "**/*.evtx",
+    "**/*.dat",
+]
+
 [dependencies]
 crc = "1.8.1"
 chrono = "0.4.6"
