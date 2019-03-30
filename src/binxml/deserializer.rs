@@ -114,8 +114,6 @@ impl<'c> BinXmlDeserializer<'c> {
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size);
 
-        let mut total_bytes_read = 0;
-
         loop {
             let token = iterator.next();
             if let Some(t) = token {
@@ -123,11 +121,16 @@ impl<'c> BinXmlDeserializer<'c> {
             } else {
                 break;
             }
-
-            total_bytes_read += iterator.data_read_so_far;
         }
 
-        cursor.seek(SeekFrom::Current(i64::from(total_bytes_read)))?;
+        let seek_ahead = iterator.cursor.position() - offset;
+
+        trace!(
+            "Position is {}, seeking {} bytes ahead",
+            cursor.position(),
+            seek_ahead
+        );
+        cursor.seek(SeekFrom::Current(seek_ahead as i64))?;
 
         Ok(tokens)
     }
