@@ -5,8 +5,8 @@ use time::Duration;
 
 use failure::Error;
 
-use crate::evtx_chunk::EvtxChunk;
 use crate::evtx_chunk::IterChunkRecords;
+use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
 
@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::stdout;
+use std::mem;
 use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
@@ -50,9 +51,10 @@ unsafe impl stable_deref_trait::StableDeref for StableDerefMmap {}
 
 pub struct EvtxParser {
     data: Box<dyn ReadSeek>,
+    current_chunk: Option<Vec<u8>>,
 }
 
-impl<'a> EvtxParser {
+impl EvtxParser {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref().canonicalize()?;
         let f = File::open(&path)?;
@@ -61,23 +63,58 @@ impl<'a> EvtxParser {
 
         let cursor = Box::new(Cursor::new(owning_mmap)) as Box<dyn ReadSeek>;
 
-        Ok(EvtxParser { data: cursor })
+        Ok(EvtxParser {
+            data: cursor,
+            current_chunk: None,
+        })
     }
 
     pub fn from_buffer(buffer: &'static [u8]) -> Self {
         let cursor = Box::new(Cursor::new(buffer)) as Box<dyn ReadSeek>;
-        EvtxParser { data: cursor }
+        EvtxParser {
+            data: cursor,
+            current_chunk: None,
+        }
     }
 
-    pub fn records(self) -> IterRecords<'a, Box<dyn ReadSeek>> {
+    pub fn records<'a>(self) -> IterRecords<'a, Box<dyn ReadSeek>> {
         IterRecords::from(self.data)
     }
 }
 
-pub struct IterRecords<'chunk, T: Read + Seek> {
+impl<'a, T: ReadSeek + 'a> IterRecords<'a, T> {
+    pub fn from(mut read_seek: T) -> Self {
+        let evtx_header =
+            EvtxFileHeader::from_reader(&mut read_seek).expect("Failed to read EVTX file header");
+
+        // Allocate the first chunk
+        let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
+
+        read_seek
+            .borrow_mut()
+            .take(EVTX_CHUNK_SIZE as u64)
+            .read_to_end(&mut chunk_data)
+            .unwrap();
+
+        let chunk = EvtxChunkData::new(chunk_data).expect("Failed to read EVTX chunk header");
+
+        assert!(chunk.validate_checksum());
+
+        IterRecords {
+            header: evtx_header,
+            evtx_data: read_seek,
+            chunk_number: 0,
+            chunk_data: chunk,
+            chunk_iter: chunk.parse().into_iter(),
+        }
+    }
+}
+
+pub struct IterRecords<'chunk, T: ReadSeek + 'chunk> {
     header: EvtxFileHeader,
     evtx_data: T,
     chunk_number: u16,
+    chunk_data: EvtxChunkData,
     chunk_iter: IterChunkRecords<'chunk>,
 }
 
@@ -108,9 +145,11 @@ impl<'a, T: ReadSeek> Iterator for IterRecords<'a, T> {
                 .read_to_end(&mut chunk_data)
                 .unwrap();
 
-            let cursor = Cursor::new(chunk_data.as_slice());
-            let with_header = EvtxChunk::new(chunk_data).unwrap();
-            self.chunk_iter = with_header.into_iter();
+            let chunk_data = EvtxChunkData::new(chunk_data).unwrap();
+
+            mem::replace(&mut self.chunk_data, chunk_data);
+
+            self.chunk_iter = self.chunk_data.parse().into_iter();
         }
 
         info!(
@@ -118,33 +157,6 @@ impl<'a, T: ReadSeek> Iterator for IterRecords<'a, T> {
             self.chunk_iter.offset_from_chunk_start()
         );
         self.chunk_iter.next()
-    }
-}
-
-impl<'a, T: ReadSeek> IterRecords<'a, T> {
-    pub fn from(mut read_seek: T) -> Self {
-        let evtx_header =
-            EvtxFileHeader::from_reader(&mut read_seek).expect("Failed to read EVTX file header");
-
-        // Allocate the first chunk
-        let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
-
-        read_seek
-            .borrow_mut()
-            .take(EVTX_CHUNK_SIZE as u64)
-            .read_to_end(&mut chunk_data)
-            .unwrap();
-
-        let chunk = EvtxChunk::new(chunk_data).expect("Failed to read EVTX chunk header");
-
-        assert!(chunk.validate_checksum());
-
-        IterRecords {
-            header: evtx_header,
-            evtx_data: read_seek,
-            chunk_number: 0,
-            chunk_iter: chunk.into_iter(),
-        }
     }
 }
 
@@ -194,7 +206,7 @@ mod tests {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
 
-        let chunk = EvtxChunk::new(
+        let chunk = EvtxChunkData::new(
             evtx_file[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
@@ -203,9 +215,7 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        println!("Chunk: {:#?}", chunk);
-
-        for record in chunk.into_iter() {
+        for record in chunk.parse().into_iter() {
             if let Err(e) = record {
                 println!("{}", e);
                 panic!();

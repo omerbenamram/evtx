@@ -9,22 +9,17 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
-pub type CachedTemplate<'a> = (BinXMLTemplateDefinition<'a>);
+pub type CachedTemplate<'c> = (BinXMLTemplateDefinition<'c>);
 
 #[derive(Debug)]
-pub struct TemplateCache<'a>(HashMap<Offset, CachedTemplate<'a>>);
+pub struct TemplateCache<'c>(HashMap<Offset, CachedTemplate<'c>>);
 
 impl<'c> TemplateCache<'c> {
     pub fn new() -> Self {
         TemplateCache(HashMap::new())
     }
 
-    pub fn populate(
-        &mut self,
-        chunk: &EvtxChunk<'c>,
-        data: &'c [u8],
-        offsets: &[Offset],
-    ) -> Result<(), failure::Error> {
+    pub fn populate(&mut self, data: &'c [u8], offsets: &[Offset]) -> Result<(), failure::Error> {
         let mut cursor = Cursor::new(data);
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             cursor.seek(SeekFrom::Start(*offset as u64))?;
