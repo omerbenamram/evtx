@@ -1,10 +1,10 @@
 use std::{
     fmt::{self, Debug, Display},
-    io::{self, Cursor, Read},
+    io::{self, Read},
 };
 
 use crate::evtx::ReadSeek;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Guid {

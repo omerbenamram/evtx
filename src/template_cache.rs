@@ -1,8 +1,8 @@
-use crate::binxml::deserializer::{BinXmlDeserializer, Context};
+use crate::binxml::deserializer::{Context};
 use crate::binxml::tokens::read_template_definition;
-use crate::error::Error;
-use crate::evtx_chunk::EvtxChunk;
-use crate::guid::Guid;
+
+
+
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::Offset;
 pub use byteorder::{LittleEndian, ReadBytesExt};

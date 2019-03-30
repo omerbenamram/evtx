@@ -1,6 +1,6 @@
 use crate::binxml::name::BinXmlName;
 use crate::Offset;
-use log::info;
+
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 

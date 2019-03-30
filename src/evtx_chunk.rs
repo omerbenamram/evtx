@@ -128,7 +128,7 @@ impl<'a> EvtxChunk<'a> {
         data: &'a [u8],
         header: &'a EvtxChunkHeader,
     ) -> Result<EvtxChunk<'a>, failure::Error> {
-        let cursor = Cursor::new(data);
+        let _cursor = Cursor::new(data);
 
         let mut string_table = StringCache::new();
         let mut template_table = TemplateCache::new();
@@ -217,7 +217,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let data = match output_builder.into_writer() {
             Ok(output) => match String::from_utf8(output) {
                 Ok(s) => s,
-                Err(utf_err) => return Some(Err(format_err!("UTF-8 conversion of output failed"))),
+                Err(_utf_err) => return Some(Err(format_err!("UTF-8 conversion of output failed"))),
             },
             Err(e) => return Some(Err(e)),
         };
@@ -315,10 +315,10 @@ mod tests {
     use crate::ensure_env_logger_initialized;
     use crate::evtx::EVTX_CHUNK_SIZE;
     use crate::evtx::EVTX_FILE_HEADER_SIZE;
-    use crc::crc32;
-    use itertools::assert_equal;
-    use itertools::Itertools;
-    use std::hash::Hash;
+    
+    
+    
+    
     use std::io::Cursor;
 
     #[test]

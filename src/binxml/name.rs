@@ -1,16 +1,16 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{Cache, Context};
+use crate::binxml::deserializer::{Context};
 use crate::error::Error;
-use crate::evtx::ReadSeek;
+
 use crate::utils::read_len_prefixed_utf16_string;
 use crate::Offset;
 use core::borrow::Borrow;
-use failure::Fail;
+
 use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
-use std::rc::Rc;
+
 use xml::name::Name;
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]

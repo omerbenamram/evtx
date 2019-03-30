@@ -6,7 +6,7 @@ use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
 use log::{error, trace};
 use std::{
     cmp::min,
-    io::{self, Cursor, Error, ErrorKind, Read, Seek, SeekFrom},
+    io::{self, Cursor, Error, ErrorKind, Read},
 };
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
@@ -52,16 +52,16 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
 }
 
 pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<Option<String>> {
-    let p = stream.tell()? as usize;
+    let _p = stream.tell()? as usize;
 
     let mut buffer = vec![0; size as usize];
-    let ref_to_utf16_bytes = stream.read_exact(&mut buffer);
+    let _ref_to_utf16_bytes = stream.read_exact(&mut buffer);
 
     match size {
         0 => Ok(None),
         _ => match UTF_16LE.decode(&mut buffer, DecoderTrap::Strict) {
             Ok(s) => Ok(Some(s)),
-            Err(s) => Err(Error::from(ErrorKind::InvalidData)),
+            Err(_s) => Err(Error::from(ErrorKind::InvalidData)),
         },
     }
 }

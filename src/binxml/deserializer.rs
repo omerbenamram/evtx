@@ -178,7 +178,7 @@ impl<'c> IterTokens<'c> {
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
                 BinXmlValue::from_binxml_stream(cursor, ctx)?,
             )),
-            BinXMLRawToken::Attribute(token_information) => Ok(
+            BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, ctx)?),
             ),
             BinXMLRawToken::CDataSection => unimplemented!("BinXMLToken::CDataSection"),
@@ -294,8 +294,9 @@ impl<'c> Iterator for IterTokens<'c> {
 mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
+    use crate::evtx_chunk::{EvtxChunkData};
     use crate::evtx_record::EvtxRecordHeader;
+    use crate::utils::dump_cursor;
     use std::borrow::BorrowMut;
     use std::io::Read;
 

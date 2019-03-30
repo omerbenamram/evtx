@@ -1,15 +1,15 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context};
+use crate::binxml::deserializer::{BinXmlDeserializer, Context};
 use crate::error::Error;
-use crate::evtx::ReadSeek;
+
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{datetime_from_filetime, read_len_prefixed_utf16_string};
 use chrono::{DateTime, Utc};
 use std::borrow::Cow;
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::{Cursor};
 use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -228,7 +228,7 @@ impl<'c> BinXmlValue<'c> {
             BinXmlValueType::BinaryType => unimplemented!("BinaryType"),
             BinXmlValueType::GuidType => {
                 Ok(BinXmlValue::GuidType(Guid::from_stream(cursor).map_err(
-                    |e| Error::other("Failed to read GUID from stream", cursor.position()),
+                    |_e| Error::other("Failed to read GUID from stream", cursor.position()),
                 )?))
             }
             BinXmlValueType::SizeTType => unimplemented!("SizeTType"),
@@ -238,7 +238,7 @@ impl<'c> BinXmlValue<'c> {
             BinXmlValueType::SysTimeType => unimplemented!("SysTimeType"),
             BinXmlValueType::SidType => {
                 Ok(BinXmlValue::SidType(Sid::from_stream(cursor).map_err(
-                    |e| Error::other("Failed to read NTSID from stream", cursor.position()),
+                    |_e| Error::other("Failed to read NTSID from stream", cursor.position()),
                 )?))
             }
             BinXmlValueType::HexInt32Type => Ok(BinXmlValue::HexInt32Type(format!(

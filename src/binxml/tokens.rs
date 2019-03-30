@@ -3,7 +3,7 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use crate::{error::Error, guid::Guid, model::deserialized::*};
 use std::io::{Cursor, Read};
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context};
+use crate::binxml::deserializer::{BinXmlDeserializer, Context};
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
@@ -164,13 +164,13 @@ pub fn read_template_definition<'c>(
     let next_template_offset = try_read!(cursor, u32);
 
     let template_guid = Guid::from_stream(cursor)
-        .map_err(|e| Error::other("Failed to read GUID from stream", cursor.position()))?;
+        .map_err(|_e| Error::other("Failed to read GUID from stream", cursor.position()))?;
 
     let data_size = try_read!(cursor, u32);
 
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
-    let data = *cursor.get_ref();
+    let _data = *cursor.get_ref();
     let tokens =
         BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), Some(data_size))?;
 
@@ -242,7 +242,7 @@ pub fn read_open_start_element<'c>(
     let data_size = try_read!(cursor, u32);
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
 
-    let attribute_list_data_size = if has_attributes {
+    let _attribute_list_data_size = if has_attributes {
         try_read!(cursor, u32)
     } else {
         0
@@ -257,7 +257,7 @@ mod test {
     use crate::binxml::value_variant::BinXmlValueType::*;
     use crate::model::deserialized::BinXMLDeserializedTokens::*;
     use crate::model::deserialized::*;
-    use pretty_assertions::{assert_eq, assert_ne};
+    use pretty_assertions::{assert_eq};
 
     use crate::binxml::deserializer::Context;
     use crate::binxml::tokens::read_template_definition;

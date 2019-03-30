@@ -1,9 +1,9 @@
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
-use std::result;
 
-use failure::{Backtrace, Context, Fail};
+
+
+use failure::{Context, Fail};
 
 #[derive(Fail, Debug)]
 pub struct Error {
@@ -59,7 +59,7 @@ impl Error {
         let err = ErrorKind::NotAValidValueType { token };
         Error::new(Context::new(err), Some(offset))
     }
-    pub(crate) fn utf16_decode_error(e: impl Fail, offset: u64) -> Self {
+    pub(crate) fn utf16_decode_error(_e: impl Fail, offset: u64) -> Self {
         Error::new(Context::new(ErrorKind::UTF16Decode), Some(offset))
     }
 

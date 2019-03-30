@@ -1,7 +1,7 @@
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::deserialized::*;
-use log::{error, log};
+
+use log::{error};
 use std::borrow::Cow;
 
 type Name<'a> = BinXmlName<'a>;
