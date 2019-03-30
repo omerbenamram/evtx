@@ -1,5 +1,3 @@
-use crate::error::Error;
-
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
 macro_rules! try_read {
     ($cursor: ident, u8) => {

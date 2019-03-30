@@ -6,9 +6,9 @@ use std::io::{Cursor, Read};
 use crate::binxml::deserializer::{BinXmlDeserializer, Cache, Context};
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
-use crate::evtx::ReadSeek;
+
 use crate::utils::{read_len_prefixed_utf16_string, read_utf16_by_size};
-use log::{debug, log, trace};
+use log::trace;
 use std::borrow::Cow;
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -21,7 +21,7 @@ pub fn read_template<'c>(
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8);
-    let template_id = try_read!(cursor, u32);
+    let _template_id = try_read!(cursor, u32);
     let template_definition_data_offset = try_read!(cursor, u32);
 
     // If name is cached, read it and seek ahead if needed.

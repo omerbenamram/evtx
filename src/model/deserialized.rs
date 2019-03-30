@@ -1,7 +1,7 @@
 use crate::binxml::name::BinXmlName;
 use crate::guid::Guid;
 
-use crate::binxml::value_variant::{BinXmlValueType, BinXmlValue};
+use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use std::rc::Rc;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -70,14 +70,6 @@ pub struct BinXMLFragmentHeader {
     pub major_version: u8,
     pub minor_version: u8,
     pub flags: u8,
-}
-
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub enum BinXmlAttributeValue<'a> {
-    Text(BinXmlName<'a>),
-    Substitution,
-    CharacterEntityReference,
-    EntityReference,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

@@ -1,25 +1,23 @@
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::{self, format_err, Context, Fail};
+use byteorder::{LittleEndian, ReadBytesExt};
+use failure::{self, format_err, Fail};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::utils::*;
 use crate::xml_output::BinXMLOutput;
 use crate::xml_output::XMLOutput;
 use crc::crc32;
-use log::{debug, error, info, log, trace};
+use log::{debug, error, info, trace};
 use std::{
-    collections::HashMap,
     fmt::{Debug, Formatter},
     io::Cursor,
     io::{Read, Seek, SeekFrom},
-    rc::Rc,
 };
 
 use crate::binxml::assemble::parse_tokens;
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use log::{log_enabled, Level};
+use log::Level;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -153,17 +151,6 @@ pub struct IterChunkRecords<'a> {
     chunk: EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
-    templates_cache_init: bool,
-}
-
-impl<'a> IterChunkRecords<'a> {
-    pub fn exhausted(&self) -> bool {
-        self.exhausted
-    }
-
-    pub fn offset_from_chunk_start(&self) -> u64 {
-        self.offset_from_chunk_start
-    }
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
@@ -256,7 +243,6 @@ impl<'a> IntoIterator for EvtxChunk<'a> {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
-            templates_cache_init: false,
         }
     }
 }
