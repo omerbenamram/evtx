@@ -298,7 +298,7 @@ impl<'c> Iterator for IterTokens<'c> {
 mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use crate::evtx_chunk::EvtxChunk;
+    use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
     use crate::evtx_record::EvtxRecordHeader;
     use std::borrow::BorrowMut;
     use std::io::Read;
@@ -320,7 +320,7 @@ mod tests {
             .read_to_end(&mut chunk_data)
             .unwrap();
 
-        let chunk = EvtxChunk::new(chunk_data).unwrap();
+        let chunk = EvtxChunkData::new(chunk_data).unwrap();
         let mut cursor = Cursor::new(chunk.data.as_slice());
 
         // Seek to bad record position
@@ -356,9 +356,9 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunk::new(from_start_of_chunk.to_vec()).unwrap();
+        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
 
-        for record in chunk.into_iter().take(1) {
+        for record in chunk.parse().into_iter().take(1) {
             assert!(record.is_ok(), record.unwrap())
         }
     }
@@ -369,9 +369,9 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunk::new(from_start_of_chunk.to_vec()).unwrap();
+        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
 
-        for record in chunk.into_iter().take(10) {
+        for record in chunk.parse().into_iter().take(10) {
             println!("{:?}", record);
         }
     }

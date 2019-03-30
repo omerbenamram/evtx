@@ -56,28 +56,19 @@ impl Debug for EvtxChunkHeader {
     }
 }
 
-pub struct EvtxChunk<'a> {
+pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
-    pub string_cache: StringCache,
-    pub template_table: TemplateCache<'a>,
 }
 
-impl<'a> EvtxChunk<'a> {
-    /// Will fail if the data starts with an invalid evtx chunk header.
-    pub fn new(data: Vec<u8>) -> Result<EvtxChunk<'a>, failure::Error> {
+impl EvtxChunkData {
+    pub fn new(data: Vec<u8>) -> Result<Self, failure::Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
-
-        let mut string_table = StringCache::new();
-        string_table.populate(&data, &header.strings_offsets)?;
-
-        Ok(EvtxChunk {
-            data,
-            header,
-            string_cache: string_table,
-            template_table: TemplateCache::new(),
-        })
+        Ok(EvtxChunkData { header, data })
+    }
+    pub fn parse(&self) -> EvtxChunk {
+        EvtxChunk::new(&self.data, &self.header).unwrap()
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -123,6 +114,35 @@ impl<'a> EvtxChunk<'a> {
 
     pub fn validate_checksum(&self) -> bool {
         self.validate_header_checksum() && self.validate_data_checksum()
+    }
+}
+
+pub struct EvtxChunk<'a> {
+    pub data: &'a [u8],
+    pub header: &'a EvtxChunkHeader,
+    pub string_cache: StringCache,
+    pub template_table: TemplateCache<'a>,
+}
+
+impl<'a> EvtxChunk<'a> {
+    /// Will fail if the data starts with an invalid evtx chunk header.
+    pub fn new(
+        data: &'a [u8],
+        header: &'a EvtxChunkHeader,
+    ) -> Result<EvtxChunk<'a>, failure::Error> {
+        let cursor = Cursor::new(data);
+
+        let mut string_table = StringCache::new();
+        let mut template_table = TemplateCache::new();
+        string_table.populate(&data, &header.strings_offsets)?;
+        template_table.populate(&data, &header.template_offsets)?;
+
+        Ok(EvtxChunk {
+            header,
+            data,
+            string_cache: string_table,
+            template_table,
+        })
     }
 }
 
@@ -185,7 +205,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                     error!("Tried to read an invalid token!, {}", e);
 
                     if log::log_enabled!(Level::Debug) {
-                        let mut cursor = Cursor::new(self.chunk.data.as_slice());
+                        let mut cursor = Cursor::new(self.chunk.data);
                         cursor
                             .seek(SeekFrom::Start(
                                 e.offset().expect("Err to have offset information"),
@@ -372,9 +392,10 @@ mod tests {
     fn test_validate_checksum() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let chunk_data = &evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        let chunk_data =
+            evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
 
-        let chunk = EvtxChunk::new(chunk_data.to_vec()).unwrap();
+        let chunk = EvtxChunkData::new(chunk_data).unwrap();
         assert!(chunk.validate_checksum());
     }
 }
