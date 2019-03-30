@@ -80,6 +80,7 @@ impl<'c> BinXmlDeserializer<'c> {
         }
     }
 
+    #[cfg(test)]
     pub fn init_without_cache(data: &'c [u8], start_offset: u64) -> Self {
         let ctx = Rc::new(Cache {
             string_cache: None,
@@ -291,10 +292,11 @@ impl<'c> Iterator for IterTokens<'c> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use crate::evtx_chunk::{EvtxChunkData};
+    use crate::evtx_chunk::EvtxChunkData;
     use crate::evtx_record::EvtxRecordHeader;
     use crate::utils::dump_cursor;
     use std::borrow::BorrowMut;

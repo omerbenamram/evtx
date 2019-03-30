@@ -1,4 +1,4 @@
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 use failure::{Error, Fail};
 use std::io::{Read, Seek, SeekFrom};
 

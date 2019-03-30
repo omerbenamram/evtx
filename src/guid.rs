@@ -1,7 +1,5 @@
-use std::{
-    fmt::{self, Debug, Display},
-    io::{self, Read},
-};
+use std::fmt::{self, Debug, Display};
+use std::io;
 
 use crate::evtx::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};

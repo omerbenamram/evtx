@@ -43,7 +43,6 @@ unsafe impl stable_deref_trait::StableDeref for StableDerefMmap {}
 
 pub struct EvtxParser {
     data: Box<dyn ReadSeek>,
-    current_chunk: Option<Vec<u8>>,
 }
 
 impl EvtxParser {
@@ -55,18 +54,12 @@ impl EvtxParser {
 
         let cursor = Box::new(Cursor::new(owning_mmap)) as Box<dyn ReadSeek>;
 
-        Ok(EvtxParser {
-            data: cursor,
-            current_chunk: None,
-        })
+        Ok(EvtxParser { data: cursor })
     }
 
     pub fn from_buffer(buffer: &'static [u8]) -> Self {
         let cursor = Box::new(Cursor::new(buffer)) as Box<dyn ReadSeek>;
-        EvtxParser {
-            data: cursor,
-            current_chunk: None,
-        }
+        EvtxParser { data: cursor }
     }
 
     pub fn records(self) -> IterRecords<Box<dyn ReadSeek>> {

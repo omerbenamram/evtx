@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use failure::{self, format_err, Fail};
+use failure::{self, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::utils::*;
@@ -20,12 +20,6 @@ use crate::template_cache::TemplateCache;
 use log::Level;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
-
-#[derive(Fail, Debug)]
-enum ChunkHeaderParseErrorKind {
-    #[fail(display = "Expected magic \"ElfChnk\x00\", got {:#?}", magic)]
-    WrongHeaderMagic { magic: [u8; 8] },
-}
 
 pub struct EvtxChunkHeader {
     pub first_event_record_number: u64,
@@ -217,7 +211,9 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let data = match output_builder.into_writer() {
             Ok(output) => match String::from_utf8(output) {
                 Ok(s) => s,
-                Err(_utf_err) => return Some(Err(format_err!("UTF-8 conversion of output failed"))),
+                Err(_utf_err) => {
+                    return Some(Err(format_err!("UTF-8 conversion of output failed")))
+                }
             },
             Err(e) => return Some(Err(e)),
         };
@@ -315,10 +311,7 @@ mod tests {
     use crate::ensure_env_logger_initialized;
     use crate::evtx::EVTX_CHUNK_SIZE;
     use crate::evtx::EVTX_FILE_HEADER_SIZE;
-    
-    
-    
-    
+
     use std::io::Cursor;
 
     #[test]

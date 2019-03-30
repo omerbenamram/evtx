@@ -2,11 +2,11 @@ use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
 
 use crate::evtx::ReadSeek;
 use crate::utils::print_hexdump;
-use byteorder::{ByteOrder, LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 use log::{error, trace};
 use std::{
     cmp::min,
-    io::{self, Cursor, Error, ErrorKind, Read},
+    io::{self, Cursor, Error, ErrorKind},
 };
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
