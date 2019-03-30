@@ -198,6 +198,7 @@ mod test {
     use crate::binxml::value_variant::BinXMLValueType::*;
     use crate::model::deserialized::BinXMLDeserializedTokens::*;
     use crate::model::deserialized::*;
+    use pretty_assertions::{assert_eq, assert_ne};
 
     use crate::binxml::deserializer::Context;
     use crate::binxml::tokens::read_template_definition;
@@ -216,9 +217,14 @@ mod test {
     #[test]
     fn test_read_template_definition() {
         ensure_env_logger_initialized();
-        let expected_at_540 = BinXMLTemplateDefinition {
+        let expected_at_550 = BinXMLTemplateDefinition {
             next_template_offset: 0,
-            template_guid: Guid::new(1, 1, 1, &[0; 8]),
+            template_guid: Guid::new(
+                3346188909,
+                47309,
+                26506,
+                &[241, 69, 105, 59, 93, 11, 147, 140],
+            ),
             data_size: 1170,
             tokens: vec![
                 FragmentHeader(BinXMLFragmentHeader {
@@ -433,15 +439,17 @@ mod test {
                     ignore: false,
                 }),
                 CloseElement,
+                // TODO: is the EndOfStream a part of this template?
+                EndOfStream,
             ],
         };
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut c = Cursor::new(from_start_of_chunk);
-        c.seek(SeekFrom::Start(541)).unwrap();
+        c.seek(SeekFrom::Start(550)).unwrap();
         let actual = read_template_definition(&mut c, Context::default()).unwrap();
 
-        assert_eq!(actual, expected_at_540);
+        assert_eq!(actual, expected_at_550);
     }
 }
