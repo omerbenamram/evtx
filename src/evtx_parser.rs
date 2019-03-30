@@ -111,7 +111,7 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
     type Item = Result<EvtxRecord, Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let next = self.chunk_records.next();
+        let mut next = self.chunk_records.next();
 
         // Need to load a new chunk.
         if next.is_none() {
@@ -141,6 +141,7 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
                 chunk_data.parse().into_iter().collect();
             let records = allocated_records.into_iter();
             self.chunk_records = records;
+            next = self.chunk_records.next()
         }
 
         next
