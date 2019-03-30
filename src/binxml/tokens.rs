@@ -191,3 +191,257 @@ pub fn read_open_start_element<'c>(
 
     Ok(BinXMLOpenStartElement { data_size, name })
 }
+
+#[cfg(test)]
+mod test {
+    use crate::binxml::name::BinXmlName;
+    use crate::binxml::value_variant::BinXMLValueType::*;
+    use crate::model::deserialized::BinXMLDeserializedTokens::*;
+    use crate::model::deserialized::*;
+
+    use crate::binxml::deserializer::Context;
+    use crate::binxml::tokens::read_template_definition;
+    use crate::binxml::value_variant::BinXmlValue;
+    use crate::ensure_env_logger_initialized;
+    use crate::guid::Guid;
+    use std::borrow::Cow;
+    use std::io::{Cursor, Seek, SeekFrom};
+
+    macro_rules! n {
+        ($s: expr) => {
+            BinXmlName::from_static_string($s)
+        };
+    }
+
+    #[test]
+    fn test_read_template_definition() {
+        ensure_env_logger_initialized();
+        let expected_at_540 = BinXMLTemplateDefinition {
+            next_template_offset: 0,
+            template_guid: Guid::new(1, 1, 1, &[0; 8]),
+            data_size: 1170,
+            tokens: vec![
+                FragmentHeader(BinXMLFragmentHeader {
+                    major_version: 1,
+                    minor_version: 1,
+                    flags: 0,
+                }),
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 1158,
+                    name: n!("Event"),
+                }),
+                Attribute(BinXMLAttribute { name: n!("xmlns") }),
+                Value(BinXmlValue::StringType(Cow::Borrowed(
+                    "http://schemas.microsoft.com/win/2004/08/events/event",
+                ))),
+                CloseStartElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 982,
+                    name: n!("System"),
+                }),
+                CloseStartElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 89,
+                    name: n!("Provider"),
+                }),
+                Attribute(BinXMLAttribute { name: n!("Name") }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 14,
+                    value_type: StringType,
+                    ignore: false,
+                }),
+                Attribute(BinXMLAttribute { name: n!("Guid") }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 15,
+                    value_type: GuidType,
+                    ignore: false,
+                }),
+                CloseEmptyElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 77,
+                    name: n!("EventID"),
+                }),
+                Attribute(BinXMLAttribute {
+                    name: n!("Qualifiers"),
+                }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 4,
+                    value_type: UInt16Type,
+                    ignore: false,
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 3,
+                    value_type: UInt16Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 34,
+                    name: n!("Version"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 11,
+                    value_type: UInt8Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 30,
+                    name: n!("Level"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 0,
+                    value_type: UInt8Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 28,
+                    name: n!("Task"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 2,
+                    value_type: UInt16Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 32,
+                    name: n!("Opcode"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 1,
+                    value_type: UInt8Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 36,
+                    name: n!("Keywords"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 5,
+                    value_type: HexInt64Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 80,
+                    name: n!("TimeCreated"),
+                }),
+                Attribute(BinXMLAttribute {
+                    name: n!("SystemTime"),
+                }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 6,
+                    value_type: FileTimeType,
+                    ignore: false,
+                }),
+                CloseEmptyElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 46,
+                    name: n!("EventRecordID"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 10,
+                    value_type: UInt64Type,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 133,
+                    name: n!("Correlation"),
+                }),
+                Attribute(BinXMLAttribute {
+                    name: n!("ActivityID"),
+                }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 7,
+                    value_type: GuidType,
+                    ignore: false,
+                }),
+                Attribute(BinXMLAttribute {
+                    name: n!("RelatedActivityID"),
+                }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 13,
+                    value_type: GuidType,
+                    ignore: false,
+                }),
+                CloseEmptyElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 109,
+                    name: n!("Execution"),
+                }),
+                Attribute(BinXMLAttribute {
+                    name: n!("ProcessID"),
+                }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 8,
+                    value_type: UInt32Type,
+                    ignore: false,
+                }),
+                Attribute(BinXMLAttribute {
+                    name: n!("ThreadID"),
+                }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 9,
+                    value_type: UInt32Type,
+                    ignore: false,
+                }),
+                CloseEmptyElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 34,
+                    name: n!("Channel"),
+                }),
+                CloseStartElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 16,
+                    value_type: StringType,
+                    ignore: false,
+                }),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 62,
+                    name: n!("Computer"),
+                }),
+                CloseStartElement,
+                Value(BinXmlValue::StringType(Cow::Borrowed("37L4247F27-25"))),
+                CloseElement,
+                OpenStartElement(BinXMLOpenStartElement {
+                    data_size: 66,
+                    name: n!("Security"),
+                }),
+                Attribute(BinXMLAttribute { name: n!("UserID") }),
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 12,
+                    value_type: SidType,
+                    ignore: false,
+                }),
+                CloseEmptyElement,
+                CloseElement,
+                Substitution(TemplateSubstitutionDescriptor {
+                    substitution_index: 17,
+                    value_type: BinXmlType,
+                    ignore: false,
+                }),
+                CloseElement,
+            ],
+        };
+        let evtx_file = include_bytes!("../../samples/security.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+
+        let mut c = Cursor::new(from_start_of_chunk);
+        c.seek(SeekFrom::Start(541)).unwrap();
+        let actual = read_template_definition(&mut c, Context::default()).unwrap();
+
+        assert_eq!(actual, expected_at_540);
+    }
+}

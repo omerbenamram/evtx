@@ -19,6 +19,10 @@ pub struct BinXmlName<'a>(Cow<'a, str>);
 pub type StringHashOffset = (String, u16, Offset);
 
 impl<'c> BinXmlName<'c> {
+    pub fn from_static_string(s: &'static str) -> Self {
+        BinXmlName(Cow::Borrowed(s))
+    }
+
     pub fn from_binxml_stream(
         cursor: &mut Cursor<&'c [u8]>,
         ctx: Context<'c>,
