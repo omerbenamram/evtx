@@ -7,7 +7,7 @@ use evtx::EvtxParser;
 
 // first chunk has 90 records
 fn process_90_records(buffer: &'static [u8]) {
-    let parser = EvtxParser::from_buffer(buffer);
+    let parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
 
     for (i, record) in parser.records().take(90).enumerate() {
         match record {

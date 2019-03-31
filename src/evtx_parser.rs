@@ -1,14 +1,16 @@
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
+use rayon::prelude::*;
 
 use failure::Error;
 use log::{debug, info};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{IntoIterator, Iterator};
+use std::iter::{Flatten, IntoIterator, Iterator};
 
+use rayon::current_num_threads;
 use std::path::Path;
 use std::vec::IntoIter;
 
@@ -23,7 +25,7 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-pub struct EvtxParser<T: ReadSeek> {
+pub struct EvtxParser<T: ReadSeek + Send> {
     data: T,
     header: EvtxFileHeader,
 }
@@ -45,7 +47,7 @@ impl EvtxParser<Cursor<Vec<u8>>> {
     }
 }
 
-impl<T: ReadSeek> EvtxParser<T> {
+impl<T: ReadSeek + Send> EvtxParser<T> {
     fn from_read_seek(mut read_seek: T) -> Result<Self, Error> {
         let evtx_header = EvtxFileHeader::from_reader(&mut read_seek)?;
 
@@ -70,37 +72,62 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data)
     }
 
-    pub fn records(mut self) -> IterRecords<T> {
+    pub fn records(self) -> IterRecords<T> {
+        self.into_iter()
+    }
+}
+
+impl<T: ReadSeek + Send> IntoIterator for EvtxParser<T> {
+    type Item = Result<EvtxRecord, Error>;
+    type IntoIter = IterRecords<T>;
+
+    fn into_iter(mut self) -> Self::IntoIter {
         let first_chunk = Self::allocate_chunk(&mut self.data, 0).expect("Invalid chunk");
+        let iterators = vec![first_chunk.into_records().into_iter()];
 
         IterRecords {
             header: self.header,
             data: self.data,
             current_chunk_number: 0,
-            chunk_records: first_chunk.into_records().into_iter(),
+            chunk_records: iterators.into_iter().flatten(),
         }
     }
 }
 
-impl<T: ReadSeek> IterRecords<T> {
+impl<T: ReadSeek + Send> IterRecords<T> {
     fn allocate_chunk(&mut self) {
         info!("Allocating new chunk {}", self.current_chunk_number);
 
-        let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)
-            .expect("Invalid chunk");
+        let mut chunks = vec![];
+        for _ in 0..current_num_threads() {
+            if self.current_chunk_number + 1 == self.header.chunk_count {
+                break;
+            }
 
-        self.chunk_records = chunk.into_records().into_iter();
+            let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)
+                .expect("Invalid chunk");
+
+            chunks.push(chunk);
+            self.current_chunk_number += 1;
+        }
+
+        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = chunks
+            .into_par_iter()
+            .map(|c| c.into_records().into_iter())
+            .collect();
+
+        self.chunk_records = iterators.into_iter().flatten();
     }
 }
 
-pub struct IterRecords<T: ReadSeek> {
+pub struct IterRecords<T: ReadSeek + Send> {
     header: EvtxFileHeader,
     data: T,
     current_chunk_number: u16,
-    chunk_records: IntoIter<Result<EvtxRecord, failure::Error>>,
+    chunk_records: Flatten<IntoIter<IntoIter<Result<EvtxRecord, failure::Error>>>>,
 }
 
-impl<T: ReadSeek> Iterator for IterRecords<T> {
+impl<T: ReadSeek + Send> Iterator for IterRecords<T> {
     type Item = Result<EvtxRecord, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         let mut next = self.chunk_records.next();
@@ -111,8 +138,6 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
             if self.current_chunk_number + 1 == self.header.chunk_count {
                 return None;
             }
-
-            self.current_chunk_number += 1;
 
             self.allocate_chunk();
             next = self.chunk_records.next()

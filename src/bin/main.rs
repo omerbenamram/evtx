@@ -26,10 +26,10 @@ fn main() {
         .expect("This is a required argument");
 
     let parser = EvtxParser::from_path(fp).unwrap();
-    for record in parser.records() {
-        match record {
-            Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
-            Err(e) => eprintln!("{}", e),
-        }
-    }
+    let par_iter = parser.records();
+
+    par_iter.for_each(|r| match r {
+        Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+        Err(e) => eprintln!("{}", e),
+    });
 }
