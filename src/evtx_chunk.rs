@@ -381,6 +381,11 @@ mod tests {
     }
 
     #[test]
+    fn test_travis() {
+        assert!(false);
+    }
+
+    #[test]
     fn test_validate_checksum() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
