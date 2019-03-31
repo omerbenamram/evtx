@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use failure::{self, format_err};
+use failure::{self, bail, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::utils::*;
@@ -57,8 +57,18 @@ impl EvtxChunkData {
     pub fn new(data: Vec<u8>) -> Result<Self, failure::Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
-        Ok(EvtxChunkData { header, data })
+
+        let chunk = EvtxChunkData { header, data };
+        if !chunk.validate_checksum() {
+            bail!("Invalid header checksum");
+        }
+
+        Ok(chunk)
     }
+    pub fn into_records(self) -> Vec<Result<EvtxRecord, failure::Error>> {
+        self.parse().into_iter().collect()
+    }
+
     pub fn parse(&self) -> EvtxChunk {
         EvtxChunk::new(&self.data, &self.header).unwrap()
     }
