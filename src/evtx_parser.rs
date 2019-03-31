@@ -102,14 +102,13 @@ impl<T: ReadSeek> EvtxParser<T> {
 
 impl<T: ReadSeek> IterRecords<T> {
     fn allocate_chunk(&mut self) {
-        info!("Allocating new chunk {}", self.current_chunk_number);
-
         let mut chunks = vec![];
         for _ in 0..self.num_threads {
             if self.current_chunk_number + 1 == self.header.chunk_count {
                 break;
             }
 
+            info!("Allocating new chunk {}", self.current_chunk_number);
             let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)
                 .expect("Invalid chunk");
 
@@ -158,7 +157,7 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
         // Need to load a new chunk.
         if next.is_none() {
             // If the next chunk is going to be more than the chunk count (which is 1 based)
-            if self.current_chunk_number + 1 == self.header.chunk_count {
+            if self.current_chunk_number + 1 >= self.header.chunk_count {
                 return None;
             }
 
@@ -279,23 +278,16 @@ mod tests {
 
     #[test]
     fn test_file_with_only_a_single_chunk() {
-        use std::collections::HashSet;
-
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        let mut record_ids = HashSet::new();
-        for record in parser.parallel_records().take(1000) {
+        for record in parser.records().take(1000) {
             match record {
-                Ok(r) => {
-                    record_ids.insert(r.event_record_id);
-                }
+                Ok(r) => {}
                 Err(e) => panic!("Error while reading record {:?}", e),
             }
         }
-
-        assert_eq!(record_ids.len(), 1000);
     }
 
     #[test]
