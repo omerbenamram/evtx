@@ -24,9 +24,9 @@ But otherwise the entire parser is safe!
 
 ## Benchmarking
 
-Initial benchmarking that I've performed indicates that this implementation is very fast.
+Initial benchmarking that I've performed indicates that this implementation is relatively fast.
 
-It crunches through a 30MB .evtx file (around 227K records) in around 4 seconds.
+It crunches through a 30MB .evtx file (around 62K records) in around 4 seconds.
 
 ## License
 
