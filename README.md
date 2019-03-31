@@ -21,11 +21,30 @@ This parser is implemented using 100% safe rust.
     }
 ```
 
+For parallel iteration (uses rayon):
+
+```rust
+    use evtx::EvtxParser;
+    
+    fn main() {
+        let parser = EvtxParser::from_path(fp).unwrap();
+        for record in parser.parallel_records() {
+            match record {
+                Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+                Err(e) => eprintln!("{}", e),
+            }
+        }
+    }
+```
+
+The parallel version is enabled when compiling with feature "multithreading" (enabled by default).
+
 ## Benchmarking
 
 Initial benchmarking that I've performed indicates that this implementation is relatively fast.
 
-It crunches through a 30MB .evtx file (around 62K records) in around 4 seconds.
+It crunches through a 30MB .evtx file (around 62K records) in around 4 seconds (single threaded).
+When using `parallel_records`, this drops to about 1 second on my machine.
 
 ## License
 

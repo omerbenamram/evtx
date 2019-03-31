@@ -2,9 +2,7 @@ use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
 #[cfg(feature = "multithreading")]
-use rayon::current_num_threads;
-#[cfg(feature = "multithreading")]
-use rayon::prelude::*;
+use rayon::{current_num_threads, prelude::*};
 
 use failure::Error;
 use log::{debug, info};
@@ -82,7 +80,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         IterRecords {
             header: self.header,
             data: self.data,
-            current_chunk_number: 0,
+            current_chunk_number: 1,
             chunk_records: iterators.into_iter().flatten(),
             num_threads: current_num_threads(),
         }
@@ -95,7 +93,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         IterRecords {
             header: self.header,
             data: self.data,
-            current_chunk_number: 0,
+            current_chunk_number: 1,
             chunk_records: iterators.into_iter().flatten(),
             num_threads: 1,
         }
@@ -246,6 +244,28 @@ mod tests {
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "multithreading")]
+    fn test_multithreading() {
+        use std::collections::HashSet;
+
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut record_ids = HashSet::new();
+        for record in parser.parallel_records().take(1000) {
+            match record {
+                Ok(r) => {
+                    record_ids.insert(r.event_record_id);
+                }
+                Err(e) => panic!("Error while reading record {:?}", e),
+            }
+        }
+
+        assert_eq!(record_ids.len(), 1000);
     }
 
     #[test]
