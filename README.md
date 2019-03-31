@@ -4,8 +4,7 @@ This is a parser for the Windows EVTX format.
 
 Note that it is complete as in the sense that it successfully parses a wide variety of samples, but I've yet to implement the full specification.
 
-This uses almost 100% safe rust, the only exception being memory mapping input files to gain seek ergonomics.
-But otherwise the entire parser is safe!
+This parser is implemented using 100% safe rust.
 
 ## Example usage:
 ```rust
