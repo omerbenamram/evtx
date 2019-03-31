@@ -4,6 +4,7 @@ mod macros;
 
 pub mod evtx_parser;
 pub use evtx_parser::EvtxParser;
+pub use evtx_record::EvtxRecord;
 
 mod binxml;
 mod error;
