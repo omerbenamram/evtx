@@ -1,13 +1,15 @@
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::EvtxRecord;
+#[cfg(feature = "multithreading")]
+use rayon::{current_num_threads, prelude::*};
 
 use failure::Error;
 use log::{debug, info};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{IntoIterator, Iterator};
+use std::iter::{Flatten, IntoIterator, Iterator};
 
 use std::path::Path;
 use std::vec::IntoIter;
@@ -70,14 +72,30 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data)
     }
 
-    pub fn records(mut self) -> IterRecords<T> {
+    #[cfg(feature = "multithreading")]
+    pub fn parallel_records(mut self) -> IterRecords<T> {
         let first_chunk = Self::allocate_chunk(&mut self.data, 0).expect("Invalid chunk");
+        let iterators = vec![first_chunk.into_records().into_iter()];
 
         IterRecords {
             header: self.header,
             data: self.data,
-            current_chunk_number: 0,
-            chunk_records: first_chunk.into_records().into_iter(),
+            current_chunk_number: 1,
+            chunk_records: iterators.into_iter().flatten(),
+            num_threads: current_num_threads(),
+        }
+    }
+
+    pub fn records(mut self) -> IterRecords<T> {
+        let first_chunk = Self::allocate_chunk(&mut self.data, 0).expect("Invalid chunk");
+        let iterators = vec![first_chunk.into_records().into_iter()];
+
+        IterRecords {
+            header: self.header,
+            data: self.data,
+            current_chunk_number: 1,
+            chunk_records: iterators.into_iter().flatten(),
+            num_threads: 1,
         }
     }
 }
@@ -86,10 +104,41 @@ impl<T: ReadSeek> IterRecords<T> {
     fn allocate_chunk(&mut self) {
         info!("Allocating new chunk {}", self.current_chunk_number);
 
-        let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)
-            .expect("Invalid chunk");
+        let mut chunks = vec![];
+        for _ in 0..self.num_threads {
+            if self.current_chunk_number + 1 == self.header.chunk_count {
+                break;
+            }
 
-        self.chunk_records = chunk.into_records().into_iter();
+            let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)
+                .expect("Invalid chunk");
+
+            chunks.push(chunk);
+            self.current_chunk_number += 1;
+        }
+
+        #[cfg(feature = "multithreading")]
+        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = {
+            if self.num_threads > 1 {
+                chunks
+                    .into_par_iter()
+                    .map(|c| c.into_records().into_iter())
+                    .collect()
+            } else {
+                chunks
+                    .into_iter()
+                    .map(|c| c.into_records().into_iter())
+                    .collect()
+            }
+        };
+
+        #[cfg(not(feature = "multithreading"))]
+        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = chunks
+            .into_iter()
+            .map(|c| c.into_records().into_iter())
+            .collect();
+
+        self.chunk_records = iterators.into_iter().flatten();
     }
 }
 
@@ -97,7 +146,8 @@ pub struct IterRecords<T: ReadSeek> {
     header: EvtxFileHeader,
     data: T,
     current_chunk_number: u16,
-    chunk_records: IntoIter<Result<EvtxRecord, failure::Error>>,
+    chunk_records: Flatten<IntoIter<IntoIter<Result<EvtxRecord, failure::Error>>>>,
+    num_threads: usize,
 }
 
 impl<T: ReadSeek> Iterator for IterRecords<T> {
@@ -111,8 +161,6 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
             if self.current_chunk_number + 1 == self.header.chunk_count {
                 return None;
             }
-
-            self.current_chunk_number += 1;
 
             self.allocate_chunk();
             next = self.chunk_records.next()
@@ -205,6 +253,28 @@ mod tests {
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "multithreading")]
+    fn test_multithreading() {
+        use std::collections::HashSet;
+
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut record_ids = HashSet::new();
+        for record in parser.parallel_records().take(1000) {
+            match record {
+                Ok(r) => {
+                    record_ids.insert(r.event_record_id);
+                }
+                Err(e) => panic!("Error while reading record {:?}", e),
+            }
+        }
+
+        assert_eq!(record_ids.len(), 1000);
     }
 
     #[test]
