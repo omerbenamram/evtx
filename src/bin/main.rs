@@ -19,16 +19,40 @@ fn main() {
                 .takes_value(true)
                 .required(true),
         )
+        .arg(
+            Arg::with_name("threads")
+                .short("t")
+                .long("threads")
+                .takes_value(false),
+        )
         .get_matches();
 
     let fp = matches
         .value_of("input")
         .expect("This is a required argument");
 
-    let parser = EvtxParser::from_path(fp).unwrap();
-    let par_iter = parser.records();
+    let threads: bool = matches.is_present("threads");
 
-    par_iter.for_each(|r| match r {
+    let parser = EvtxParser::from_path(fp).unwrap();
+
+    if threads && !cfg!(feature = "multithreading") {
+        eprintln!("turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator");
+    };
+
+    let iter = if threads {
+        #[cfg(feature = "multithreading")]
+        {
+            parser.parallel_records()
+        }
+        #[cfg(not(feature = "multithreading"))]
+        {
+            parser.records()
+        }
+    } else {
+        parser.records()
+    };
+
+    iter.for_each(|r| match r {
         Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
         Err(e) => eprintln!("{}", e),
     });
