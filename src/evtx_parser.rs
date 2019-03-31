@@ -118,10 +118,19 @@ impl<T: ReadSeek> IterRecords<T> {
         }
 
         #[cfg(feature = "multithreading")]
-        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = chunks
-            .into_par_iter()
-            .map(|c| c.into_records().into_iter())
-            .collect();
+        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = {
+            if self.num_threads > 1 {
+                chunks
+                    .into_par_iter()
+                    .map(|c| c.into_records().into_iter())
+                    .collect()
+            } else {
+                chunks
+                    .into_iter()
+                    .map(|c| c.into_records().into_iter())
+                    .collect()
+            }
+        };
 
         #[cfg(not(feature = "multithreading"))]
         let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = chunks
