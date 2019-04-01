@@ -6,7 +6,7 @@ This is a parser for the Windows EVTX format.
 
 Note that it is complete as in the sense that it successfully parses a wide variety of samples, but I've yet to implement the full specification.
 
-This parser is implemented using 100% safe rust.
+This parser is implemented using 100% safe rust, and should work on recent (i'm testing against 1.34) versions of rust.
 
 ## Example usage:
 ```rust
