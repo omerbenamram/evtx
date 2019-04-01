@@ -13,9 +13,8 @@ This parser is implemented using 100% safe rust, and should work on recent (i'm 
 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (still experimental, will publish to PyPi soon)
 
 ## Example usage (associated binary utility):
-  - Clone this repo
-  - `cargo build --release`
-  - run `./target/release/main --input <evtx_file>` to dump contents of evtx records as xml.
+  - `cargo install evtx`
+  - run `evtx_dump --input <evtx_file>` to dump contents of evtx records as xml.
 
 ## Example usage (as library):
 ```rust

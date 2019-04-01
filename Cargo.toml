@@ -37,6 +37,9 @@ multithreading = ["rayon"]
 pretty_assertions = "0.6.1"
 criterion = "0.2"
 
+[[bin]]
+name = "evtx_dump"
+
 [[bench]]
 name = "benchmark"
 path = "./src/benches/benchmark.rs"
