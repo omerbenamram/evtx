@@ -65,12 +65,12 @@ impl EvtxChunkData {
 
         Ok(chunk)
     }
-    pub fn into_records(self) -> Vec<Result<EvtxRecord, failure::Error>> {
-        self.parse().into_iter().collect()
+    pub fn into_records(self) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
+        Ok(self.parse()?.into_iter().collect())
     }
 
-    pub fn parse(&self) -> EvtxChunk {
-        EvtxChunk::new(&self.data, &self.header).unwrap()
+    pub fn parse(&self) -> Result<EvtxChunk, failure::Error> {
+        EvtxChunk::new(&self.data, &self.header)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -188,8 +188,12 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let mut output_builder = XMLOutput::with_writer(record_buffer);
 
         let mut tokens = vec![];
+        let iter = match deserializer.iter_tokens(Some(binxml_data_size)) {
+            Ok(iter) => iter,
+            Err(e) => return Some(Err(format_err!("{}", e))),
+        };
 
-        for token in deserializer.iter_tokens(Some(binxml_data_size)) {
+        for token in iter {
             match token {
                 Ok(token) => {
                     trace!("successfully read {:?}", token);
