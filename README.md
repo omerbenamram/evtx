@@ -8,6 +8,8 @@ Note that it is complete as in the sense that it successfully parses a wide vari
 
 This parser is implemented using 100% safe rust, and should work on recent (i'm testing against 1.34) versions of rust.
 
+[Documentation](https://docs.rs/evtx/0.1.3/)
+
 ## Example usage:
 ```rust
     use evtx::EvtxParser;
