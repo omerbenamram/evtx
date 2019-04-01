@@ -1,5 +1,5 @@
 [![Build Status](https://travis-ci.org/omerbenamram/evtx.svg?branch=master)](https://travis-ci.org/omerbenamram/evtx)
-
+![crates.io](https://img.shields.io/crates/v/evtx.svg)
 # EVTX
 
 This is a parser for the Windows EVTX format.
