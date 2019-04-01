@@ -8,9 +8,16 @@ Note that it is complete as in the sense that it successfully parses a wide vari
 
 This parser is implemented using 100% safe rust, and should work on recent (i'm testing against 1.34) versions of rust.
 
-[Documentation](https://docs.rs/evtx/0.1.3/)
+[Documentation](https://docs.rs/evtx/0.1.4/)
 
-## Example usage:
+Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (still experimental, will publish to PyPi soon)
+
+## Example usage (associated binary utility):
+  - Clone this repo
+  - `cargo build --release`
+  - run `./target/release/main --input <evtx_file>` to dump contents of evtx records as xml.
+
+## Example usage (as library):
 ```rust
     use evtx::EvtxParser;
     
@@ -96,6 +103,10 @@ Comparison with other libraries:
             1.51 real         7.50 user         0.26 sys
     ```
    
+## Caveats
+
+- I haven't implemented any sort of recovery/carving of records (available in some other implementations).
+- I haven't tested this against samples which contains esotericlly encoded strings.
 
 ## License
 
