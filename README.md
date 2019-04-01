@@ -45,7 +45,7 @@ The parallel version is enabled when compiling with feature "multithreading" (en
 
 ## Benchmarking
 
-Initial benchmarking that I've performed indicates that this implementation probably the fastest available online 🍺.
+Initial benchmarking I've performed indicate that this implementation is probably the fastest available 🍺.
 
 I'm using a real world, 30MB sample which contains ~62K records.
 
@@ -62,7 +62,7 @@ Comparison with other libraries:
           363.83 real       356.26 user         2.17 sys
     ```
     
-    With PyPy (tested with pypy3.5, 7.0.0), it's taking about just less than a minute (a 6x improvement!)
+    With PyPy (tested with pypy3.5, 7.0.0), it's taking just less than a minute (a 6x improvement!)
     ```
     time -- pypy3 ~/Workspace/python-evtx/scripts/evtx_dump.py ./samples/security_big_sample.evtx > /dev/null                                                                      Mon Apr  1 19:41:16 2019
           59.30 real        58.10 user         0.51 sys
@@ -71,7 +71,8 @@ Comparison with other libraries:
 - libevtx (https://github.com/libyal/libevtx)
    
    This library is written in C, so I initially expected it to be faster than my implementation originally.
-   It clocks in about 6x than PyPy, which is pretty good.
+
+   It clocks in about 6x faster than PyPy.
    
    ```
    time -- ~/Workspace/libevtx/dist/bin/evtxexport -f xml ./samples/security_big_sample.evtx > /dev/null
