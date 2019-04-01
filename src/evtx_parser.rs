@@ -98,7 +98,9 @@ impl<T: ReadSeek> IterRecords<T> {
     fn allocate_chunks(&mut self) -> Result<(), Error> {
         let mut chunks = vec![];
         for _ in 0..self.num_threads {
-            if self.current_chunk_number + 1 == self.header.chunk_count {
+            if self.chunk_records.is_some()
+                && self.current_chunk_number + 1 == self.header.chunk_count
+            {
                 break;
             }
 
@@ -286,12 +288,7 @@ mod tests {
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        for record in parser.records().take(1000) {
-            match record {
-                Ok(r) => {}
-                Err(e) => panic!("Error while reading record {:?}", e),
-            }
-        }
+        assert_eq!(parser.records().count(), 4);
     }
 
     #[test]
