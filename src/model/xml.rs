@@ -48,7 +48,7 @@ impl<'a> XmlElementBuilder<'a> {
     }
 
     pub fn attribute_value(mut self, value: BinXmlValue<'a>) -> Self {
-        assert!(
+        debug_assert!(
             self.current_attribute_name.is_some(),
             "There should be a name"
         );

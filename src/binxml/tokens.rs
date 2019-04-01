@@ -139,7 +139,7 @@ pub fn read_template<'c>(
             trace!("\t Skip {}", descriptor.size);
             cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
         }
-        assert_eq!(
+        debug_assert_eq!(
             position + u64::from(descriptor.size),
             cursor.position(),
             "{}",
