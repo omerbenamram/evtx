@@ -44,7 +44,8 @@ The parallel version is enabled when compiling with feature "multithreading" (en
 ## Benchmarking
 
 Initial benchmarking that I've performed indicates that this implementation probably the fastest available online 🍺.
-I'm using a real world, 30MB samples which contains about 62K records.
+
+I'm using a real world, 30MB sample which contains ~62K records.
 
 This is benchmarked on my 2017 MBP.
 
