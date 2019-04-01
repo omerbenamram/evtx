@@ -73,35 +73,29 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     #[cfg(feature = "multithreading")]
-    pub fn parallel_records(mut self) -> IterRecords<T> {
-        let first_chunk = Self::allocate_chunk(&mut self.data, 0).expect("Invalid chunk");
-        let iterators = vec![first_chunk.into_records().into_iter()];
-
+    pub fn parallel_records(self) -> IterRecords<T> {
         IterRecords {
             header: self.header,
             data: self.data,
-            current_chunk_number: 1,
-            chunk_records: iterators.into_iter().flatten(),
+            current_chunk_number: 0,
+            chunk_records: None,
             num_threads: current_num_threads(),
         }
     }
 
-    pub fn records(mut self) -> IterRecords<T> {
-        let first_chunk = Self::allocate_chunk(&mut self.data, 0).expect("Invalid chunk");
-        let iterators = vec![first_chunk.into_records().into_iter()];
-
+    pub fn records(self) -> IterRecords<T> {
         IterRecords {
             header: self.header,
             data: self.data,
-            current_chunk_number: 1,
-            chunk_records: iterators.into_iter().flatten(),
+            current_chunk_number: 0,
+            chunk_records: None,
             num_threads: 1,
         }
     }
 }
 
 impl<T: ReadSeek> IterRecords<T> {
-    fn allocate_chunk(&mut self) {
+    fn allocate_chunks(&mut self) -> Result<(), Error> {
         let mut chunks = vec![];
         for _ in 0..self.num_threads {
             if self.current_chunk_number + 1 == self.header.chunk_count {
@@ -109,35 +103,37 @@ impl<T: ReadSeek> IterRecords<T> {
             }
 
             info!("Allocating new chunk {}", self.current_chunk_number);
-            let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)
-                .expect("Invalid chunk");
+            let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)?;
 
             chunks.push(chunk);
             self.current_chunk_number += 1;
         }
 
         #[cfg(feature = "multithreading")]
-        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = {
+        let iterators: Result<
+            Vec<Vec<Result<EvtxRecord, failure::Error>>>,
+            failure::Error,
+        > = {
             if self.num_threads > 1 {
-                chunks
-                    .into_par_iter()
-                    .map(|c| c.into_records().into_iter())
-                    .collect()
+                chunks.into_par_iter().map(|c| c.into_records()).collect()
             } else {
-                chunks
-                    .into_iter()
-                    .map(|c| c.into_records().into_iter())
-                    .collect()
+                chunks.into_iter().map(|c| c.into_records()).collect()
             }
         };
 
         #[cfg(not(feature = "multithreading"))]
-        let iterators: Vec<IntoIter<Result<EvtxRecord, failure::Error>>> = chunks
-            .into_iter()
-            .map(|c| c.into_records().into_iter())
-            .collect();
+        let mut iterators: Result<
+            Vec<Vec<Result<EvtxRecord, failure::Error>>>,
+            failure::Error,
+        > = chunks.into_iter().map(|c| c.into_records()).collect();
 
-        self.chunk_records = iterators.into_iter().flatten();
+        match iterators {
+            Ok(inner) => {
+                self.chunk_records = Some(inner.into_iter().flatten());
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -145,14 +141,20 @@ pub struct IterRecords<T: ReadSeek> {
     header: EvtxFileHeader,
     data: T,
     current_chunk_number: u16,
-    chunk_records: Flatten<IntoIter<IntoIter<Result<EvtxRecord, failure::Error>>>>,
+    chunk_records: Option<Flatten<IntoIter<Vec<Result<EvtxRecord, failure::Error>>>>>,
     num_threads: usize,
 }
 
 impl<T: ReadSeek> Iterator for IterRecords<T> {
     type Item = Result<EvtxRecord, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut next = self.chunk_records.next();
+        if self.chunk_records.is_none() {
+            if let Err(e) = self.allocate_chunks() {
+                return Some(Err(e));
+            }
+        }
+
+        let mut next = self.chunk_records.as_mut().unwrap().next();
 
         // Need to load a new chunk.
         if next.is_none() {
@@ -161,8 +163,10 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
                 return None;
             }
 
-            self.allocate_chunk();
-            next = self.chunk_records.next()
+            if let Err(e) = self.allocate_chunks() {
+                return Some(Err(e));
+            }
+            next = self.chunk_records.as_mut().unwrap().next()
         }
 
         next
@@ -304,7 +308,7 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse().into_iter() {
+        for record in chunk.parse().unwrap().into_iter() {
             if let Err(e) = record {
                 println!("{}", e);
                 panic!();

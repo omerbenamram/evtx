@@ -109,7 +109,7 @@ impl<'c> BinXmlDeserializer<'c> {
         };
 
         let mut tokens = vec![];
-        let mut iterator = de.iter_tokens(data_size);
+        let mut iterator = de.iter_tokens(data_size)?;
 
         loop {
             let token = iterator.next();
@@ -133,17 +133,17 @@ impl<'c> BinXmlDeserializer<'c> {
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
-    pub fn iter_tokens(self, data_size: Option<u32>) -> IterTokens<'c> {
+    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'c>, Error> {
         let mut cursor = Cursor::new(self.data);
-        cursor.seek(SeekFrom::Start(self.offset)).unwrap();
+        cursor.seek(SeekFrom::Start(self.offset))?;
 
-        IterTokens {
+        Ok(IterTokens {
             cursor,
             ctx: Rc::clone(&self.ctx),
             data_size,
             data_read_so_far: 0,
             eof: false,
-        }
+        })
     }
 }
 
@@ -338,7 +338,10 @@ mod tests {
             (3872_usize + EVTX_RECORD_HEADER_SIZE) as u64,
         );
 
-        for token in deser.iter_tokens(Some(record_header.data_size - 4 - 4 - 4 - 8 - 8)) {
+        for token in deser
+            .iter_tokens(Some(record_header.data_size - 4 - 4 - 4 - 8 - 8))
+            .unwrap()
+        {
             if let Err(e) = token {
                 let mut cursor = Cursor::new(chunk.data.as_slice());
                 println!("{}", e);
@@ -357,7 +360,7 @@ mod tests {
 
         let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
 
-        for record in chunk.parse().into_iter().take(1) {
+        for record in chunk.parse().unwrap().into_iter().take(1) {
             assert!(record.is_ok(), record.unwrap())
         }
     }
