@@ -76,7 +76,7 @@ Comparison with other libraries:
     
 - libevtx (https://github.com/libyal/libevtx)
    
-   This library is written in C, so I initially expected it to be faster than my implementation originally.
+   This library is written in C, so I initially expected it to be faster than my implementation.
 
    It clocks in about 6x faster than PyPy.
    
