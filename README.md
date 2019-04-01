@@ -43,10 +43,55 @@ The parallel version is enabled when compiling with feature "multithreading" (en
 
 ## Benchmarking
 
-Initial benchmarking that I've performed indicates that this implementation is relatively fast.
+Initial benchmarking that I've performed indicates that this implementation probably the fastest available online 🍺.
+I'm using a real world, 30MB samples which contains about 62K records.
 
-It crunches through a 30MB .evtx file (around 62K records) in around 4 seconds (single threaded).
-When using `parallel_records`, this drops to about 1 second on my machine.
+This is benchmarked on my 2017 MBP.
+
+Comparison with other libraries:
+
+- python-evtx (https://github.com/williballenthin/python-evtx)
+    
+    With CPython this is quite slow 
+    
+    ```
+    time -- python3 ~/Workspace/python-evtx/scripts/evtx_dump.py ./samples/security_big_sample.evtx > /dev/null                                                                      Mon Apr  1 19:41:16 2019
+          363.83 real       356.26 user         2.17 sys
+    ```
+    
+    With PyPy (tested with pypy3.5, 7.0.0), it's taking about just less than a minute (a 6x improvement!)
+    ```
+    time -- pypy3 ~/Workspace/python-evtx/scripts/evtx_dump.py ./samples/security_big_sample.evtx > /dev/null                                                                      Mon Apr  1 19:41:16 2019
+          59.30 real        58.10 user         0.51 sys
+    ```
+    
+- libevtx (https://github.com/libyal/libevtx)
+   
+   This library is written in C, so I initially expected it to be faster than my implementation originally.
+   It clocks in about 6x than PyPy, which is pretty good.
+   
+   ```
+   time -- ~/Workspace/libevtx/dist/bin/evtxexport -f xml ./samples/security_big_sample.evtx > /dev/null
+          11.30 real        10.77 user         0.41 sys
+   ```
+    
+   Note: libevtx does have multi-threading support planned (according to the readme),
+   but isn't implemented as of writing this (April 2019).
+   
+- evtx (this library!)
+    
+    When using a single thread, this implementation is about 2x faster than C
+    ```
+    time -- ./target/release/main --input ./samples/security_big_sample.evtx > /dev/null                                                                                     516ms  Mon Apr  1 19:53:59 2019
+            4.65 real         4.53 user         0.10 sys
+    ```
+    
+    With multi-threading enabled, it blazes through the file in just 1.5 seconds:
+    ```
+    time -- ./target/release/main -t --input ./samples/security_big_sample.evtx > /dev/null                                                                                 4661ms  Mon Apr  1 19:54:14 2019
+            1.51 real         7.50 user         0.26 sys
+    ```
+   
 
 ## License
 
