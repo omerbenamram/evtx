@@ -220,7 +220,9 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
-        parse_tokens(tokens, &mut output_builder);
+        if let Err(e) = parse_tokens(tokens, &mut output_builder) {
+            return Some(Err(e.into()));
+        }
 
         let data = match output_builder.into_writer() {
             Ok(output) => match String::from_utf8(output) {

@@ -294,63 +294,9 @@ impl<'c> Iterator for IterTokens<'c> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::ensure_env_logger_initialized;
     use crate::evtx_chunk::EvtxChunkData;
-    use crate::evtx_record::EvtxRecordHeader;
-    use crate::utils::dump_cursor;
-    use std::borrow::BorrowMut;
-    use std::io::Read;
-
-    const EVTX_CHUNK_SIZE: usize = 65536;
-    const EVTX_HEADER_SIZE: usize = 4096;
-    const EVTX_RECORD_HEADER_SIZE: usize = 24;
-
-    #[test]
-    fn test_read_name_bug() {
-        ensure_env_logger_initialized();
-        let evtx_file = include_bytes!("../../samples/security.evtx");
-
-        let mut cursor = Cursor::new(&evtx_file[EVTX_HEADER_SIZE + EVTX_CHUNK_SIZE..]);
-        let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
-        cursor
-            .borrow_mut()
-            .take(EVTX_CHUNK_SIZE as u64)
-            .read_to_end(&mut chunk_data)
-            .unwrap();
-
-        let chunk = EvtxChunkData::new(chunk_data).unwrap();
-        let mut cursor = Cursor::new(chunk.data.as_slice());
-
-        // Seek to bad record position
-        cursor.seek(SeekFrom::Start(3872)).unwrap();
-
-        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
-        let mut data = Vec::with_capacity(record_header.data_size as usize);
-
-        cursor
-            .take(u64::from(record_header.data_size))
-            .read_to_end(&mut data)
-            .unwrap();
-
-        let deser = BinXmlDeserializer::init_without_cache(
-            &chunk.data,
-            (3872_usize + EVTX_RECORD_HEADER_SIZE) as u64,
-        );
-
-        for token in deser
-            .iter_tokens(Some(record_header.data_size - 4 - 4 - 4 - 8 - 8))
-            .unwrap()
-        {
-            if let Err(e) = token {
-                let mut cursor = Cursor::new(chunk.data.as_slice());
-                println!("{}", e);
-                cursor.seek(SeekFrom::Start(e.offset().unwrap())).unwrap();
-                dump_cursor(&mut cursor, 10);
-                panic!();
-            }
-        }
-    }
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_reads_a_single_record() {
@@ -359,23 +305,37 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.into_records().unwrap();
 
-        for record in chunk.parse().unwrap().into_iter().take(1) {
+        for record in records.into_iter().take(1) {
             assert!(record.is_ok(), record.unwrap())
         }
     }
 
     #[test]
-    fn test_reads_a_ten_records() {
+    fn test_event_xml_text_contains_all_closing_tags() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
         let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.into_records().unwrap();
+        let first_record = records
+            .into_iter()
+            .next()
+            .expect("iterator to have data")
+            .expect("record to be ok");
 
-        for record in chunk.parse().into_iter().take(10) {
-            println!("{:?}", record);
-        }
+        assert_eq!(
+            first_record
+                .data
+                .lines()
+                .map(|l| l.trim())
+                .collect::<String>(),
+            include_str!("../../samples/security_event_1.xml")
+                .lines()
+                .map(|l| l.trim())
+                .collect::<String>()
+        );
     }
-
 }

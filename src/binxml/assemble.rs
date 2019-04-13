@@ -2,25 +2,30 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXMLOutput;
+use failure::Error;
 use log::trace;
 use std::io::Write;
 
 pub fn parse_tokens<'c, W: Write, T: BinXMLOutput<'c, W>>(
     tokens: Vec<BinXMLDeserializedTokens<'c>>,
     visitor: &mut T,
-) {
+) -> Result<(), Error> {
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
 
     for owned_token in record_model {
         match owned_token {
-            XmlModel::OpenElement(open_element) => visitor.visit_open_start_element(&open_element),
-            XmlModel::CloseElement => visitor.visit_close_element(),
-            XmlModel::String(s) => visitor.visit_characters(&s),
-            XmlModel::EndOfStream => visitor.visit_end_of_stream(),
-            XmlModel::StartOfStream => visitor.visit_start_of_stream(),
-        }
+            XmlModel::OpenElement(open_element) => {
+                visitor.visit_open_start_element(&open_element)?
+            }
+            XmlModel::CloseElement => visitor.visit_close_element()?,
+            XmlModel::String(s) => visitor.visit_characters(&s)?,
+            XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
+            XmlModel::StartOfStream => visitor.visit_start_of_stream()?,
+        };
     }
+
+    Ok(())
 }
 
 pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlModel> {
