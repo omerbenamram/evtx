@@ -11,8 +11,6 @@ use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
 use crate::binxml::name::BinXmlName;
 use failure::{bail, format_err, Error};
 use serde_json::{Map, Value};
-use std::any::Any;
-use std::collections::HashMap;
 use std::mem;
 
 pub trait BinXMLOutput<'a, W: Write> {
@@ -45,6 +43,7 @@ pub struct SerdeOutput<W: Write> {
 }
 
 impl<W: Write> SerdeOutput<W> {
+    /// Looks up the current path, will fill with empty objects if needed.
     fn get_or_create_current_path(&mut self) -> &mut Value {
         let mut v_temp = self.map.borrow_mut();
 
@@ -70,19 +69,22 @@ impl<W: Write> SerdeOutput<W> {
                 }
             }
 
-            v_temp = v_temp.get_mut(key).expect("inserted if missing")
+            v_temp = v_temp.get_mut(key).expect("Loop above inserted this node.")
         }
 
         v_temp
     }
 
     fn get_current_parent(&mut self) -> &mut Value {
+        // Make sure we are operating on created nodes.
         self.get_or_create_current_path();
 
         let mut v_temp = self.map.borrow_mut();
 
         for key in self.stack.iter().take(self.stack.len() - 1) {
-            v_temp = v_temp.get_mut(key).expect("inserted if missing")
+            v_temp = v_temp
+                .get_mut(key)
+                .expect("Calling `get_or_create_current_path` ensures that the node was created")
         }
 
         v_temp
@@ -109,12 +111,12 @@ impl<W: Write> SerdeOutput<W> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
-        let container = match self.get_current_parent().as_object_mut() {
-            Some(c) => c,
-            None => {
-                panic!("{:?}", &self.map);
-            }
-        };
+        let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
+            format_err!(
+                "This is a bug - expected parent container to exist, and to be an object type.\
+                 Check that the referenceing parent is not `Value::null`"
+            )
+        })?;
 
         container.insert(name.to_owned(), Value::Null);
         Ok(())
@@ -127,12 +129,15 @@ impl<W: Write> SerdeOutput<W> {
     ) -> Result<(), Error> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
-        let value = match self.get_or_create_current_path().as_object_mut() {
-            Some(o) => o,
-            None => {
-                panic!("{:?}", &self.map);
-            }
-        };
+        let value = self
+            .get_or_create_current_path()
+            .as_object_mut()
+            .ok_or_else(|| {
+                format_err!(
+                    "This is a bug - expected current value to exist, and to be an object type.\
+                     Check that the value is not `Value::null`"
+                )
+            })?;
 
         let mut attributes = Map::new();
 
@@ -190,15 +195,24 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for SerdeOutput<W> {
 
     fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
         trace!("visit_chars {:?}", &self.stack);
-        let name = self.stack.last().unwrap().clone();
         let current_value = self.get_or_create_current_path();
 
+        // If our parent is an element without any attributes,
+        // we simply swap the null with the string value.
         if current_value.is_null() {
             mem::replace(current_value, Value::String(value.to_owned()));
         } else {
-            let current_object = current_value
-                .as_object_mut()
-                .expect("It has to be an object or null");
+            // Should look like:
+            // ----------------
+            //  "EventID": {
+            //    "#attributes": {
+            //      "Qualifiers": ""
+            //    },
+            //    "#text": "4902"
+            //  },
+            let current_object = current_value.as_object_mut().ok_or_else(|| {
+                format_err!("This is a bug - expected current value to be an object type")
+            })?;
 
             current_object.insert("#text".to_owned(), Value::String(value.to_owned()));
         }
