@@ -40,6 +40,7 @@ pub struct SerdeOutput<W: Write> {
     writer: W,
     map: Value,
     stack: Vec<String>,
+    eof_reached: bool,
 }
 
 impl<W: Write> SerdeOutput<W> {
@@ -103,11 +104,7 @@ impl<W: Write> SerdeOutput<W> {
         self.insert_node_without_attributes(element, data_key)
     }
 
-    fn insert_node_without_attributes(
-        &mut self,
-        element: &XmlElement,
-        name: &str,
-    ) -> Result<(), Error> {
+    fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<(), Error> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
@@ -160,15 +157,30 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for SerdeOutput<W> {
             writer: target,
             map: Value::Object(Map::new()),
             stack: vec![],
+            eof_reached: false,
         }
     }
 
-    fn into_writer(self) -> Result<W, Error> {
-        Ok(self.writer)
+    fn into_writer(mut self) -> Result<W, Error> {
+        if self.eof_reached {
+            if !self.stack.is_empty() {
+                Err(format_err!(
+                    "Invalid stream, EOF reached before closing all attributes"
+                ))
+            } else {
+                serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                Ok(self.writer)
+            }
+        } else {
+            Err(format_err!(
+                "Tried to return writer before EOF marked, incomplete output."
+            ))
+        }
     }
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
-        serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+        trace!("visit_end_of_stream");
+        self.eof_reached = true;
         Ok(())
     }
 
@@ -189,7 +201,8 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for SerdeOutput<W> {
     }
 
     fn visit_close_element(&mut self) -> Result<(), Error> {
-        self.stack.pop();
+        let p = self.stack.pop();
+        trace!("visit_close_element: {:?}", p);
         Ok(())
     }
 
