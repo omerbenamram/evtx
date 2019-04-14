@@ -3,8 +3,8 @@ use failure::{self, bail, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::utils::*;
-use crate::xml_output::BinXMLOutput;
 use crate::xml_output::XMLOutput;
+use crate::xml_output::{BinXMLOutput, SerdeOutput};
 use crc::crc32;
 use log::{debug, error, info, trace};
 use std::{
@@ -18,6 +18,7 @@ use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
 use log::Level;
+use std::io::{BufReader, BufWriter};
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -185,7 +186,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         // Setup a buffer to receive XML output.
         let record_buffer = Vec::new();
-        let mut output_builder = XMLOutput::with_writer(record_buffer);
+        let mut output_builder = SerdeOutput::with_writer(record_buffer);
 
         let mut tokens = vec![];
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)) {

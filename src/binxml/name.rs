@@ -91,6 +91,12 @@ impl<'c> BinXmlName<'c> {
     }
 }
 
+impl<'a> Into<&'a str> for &'a BinXmlName<'a> {
+    fn into(self) -> &'a str {
+        self.0.borrow()
+    }
+}
+
 impl<'a> Into<xml::name::Name<'a>> for &'a BinXmlName<'a> {
     fn into(self) -> Name<'a> {
         Name::from(self.0.borrow())
