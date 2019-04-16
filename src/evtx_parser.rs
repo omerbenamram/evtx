@@ -181,6 +181,7 @@ impl<T: ReadSeek> IterRecords<T> {
             if self.chunk_records.is_some()
                 && self.current_chunk_number + 1 == self.header.chunk_count
             {
+                debug!("No more chunks left to allocate.");
                 break;
             }
 
