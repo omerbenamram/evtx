@@ -152,6 +152,11 @@ impl<'a, W: Write> BinXmlOutput<'a, W> for JsonOutput<W> {
         }
     }
 
+    fn into_writer_from_box(self: Box<Self>) -> Result<W, Error> {
+        let slf = *self;
+        slf.into_writer()
+    }
+
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;

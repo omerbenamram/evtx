@@ -3,8 +3,8 @@ use failure::{self, bail, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::utils::*;
-use crate::xml_output::XMLOutput;
-use crate::xml_output::{BinXMLOutput, SerdeOutput};
+use crate::xml_output::{XmlOutput};
+use crate::json_output::{JsonOutput};
 use crc::crc32;
 use log::{debug, error, info, trace};
 use std::{
@@ -12,6 +12,7 @@ use std::{
     io::Cursor,
     io::{Read, Seek, SeekFrom},
 };
+use crate::xml_output::BinXmlOutput;
 
 use crate::binxml::assemble::parse_tokens;
 use crate::binxml::deserializer::BinXmlDeserializer;
@@ -186,7 +187,15 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         // Setup a buffer to receive XML output.
         let record_buffer = Vec::new();
-        let mut output_builder = SerdeOutput::with_writer(record_buffer);
+        let use_json = true;
+
+        let mut output_builder: Box<dyn BinXmlOutput<_>> = if use_json {
+            let json_output = JsonOutput::with_writer(record_buffer);
+            Box::new(json_output)
+        } else {
+            let xml_output = XmlOutput::with_writer(record_buffer);
+            Box::new(xml_output)
+        };
 
         let mut tokens = vec![];
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)) {
@@ -221,11 +230,11 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
-        if let Err(e) = parse_tokens(tokens, &mut output_builder) {
+        if let Err(e) = parse_tokens(tokens, output_builder.as_mut()) {
             return Some(Err(e.into()));
         }
 
-        let data = match output_builder.into_writer() {
+        let data = match output_builder.into_writer_from_box() {
             Ok(output) => match String::from_utf8(output) {
                 Ok(s) => s,
                 Err(_utf_err) => {

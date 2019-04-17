@@ -13,6 +13,7 @@ pub trait BinXmlOutput<'a, W: Write> {
     where
         Self: Sized;
     fn into_writer(self) -> Result<W, Error>;
+    fn into_writer_from_box(self: Box<Self>) -> Result<W, Error>;
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
     fn visit_open_start_element(
@@ -56,6 +57,11 @@ impl<'a, W: Write> BinXmlOutput<'a, W> for XmlOutput<W> {
                 "Tried to return writer before EOF marked, incomplete output."
             ))
         }
+    }
+
+    fn into_writer_from_box(self: Box<Self>) -> Result<W, Error> {
+        let slf = *self;
+        slf.into_writer()
     }
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
