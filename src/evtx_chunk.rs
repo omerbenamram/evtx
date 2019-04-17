@@ -3,8 +3,8 @@ use failure::{self, bail, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 use crate::utils::*;
-use crate::xml_output::{XmlOutput};
-use crate::json_output::{JsonOutput};
+use crate::xml_output::XmlOutput;
+use crate::json_output::JsonOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
 use std::{
@@ -53,6 +53,7 @@ impl Debug for EvtxChunkHeader {
 pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
+    pub string_cache: StringCache,
 }
 
 impl EvtxChunkData {
@@ -60,19 +61,20 @@ impl EvtxChunkData {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let chunk = EvtxChunkData { header, data };
+        let chunk = EvtxChunkData { header, data, string_cache: StringCache::new() };
         if !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
 
         Ok(chunk)
     }
-    pub fn into_records(self) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
+
+    pub fn into_records<'a>(&'a mut self) -> Result<Vec<Result<EvtxRecord<'a>, failure::Error>>, failure::Error> {
         Ok(self.parse()?.into_iter().collect())
     }
 
-    pub fn parse(&self) -> Result<EvtxChunk, failure::Error> {
-        EvtxChunk::new(&self.data, &self.header)
+    pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {
+        EvtxChunk::new(&self.data, &self.header, &mut self.string_cache)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -124,7 +126,7 @@ impl EvtxChunkData {
 pub struct EvtxChunk<'a> {
     pub data: &'a [u8],
     pub header: &'a EvtxChunkHeader,
-    pub string_cache: StringCache,
+    pub string_cache: &'a StringCache,
     pub template_table: TemplateCache<'a>,
 }
 
@@ -133,21 +135,21 @@ impl<'a> EvtxChunk<'a> {
     pub fn new(
         data: &'a [u8],
         header: &'a EvtxChunkHeader,
+        string_cache: &'a mut StringCache,
     ) -> Result<EvtxChunk<'a>, failure::Error> {
         let _cursor = Cursor::new(data);
 
-        let mut string_table = StringCache::new();
         let mut template_table = TemplateCache::new();
 
         info!("Initializing string cache");
-        string_table.populate(&data, &header.strings_offsets)?;
+        string_cache.populate(&data, &header.strings_offsets)?;
         info!("Initializing template cache");
         template_table.populate(&data, &header.template_offsets)?;
 
         Ok(EvtxChunk {
             header,
             data,
-            string_cache: string_table,
+            string_cache,
             template_table,
         })
     }
@@ -160,7 +162,7 @@ pub struct IterChunkRecords<'a> {
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = Result<EvtxRecord, failure::Error>;
+    type Item = Result<EvtxRecord<'a>, failure::Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
@@ -179,23 +181,12 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
         let deserializer = BinXmlDeserializer::init(
-            &self.chunk.data,
+            self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
-            &self.chunk.string_cache,
+            self.chunk.string_cache,
             &self.chunk.template_table,
         );
 
-        // Setup a buffer to receive XML output.
-        let record_buffer = Vec::new();
-        let use_json = true;
-
-        let mut output_builder: Box<dyn BinXmlOutput<_>> = if use_json {
-            let json_output = JsonOutput::with_writer(record_buffer);
-            Box::new(json_output)
-        } else {
-            let xml_output = XmlOutput::with_writer(record_buffer);
-            Box::new(xml_output)
-        };
 
         let mut tokens = vec![];
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)) {
@@ -230,19 +221,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
-        if let Err(e) = parse_tokens(tokens, output_builder.as_mut()) {
-            return Some(Err(e.into()));
-        }
-
-        let data = match output_builder.into_writer_from_box() {
-            Ok(output) => match String::from_utf8(output) {
-                Ok(s) => s,
-                Err(_utf_err) => {
-                    return Some(Err(format_err!("UTF-8 conversion of output failed")))
-                }
-            },
-            Err(e) => return Some(Err(e)),
-        };
 
         if self.chunk.header.last_event_record_id == record_header.event_record_id {
             self.exhausted = true;
@@ -251,13 +229,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         Some(Ok(EvtxRecord {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            data,
+            tokens,
         }))
     }
 }
 
 impl<'a> IntoIterator for EvtxChunk<'a> {
-    type Item = Result<EvtxRecord, failure::Error>;
+    type Item = Result<EvtxRecord<'a>, failure::Error>;
     type IntoIter = IterChunkRecords<'a>;
 
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {

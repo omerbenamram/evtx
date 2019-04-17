@@ -1,6 +1,6 @@
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
-use crate::evtx_record::EvtxRecord;
+use crate::evtx_record::{EvtxRecord, SerializedEvtxRecord};
 #[cfg(feature = "multithreading")]
 use rayon;
 #[cfg(feature = "multithreading")]
@@ -11,7 +11,7 @@ use log::{debug, info};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{Flatten, IntoIterator, Iterator};
+use std::iter::{Flatten, IntoIterator, Iterator, Peekable};
 
 use std::path::Path;
 use std::vec::IntoIter;
@@ -163,98 +163,88 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data)
     }
 
-    pub fn records(self) -> IterRecords<T> {
-        IterRecords {
-            header: self.header,
-            data: self.data,
+    pub fn chunks(&mut self) -> IterChunks<T> {
+        IterChunks {
+            parser: self,
             current_chunk_number: 0,
-            chunk_records: None,
-            config: self.config,
+        }
+    }
+
+    pub fn records(&mut self) -> IterSerializedRecords<T> {
+        IterSerializedRecords {
+            chunks: self.chunks(),
+            current_chunk_records: None,
         }
     }
 }
 
-impl<T: ReadSeek> IterRecords<T> {
-    fn allocate_chunks(&mut self) -> Result<(), Error> {
-        let mut chunks = vec![];
-        for _ in 0..self.config.num_threads {
-            if self.chunk_records.is_some()
-                && self.current_chunk_number + 1 == self.header.chunk_count
-            {
-                debug!("No more chunks left to allocate.");
-                break;
-            }
 
-            info!("Allocating new chunk {}", self.current_chunk_number);
-            let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)?;
-
-            chunks.push(chunk);
-            self.current_chunk_number += 1;
-        }
-
-        #[cfg(feature = "multithreading")]
-        let iterators: Result<
-            Vec<Vec<Result<EvtxRecord, failure::Error>>>,
-            failure::Error,
-        > = {
-            if self.config.num_threads > 1 {
-                chunks.into_par_iter().map(|c| c.into_records()).collect()
-            } else {
-                chunks.into_iter().map(|c| c.into_records()).collect()
-            }
-        };
-
-        #[cfg(not(feature = "multithreading"))]
-        let mut iterators: Result<
-            Vec<Vec<Result<EvtxRecord, failure::Error>>>,
-            failure::Error,
-        > = chunks.into_iter().map(|c| c.into_records()).collect();
-
-        match iterators {
-            Ok(inner) => {
-                self.chunk_records = Some(inner.into_iter().flatten());
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-}
-
-pub struct IterRecords<T: ReadSeek> {
-    header: EvtxFileHeader,
-    data: T,
+pub struct IterChunks<'c, T: ReadSeek> {
+    parser: &'c mut EvtxParser<T>,
     current_chunk_number: u16,
-    chunk_records: Option<Flatten<IntoIter<Vec<Result<EvtxRecord, failure::Error>>>>>,
-    config: ParserSettings,
 }
 
-impl<T: ReadSeek> Iterator for IterRecords<T> {
-    type Item = Result<EvtxRecord, Error>;
+impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
+    type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.chunk_records.is_none() {
-            if let Err(e) = self.allocate_chunks() {
-                return Some(Err(e));
-            }
+        if self.current_chunk_number == self.parser.header.chunk_count {
+            return None;
         }
 
-        let mut next = self.chunk_records.as_mut().unwrap().next();
+        let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number);
 
-        // Need to load a new chunk.
-        if next.is_none() {
-            // If the next chunk is going to be more than the chunk count (which is 1 based)
-            if self.current_chunk_number + 1 >= self.header.chunk_count {
+        self.current_chunk_number += 1;
+
+        Some(next)
+    }
+}
+
+
+pub struct IterSerializedRecords<'c, T: ReadSeek> {
+    chunks: IterChunks<'c, T>,
+    current_chunk_records: Option<std::vec::IntoIter<Result<SerializedEvtxRecord, Error>>>,
+}
+
+impl<'c, T: ReadSeek> Iterator for IterSerializedRecords<'c, T> {
+    type Item = Result<SerializedEvtxRecord, Error>;
+    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        let next_record_item: Option<Result<SerializedEvtxRecord, Error>> = self.current_chunk_records.as_mut().and_then(|records_iter| records_iter.next());
+
+        if next_record_item.is_some() {
+            return next_record_item;
+        }
+
+        let next_chunk_item = self.chunks.next();
+
+        let mut next_chunk = match next_chunk_item {
+            None => {
                 return None;
             }
-
-            if let Err(e) = self.allocate_chunks() {
+            Some(Err(e)) => {
                 return Some(Err(e));
             }
-            next = self.chunk_records.as_mut().unwrap().next()
-        }
+            Some(Ok(chunk)) => chunk
+        };
+
+        let records = match next_chunk.into_records() {
+            Err(e) => {
+                return Some(Err(e));
+            }
+            Ok(records) => records,
+        };
+
+        let mut serialized_records: Vec<Result<SerializedEvtxRecord, Error>> = records.into_iter().map(|record_res| record_res.and_then(|record| record.into_serialized())).collect();
+        let mut records_iter = serialized_records.into_iter();
+
+        // We assume a chunk always has at least a single record. Is that true?
+        let next = records_iter.next();
+
+        self.current_chunk_records = Some(records_iter);
 
         next
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -264,7 +254,7 @@ mod tests {
     use crate::ensure_env_logger_initialized;
 
     fn process_90_records(buffer: &'static [u8]) {
-        let parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(90).enumerate() {
             match record {
@@ -286,7 +276,7 @@ mod tests {
     #[test]
     fn test_sample_2() {
         let evtx_file = include_bytes!("../samples/system.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(10).enumerate() {
             match record {
@@ -307,7 +297,7 @@ mod tests {
     fn test_parses_first_10_records() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(10).enumerate() {
             match record {
@@ -328,7 +318,7 @@ mod tests {
     fn test_parses_records_from_different_chunks() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(1000).enumerate() {
             match record {
@@ -348,7 +338,7 @@ mod tests {
 
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         let mut record_ids = HashSet::new();
         for record in parser.records().take(1000) {
@@ -367,7 +357,7 @@ mod tests {
     fn test_file_with_only_a_single_chunk() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         assert_eq!(parser.records().count(), 4);
     }
@@ -377,12 +367,12 @@ mod tests {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
 
-        let chunk = EvtxChunkData::new(
+        let mut chunk = EvtxChunkData::new(
             evtx_file[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
         )
-        .unwrap();
+            .unwrap();
 
         assert!(chunk.validate_checksum());
 
@@ -393,7 +383,7 @@ mod tests {
             }
 
             if let Ok(r) = record {
-                println!("{}", r.data);
+                println!("{}", r.into_serialized().unwrap().data);
             }
         }
     }

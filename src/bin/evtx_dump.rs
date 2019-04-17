@@ -76,7 +76,7 @@ fn main() {
 
     let configuration = parser_configuration_from_cli_matches(&matches);
 
-    let parser = EvtxParser::from_path(fp)
+    let mut parser = EvtxParser::from_path(fp)
         .expect(&format!("Failed to load evtx file located at {}", fp))
         .with_configuration(configuration);
 

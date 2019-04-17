@@ -18,15 +18,15 @@ pub struct BinXmlName<'a>(Cow<'a, str>);
 
 pub type StringHashOffset = (String, u16, Offset);
 
-impl<'c> BinXmlName<'c> {
+impl<'a> BinXmlName<'a> {
     pub fn from_static_string(s: &'static str) -> Self {
         BinXmlName(Cow::Borrowed(s))
     }
 
-    pub fn from_binxml_stream(
-        cursor: &mut Cursor<&'c [u8]>,
-        ctx: Context<'c>,
-    ) -> Result<BinXmlName<'c>, Error> {
+    pub fn from_binxml_stream<'c>(
+        cursor: &mut Cursor<&'a [u8]>,
+        ctx: Context<'a, 'c>,
+    ) -> Result<BinXmlName<'a>, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = try_read!(cursor, u32);
@@ -45,7 +45,7 @@ impl<'c> BinXmlName<'c> {
     }
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
-    pub fn from_stream(cursor: &mut Cursor<&'c [u8]>) -> Result<StringHashOffset, Error> {
+    pub fn from_stream(cursor: &mut Cursor<&'a [u8]>) -> Result<StringHashOffset, Error> {
         let position_before_read = cursor.position();
 
         let _ = try_read!(cursor, u32);
@@ -65,7 +65,7 @@ impl<'c> BinXmlName<'c> {
 
     /// Reads a `BinXmlName` from a given offset, seeks if needed.
     fn from_stream_at_offset(
-        cursor: &mut Cursor<&'c [u8]>,
+        cursor: &mut Cursor<&'a [u8]>,
         offset: Offset,
     ) -> Result<StringHashOffset, Error> {
         if offset != cursor.position() as u32 {
