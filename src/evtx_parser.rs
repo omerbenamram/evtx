@@ -170,11 +170,40 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
-    pub fn records(&mut self) -> IterSerializedRecords<T> {
+    #[cfg(not(feature = "multithreading"))]
+    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         IterSerializedRecords {
             chunks: self.chunks(),
             current_chunk_records: None,
         }
+    }
+
+
+    #[cfg(feature = "multithreading")]
+    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> {
+        let chunks: Vec<Result<EvtxChunkData, Error>> = self.chunks().collect();
+
+        let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunks.into_par_iter().map(
+            |chunk_res| {
+                match chunk_res {
+                    Err(err) => vec![Err(err)],
+                    Ok(mut chunk) => {
+                        let chunk_records_res = chunk.into_records();
+
+                        match chunk_records_res {
+                            Err(err) => vec![Err(err)],
+                            Ok(chunk_records) => {
+                                chunk_records.into_iter().map(|record_res| {
+                                    record_res.and_then(|record| record.into_serialized())
+                                }).collect()
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        iterators.into_iter().flatten().into_iter()
     }
 }
 
