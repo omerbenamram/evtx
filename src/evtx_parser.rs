@@ -173,12 +173,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
-    // TODO: This doesn't work.
     #[cfg(not(feature = "multithreading"))]
-    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
-        IterSerializedRecords {
+    pub fn serialized_records<'a, O: 'a + BinXmlOutput<Vec<u8>>>(&'a mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + 'a {
+        IterSerializedRecords::<'a, T, O> {
             chunks: self.chunks(),
             current_chunk_records: None,
+            _phantom: PhantomData,
         }
     }
 
