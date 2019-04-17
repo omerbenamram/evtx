@@ -1,7 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use failure::{self, bail, format_err};
 
-use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
+use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 use crate::utils::*;
 use crate::xml_output::XmlOutput;
 use crate::json_output::JsonOutput;
@@ -71,6 +71,14 @@ impl EvtxChunkData {
 
     pub fn into_records<'a>(&'a mut self) -> Result<Vec<Result<EvtxRecord<'a>, failure::Error>>, failure::Error> {
         Ok(self.parse()?.into_iter().collect())
+    }
+
+    pub fn into_serialized_records<'a, O: BinXmlOutput<Vec<u8>>>(&'a mut self) -> Result<Vec<Result<SerializedEvtxRecord, failure::Error>>, failure::Error> {
+        Ok(self.into_records()?.into_iter().map(|record_res| {
+            record_res.and_then(|record| {
+                record.into_serialized::<O>()
+            })
+        }).collect())
     }
 
     pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {

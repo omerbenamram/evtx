@@ -308,7 +308,7 @@ mod tests {
         let records = chunk.into_records().unwrap();
 
         for record in records.into_iter().take(1) {
-            assert!(record.is_ok(), record.unwrap().into_serialized())
+            assert!(record.is_ok(), record.unwrap().into_xml())
         }
     }
 
@@ -328,7 +328,7 @@ mod tests {
 
         assert_eq!(
             first_record
-                .into_serialized().unwrap()
+                .into_xml().unwrap()
                 .data
                 .lines()
                 .map(|l| l.trim())

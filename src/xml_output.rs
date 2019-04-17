@@ -8,7 +8,7 @@ use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
 
 use failure::{bail, format_err, Error};
 
-pub trait BinXmlOutput<'a, W: Write> {
+pub trait BinXmlOutput<W: Write> {
     fn with_writer(target: W) -> Self
     where
         Self: Sized;
@@ -16,7 +16,7 @@ pub trait BinXmlOutput<'a, W: Write> {
     fn into_writer_from_box(self: Box<Self>) -> Result<W, Error>;
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
-    fn visit_open_start_element(
+    fn visit_open_start_element<'a>(
         &mut self,
         open_start_element: &XmlElement<'a>,
     ) -> Result<(), Error>;
@@ -35,7 +35,7 @@ pub struct XmlOutput<W: Write> {
 }
 
 /// Adapter between binxml XmlModel type and rust-xml output stream.
-impl<'a, W: Write> BinXmlOutput<'a, W> for XmlOutput<W> {
+impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn with_writer(target: W) -> Self {
         let writer = EmitterConfig::new()
             .line_separator("\r\n")

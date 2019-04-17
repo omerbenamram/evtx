@@ -15,6 +15,9 @@ use std::iter::{Flatten, IntoIterator, Iterator, Peekable};
 
 use std::path::Path;
 use std::vec::IntoIter;
+use crate::xml_output::{BinXmlOutput, XmlOutput};
+use crate::json_output::JsonOutput;
+use std::marker::PhantomData;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -170,17 +173,18 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
+    // TODO: This doesn't work.
     #[cfg(not(feature = "multithreading"))]
-    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
+    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         IterSerializedRecords {
             chunks: self.chunks(),
             current_chunk_records: None,
         }
     }
 
-
     #[cfg(feature = "multithreading")]
-    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> {
+    pub fn serialized_records<'a, 'c, O: BinXmlOutput<Vec<u8>>>(&'a mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
+    {
         let chunks: Vec<Result<EvtxChunkData, Error>> = self.chunks().collect();
 
         let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunks.into_par_iter().map(
@@ -188,15 +192,11 @@ impl<T: ReadSeek> EvtxParser<T> {
                 match chunk_res {
                     Err(err) => vec![Err(err)],
                     Ok(mut chunk) => {
-                        let chunk_records_res = chunk.into_records();
+                        let chunk_records_res = chunk.into_serialized_records::<O>();
 
                         match chunk_records_res {
                             Err(err) => vec![Err(err)],
-                            Ok(chunk_records) => {
-                                chunk_records.into_iter().map(|record_res| {
-                                    record_res.and_then(|record| record.into_serialized())
-                                }).collect()
-                            }
+                            Ok(chunk_records) => chunk_records,
                         }
                     }
                 }
@@ -204,6 +204,15 @@ impl<T: ReadSeek> EvtxParser<T> {
             .collect();
 
         iterators.into_iter().flatten().into_iter()
+    }
+
+    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
+        self.serialized_records::<XmlOutput<Vec<u8>>>()
+    }
+
+
+    pub fn records_json(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
+        self.serialized_records::<JsonOutput<Vec<u8>>>()
     }
 }
 
@@ -228,13 +237,13 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     }
 }
 
-
-pub struct IterSerializedRecords<'c, T: ReadSeek> {
+pub struct IterSerializedRecords<'c, T: ReadSeek, O: BinXmlOutput<Vec<u8>>> {
     chunks: IterChunks<'c, T>,
     current_chunk_records: Option<std::vec::IntoIter<Result<SerializedEvtxRecord, Error>>>,
+    _phantom: PhantomData<O>,
 }
 
-impl<'c, T: ReadSeek> Iterator for IterSerializedRecords<'c, T> {
+impl<'c, T: ReadSeek, O: BinXmlOutput<Vec<u8>>> Iterator for IterSerializedRecords<'c, T, O> {
     type Item = Result<SerializedEvtxRecord, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         let next_record_item: Option<Result<SerializedEvtxRecord, Error>> = self.current_chunk_records.as_mut().and_then(|records_iter| records_iter.next());
@@ -262,7 +271,9 @@ impl<'c, T: ReadSeek> Iterator for IterSerializedRecords<'c, T> {
             Ok(records) => records,
         };
 
-        let mut serialized_records: Vec<Result<SerializedEvtxRecord, Error>> = records.into_iter().map(|record_res| record_res.and_then(|record| record.into_serialized())).collect();
+        let mut serialized_records: Vec<Result<SerializedEvtxRecord, Error>> = records.into_iter().map(
+            |record_res| record_res.and_then(
+                |record| record.into_serialized::<O>())).collect();
         let mut records_iter = serialized_records.into_iter();
 
         // We assume a chunk always has at least a single record. Is that true?
@@ -412,7 +423,7 @@ mod tests {
             }
 
             if let Ok(r) = record {
-                println!("{}", r.into_serialized().unwrap().data);
+                println!("{}", r.into_xml().unwrap().data);
             }
         }
     }

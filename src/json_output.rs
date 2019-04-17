@@ -125,7 +125,7 @@ impl<W: Write> JsonOutput<W> {
     }
 }
 
-impl<'a, W: Write> BinXmlOutput<'a, W> for JsonOutput<W> {
+impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
     fn with_writer(target: W) -> Self {
         JsonOutput {
             writer: target,

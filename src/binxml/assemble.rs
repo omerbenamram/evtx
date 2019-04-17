@@ -6,7 +6,7 @@ use failure::Error;
 use log::trace;
 use std::io::Write;
 
-pub fn parse_tokens<'c, W: Write, T: BinXmlOutput<'c, W> + ?Sized>(
+pub fn parse_tokens<'c, W: Write, T: BinXmlOutput<W> + ?Sized>(
     tokens: Vec<BinXMLDeserializedTokens<'c>>,
     visitor: &mut T,
 ) -> Result<(), Error> {
@@ -136,7 +136,7 @@ pub fn expand_templates(
                 // We have to clone here since the templates **definitions** are shared.
                 for token in template.definition.tokens.iter().cloned() {
                     if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) =
-                        token
+                    token
                     {
                         if substitution_descriptor.ignore {
                             continue;

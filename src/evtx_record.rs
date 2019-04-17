@@ -1,7 +1,7 @@
 use crate::utils::datetime_from_filetime;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
-use std::io::{self, Cursor, Read};
+use std::io::{self, Cursor, Read, Write};
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use failure::Error;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
@@ -55,28 +55,28 @@ impl EvtxRecordHeader {
 }
 
 impl<'a> EvtxRecord<'a> {
-    pub fn into_serialized(self) -> Result<SerializedEvtxRecord, Error> {
-        // Setup a buffer to receive XML output.
-        let record_buffer = Vec::new();
-        let use_json = false;
+    /// Consumes the record, returning a SerializedEvtxRecord with the serialized data.
+    pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord, Error> {
+        let mut output_builder = T::with_writer(Vec::new());
 
-        let mut output_builder: Box<dyn BinXmlOutput<_>> = if use_json {
-            let json_output = JsonOutput::with_writer(record_buffer);
-            Box::new(json_output)
-        } else {
-            let xml_output = XmlOutput::with_writer(record_buffer);
-            Box::new(xml_output)
-        };
+        parse_tokens(self.tokens, &mut output_builder)?;
 
-        parse_tokens(self.tokens, output_builder.as_mut())?;
-
-        let data =  String::from_utf8(output_builder.into_writer_from_box()?)?;
+        let data = String::from_utf8(output_builder.into_writer()?)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
             data,
         })
+    }
 
+    /// Consumes the record and parse it, producing a JSON serialized record.
+    pub fn into_json(self) -> Result<SerializedEvtxRecord, Error> {
+        self.into_serialized::<JsonOutput<Vec<u8>>>()
+    }
+
+    /// Consumes the record and parse it, producing an XML serialized record.
+    pub fn into_xml(self) -> Result<SerializedEvtxRecord, Error> {
+        self.into_serialized::<XmlOutput<Vec<u8>>>()
     }
 }
