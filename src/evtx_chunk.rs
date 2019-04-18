@@ -66,6 +66,8 @@ impl EvtxChunkData {
         Ok(chunk)
     }
     pub fn into_records(self) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
+        dbg!(&self.header.first_event_record_number);
+        dbg!(&self.header.last_event_record_number);
         Ok(self.parse()?.into_iter().collect())
     }
 

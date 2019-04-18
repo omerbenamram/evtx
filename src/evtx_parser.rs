@@ -62,12 +62,10 @@ impl<T: ReadSeek> EvtxParser<T> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         data.seek(SeekFrom::Start(
             (EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE) as u64,
-        ))
-        .unwrap();
+        ))?;
 
         data.take(EVTX_CHUNK_SIZE as u64)
-            .read_to_end(&mut chunk_data)
-            .unwrap();
+            .read_to_end(&mut chunk_data)?;
 
         EvtxChunkData::new(chunk_data)
     }
@@ -80,6 +78,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             current_chunk_number: 0,
             chunk_records: None,
             num_threads: current_num_threads(),
+            exhausted: false,
         }
     }
 
@@ -90,6 +89,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             current_chunk_number: 0,
             chunk_records: None,
             num_threads: 1,
+            exhausted: false,
         }
     }
 }
@@ -97,18 +97,23 @@ impl<T: ReadSeek> EvtxParser<T> {
 impl<T: ReadSeek> IterRecords<T> {
     fn allocate_chunks(&mut self) -> Result<(), Error> {
         let mut chunks = vec![];
+
+        // Some dirty samples contains additional chunks (further than the marked number).
+        // So instead of trusting the file header, we opportunistically try to read a bit further.
+        // If we fail, we terminate iteration.
         for _ in 0..self.num_threads {
-            if self.chunk_records.is_some()
-                && self.current_chunk_number + 1 == self.header.chunk_count
-            {
-                break;
-            }
-
             info!("Allocating new chunk {}", self.current_chunk_number);
-            let chunk = EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number)?;
-
-            chunks.push(chunk);
-            self.current_chunk_number += 1;
+            match EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number) {
+                Ok(chunk) => {
+                    chunks.push(chunk);
+                    self.current_chunk_number += 1;
+                }
+                Err(e) => {
+                    info!("Next block does not contain a valid chunk. terminating iteration.");
+                    self.exhausted = true;
+                    break;
+                }
+            }
         }
 
         #[cfg(feature = "multithreading")]
@@ -145,11 +150,14 @@ pub struct IterRecords<T: ReadSeek> {
     current_chunk_number: u16,
     chunk_records: Option<Flatten<IntoIter<Vec<Result<EvtxRecord, failure::Error>>>>>,
     num_threads: usize,
+    // This is turned on when the next chunk is invalid data.
+    exhausted: bool,
 }
 
 impl<T: ReadSeek> Iterator for IterRecords<T> {
     type Item = Result<EvtxRecord, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        // Load first chunk
         if self.chunk_records.is_none() {
             if let Err(e) = self.allocate_chunks() {
                 return Some(Err(e));
@@ -161,13 +169,15 @@ impl<T: ReadSeek> Iterator for IterRecords<T> {
         // Need to load a new chunk.
         if next.is_none() {
             // If the next chunk is going to be more than the chunk count (which is 1 based)
-            if self.current_chunk_number + 1 >= self.header.chunk_count {
-                return None;
-            }
-
             if let Err(e) = self.allocate_chunks() {
                 return Some(Err(e));
             }
+
+            // When using multiple threads, we may reach exhaustion but still have some data left.
+            if self.exhausted && self.chunk_records.is_none() {
+                return None;
+            }
+
             next = self.chunk_records.as_mut().unwrap().next()
         }
 
@@ -315,5 +325,30 @@ mod tests {
                 println!("{}", r.data);
             }
         }
+    }
+
+    #[test]
+    fn test_issue_2() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/2-system-Security.evtx");
+
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut count = 0;
+        for r in parser.records() {
+            r.unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 14621, "Single threaded iteration failed");
+
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut count = 0;
+        for r in parser.parallel_records() {
+            r.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 14621, "Parallel iteration failed");
     }
 }
