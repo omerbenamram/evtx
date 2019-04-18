@@ -242,11 +242,11 @@ impl<'c> BinXmlValue<'c> {
                 )?))
             }
             BinXmlValueType::HexInt32Type => Ok(BinXmlValue::HexInt32Type(format!(
-                "0x{:2x}",
+                "0x{:x}",
                 try_read!(cursor, i32)
             ))),
             BinXmlValueType::HexInt64Type => Ok(BinXmlValue::HexInt64Type(format!(
-                "0x{:2x}",
+                "0x{:x}",
                 try_read!(cursor, i64)
             ))),
             BinXmlValueType::EvtHandle => unimplemented!("EvtHandle"),
@@ -280,7 +280,11 @@ impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
             BinXmlValue::Real32Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::Real64Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::BinaryType(bytes) => Cow::Owned(format!("{:?}", bytes)),
+            BinXmlValue::BinaryType(bytes) => {
+                // Bytes will be formatted as const length of 2 with '0' padding.
+                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                Cow::Owned(repr)
+            }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
             BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
