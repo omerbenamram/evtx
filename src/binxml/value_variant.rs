@@ -281,7 +281,8 @@ impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
             BinXmlValue::Real64Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BinaryType(bytes) => {
-                let repr: String = bytes.iter().map(|b| format!("{:x?}", b)).collect();
+                // Bytes will be formatted as const length of 2 with '0' padding.
+                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
                 Cow::Owned(repr)
             }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
