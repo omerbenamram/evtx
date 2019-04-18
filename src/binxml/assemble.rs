@@ -6,8 +6,8 @@ use failure::Error;
 use log::trace;
 use std::io::Write;
 
-pub fn parse_tokens<'c, W: Write, T: BinXmlOutput<W> + ?Sized>(
-    tokens: Vec<BinXMLDeserializedTokens<'c>>,
+pub fn parse_tokens<W: Write, T: BinXmlOutput<W> + ?Sized>(
+    tokens: Vec<BinXMLDeserializedTokens>,
     visitor: &mut T,
 ) -> Result<(), Error> {
     let expanded_tokens = expand_templates(tokens);

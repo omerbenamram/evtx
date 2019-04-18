@@ -65,11 +65,11 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
-    pub fn into_records<'a>(&'a mut self) -> Result<Vec<Result<EvtxRecord<'a>, failure::Error>>, failure::Error> {
+    pub fn into_records(&mut self) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
         Ok(self.parse()?.into_iter().collect())
     }
 
-    pub fn into_serialized_records<'a, O: BinXmlOutput<Vec<u8>>>(&'a mut self) -> Result<Vec<Result<SerializedEvtxRecord, failure::Error>>, failure::Error> {
+    pub fn into_serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> Result<Vec<Result<SerializedEvtxRecord, failure::Error>>, failure::Error> {
         Ok(self.into_records()?.into_iter().map(|record_res| {
             record_res.and_then(|record| {
                 record.into_serialized::<O>()
