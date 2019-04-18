@@ -242,11 +242,11 @@ impl<'c> BinXmlValue<'c> {
                 )?))
             }
             BinXmlValueType::HexInt32Type => Ok(BinXmlValue::HexInt32Type(format!(
-                "0x{:2x}",
+                "0x{:x}",
                 try_read!(cursor, i32)
             ))),
             BinXmlValueType::HexInt64Type => Ok(BinXmlValue::HexInt64Type(format!(
-                "0x{:2x}",
+                "0x{:x}",
                 try_read!(cursor, i64)
             ))),
             BinXmlValueType::EvtHandle => unimplemented!("EvtHandle"),
