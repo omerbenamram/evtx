@@ -62,7 +62,7 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
         _ => match UTF_16LE.decode(&buffer, DecoderTrap::Strict) {
             Ok(mut s) => {
                 // Strip nul terminator if needed
-                if s.len() > 0 && s.chars().last().expect("string len > 0") == '\0' {
+                if let Some('\0') = s.chars().last() {
                     s.pop();
                 }
 
