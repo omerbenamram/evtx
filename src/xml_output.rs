@@ -37,12 +37,12 @@ pub struct XMLOutput<W: Write> {
 impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
     fn with_writer(target: W) -> Self {
         let config = EmitterConfig {
-            line_separator: Cow::Borrowed("\r\n"),
-            indent_string: Cow::Borrowed("  "),
+            line_separator: "\r\n".into(),
+            indent_string: "  ".into(),
             perform_indent: true,
             perform_escaping: false,
             write_document_declaration: true,
-            normalize_empty_elements: true,
+            normalize_empty_elements: false,
             cdata_to_characters: false,
             keep_element_names_stack: true,
             autopad_comments: true,
