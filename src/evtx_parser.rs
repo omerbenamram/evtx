@@ -245,8 +245,16 @@ mod tests {
         }
 
         // It should be empty, and not a [].
-        assert!(records[0].as_ref().unwrap().data.contains("<Binary></Binary>"));
-        assert!(records[1].as_ref().unwrap().data.contains("<Binary>e177030c01101001c0d6000000000</Binary>"));
+        assert!(records[0]
+            .as_ref()
+            .unwrap()
+            .data
+            .contains("<Binary></Binary>"));
+        assert!(records[1]
+            .as_ref()
+            .unwrap()
+            .data
+            .contains("<Binary>E107070003000C00110010001C00D6000000000000000000</Binary>"));
     }
 
     #[test]
