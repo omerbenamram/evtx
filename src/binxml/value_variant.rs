@@ -200,7 +200,7 @@ impl<'c> BinXmlValue<'c> {
             BinXmlValueType::StringType => Ok(BinXmlValue::StringType(Cow::Owned(
                 read_len_prefixed_utf16_string(cursor, false)
                     .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-                    .unwrap_or("".to_owned()),
+                    .unwrap_or_else(|| "".to_owned()),
             ))),
             BinXmlValueType::StringArrayType => unimplemented!("StringArray"),
             BinXmlValueType::AnsiStringType => unimplemented!("AnsiString"),

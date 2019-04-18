@@ -33,5 +33,5 @@ static LOGGER_INIT: Once = ONCE_INIT;
 // it will crash when attempting to run `cargo test` with some logging facilities.
 #[cfg(test)]
 pub fn ensure_env_logger_initialized() {
-    LOGGER_INIT.call_once(|| env_logger::init());
+    LOGGER_INIT.call_once(env_logger::init);
 }

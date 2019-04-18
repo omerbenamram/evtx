@@ -162,7 +162,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
-            || self.offset_from_chunk_start >= self.chunk.header.free_space_offset as u64
+            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
         {
             return None;
         }
@@ -209,7 +209,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                                 e.offset().expect("Err to have offset information"),
                             ))
                             .unwrap();
-                        dump_cursor(&mut cursor, 10);
+                        dump_cursor(&cursor, 10);
                     }
 
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
@@ -221,7 +221,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
         if let Err(e) = parse_tokens(tokens, &mut output_builder) {
-            return Some(Err(e.into()));
+            return Some(Err(e));
         }
 
         let data = match output_builder.into_writer() {
@@ -350,7 +350,7 @@ mod tests {
             last_event_record_data_offset: 64928,
             free_space_offset: 65376,
             events_checksum: 4_252_479_141,
-            header_chunk_checksum: 978805790,
+            header_chunk_checksum: 978_805_790,
             strings_offsets: [0_u32; 64],
             template_offsets: [0_u32; 32],
         };

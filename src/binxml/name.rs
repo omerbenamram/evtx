@@ -35,7 +35,7 @@ impl<'c> BinXmlName<'c> {
         if let Some((name, _, n_bytes_read)) = ctx.cached_string_at_offset(name_offset) {
             // Seek if needed
             if name_offset == cursor.position() as u32 {
-                cursor.seek(SeekFrom::Current(*n_bytes_read as i64))?;
+                cursor.seek(SeekFrom::Current(i64::from(*n_bytes_read)))?;
             }
             return Ok(BinXmlName(Cow::Borrowed(name)));
         }

@@ -8,7 +8,7 @@ pub type StringHash = u16;
 
 pub type CachedString = (String, StringHash, Offset);
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct StringCache(HashMap<Offset, CachedString>);
 
 impl StringCache {
@@ -20,7 +20,7 @@ impl StringCache {
         let mut cursor = Cursor::new(data);
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor.seek(SeekFrom::Start(*offset as u64))?;
+            cursor.seek(SeekFrom::Start(u64::from(*offset)))?;
             self.0
                 .insert(*offset, BinXmlName::from_stream(&mut cursor)?);
         }

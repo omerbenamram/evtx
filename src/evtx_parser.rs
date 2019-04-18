@@ -108,7 +108,7 @@ impl<T: ReadSeek> IterRecords<T> {
                     chunks.push(chunk);
                     self.current_chunk_number += 1;
                 }
-                Err(e) => {
+                Err(_) => {
                     info!("Next block does not contain a valid chunk. terminating iteration.");
                     self.exhausted = true;
                     break;
@@ -122,9 +122,15 @@ impl<T: ReadSeek> IterRecords<T> {
             failure::Error,
         > = {
             if self.num_threads > 1 {
-                chunks.into_par_iter().map(|c| c.into_records()).collect()
+                chunks
+                    .into_par_iter()
+                    .map(EvtxChunkData::into_records)
+                    .collect()
             } else {
-                chunks.into_iter().map(|c| c.into_records()).collect()
+                chunks
+                    .into_iter()
+                    .map(EvtxChunkData::into_records)
+                    .collect()
             }
         };
 
@@ -132,7 +138,10 @@ impl<T: ReadSeek> IterRecords<T> {
         let mut iterators: Result<
             Vec<Vec<Result<EvtxRecord, failure::Error>>>,
             failure::Error,
-        > = chunks.into_iter().map(|c| c.into_records()).collect();
+        > = chunks
+            .into_iter()
+            .map(EvtxChunkData::into_records)
+            .collect();
 
         match iterators {
             Ok(inner) => {
@@ -144,11 +153,13 @@ impl<T: ReadSeek> IterRecords<T> {
     }
 }
 
+type FlatIterator<T> = Flatten<IntoIter<Vec<T>>>;
+
 pub struct IterRecords<T: ReadSeek> {
     header: EvtxFileHeader,
     data: T,
     current_chunk_number: u16,
-    chunk_records: Option<Flatten<IntoIter<Vec<Result<EvtxRecord, failure::Error>>>>>,
+    chunk_records: Option<FlatIterator<Result<EvtxRecord, failure::Error>>>,
     num_threads: usize,
     // This is turned on when the next chunk is invalid data.
     exhausted: bool,

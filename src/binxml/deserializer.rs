@@ -80,20 +80,6 @@ impl<'c> BinXmlDeserializer<'c> {
         }
     }
 
-    #[cfg(test)]
-    pub fn init_without_cache(data: &'c [u8], start_offset: u64) -> Self {
-        let ctx = Rc::new(Cache {
-            string_cache: None,
-            template_cache: None,
-        });
-
-        BinXmlDeserializer {
-            data,
-            offset: start_offset,
-            ctx,
-        }
-    }
-
     /// Returns a tuple of the tokens.
     pub fn read_binxml_fragment(
         cursor: &mut Cursor<&'c [u8]>,
@@ -327,14 +313,10 @@ mod tests {
             .expect("record to be ok");
 
         assert_eq!(
-            first_record
-                .data
-                .lines()
-                .map(|l| l.trim())
-                .collect::<String>(),
+            first_record.data.lines().map(str::trim).collect::<String>(),
             include_str!("../../samples/security_event_1.xml")
                 .lines()
-                .map(|l| l.trim())
+                .map(str::trim)
                 .collect::<String>()
         );
     }

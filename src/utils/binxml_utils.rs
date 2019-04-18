@@ -59,7 +59,7 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
 
     match size {
         0 => Ok(None),
-        _ => match UTF_16LE.decode(&mut buffer, DecoderTrap::Strict) {
+        _ => match UTF_16LE.decode(&buffer, DecoderTrap::Strict) {
             Ok(s) => Ok(Some(s)),
             Err(_s) => Err(Error::from(ErrorKind::InvalidData)),
         },
