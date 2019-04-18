@@ -328,9 +328,10 @@ mod tests {
     }
 
     #[test]
-    fn test_issue_2() {
+    // https://github.com/omerbenamram/evtx/issues/10
+    fn test_issue_10() {
         ensure_env_logger_initialized();
-        let evtx_file = include_bytes!("../samples/2-system-Security.evtx");
+        let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
 
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
