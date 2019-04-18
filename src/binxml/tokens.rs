@@ -95,7 +95,14 @@ pub fn read_template<'c>(
                 cursor.read_exact(&mut bytes)?;
 
                 BinXmlValue::AnsiStringType(Cow::Owned(
-                    String::from_utf8(bytes).expect("Should be valid bytes"),
+                    String::from_utf8(bytes)
+                        .and_then(|mut s| {
+                            if let Some('\0') = s.chars().last() {
+                                s.pop();
+                            }
+                            Ok(s)
+                        })
+                        .map_err(|e| Error::utf8_decode_error(e, cursor.position()))?,
                 ))
             }
             BinXmlValueType::StringArrayType => {

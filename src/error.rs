@@ -22,6 +22,8 @@ pub enum ErrorKind {
     NotAValidValueType { token: u8 },
     #[fail(display = "Unexpected EOF")]
     UnexpectedEOF,
+    #[fail(display = "Failed to decode UTF-8 string")]
+    UTF8Decode,
     #[fail(display = "Failed to decode UTF-16 string")]
     UTF16Decode,
     #[fail(display = "Unexpected IO error")]
@@ -57,6 +59,11 @@ impl Error {
         let err = ErrorKind::NotAValidValueType { token };
         Error::new(Context::new(err), Some(offset))
     }
+
+    pub(crate) fn utf8_decode_error(_e: impl Fail, offset: u64) -> Self {
+        Error::new(Context::new(ErrorKind::UTF8Decode), Some(offset))
+    }
+
     pub(crate) fn utf16_decode_error(_e: impl Fail, offset: u64) -> Self {
         Error::new(Context::new(ErrorKind::UTF16Decode), Some(offset))
     }
