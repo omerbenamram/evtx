@@ -6,8 +6,9 @@ use crate::error::Error;
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
-use crate::utils::{datetime_from_filetime, read_len_prefixed_utf16_string};
+use crate::utils::{datetime_from_filetime, read_len_prefixed_utf16_string, read_systemtime};
 use chrono::{DateTime, Utc};
+use failure::bail;
 use std::borrow::Cow;
 use std::io::Cursor;
 use std::rc::Rc;
@@ -33,7 +34,7 @@ pub enum BinXmlValue<'a> {
     GuidType(Guid),
     SizeTType(usize),
     FileTimeType(DateTime<Utc>),
-    SysTimeType,
+    SysTimeType(DateTime<Utc>),
     SidType(Sid),
     HexInt32Type(String),
     HexInt64Type(String),
@@ -43,21 +44,21 @@ pub enum BinXmlValue<'a> {
     EvtXml,
     StringArrayType(Vec<Cow<'a, str>>),
     AnsiStringArrayType,
-    Int8ArrayType,
-    UInt8ArrayType,
-    Int16ArrayType,
-    UInt16ArrayType,
-    Int32ArrayType,
-    UInt32ArrayType,
-    Int64ArrayType,
-    UInt64ArrayType,
-    Real32ArrayType,
-    Real64ArrayType,
-    BoolArrayType,
+    Int8ArrayType(Vec<i8>),
+    UInt8ArrayType(Vec<u8>),
+    Int16ArrayType(Vec<i16>),
+    UInt16ArrayType(Vec<u16>),
+    Int32ArrayType(Vec<i32>),
+    UInt32ArrayType(Vec<u32>),
+    Int64ArrayType(Vec<i64>),
+    UInt64ArrayType(Vec<u64>),
+    Real32ArrayType(Vec<f32>),
+    Real64ArrayType(Vec<f64>),
+    BoolArrayType(Vec<bool>),
     BinaryArrayType,
-    GuidArrayType,
+    GuidArrayType(Vec<Guid>),
     SizeTArrayType,
-    FileTimeArrayType,
+    FileTimeArrayType(Vec<DateTime<Utc>>),
     SysTimeArrayType,
     SidArrayType,
     HexInt32ArrayType,
@@ -202,8 +203,13 @@ impl<'c> BinXmlValue<'c> {
                     .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
                     .unwrap_or_else(|| "".to_owned()),
             ))),
-            BinXmlValueType::StringArrayType => unimplemented!("StringArray"),
-            BinXmlValueType::AnsiStringType => unimplemented!("AnsiString"),
+            BinXmlValueType::StringArrayType => Err(Error::other(
+                "Unimplemented: StringArray",
+                cursor.position(),
+            )),
+            BinXmlValueType::AnsiStringType => {
+                Err(Error::other("Unimplemented: AnsiString", cursor.position()))
+            }
             BinXmlValueType::Int8Type => Ok(BinXmlValue::Int8Type(try_read!(cursor, i8))),
             BinXmlValueType::UInt8Type => Ok(BinXmlValue::UInt8Type(try_read!(cursor, u8))),
             BinXmlValueType::Int16Type => Ok(BinXmlValue::Int16Type(try_read!(cursor, i16))),
@@ -212,8 +218,8 @@ impl<'c> BinXmlValue<'c> {
             BinXmlValueType::UInt32Type => Ok(BinXmlValue::UInt32Type(try_read!(cursor, u32))),
             BinXmlValueType::Int64Type => Ok(BinXmlValue::Int64Type(try_read!(cursor, i64))),
             BinXmlValueType::UInt64Type => Ok(BinXmlValue::UInt64Type(try_read!(cursor, u64))),
-            BinXmlValueType::Real32Type => unimplemented!("Real32Type"),
-            BinXmlValueType::Real64Type => unimplemented!("Real64Type"),
+            BinXmlValueType::Real32Type => Ok(BinXmlValue::Real32Type(try_read!(cursor, f32))),
+            BinXmlValueType::Real64Type => Ok(BinXmlValue::Real64Type(try_read!(cursor, f64))),
             BinXmlValueType::BoolType => {
                 let bool_value = try_read!(cursor, u32);
                 match bool_value {
@@ -225,17 +231,21 @@ impl<'c> BinXmlValue<'c> {
                     )),
                 }
             }
-            BinXmlValueType::BinaryType => unimplemented!("BinaryType"),
+            BinXmlValueType::BinaryType => {
+                Err(Error::other("Unimplemented: BinaryType", cursor.position()))
+            }
             BinXmlValueType::GuidType => {
                 Ok(BinXmlValue::GuidType(Guid::from_stream(cursor).map_err(
                     |_e| Error::other("Failed to read GUID from stream", cursor.position()),
                 )?))
             }
-            BinXmlValueType::SizeTType => unimplemented!("SizeTType"),
+            BinXmlValueType::SizeTType => {
+                Err(Error::other("Unimplemented: SizeTType", cursor.position()))
+            }
             BinXmlValueType::FileTimeType => Ok(BinXmlValue::FileTimeType(datetime_from_filetime(
                 try_read!(cursor, u64),
             ))),
-            BinXmlValueType::SysTimeType => unimplemented!("SysTimeType"),
+            BinXmlValueType::SysTimeType => Ok(BinXmlValue::SysTimeType(read_systemtime(cursor)?)),
             BinXmlValueType::SidType => {
                 Ok(BinXmlValue::SidType(Sid::from_stream(cursor).map_err(
                     |_e| Error::other("Failed to read NTSID from stream", cursor.position()),
@@ -249,15 +259,22 @@ impl<'c> BinXmlValue<'c> {
                 "0x{:x}",
                 try_read!(cursor, i64)
             ))),
-            BinXmlValueType::EvtHandle => unimplemented!("EvtHandle"),
+            BinXmlValueType::EvtHandle => {
+                Err(Error::other("Unimplemented: EvtHandle", cursor.position()))
+            }
             BinXmlValueType::BinXmlType => {
                 let tokens =
                     BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), None)?;
 
                 Ok(BinXmlValue::BinXmlType(tokens))
             }
-            BinXmlValueType::EvtXmlType => unimplemented!("EvtXml"),
-            _ => unimplemented!("{:?}", value_type),
+            BinXmlValueType::EvtXmlType => {
+                Err(Error::other("Unimplemented: EvtXml", cursor.position()))
+            }
+            _ => Err(Error::other(
+                format!("Unimplemented: {:?}", value_type),
+                cursor.position(),
+            )),
         }
     }
 }
@@ -288,7 +305,7 @@ impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
             BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
-            BinXmlValue::SysTimeType => unimplemented!("SysTimeType"),
+            BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => Cow::Owned(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),

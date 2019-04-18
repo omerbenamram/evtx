@@ -24,11 +24,19 @@ macro_rules! try_read {
         $cursor.read_u32::<byteorder::LittleEndian>()?;
     };
 
+    ($cursor: ident, f32) => {
+        $cursor.read_f32::<byteorder::LittleEndian>()?;
+    };
+
     ($cursor: ident, i64) => {
         $cursor.read_i64::<byteorder::LittleEndian>()?;
     };
 
     ($cursor: ident, u64) => {
         $cursor.read_u64::<byteorder::LittleEndian>()?;
+    };
+
+    ($cursor: ident, f64) => {
+        $cursor.read_f64::<byteorder::LittleEndian>()?;
     };
 }

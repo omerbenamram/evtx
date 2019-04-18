@@ -8,6 +8,7 @@ use xml::common::XmlVersion;
 use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
 
 use failure::{bail, format_err, Error};
+use std::borrow::Cow;
 
 pub trait BinXMLOutput<'a, W: Write> {
     fn with_writer(target: W) -> Self;
@@ -35,11 +36,19 @@ pub struct XMLOutput<W: Write> {
 /// Adapter between binxml XmlModel type and rust-xml output stream.
 impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
     fn with_writer(target: W) -> Self {
-        let writer = EmitterConfig::new()
-            .line_separator("\r\n")
-            .perform_indent(true)
-            .normalize_empty_elements(false)
-            .create_writer(target);
+        let config = EmitterConfig {
+            line_separator: Cow::Borrowed("\r\n"),
+            indent_string: Cow::Borrowed("  "),
+            perform_indent: true,
+            perform_escaping: false,
+            write_document_declaration: true,
+            normalize_empty_elements: true,
+            cdata_to_characters: false,
+            keep_element_names_stack: true,
+            autopad_comments: true,
+        };
+
+        let writer = EventWriter::new_with_config(target, config);
 
         XMLOutput {
             writer,
@@ -93,19 +102,19 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
     }
 
     fn visit_cdata_section(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_cdata_section");
+        bail!("Unimplemented: visit_cdata_section")
     }
 
     fn visit_entity_reference(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_entity_reference");
+        bail!("Unimplemented: visit_entity_reference")
     }
 
     fn visit_processing_instruction_target(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_processing_instruction_target");
+        bail!("Unimplemented: visit_processing_instruction_target")
     }
 
     fn visit_processing_instruction_data(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_processing_instruction_data");
+        bail!("Unimplemented: visit_processing_instruction_data")
     }
 
     fn visit_start_of_stream(&mut self) -> Result<(), Error> {
