@@ -1,7 +1,7 @@
 use crate::utils::datetime_from_filetime;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read};
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use failure::Error;
 use crate::xml_output::{BinXmlOutput, XmlOutput};

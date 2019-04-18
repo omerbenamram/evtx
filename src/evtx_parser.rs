@@ -1,20 +1,19 @@
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
-use crate::evtx_record::{EvtxRecord, SerializedEvtxRecord};
+use crate::evtx_record::SerializedEvtxRecord;
 #[cfg(feature = "multithreading")]
 use rayon;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
 use failure::Error;
-use log::{debug, info};
+use log::debug;
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{Flatten, IntoIterator, Iterator, Peekable};
+use std::iter::{IntoIterator, Iterator};
 
 use std::path::Path;
-use std::vec::IntoIter;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::json_output::JsonOutput;
 use std::marker::PhantomData;
@@ -183,7 +182,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     #[cfg(feature = "multithreading")]
-    pub fn serialized_records<'a, 'c, O: BinXmlOutput<Vec<u8>>>(&'a mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
+    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
     {
         let chunks: Vec<Result<EvtxChunkData, Error>> = self.chunks().collect();
 
@@ -271,7 +270,7 @@ impl<'c, T: ReadSeek, O: BinXmlOutput<Vec<u8>>> Iterator for IterSerializedRecor
             Ok(records) => records,
         };
 
-        let mut serialized_records: Vec<Result<SerializedEvtxRecord, Error>> = records.into_iter().map(
+        let serialized_records: Vec<Result<SerializedEvtxRecord, Error>> = records.into_iter().map(
             |record_res| record_res.and_then(
                 |record| record.into_serialized::<O>())).collect();
         let mut records_iter = serialized_records.into_iter();

@@ -3,8 +3,6 @@ use failure::{self, bail, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 use crate::utils::*;
-use crate::xml_output::XmlOutput;
-use crate::json_output::JsonOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
 use std::{
@@ -14,12 +12,10 @@ use std::{
 };
 use crate::xml_output::BinXmlOutput;
 
-use crate::binxml::assemble::parse_tokens;
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
 use log::Level;
-use std::io::{BufReader, BufWriter};
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
