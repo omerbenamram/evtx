@@ -280,7 +280,10 @@ impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
             BinXmlValue::Real32Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::Real64Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::BinaryType(bytes) => Cow::Owned(format!("{:?}", bytes)),
+            BinXmlValue::BinaryType(bytes) => {
+                let repr: String = bytes.iter().map(|b| format!("{:x?}", b)).collect();
+                Cow::Owned(repr)
+            }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
             BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
