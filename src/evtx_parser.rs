@@ -228,7 +228,9 @@ mod tests {
         let evtx_file = include_bytes!("../samples/system.evtx");
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        for (i, record) in parser.records().take(10).enumerate() {
+        let records: Vec<_> = parser.records().take(10).collect();
+
+        for (i, record) in records.iter().enumerate() {
             match record {
                 Ok(r) => {
                     assert_eq!(
@@ -241,6 +243,18 @@ mod tests {
                 Err(e) => panic!("Error while reading record {}, {:?}", i, e),
             }
         }
+
+        // It should be empty, and not a [].
+        assert!(records[0]
+            .as_ref()
+            .unwrap()
+            .data
+            .contains("<Binary></Binary>"));
+        assert!(records[1]
+            .as_ref()
+            .unwrap()
+            .data
+            .contains("<Binary>E107070003000C00110010001C00D6000000000000000000</Binary>"));
     }
 
     #[test]

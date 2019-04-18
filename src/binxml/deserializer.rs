@@ -320,4 +320,19 @@ mod tests {
                 .collect::<String>()
         );
     }
+
+    #[test]
+    fn test_record_formatting_does_not_contain_nul_bytes() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../../samples/security.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+
+        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.into_records().unwrap();
+
+        for record in records.into_iter().take(100) {
+            assert!(!record.unwrap().data.chars().any(|c| c == '\0'))
+        }
+    }
+
 }
