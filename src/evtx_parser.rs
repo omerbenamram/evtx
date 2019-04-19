@@ -172,16 +172,17 @@ impl<T: ReadSeek> EvtxParser<T> {
         let num_threads = max(self.config.num_threads, 1);
         let mut chunks = self.chunks();
 
-        let chunks_in_chunks = std::iter::from_fn(move || {
+        let records_per_chunk = std::iter::from_fn(move || {
+            // Allocate some chunks in advances, so they can be parsed in parallel.
             let mut chunk_of_chunks = Vec::with_capacity(num_threads);
 
             for _ in 0..num_threads {
-                match chunks.next() {
-                    Some(chunk) => chunk_of_chunks.push(chunk),
-                    None => {}
-                }
+                if let Some(chunk) = chunks.next() {
+                    chunk_of_chunks.push(chunk);
+                };
             }
 
+            // We only stop once no chunks can be allocated.
             if chunk_of_chunks.is_empty() {
                 None
             } else {
@@ -191,6 +192,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 #[cfg(not(feature = "multithreading"))]
                 let chunk_iter = chunk_of_chunks.into_iter();
 
+                // Serialize the records in each chunk.
                 let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter.map(
                     |chunk_res| {
                         match chunk_res {
@@ -211,7 +213,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             }
         });
 
-        chunks_in_chunks.flatten()
+        records_per_chunk.flatten()
     }
 
     /// Return an iterator over all the records.
@@ -237,7 +239,6 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-
         let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number);
 
         // We try to read past the `chunk_count` to allow for dirty files.
