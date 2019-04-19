@@ -55,7 +55,7 @@ impl EvtxRecordHeader {
 }
 
 impl<'a> EvtxRecord<'a> {
-    /// Consumes the record, returning a SerializedEvtxRecord with the serialized data.
+    /// Consumes the record, returning a `SerializedEvtxRecord` with the serialized data.
     pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord, Error> {
         let mut output_builder = T::with_writer(Vec::new());
 
