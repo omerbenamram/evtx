@@ -36,6 +36,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 ///
 /// ```rust
 /// # use evtx::EvtxParser;
+/// # let fp = std::path::PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap()));
 ///
 ///
 /// let mut parser = EvtxParser::from_path(fp).unwrap();
@@ -53,6 +54,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 ///
 /// ```rust
 /// # use evtx::{EvtxParser, ParserSettings};
+/// # let fp = std::path::PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap()));
 ///
 ///
 /// let settings = ParserSettings::default().num_threads(0);
