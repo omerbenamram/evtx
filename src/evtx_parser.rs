@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::json_output::JsonOutput;
 use std::marker::PhantomData;
+use std::cmp::max;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -177,27 +178,45 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Return an iterator over all the records.
     /// Records will be serialized using the given `BinXmlOutput`.
     #[cfg(feature = "multithreading")]
-    pub fn serialized_records_parallel<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
+    pub fn serialized_records_parallel<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_
     {
-        let chunks: Vec<Result<EvtxChunkData, Error>> = self.chunks().collect();
+        let num_threads = max(self.config.num_threads, 1);
+        let mut chunks = self.chunks();
 
-        let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunks.into_par_iter().map(
-            |chunk_res| {
-                match chunk_res {
-                    Err(err) => vec![Err(err)],
-                    Ok(mut chunk) => {
-                        let chunk_records_res = chunk.into_serialized_records::<O>();
+        let chunks_in_chunks = std::iter::from_fn(move || {
+            let mut chunk_of_chunks = Vec::with_capacity(num_threads);
 
-                        match chunk_records_res {
-                            Err(err) => vec![Err(err)],
-                            Ok(chunk_records) => chunk_records,
-                        }
-                    }
+            for _ in 0..num_threads {
+                match chunks.next() {
+                    Some(chunk) => chunk_of_chunks.push(chunk),
+                    None => {}
                 }
-            })
-            .collect();
+            }
 
-        iterators.into_iter().flatten().into_iter()
+            if chunk_of_chunks.is_empty() {
+                None
+            } else {
+                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_of_chunks.into_par_iter().map(
+                    |chunk_res| {
+                        match chunk_res {
+                            Err(err) => vec![Err(err)],
+                            Ok(mut chunk) => {
+                                let chunk_records_res = chunk.into_serialized_records::<O>();
+
+                                match chunk_records_res {
+                                    Err(err) => vec![Err(err)],
+                                    Ok(chunk_records) => chunk_records,
+                                }
+                            }
+                        }
+                    })
+                    .collect();
+
+                Some(iterators.into_iter().flatten().into_iter())
+            }
+        });
+
+        chunks_in_chunks.flatten()
     }
 
     /// Return an iterator over all the records.
