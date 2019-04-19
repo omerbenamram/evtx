@@ -3,18 +3,6 @@ use chrono::prelude::*;
 use std::io::Read;
 use time::Duration;
 
-#[derive(Debug, PartialEq, PartialOrd, Clone)]
-pub struct FileTime {
-    pub year: u32,
-    pub month: u32,
-    pub day_of_week: u32,
-    pub day: u32,
-    pub hour: u32,
-    pub minute: u32,
-    pub second: u32,
-    pub milis: u32,
-}
-
 pub fn read_systemtime<R: Read>(mut r: R) -> Result<DateTime<Utc>, crate::error::Error> {
     let year = try_read!(r, u16);
     let month = try_read!(r, u16);
