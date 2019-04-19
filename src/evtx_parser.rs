@@ -216,6 +216,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Return an iterator over all the records.
     /// Records will be XML-formatted.
     pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
+        // '_ is required in the signature because the iterator is bound to &self.
         self.serialized_records::<XmlOutput<Vec<u8>>>()
     }
 
