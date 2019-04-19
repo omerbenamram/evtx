@@ -240,7 +240,7 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
 
         // We try to read past the `chunk_count` to allow for dirty files.
         // But if we failed, it means we really are at the end of the file.
-        if next.is_err() && self.current_chunk_number > self.parser.header.chunk_count {
+        if next.is_err() && self.current_chunk_number >= self.parser.header.chunk_count {
             return None;
         }
 
@@ -427,7 +427,8 @@ mod tests {
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        assert_eq!(parser.records().count(), 4);
+        let records: Vec<_> = parser.records().collect();
+        assert_eq!(records.len(), 4);
     }
 
     #[test]
