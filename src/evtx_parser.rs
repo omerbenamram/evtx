@@ -167,18 +167,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be serialized using the given `BinXmlOutput`.
-    pub fn serialized_records<'a, O: 'a + BinXmlOutput<Vec<u8>>>(&'a mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + 'a {
-        IterSerializedRecords::<'a, T, O> {
-            chunks: self.chunks(),
-            current_chunk_records: None,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Return an iterator over all the records.
-    /// Records will be serialized using the given `BinXmlOutput`.
-    #[cfg(feature = "multithreading")]
-    pub fn serialized_records_parallel<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_
+    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_
     {
         let num_threads = max(self.config.num_threads, 1);
         let mut chunks = self.chunks();
@@ -196,7 +185,13 @@ impl<T: ReadSeek> EvtxParser<T> {
             if chunk_of_chunks.is_empty() {
                 None
             } else {
-                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_of_chunks.into_par_iter().map(
+                #[cfg(feature = "multithreading")]
+                let chunk_iter = chunk_of_chunks.into_par_iter();
+
+                #[cfg(not(feature = "multithreading"))]
+                let chunk_iter = chunk_of_chunks.into_iter();
+
+                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter.map(
                     |chunk_res| {
                         match chunk_res {
                             Err(err) => vec![Err(err)],
@@ -256,56 +251,6 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
         Some(next)
     }
 }
-
-pub struct IterSerializedRecords<'c, T: ReadSeek, O: BinXmlOutput<Vec<u8>>> {
-    chunks: IterChunks<'c, T>,
-    current_chunk_records: Option<std::vec::IntoIter<Result<SerializedEvtxRecord, Error>>>,
-    // Let us remember which formatter to use.
-    _phantom: PhantomData<O>,
-}
-
-impl<'c, T: ReadSeek, O: BinXmlOutput<Vec<u8>>> Iterator for IterSerializedRecords<'c, T, O> {
-    type Item = Result<SerializedEvtxRecord, Error>;
-    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let next_record_item: Option<Result<SerializedEvtxRecord, Error>> = self.current_chunk_records.as_mut().and_then(|records_iter| records_iter.next());
-
-        if next_record_item.is_some() {
-            return next_record_item;
-        }
-
-        let next_chunk_item = self.chunks.next();
-
-        let mut next_chunk = match next_chunk_item {
-            None => {
-                return None;
-            }
-            Some(Err(e)) => {
-                return Some(Err(e));
-            }
-            Some(Ok(chunk)) => chunk
-        };
-
-        let records = match next_chunk.into_records() {
-            Err(e) => {
-                return Some(Err(e));
-            }
-            Ok(records) => records,
-        };
-
-        let serialized_records: Vec<Result<SerializedEvtxRecord, Error>> = records.into_iter().map(
-            |record_res| record_res.and_then(
-                |record| record.into_serialized::<O>())).collect();
-        let mut records_iter = serialized_records.into_iter();
-
-        // We assume a chunk always has at least a single record. Is that true?
-        let next = records_iter.next();
-
-        self.current_chunk_records = Some(records_iter);
-
-        next
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
@@ -479,10 +424,11 @@ mod tests {
         }
         assert_eq!(count, 14621, "Single threaded iteration failed");
 
-        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = parser.with_configuration(ParserSettings { num_threads: 8 });
 
         let mut count = 0;
-        for r in parser.serialized_records_parallel::<XmlOutput<Vec<u8>>>() {
+        for r in parser.records() {
             r.unwrap();
             count += 1;
         }
