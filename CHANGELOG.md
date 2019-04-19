@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2019-04-19
+
+### Added
+- Now supporting `SystemTime`, floating types, and all numerical array types.
+
+### Fixed
+- strip nuls from ascii strings as well.  
+
+### Changed
+- Now using `quick-xml`, which microbenchmarks show that is about 15-20% faster than `xml-rs`. 
 
 ## [0.1.8] - 2019-04-18
 
