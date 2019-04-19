@@ -11,7 +11,7 @@ use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-use xml::name::Name;
+use quick_xml::events::{BytesEnd, BytesStart};
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub struct BinXmlName<'a>(Cow<'a, str>);
@@ -89,10 +89,21 @@ impl<'c> BinXmlName<'c> {
             Ok((name, hash, n_bytes_read))
         }
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-impl<'a> Into<xml::name::Name<'a>> for &'a BinXmlName<'a> {
-    fn into(self) -> Name<'a> {
-        Name::from(self.0.borrow())
+impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName<'a> {
+    fn into(self) -> BytesStart<'a> {
+        BytesStart::borrowed_name(self.0.as_bytes())
+    }
+}
+
+impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName<'a> {
+    fn into(self) -> BytesEnd<'a> {
+        let inner = self.0.as_bytes();
+        BytesEnd::owned(inner.to_vec())
     }
 }

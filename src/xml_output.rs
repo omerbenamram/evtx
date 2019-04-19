@@ -4,9 +4,11 @@ use log::trace;
 
 use std::io::Write;
 
-use xml::common::XmlVersion;
-use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
+use quick_xml::events::attributes::Attribute;
+use quick_xml::events::{BytesDecl, BytesStart, BytesText, Event};
+use quick_xml::Writer;
 
+use crate::binxml::name::BinXmlName;
 use failure::{bail, format_err, Error};
 
 pub trait BinXMLOutput<'a, W: Write> {
@@ -27,31 +29,21 @@ pub trait BinXMLOutput<'a, W: Write> {
     fn visit_start_of_stream(&mut self) -> Result<(), Error>;
 }
 
-pub struct XMLOutput<W: Write> {
-    writer: EventWriter<W>,
+pub struct XMLOutput<'a, W: Write> {
+    writer: Writer<W>,
     eof_reached: bool,
+    stack: Vec<BinXmlName<'a>>,
 }
 
-/// Adapter between binxml XmlModel type and rust-xml output stream.
-impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
+/// Adapter between binxml XmlModel type and quick-xml events.
+impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
     fn with_writer(target: W) -> Self {
-        let config = EmitterConfig {
-            line_separator: "\r\n".into(),
-            indent_string: "  ".into(),
-            perform_indent: true,
-            perform_escaping: false,
-            write_document_declaration: true,
-            normalize_empty_elements: false,
-            cdata_to_characters: false,
-            keep_element_names_stack: true,
-            autopad_comments: true,
-        };
-
-        let writer = EventWriter::new_with_config(target, config);
+        let writer = Writer::new_with_indent(target, b' ', 2);
 
         XMLOutput {
             writer,
             eof_reached: false,
+            stack: vec![],
         }
     }
 
@@ -71,32 +63,46 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn visit_open_start_element(&mut self, element: &XmlElement<'a>) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element);
         if self.eof_reached {
             bail!("Impossible state - `visit_open_start_element` after EOF");
         }
 
-        let mut event_builder = XmlEvent::start_element(element.name.borrow());
+        // TODO: we could improve performance even further if we could somehow avoid this clone,
+        // and share this borrow to the end element.
+        self.stack.push(element.name.clone());
+
+        let mut event_builder = BytesStart::from(element.name.borrow().into());
 
         for attr in element.attributes.iter() {
-            event_builder = event_builder.attr(attr.name.borrow(), &attr.value.borrow());
+            let name_as_str = attr.name.as_str();
+
+            let attr = Attribute::from((name_as_str, attr.value.as_ref()));
+            event_builder.push_attribute(attr);
         }
 
-        self.writer.write(event_builder)?;
+        self.writer.write_event(Event::Start(event_builder))?;
 
         Ok(())
     }
 
     fn visit_close_element(&mut self) -> Result<(), Error> {
         trace!("visit_close_element");
-        self.writer.write(XmlEvent::end_element())?;
+        let name = self
+            .stack
+            .pop()
+            .ok_or_else(|| format_err!("invalid stack state"))?;
+
+        let event = name.into();
+        self.writer.write_event(Event::End(event))?;
         Ok(())
     }
 
     fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
         trace!("visit_chars");
-        self.writer.write(XmlEvent::characters(value))?;
+        let event = BytesText::from_escaped_str(value);
+        self.writer.write_event(Event::Text(event))?;
         Ok(())
     }
 
@@ -122,11 +128,9 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<W> {
             bail!("Impossible state - `visit_start_of_stream` after EOF");
         }
 
-        self.writer.write(XmlEvent::StartDocument {
-            version: XmlVersion::Version10,
-            encoding: None,
-            standalone: None,
-        })?;
+        let event = BytesDecl::new(b"1.0", None, None);
+
+        self.writer.write_event(Event::Decl(event))?;
 
         Ok(())
     }
