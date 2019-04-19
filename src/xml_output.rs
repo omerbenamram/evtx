@@ -60,6 +60,7 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;
+        self.writer.write_event(Event::Eof)?;
         Ok(())
     }
 
@@ -124,11 +125,7 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
 
     fn visit_start_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_start_of_stream");
-        if self.eof_reached {
-            bail!("Impossible state - `visit_start_of_stream` after EOF");
-        }
-
-        let event = BytesDecl::new(b"1.0", None, None);
+        let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 
         self.writer.write_event(Event::Decl(event))?;
 

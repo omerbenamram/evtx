@@ -5,7 +5,6 @@ use crate::error::Error;
 
 use crate::utils::read_len_prefixed_utf16_string;
 use crate::Offset;
-use core::borrow::Borrow;
 
 use log::trace;
 use std::borrow::Cow;
