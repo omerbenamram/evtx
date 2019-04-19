@@ -113,7 +113,7 @@ impl<W: Write> JsonOutput<W> {
         let mut attributes = Map::new();
 
         for attribute in element.attributes.iter() {
-            let name: &str = attribute.name.borrow().into();
+            let name: &str = attribute.name.as_str().into();
             let value_as_string: &str = attribute.value.borrow();
 
             attributes.insert(name.to_owned(), Value::String(value_as_string.to_owned()));
@@ -160,7 +160,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
 
     fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element.name);
-        let element_name: &str = element.name.borrow().into();
+        let element_name = element.name.as_str();
 
         if element_name == "Data" {
             return self.insert_data_node(element);

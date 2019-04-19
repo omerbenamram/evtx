@@ -5,13 +5,12 @@ use crate::error::Error;
 
 use crate::utils::read_len_prefixed_utf16_string;
 use crate::Offset;
-use core::borrow::Borrow;
 
 use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-use xml::name::Name;
+use quick_xml::events::{BytesEnd, BytesStart};
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub struct BinXmlName<'a>(Cow<'a, str>);
@@ -35,7 +34,7 @@ impl<'a> BinXmlName<'a> {
         if let Some((name, _, n_bytes_read)) = ctx.cached_string_at_offset(name_offset) {
             // Seek if needed
             if name_offset == cursor.position() as u32 {
-                cursor.seek(SeekFrom::Current(*n_bytes_read as i64))?;
+                cursor.seek(SeekFrom::Current(i64::from(*n_bytes_read)))?;
             }
             return Ok(BinXmlName(Cow::Borrowed(name)));
         }
@@ -89,16 +88,21 @@ impl<'a> BinXmlName<'a> {
             Ok((name, hash, n_bytes_read))
         }
     }
-}
 
-impl<'a> Into<&'a str> for &'a BinXmlName<'a> {
-    fn into(self) -> &'a str {
-        self.0.borrow()
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-impl<'a> Into<xml::name::Name<'a>> for &'a BinXmlName<'a> {
-    fn into(self) -> Name<'a> {
-        Name::from(self.0.borrow())
+impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName<'a> {
+    fn into(self) -> BytesStart<'a> {
+        BytesStart::borrowed_name(self.0.as_bytes())
+    }
+}
+
+impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName<'a> {
+    fn into(self) -> BytesEnd<'a> {
+        let inner = self.0.as_bytes();
+        BytesEnd::owned(inner.to_vec())
     }
 }

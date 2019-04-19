@@ -3,9 +3,11 @@ use core::borrow::Borrow;
 use log::trace;
 use std::io::Write;
 
-use xml::common::XmlVersion;
-use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
+use quick_xml::events::attributes::Attribute;
+use quick_xml::events::{BytesDecl, BytesStart, BytesText, Event, BytesEnd};
+use quick_xml::Writer;
 
+use crate::binxml::name::BinXmlName;
 use failure::{bail, format_err, Error};
 
 pub trait BinXmlOutput<W: Write> {
@@ -26,22 +28,21 @@ pub trait BinXmlOutput<W: Write> {
 }
 
 pub struct XmlOutput<W: Write> {
-    writer: EventWriter<W>,
+    writer: Writer<W>,
     eof_reached: bool,
+    // TODO: Bring back Vec<BinXmlName<'a>> if possible.
+    stack: Vec<String>,
 }
 
-/// Adapter between binxml XmlModel type and rust-xml output stream.
+/// Adapter between binxml XmlModel type and quick-xml events.
 impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn with_writer(target: W) -> Self {
-        let writer = EmitterConfig::new()
-            .line_separator("\r\n")
-            .perform_indent(true)
-            .normalize_empty_elements(false)
-            .create_writer(target);
+        let writer = Writer::new_with_indent(target, b' ', 2);
 
         XmlOutput {
             writer,
             eof_reached: false,
+            stack: vec![],
         }
     }
 
@@ -58,6 +59,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;
+        self.writer.write_event(Event::Eof)?;
         Ok(())
     }
 
@@ -67,56 +69,65 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
             bail!("Impossible state - `visit_open_start_element` after EOF");
         }
 
-        let mut event_builder = XmlEvent::start_element(element.name.borrow());
+        // TODO: we could improve performance even further if we could somehow avoid this clone,
+        // and share this borrow to the end element.
+        self.stack.push(element.name.as_str().to_owned());
+
+        let mut event_builder = BytesStart::from(element.name.borrow().into());
 
         for attr in element.attributes.iter() {
-            event_builder = event_builder.attr(attr.name.borrow(), &attr.value.borrow());
+            let name_as_str = attr.name.as_str();
+
+            let attr = Attribute::from((name_as_str, attr.value.as_ref()));
+            event_builder.push_attribute(attr);
         }
 
-        self.writer.write(event_builder)?;
+        self.writer.write_event(Event::Start(event_builder))?;
 
         Ok(())
     }
 
     fn visit_close_element(&mut self) -> Result<(), Error> {
         trace!("visit_close_element");
-        self.writer.write(XmlEvent::end_element())?;
+        let name = self
+            .stack
+            .pop()
+            .ok_or_else(|| format_err!("invalid stack state"))?;
+
+        let event = BytesEnd::owned(name.into_bytes());
+
+        self.writer.write_event(Event::End(event))?;
         Ok(())
     }
 
     fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
         trace!("visit_chars");
-        self.writer.write(XmlEvent::characters(value))?;
+        let event = BytesText::from_escaped_str(value);
+        self.writer.write_event(Event::Text(event))?;
         Ok(())
     }
 
     fn visit_cdata_section(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_cdata_section");
+        bail!("Unimplemented: visit_cdata_section")
     }
 
     fn visit_entity_reference(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_entity_reference");
+        bail!("Unimplemented: visit_entity_reference")
     }
 
     fn visit_processing_instruction_target(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_processing_instruction_target");
+        bail!("Unimplemented: visit_processing_instruction_target")
     }
 
     fn visit_processing_instruction_data(&mut self) -> Result<(), Error> {
-        unimplemented!("visit_processing_instruction_data");
+        bail!("Unimplemented: visit_processing_instruction_data")
     }
 
     fn visit_start_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_start_of_stream");
-        if self.eof_reached {
-            bail!("Impossible state - `visit_start_of_stream` after EOF");
-        }
+        let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 
-        self.writer.write(XmlEvent::StartDocument {
-            version: XmlVersion::Version10,
-            encoding: None,
-            standalone: None,
-        })?;
+        self.writer.write_event(Event::Decl(event))?;
 
         Ok(())
     }

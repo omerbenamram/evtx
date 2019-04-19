@@ -1,15 +1,14 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::{error::Error, guid::Guid, model::deserialized::*};
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use crate::binxml::deserializer::{BinXmlDeserializer, Context};
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
-use crate::utils::{read_len_prefixed_utf16_string, read_utf16_by_size};
 use log::trace;
-use std::borrow::Cow;
+
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::rc::Rc;
@@ -35,27 +34,27 @@ pub fn read_template<'a, 'c>(
             );
             // 33 is template definition data size, we've read 9 bytes so far.
             if template_definition_data_offset == cursor.position() as u32 {
-                cursor.seek(SeekFrom::Current(definition.data_size as i64 + (33 - 9)))?;
+                cursor.seek(SeekFrom::Current(
+                    i64::from(definition.data_size) + (33 - 9),
+                ))?;
             }
             Rc::clone(&definition)
+        } else if template_definition_data_offset != cursor.position() as u32 {
+            trace!(
+                "Need to seek to offset {} to read template",
+                template_definition_data_offset
+            );
+            let position_before_seek = cursor.position();
+
+            cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
+
+            let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
+
+            cursor.seek(SeekFrom::Start(position_before_seek))?;
+
+            template_def
         } else {
-            if template_definition_data_offset != cursor.position() as u32 {
-                trace!(
-                    "Need to seek to offset {} to read template",
-                    template_definition_data_offset
-                );
-                let position_before_seek = cursor.position();
-
-                cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
-
-                let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
-
-                cursor.seek(SeekFrom::Start(position_before_seek))?;
-
-                template_def
-            } else {
-                Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?)
-            }
+            Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?)
         };
 
     let number_of_substitutions = try_read!(cursor, u32);
@@ -83,55 +82,12 @@ pub fn read_template<'a, 'c>(
     for descriptor in value_descriptors {
         let position = cursor.position();
         trace!("Substitution: {:?} at {}", descriptor.value_type, position);
-        let value = match descriptor.value_type {
-            // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
-            BinXmlValueType::StringType => BinXmlValue::StringType(Cow::Owned(
-                read_utf16_by_size(cursor, u64::from(descriptor.size))
-                    .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-                    .unwrap_or_else(|| "".to_owned()),
-            )),
-            BinXmlValueType::AnsiStringType => {
-                let mut bytes = vec![0; descriptor.size as usize];
-                cursor.read_exact(&mut bytes)?;
-
-                BinXmlValue::AnsiStringType(Cow::Owned(
-                    String::from_utf8(bytes).expect("Should be valid bytes"),
-                ))
-            }
-            BinXmlValueType::StringArrayType => {
-                let mut data = vec![0; descriptor.size as usize];
-                cursor.read_exact(&mut data)?;
-
-                let mut local_cursor = Cursor::new(&data);
-                let mut array = vec![];
-
-                loop {
-                    if cursor.position() >= data.len() as u64 {
-                        break;
-                    }
-
-                    let s = read_len_prefixed_utf16_string(&mut local_cursor, false)
-                        .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-                        .unwrap_or("".to_owned());
-
-                    array.push(Cow::Owned(s));
-                }
-                BinXmlValue::StringArrayType(array)
-            }
-            BinXmlValueType::BinaryType => {
-                let data = *cursor.get_ref();
-                let bytes = &data[cursor.position() as usize
-                    ..(cursor.position() + u64::from(descriptor.size)) as usize];
-
-                cursor.seek(SeekFrom::Current(descriptor.size as i64))?;
-                BinXmlValue::BinaryType(bytes)
-            }
-            _ => BinXmlValue::deserialize_value_type(
-                &descriptor.value_type,
-                cursor,
-                Rc::clone(&ctx),
-            )?,
-        };
+        let value = BinXmlValue::deserialized_sized_value_type(
+            &descriptor.value_type,
+            cursor,
+            Rc::clone(&ctx),
+            descriptor.size,
+        )?;
 
         trace!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
@@ -279,7 +235,7 @@ mod test {
         let expected_at_550 = BinXMLTemplateDefinition {
             next_template_offset: 0,
             template_guid: Guid::new(
-                3346188909,
+                3_346_188_909,
                 47309,
                 26506,
                 &[241, 69, 105, 59, 93, 11, 147, 140],

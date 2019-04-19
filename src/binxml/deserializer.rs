@@ -80,20 +80,6 @@ impl<'a, 'c> BinXmlDeserializer<'a, 'c> {
         }
     }
 
-    #[cfg(test)]
-    pub fn init_without_cache(data: &'a [u8], start_offset: u64) -> Self {
-        let ctx = Rc::new(Cache {
-            string_cache: None,
-            template_cache: None,
-        });
-
-        BinXmlDeserializer {
-            data,
-            offset: start_offset,
-            ctx,
-        }
-    }
-
     /// Returns a tuple of the tokens.
     pub fn read_binxml_fragment(
         cursor: &mut Cursor<&'a [u8]>,
@@ -182,16 +168,21 @@ impl<'a, 'c> IterTokens<'a, 'c> {
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, ctx)?),
             ),
-            BinXMLRawToken::CDataSection => unimplemented!("BinXMLToken::CDataSection"),
+            BinXMLRawToken::CDataSection => Err(Error::other(
+                "Unimplemented: BinXMLToken::CDataSection",
+                cursor.position(),
+            )),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, ctx)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => {
-                unimplemented!("BinXMLToken::ProcessingInstructionTarget")
-            }
-            BinXMLRawToken::ProcessingInstructionData => {
-                unimplemented!("BinXMLToken::ProcessingInstructionData")
-            }
+            BinXMLRawToken::ProcessingInstructionTarget => Err(Error::other(
+                "Unimplemented: BinXMLToken::ProcessingInstructionTarget",
+                cursor.position(),
+            )),
+            BinXMLRawToken::ProcessingInstructionData => Err(Error::other(
+                "Unimplemented: BinXMLToken::ProcessingInstructionData",
+                cursor.position(),
+            )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, ctx)?,
             )),
@@ -335,8 +326,45 @@ mod tests {
                 .collect::<String>(),
             include_str!("../../samples/security_event_1.xml")
                 .lines()
-                .map(|l| l.trim())
+                .map(str::trim)
                 .collect::<String>()
         );
     }
+
+    #[test]
+    fn test_record_formatting_does_not_contain_nul_bytes() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../../samples/security.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.into_records().unwrap();
+
+        for record in records.into_iter().take(100) {
+            assert!(!record.unwrap().into_xml().unwrap().data.chars().any(|c| c == '\0'))
+        }
+    }
+
+    #[test]
+    fn test_record_formatting_does_not_contain_nul_bytes_another_sample() {
+        ensure_env_logger_initialized();
+        let evtx_file =
+            include_bytes!("../../samples/2-system-Microsoft-Windows-LiveId%4Operational.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.into_records().unwrap();
+
+        for record in records.into_iter() {
+            let r = record.unwrap().into_xml().unwrap();
+            for line in r.data.lines() {
+                for char in line.chars() {
+                    if char == '\0' {
+                        panic!("{}", line);
+                    }
+                }
+            }
+        }
+    }
+
 }

@@ -13,6 +13,8 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
 
+    visitor.visit_start_of_stream()?;
+
     for owned_token in record_model {
         match owned_token {
             XmlModel::OpenElement(open_element) => {
@@ -21,7 +23,9 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
             XmlModel::CloseElement => visitor.visit_close_element()?,
             XmlModel::String(s) => visitor.visit_characters(&s)?,
             XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
-            XmlModel::StartOfStream => visitor.visit_start_of_stream()?,
+            // Sometimes there are multiple fragment headers,
+            // but we only need to write start of stream once.
+            XmlModel::StartOfStream => {}
         };
     }
 

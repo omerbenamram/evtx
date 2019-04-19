@@ -178,7 +178,6 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be serialized using the given `BinXmlOutput`.
-    #[cfg(not(feature = "multithreading"))]
     pub fn serialized_records<'a, O: 'a + BinXmlOutput<Vec<u8>>>(&'a mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + 'a {
         IterSerializedRecords::<'a, T, O> {
             chunks: self.chunks(),
@@ -190,7 +189,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Return an iterator over all the records.
     /// Records will be serialized using the given `BinXmlOutput`.
     #[cfg(feature = "multithreading")]
-    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
+    pub fn serialized_records_parallel<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
     {
         let chunks: Vec<Result<EvtxChunkData, Error>> = self.chunks().collect();
 
@@ -228,7 +227,6 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 }
 
-
 pub struct IterChunks<'c, T: ReadSeek> {
     parser: &'c mut EvtxParser<T>,
     current_chunk_number: u16,
@@ -237,11 +235,14 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.current_chunk_number == self.parser.header.chunk_count {
-            return None;
-        }
 
         let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number);
+
+        // We try to read past the `chunk_count` to allow for dirty files.
+        // But if we failed, it means we really are at the end of the file.
+        if next.is_err() && self.current_chunk_number > self.parser.header.chunk_count {
+            return None;
+        }
 
         self.current_chunk_number += 1;
 
@@ -331,7 +332,9 @@ mod tests {
         let evtx_file = include_bytes!("../samples/system.evtx");
         let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        for (i, record) in parser.records().take(10).enumerate() {
+        let records: Vec<_> = parser.records().take(10).collect();
+
+        for (i, record) in records.iter().enumerate() {
             match record {
                 Ok(r) => {
                     assert_eq!(
@@ -344,6 +347,18 @@ mod tests {
                 Err(e) => panic!("Error while reading record {}, {:?}", i, e),
             }
         }
+
+        // It should be empty, and not a [].
+        assert!(records[0]
+            .as_ref()
+            .unwrap()
+            .data
+            .contains("<Binary></Binary>"));
+        assert!(records[1]
+            .as_ref()
+            .unwrap()
+            .data
+            .contains("<Binary>E107070003000C00110010001C00D6000000000000000000</Binary>"));
     }
 
     #[test]
@@ -439,5 +454,31 @@ mod tests {
                 println!("{}", r.into_xml().unwrap().data);
             }
         }
+    }
+
+    #[test]
+    // https://github.com/omerbenamram/evtx/issues/10
+    fn test_issue_10() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
+
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut count = 0;
+        for r in parser.records() {
+            r.unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 14621, "Single threaded iteration failed");
+
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut count = 0;
+        for r in parser.serialized_records_parallel::<XmlOutput<Vec<u8>>>() {
+            r.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 14621, "Parallel iteration failed");
     }
 }
