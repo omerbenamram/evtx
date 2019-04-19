@@ -8,7 +8,6 @@ use xml::common::XmlVersion;
 use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
 
 use failure::{bail, format_err, Error};
-use std::borrow::Cow;
 
 pub trait BinXMLOutput<'a, W: Write> {
     fn with_writer(target: W) -> Self;

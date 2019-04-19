@@ -1,4 +1,4 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::ReadBytesExt;
 use chrono::prelude::*;
 use std::io::Read;
 use time::Duration;

@@ -1,15 +1,14 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::{error::Error, guid::Guid, model::deserialized::*};
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 
 use crate::binxml::deserializer::{BinXmlDeserializer, Context};
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
-use crate::utils::{read_len_prefixed_utf16_string, read_utf16_by_size};
 use log::trace;
-use std::borrow::Cow;
+
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::rc::Rc;
@@ -83,62 +82,12 @@ pub fn read_template<'c>(
     for descriptor in value_descriptors {
         let position = cursor.position();
         trace!("Substitution: {:?} at {}", descriptor.value_type, position);
-        let value = match descriptor.value_type {
-            // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
-            BinXmlValueType::StringType => BinXmlValue::StringType(Cow::Owned(
-                read_utf16_by_size(cursor, u64::from(descriptor.size))
-                    .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-                    .unwrap_or_else(|| "".to_owned()),
-            )),
-            BinXmlValueType::AnsiStringType => {
-                let mut bytes = vec![0; descriptor.size as usize];
-                cursor.read_exact(&mut bytes)?;
-
-                BinXmlValue::AnsiStringType(Cow::Owned(
-                    String::from_utf8(bytes)
-                        .and_then(|mut s| {
-                            if let Some('\0') = s.chars().last() {
-                                s.pop();
-                            }
-                            Ok(s)
-                        })
-                        .map_err(|e| Error::utf8_decode_error(e, cursor.position()))?,
-                ))
-            }
-            BinXmlValueType::StringArrayType => {
-                let mut data = vec![0; descriptor.size as usize];
-                cursor.read_exact(&mut data)?;
-
-                let mut local_cursor = Cursor::new(&data);
-                let mut array = vec![];
-
-                loop {
-                    if cursor.position() >= data.len() as u64 {
-                        break;
-                    }
-
-                    let s = read_len_prefixed_utf16_string(&mut local_cursor, false)
-                        .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-                        .unwrap_or_else(|| "".to_owned());
-
-                    array.push(Cow::Owned(s));
-                }
-                BinXmlValue::StringArrayType(array)
-            }
-            BinXmlValueType::BinaryType => {
-                let data = *cursor.get_ref();
-                let bytes = &data[cursor.position() as usize
-                    ..(cursor.position() + u64::from(descriptor.size)) as usize];
-
-                cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
-                BinXmlValue::BinaryType(bytes)
-            }
-            _ => BinXmlValue::deserialize_value_type(
-                &descriptor.value_type,
-                cursor,
-                Rc::clone(&ctx),
-            )?,
-        };
+        let value = BinXmlValue::deserialized_sized_value_type(
+            &descriptor.value_type,
+            cursor,
+            Rc::clone(&ctx),
+            descriptor.size,
+        )?;
 
         trace!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
