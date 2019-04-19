@@ -168,16 +168,21 @@ impl<'c> IterTokens<'c> {
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, ctx)?),
             ),
-            BinXMLRawToken::CDataSection => unimplemented!("BinXMLToken::CDataSection"),
+            BinXMLRawToken::CDataSection => Err(Error::other(
+                "Unimplemented: BinXMLToken::CDataSection",
+                cursor.position(),
+            )),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, ctx)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => {
-                unimplemented!("BinXMLToken::ProcessingInstructionTarget")
-            }
-            BinXMLRawToken::ProcessingInstructionData => {
-                unimplemented!("BinXMLToken::ProcessingInstructionData")
-            }
+            BinXMLRawToken::ProcessingInstructionTarget => Err(Error::other(
+                "Unimplemented: BinXMLToken::ProcessingInstructionTarget",
+                cursor.position(),
+            )),
+            BinXMLRawToken::ProcessingInstructionData => Err(Error::other(
+                "Unimplemented: BinXMLToken::ProcessingInstructionData",
+                cursor.position(),
+            )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, ctx)?,
             )),
@@ -332,6 +337,28 @@ mod tests {
 
         for record in records.into_iter().take(100) {
             assert!(!record.unwrap().data.chars().any(|c| c == '\0'))
+        }
+    }
+
+    #[test]
+    fn test_record_formatting_does_not_contain_nul_bytes_another_sample() {
+        ensure_env_logger_initialized();
+        let evtx_file =
+            include_bytes!("../../samples/2-system-Microsoft-Windows-LiveId%4Operational.evtx");
+        let from_start_of_chunk = &evtx_file[4096..];
+
+        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.into_records().unwrap();
+
+        for record in records.into_iter() {
+            let r = record.unwrap();
+            for line in r.data.lines() {
+                for char in line.chars() {
+                    if char == '\0' {
+                        panic!("{}", line);
+                    }
+                }
+            }
         }
     }
 
