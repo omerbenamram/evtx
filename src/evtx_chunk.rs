@@ -46,6 +46,9 @@ impl Debug for EvtxChunkHeader {
     }
 }
 
+
+/// A struct which owns all the data associated with a chunk.
+/// See EvtxChunk for more.
 pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
@@ -127,6 +130,9 @@ impl EvtxChunkData {
     }
 }
 
+/// A struct which can hold references to chunk data (`EvtxChunkData`).
+/// All references are created together,
+/// and can be assume to live for the entire duration of the parsing phase.
 pub struct EvtxChunk<'a> {
     pub data: &'a [u8],
     pub header: &'a EvtxChunkHeader,
@@ -184,6 +190,10 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let binxml_data_size = record_header.record_data_size();
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+
+        // `EvtxChunk` only owns `template_table`, which we want to loan to the Deserializer.
+        // `data` and `string_cache` are both references and are `Copy`ed when passed to init.
+        // We avoid creating new references so that `BinXmlDeserializer` can still generate 'a data.
         let deserializer = BinXmlDeserializer::init(
             self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),

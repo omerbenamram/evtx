@@ -6,7 +6,7 @@ use failure::Error;
 use log::trace;
 use std::io::Write;
 
-pub fn parse_tokens<W: Write, T: BinXmlOutput<W> + ?Sized>(
+pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     tokens: Vec<BinXMLDeserializedTokens>,
     visitor: &mut T,
 ) -> Result<(), Error> {

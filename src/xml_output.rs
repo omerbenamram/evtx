@@ -9,16 +9,12 @@ use xml::{writer::XmlEvent, EmitterConfig, EventWriter};
 use failure::{bail, format_err, Error};
 
 pub trait BinXmlOutput<W: Write> {
-    fn with_writer(target: W) -> Self
-    where
-        Self: Sized;
+    fn with_writer(target: W) -> Self;
     fn into_writer(self) -> Result<W, Error>;
-    fn into_writer_from_box(self: Box<Self>) -> Result<W, Error>;
-
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
-    fn visit_open_start_element<'a>(
+    fn visit_open_start_element(
         &mut self,
-        open_start_element: &XmlElement<'a>,
+        open_start_element: &XmlElement,
     ) -> Result<(), Error>;
     fn visit_close_element(&mut self) -> Result<(), Error>;
     fn visit_characters(&mut self, value: &str) -> Result<(), Error>;
@@ -57,11 +53,6 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
                 "Tried to return writer before EOF marked, incomplete output."
             ))
         }
-    }
-
-    fn into_writer_from_box(self: Box<Self>) -> Result<W, Error> {
-        let slf = *self;
-        slf.into_writer()
     }
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {

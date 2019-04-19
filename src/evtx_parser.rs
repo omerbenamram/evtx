@@ -165,6 +165,10 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data)
     }
 
+
+    /// Return an iterator over all the chunks.
+    /// Each chunk supports iterating over it's records in their un-serialized state
+    /// (before they are converted to XML or JSON).
     pub fn chunks(&mut self) -> IterChunks<T> {
         IterChunks {
             parser: self,
@@ -172,6 +176,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
+    /// Return an iterator over all the records.
+    /// Records will be serialized using the given `BinXmlOutput`.
     #[cfg(not(feature = "multithreading"))]
     pub fn serialized_records<'a, O: 'a + BinXmlOutput<Vec<u8>>>(&'a mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + 'a {
         IterSerializedRecords::<'a, T, O> {
@@ -181,6 +187,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
+    /// Return an iterator over all the records.
+    /// Records will be serialized using the given `BinXmlOutput`.
     #[cfg(feature = "multithreading")]
     pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>>
     {
@@ -205,11 +213,15 @@ impl<T: ReadSeek> EvtxParser<T> {
         iterators.into_iter().flatten().into_iter()
     }
 
+    /// Return an iterator over all the records.
+    /// Records will be XML-formatted.
     pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         self.serialized_records::<XmlOutput<Vec<u8>>>()
     }
 
 
+    /// Return an iterator over all the records.
+    /// Records will be JSON-formatted.
     pub fn records_json(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         self.serialized_records::<JsonOutput<Vec<u8>>>()
     }
@@ -239,6 +251,7 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
 pub struct IterSerializedRecords<'c, T: ReadSeek, O: BinXmlOutput<Vec<u8>>> {
     chunks: IterChunks<'c, T>,
     current_chunk_records: Option<std::vec::IntoIter<Result<SerializedEvtxRecord, Error>>>,
+    // Let us remember which formatter to use.
     _phantom: PhantomData<O>,
 }
 
