@@ -2,8 +2,13 @@ extern crate evtx;
 
 use clap::{App, Arg, ArgMatches};
 
-use evtx::evtx_parser::EvtxOutputFormat;
 use evtx::{EvtxParser, ParserSettings};
+
+#[derive(Copy, Clone, PartialOrd, PartialEq)]
+pub enum EvtxOutputFormat {
+    JSON,
+    XML,
+}
 
 fn is_a_non_negative_number(value: String) -> Result<(), String> {
     match value.parse::<usize>() {
@@ -12,7 +17,7 @@ fn is_a_non_negative_number(value: String) -> Result<(), String> {
     }
 }
 
-fn parser_configuration_from_cli_matches(matches: &ArgMatches) -> ParserSettings {
+fn parser_configuration_from_cli_matches(matches: &ArgMatches) -> (ParserSettings, EvtxOutputFormat) {
     let output_format = match matches.value_of("output-format").unwrap_or_default() {
         "xml" => EvtxOutputFormat::XML,
         "json" => EvtxOutputFormat::JSON,
@@ -34,9 +39,8 @@ fn parser_configuration_from_cli_matches(matches: &ArgMatches) -> ParserSettings
         (false, _, _) => 1,
     };
 
-    ParserSettings::new()
-        .output_format(output_format)
-        .num_threads(num_threads)
+    (ParserSettings::new()
+         .num_threads(num_threads), output_format)
 }
 
 fn main() {
@@ -74,16 +78,28 @@ fn main() {
         .value_of("input")
         .expect("This is a required argument");
 
-    let configuration = parser_configuration_from_cli_matches(&matches);
+    let (configuration, output_format) = parser_configuration_from_cli_matches(&matches);
 
     let mut parser = EvtxParser::from_path(fp)
         .expect(&format!("Failed to load evtx file located at {}", fp))
         .with_configuration(configuration);
 
-    for record in parser.records() {
-        match record {
-            Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
-            Err(e) => eprintln!("{}", e),
+    match output_format {
+        EvtxOutputFormat::XML => {
+            for record in parser.records() {
+                match record {
+                    Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
         }
-    }
+        EvtxOutputFormat::JSON => {
+            for record in parser.records_json() {
+                match record {
+                    Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
+        }
+    };
 }

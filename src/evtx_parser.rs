@@ -38,7 +38,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// # use evtx::EvtxParser;
 ///
 ///
-/// let parser = EvtxParser::from_path(fp).unwrap();
+/// let mut parser = EvtxParser::from_path(fp).unwrap();
 ///
 /// for record in parser.records() {
 ///     match record {
@@ -56,7 +56,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 ///
 ///
 /// let settings = ParserSettings::default().num_threads(0);
-/// let parser = EvtxParser::from_path(fp).unwrap().with_configuration(settings);
+/// let mut parser = EvtxParser::from_path(fp).unwrap().with_configuration(settings);
 ///
 /// for record in parser.records() {
 ///     match record {
@@ -73,21 +73,13 @@ pub struct EvtxParser<T: ReadSeek> {
     config: ParserSettings,
 }
 
-#[derive(Copy, Clone, PartialOrd, PartialEq)]
-pub enum EvtxOutputFormat {
-    JSON,
-    XML,
-}
-
 pub struct ParserSettings {
-    output_format: EvtxOutputFormat,
     num_threads: usize,
 }
 
 impl Default for ParserSettings {
     fn default() -> Self {
         ParserSettings {
-            output_format: EvtxOutputFormat::XML,
             num_threads: 0,
         }
     }
@@ -96,12 +88,6 @@ impl Default for ParserSettings {
 impl ParserSettings {
     pub fn new() -> Self {
         ParserSettings::default()
-    }
-
-    /// Sets the output format of the evtx records.
-    pub fn output_format(mut self, format: EvtxOutputFormat) -> Self {
-        self.output_format = format;
-        self
     }
 
     /// Sets the number of worker threads.
