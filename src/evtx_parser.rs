@@ -377,4 +377,17 @@ mod tests {
 
         assert_eq!(count, 14621, "Parallel iteration failed");
     }
+
+    #[test]
+    fn test_issue_10_2() {
+        ensure_env_logger_initialized();
+        let evtx_file =
+            include_bytes!("../samples/2-system-Microsoft-Windows-GroupPolicy%4Operational.evtx");
+
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        for r in parser.records() {
+            r.unwrap();
+        }
+    }
 }
