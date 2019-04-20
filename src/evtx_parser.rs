@@ -171,7 +171,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         let mut chunks = self.chunks();
 
         let records_per_chunk = std::iter::from_fn(move || {
-            // Allocate some chunks in advances, so they can be parsed in parallel.
+            // Allocate some chunks in advance, so they can be parsed in parallel.
             let mut chunk_of_chunks = Vec::with_capacity(num_threads);
 
             for _ in 0..num_threads {
