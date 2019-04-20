@@ -6,6 +6,11 @@ This is a parser for the Windows EVTX format.
 
 This parser is implemented using 100% safe rust.
 
+The parser supports XML and JSON outputs, both being zero-copy and independent of each other.
+
+For JSON this means that no conversion to textual XML is done.
+The JSON object is being directly built from the inner representation of the binary xml token tree.
+
 Supported rust version is latest stable rust (minimum 1.34) or nightly.
 
 [Documentation](https://docs.rs/evtx/0.2.0/)
