@@ -11,6 +11,7 @@ use crate::utils::{
 };
 use chrono::{DateTime, Utc};
 use log::trace;
+use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
@@ -352,6 +353,69 @@ fn to_delimited_list<N: ToString>(ns: Vec<N>) -> String {
         .map(|n| n.to_string())
         .collect::<Vec<String>>()
         .join(",")
+}
+
+impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
+    fn into(self) -> Value {
+        match self {
+            BinXmlValue::NullType => Value::Null,
+            BinXmlValue::StringType(s) => json!(s.into_owned()),
+            BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
+            BinXmlValue::Int8Type(num) => json!(num),
+            BinXmlValue::UInt8Type(num) => json!(num),
+            BinXmlValue::Int16Type(num) => json!(num),
+            BinXmlValue::UInt16Type(num) => json!(num),
+            BinXmlValue::Int32Type(num) => json!(num),
+            BinXmlValue::UInt32Type(num) => json!(num),
+            BinXmlValue::Int64Type(num) => json!(num),
+            BinXmlValue::UInt64Type(num) => json!(num),
+            BinXmlValue::Real32Type(num) => json!(num),
+            BinXmlValue::Real64Type(num) => json!(num),
+            BinXmlValue::BoolType(num) => json!(num),
+            BinXmlValue::BinaryType(bytes) => {
+                // Bytes will be formatted as const length of 2 with '0' padding.
+                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                json!(repr)
+            }
+            BinXmlValue::GuidType(guid) => json!(guid.to_string()),
+            //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
+            BinXmlValue::FileTimeType(tm) => json!(tm),
+            BinXmlValue::SysTimeType(tm) => json!(tm),
+            BinXmlValue::SidType(sid) => json!(sid.to_string()),
+            BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
+            BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
+            BinXmlValue::StringArrayType(s) => json!(s),
+            BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt16ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Real32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Real64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::BoolArrayType(bools) => json!(bools),
+            BinXmlValue::GuidArrayType(guids) => {
+                json!(guids.iter().map(Guid::to_string).collect::<Vec<String>>())
+            }
+            BinXmlValue::FileTimeArrayType(filetimes) => json!(filetimes),
+            BinXmlValue::SysTimeArrayType(systimes) => json!(systimes),
+            BinXmlValue::SidArrayType(sids) => {
+                json!(sids.iter().map(Sid::to_string).collect::<Vec<String>>())
+            }
+            BinXmlValue::HexInt32ArrayType(hex_strings) => json!(hex_strings),
+            BinXmlValue::HexInt64ArrayType(hex_strings) => json!(hex_strings),
+            BinXmlValue::EvtHandle => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXmlValue::BinXmlType(_) => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXmlValue::EvtXml => panic!("Unsupported conversion, call `expand_templates` first"),
+            _ => unimplemented!("{:?}", self),
+        }
+    }
 }
 
 impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {

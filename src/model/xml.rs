@@ -1,6 +1,7 @@
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 
+use crate::model::deserialized::BinXMLAttribute;
 use log::error;
 use std::borrow::Cow;
 
@@ -10,7 +11,7 @@ type Name<'a> = BinXmlName<'a>;
 pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
-    String(Cow<'a, str>),
+    Value(BinXmlValue<'a>),
     EndOfStream,
     StartOfStream,
 }
@@ -19,7 +20,7 @@ pub struct XmlElementBuilder<'a> {
     name: Option<Name<'a>>,
     attributes: Vec<XmlAttribute<'a>>,
     current_attribute_name: Option<Name<'a>>,
-    current_attribute_value: Option<Cow<'a, str>>,
+    current_attribute_value: Option<BinXmlValue<'a>>,
 }
 
 impl<'a> XmlElementBuilder<'a> {
@@ -53,12 +54,7 @@ impl<'a> XmlElementBuilder<'a> {
             "There should be a name"
         );
         match self.current_attribute_value {
-            None => {
-                self.current_attribute_value = Some(match value {
-                    BinXmlValue::StringType(cow) => cow,
-                    _ => Cow::Owned(format!("{:?}", value)),
-                })
-            }
+            None => self.current_attribute_value = Some(value),
             Some(_) => panic!("invalid state, there should not be a value"),
         }
 
@@ -81,7 +77,13 @@ impl<'a> XmlElementBuilder<'a> {
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct XmlAttribute<'a> {
     pub name: Name<'a>,
-    pub value: Cow<'a, str>,
+    pub value: BinXmlValue<'a>,
+}
+
+impl<'a> XmlAttribute<'a> {
+    fn into_string(self) -> Cow<'a, str> {
+        self.value.into()
+    }
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

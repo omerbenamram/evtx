@@ -1,5 +1,4 @@
 use crate::model::xml::XmlElement;
-use core::borrow::Borrow;
 use log::trace;
 use std::io::Write;
 
@@ -7,7 +6,9 @@ use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
+use crate::binxml::value_variant::BinXmlValue;
 use failure::{bail, format_err, Error};
+use std::borrow::{Borrow, Cow};
 
 pub trait BinXmlOutput<W: Write> {
     fn with_writer(target: W) -> Self;
@@ -15,7 +16,7 @@ pub trait BinXmlOutput<W: Write> {
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
     fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<(), Error>;
     fn visit_close_element(&mut self) -> Result<(), Error>;
-    fn visit_characters(&mut self, value: &str) -> Result<(), Error>;
+    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error>;
     fn visit_cdata_section(&mut self) -> Result<(), Error>;
     fn visit_entity_reference(&mut self) -> Result<(), Error>;
     fn visit_processing_instruction_target(&mut self) -> Result<(), Error>;
@@ -59,7 +60,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn visit_open_start_element<'a>(&mut self, element: &XmlElement) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element);
         if self.eof_reached {
             bail!("Impossible state - `visit_open_start_element` after EOF");
@@ -74,7 +75,8 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         for attr in element.attributes.iter() {
             let name_as_str = attr.name.as_str();
 
-            let attr = Attribute::from((name_as_str, attr.value.as_ref()));
+            let value_cow: Cow<'_, str> = attr.value.clone().into();
+            let attr = Attribute::from((name_as_str, value_cow.as_ref()));
             event_builder.push_attribute(attr);
         }
 
@@ -96,9 +98,10 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars");
-        let event = BytesText::from_plain_str(value);
+        let cow: Cow<'_, str> = value.clone().into();
+        let event = BytesText::from_plain_str(&cow);
         self.writer.write_event(Event::Text(event))?;
         Ok(())
     }

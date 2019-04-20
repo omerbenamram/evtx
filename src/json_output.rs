@@ -4,9 +4,11 @@ use crate::model::xml::XmlElement;
 use failure::{format_err, Error};
 use log::trace;
 
+use crate::binxml::value_variant::BinXmlValue;
 use crate::xml_output::BinXmlOutput;
 use core::borrow::{Borrow, BorrowMut};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
 
@@ -74,8 +76,8 @@ impl<W: Write> JsonOutput<W> {
             .find(|a| a.name == BinXmlName::from_static_string("Name"))
             .expect("Data node to have a name");
 
-        let data_key: &str = name_attribute.value.borrow();
-        self.insert_node_without_attributes(element, data_key)
+        let data_key: Cow<'_, str> = name_attribute.value.clone().into();
+        self.insert_node_without_attributes(element, &data_key)
     }
 
     fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<(), Error> {
@@ -114,9 +116,9 @@ impl<W: Write> JsonOutput<W> {
 
         for attribute in element.attributes.iter() {
             let name: &str = attribute.name.as_str().into();
-            let value_as_string: &str = attribute.value.borrow();
+            let value: Value = attribute.value.clone().into();
 
-            attributes.insert(name.to_owned(), Value::String(value_as_string.to_owned()));
+            attributes.insert(name.to_owned(), value);
         }
 
         value.insert("#attributes".to_owned(), Value::Object(attributes));
@@ -180,14 +182,14 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars {:?}", &self.stack);
         let current_value = self.get_or_create_current_path();
 
         // If our parent is an element without any attributes,
         // we simply swap the null with the string value.
         if current_value.is_null() {
-            mem::replace(current_value, Value::String(value.to_owned()));
+            mem::replace(current_value, value.clone().into());
         } else {
             // Should look like:
             // ----------------
@@ -201,7 +203,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
                 format_err!("This is a bug - expected current value to be an object type")
             })?;
 
-            current_object.insert("#text".to_owned(), Value::String(value.to_owned()));
+            current_object.insert("#text".to_owned(), value.clone().into());
         }
 
         Ok(())

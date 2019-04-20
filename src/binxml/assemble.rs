@@ -21,7 +21,7 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
                 visitor.visit_open_start_element(&open_element)?
             }
             XmlModel::CloseElement => visitor.visit_close_element()?,
-            XmlModel::String(s) => visitor.visit_characters(&s)?,
+            XmlModel::Value(s) => visitor.visit_characters(&s)?,
             XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
             // Sometimes there are multiple fragment headers,
             // but we only need to write start of stream once.
@@ -85,20 +85,16 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                 match current_element.take() {
                     // A string that is not inside any element, yield it
                     None => match value {
-                        BinXmlValue::StringType(cow) => {
-                            model.push(XmlModel::String(cow.clone()));
-                        }
                         BinXmlValue::EvtXml => {
                             panic!("Call `expand_templates` before calling this function")
                         }
                         _ => {
-                            model.push(XmlModel::String(value.into()));
+                            model.push(XmlModel::Value(value.into()));
                         }
                     },
                     // A string that is bound to an attribute
                     Some(builder) => {
-                        current_element =
-                            Some(builder.attribute_value(BinXmlValue::StringType(value.into())));
+                        current_element = Some(builder.attribute_value(value.into()));
                     }
                 };
             }
