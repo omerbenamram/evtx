@@ -41,14 +41,17 @@ macro_rules! try_read {
     };
 
     ($cursor: ident, bool) => {{
-        let bool_value = try_read!($cursor, u32);
+        let bool_value = try_read!($cursor, i32);
         match bool_value {
             0 => false,
             1 => true,
-            _ => Err(Error::other(
-                format!("{} is invalid value for bool", bool_value),
-                $cursor.position(),
-            ))?,
+            _ => {
+                log::warn!(
+                    "{:?} is an unknown value for bool, coercing to `true`",
+                    bool_value
+                );
+                true
+            }
         }
     }};
 

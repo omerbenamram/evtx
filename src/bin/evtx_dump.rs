@@ -55,10 +55,11 @@ fn main() {
         .version("0.1")
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
-        .arg(Arg::with_name("INPUT").required(true).index(1))
+        .arg(Arg::with_name("INPUT").required(true))
         .arg(
             Arg::with_name("num-threads")
-                .requires("threads")
+                .short("-t")
+                .long("--threads")
                 .default_value("0")
                 .validator(is_a_non_negative_number)
                 .help("Sets the number of worker threads, defaults to number of CPU cores."),
@@ -66,6 +67,7 @@ fn main() {
         .arg(
             Arg::with_name("output-format")
                 .short("-o")
+                .long("--format")
                 .possible_values(&["json", "xml"])
                 .default_value("xml")
                 .help("sets the output format"),
@@ -75,7 +77,7 @@ fn main() {
         .get_matches();
 
     let fp = matches
-        .value_of("input")
+        .value_of("INPUT")
         .expect("This is a required argument");
 
     let config = EvtxDumpConfig::from_cli_matches(&matches);
