@@ -69,15 +69,22 @@ impl<W: Write> JsonOutput<W> {
 
     /// Like a regular node, but uses it's "Name" attribute.
     fn insert_data_node(&mut self, element: &XmlElement) -> Result<(), Error> {
-        trace!("inserting data node");
-        let name_attribute = element
+        trace!("inserting data node {:?}", &element);
+        match element
             .attributes
             .iter()
             .find(|a| a.name == BinXmlName::from_static_string("Name"))
-            .expect("Data node to have a name");
-
-        let data_key: Cow<'_, str> = name_attribute.value.borrow().into();
-        self.insert_node_without_attributes(element, &data_key)
+        {
+            Some(name) => {
+                let data_key: Cow<'_, str> = name.value.borrow().into();
+                self.insert_node_without_attributes(element, &data_key)
+            }
+            // Ignore this node
+            None => {
+                self.stack.push("Data".to_owned());
+                Ok(())
+            }
+        }
     }
 
     fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<(), Error> {
@@ -87,7 +94,7 @@ impl<W: Write> JsonOutput<W> {
         let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
             format_err!(
                 "This is a bug - expected parent container to exist, and to be an object type.\
-                 Check that the referenceing parent is not `Value::null`"
+                 Check that the referencing parent is not `Value::null`"
             )
         })?;
 
