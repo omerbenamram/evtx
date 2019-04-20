@@ -1,0 +1,38 @@
+{
+  "Event": {
+    "#attributes": {
+      "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+    },
+    "EventData": {
+      "Binary": null,
+      "Data": {
+        "#text": []
+      }
+    },
+    "System": {
+      "Channel": "System",
+      "Computer": "WIN-P4SIAA0SQCO",
+      "EventID": {
+        "#attributes": {
+          "Qualifiers": 32768
+        },
+        "#text": 6009
+      },
+      "EventRecordID": 1,
+      "Keywords": "0x80000000000000",
+      "Level": 4,
+      "Provider": {
+        "#attributes": {
+          "Name": "EventLog"
+        }
+      },
+      "Security": null,
+      "Task": 0,
+      "TimeCreated": {
+        "#attributes": {
+          "SystemTime": "2017-07-12T17:16:28.214161Z"
+        }
+      }
+    }
+  }
+}
