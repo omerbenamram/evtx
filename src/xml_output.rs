@@ -11,16 +11,40 @@ use failure::{bail, format_err, Error};
 use std::borrow::{Borrow, Cow};
 
 pub trait BinXmlOutput<W: Write> {
+    /// Implementors are expected to provide a `std::Write` target.
+    /// The record will be written to the target.
     fn with_writer(target: W) -> Self;
+
+    /// Consumes the output, returning control of the inner writer to the caller.
     fn into_writer(self) -> Result<W, Error>;
+
+    /// Called once when EOF is reached.
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
+
+    /// Called on <Tag attr="value" another_attr="value">.
     fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<(), Error>;
+
+    /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
     fn visit_close_element(&mut self) -> Result<(), Error>;
+
+    ///
+    /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
+    ///                                                     ~~~~~~~~~~~~~~~
     fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error>;
+
+    /// Unimplemented
     fn visit_cdata_section(&mut self) -> Result<(), Error>;
+
+    /// Unimplemented
     fn visit_entity_reference(&mut self) -> Result<(), Error>;
+
+    /// Unimplemented
     fn visit_processing_instruction_target(&mut self) -> Result<(), Error>;
+
+    /// Unimplemented
     fn visit_processing_instruction_data(&mut self) -> Result<(), Error>;
+
+    /// Called once on beginning of parsing.
     fn visit_start_of_stream(&mut self) -> Result<(), Error>;
 }
 
