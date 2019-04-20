@@ -5,6 +5,7 @@ use crate::xml_output::BinXmlOutput;
 use failure::Error;
 use log::trace;
 use std::io::Write;
+use std::mem;
 
 pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     tokens: Vec<BinXMLDeserializedTokens>,
@@ -21,7 +22,7 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
                 visitor.visit_open_start_element(&open_element)?
             }
             XmlModel::CloseElement => visitor.visit_close_element()?,
-            XmlModel::String(s) => visitor.visit_characters(&s)?,
+            XmlModel::Value(s) => visitor.visit_characters(&s)?,
             XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
             // Sometimes there are multiple fragment headers,
             // but we only need to write start of stream once.
@@ -85,20 +86,16 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
                 match current_element.take() {
                     // A string that is not inside any element, yield it
                     None => match value {
-                        BinXmlValue::StringType(cow) => {
-                            model.push(XmlModel::String(cow.clone()));
-                        }
                         BinXmlValue::EvtXml => {
                             panic!("Call `expand_templates` before calling this function")
                         }
                         _ => {
-                            model.push(XmlModel::String(value.into()));
+                            model.push(XmlModel::Value(value.into()));
                         }
                     },
                     // A string that is bound to an attribute
                     Some(builder) => {
-                        current_element =
-                            Some(builder.attribute_value(BinXmlValue::StringType(value.into())));
+                        current_element = Some(builder.attribute_value(value.into()));
                     }
                 };
             }
@@ -120,39 +117,48 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
 pub fn expand_templates(
     token_tree: Vec<BinXMLDeserializedTokens>,
 ) -> Vec<BinXMLDeserializedTokens> {
-    let mut stack = Vec::new();
+    // We can assume the new tree will be at least as big as the old one.
+    let mut stack = Vec::with_capacity(token_tree.len());
 
     fn _expand_templates<'c>(
         token: BinXMLDeserializedTokens<'c>,
         stack: &mut Vec<BinXMLDeserializedTokens<'c>>,
     ) {
         match token {
-            BinXMLDeserializedTokens::Value(ref value) => {
-                if let BinXmlValue::BinXmlType(tokens) = value {
-                    for token in tokens.iter() {
-                        _expand_templates(token.clone(), stack);
+            BinXMLDeserializedTokens::Value(value) => match value {
+                BinXmlValue::BinXmlType(tokens) => {
+                    for token in tokens.into_iter() {
+                        _expand_templates(token, stack);
                     }
-                } else {
-                    stack.push(token)
                 }
-            }
+                _ => stack.push(BinXMLDeserializedTokens::Value(value)),
+            },
             BinXMLDeserializedTokens::TemplateInstance(template) => {
-                // We have to clone here since the templates **definitions** are shared.
-                for token in template.definition.tokens.iter().cloned() {
+                // We would like to consume the template token into an owned token tree.
+
+                // First. We clone ourselves a copy of the shared definitions.
+                let tokens: Vec<BinXMLDeserializedTokens> =
+                    template.definition.tokens.iter().cloned().collect();
+
+                // We move out the array from the template object, destroying the template object.
+                let mut substitution_array = template.substitution_array;
+
+                for token in tokens {
                     if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) =
                         token
                     {
                         if substitution_descriptor.ignore {
                             continue;
                         } else {
-                            // TODO: see if we can avoid this copy
-                            let value = &template.substitution_array
-                                [substitution_descriptor.substitution_index as usize];
-
-                            _expand_templates(
-                                BinXMLDeserializedTokens::Value(value.clone()),
-                                stack,
+                            // We swap out the node in the substitution array with a dummy value (to avoid copying it),
+                            // moving control of the original node to the new token tree.
+                            let value = mem::replace(
+                                &mut substitution_array
+                                    [substitution_descriptor.substitution_index as usize],
+                                BinXmlValue::NullType,
                             );
+
+                            _expand_templates(BinXMLDeserializedTokens::Value(value), stack);
                         }
                     } else {
                         _expand_templates(token, stack);

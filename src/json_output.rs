@@ -4,9 +4,11 @@ use crate::model::xml::XmlElement;
 use failure::{format_err, Error};
 use log::trace;
 
+use crate::binxml::value_variant::BinXmlValue;
 use crate::xml_output::BinXmlOutput;
 use core::borrow::{Borrow, BorrowMut};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
 
@@ -67,15 +69,22 @@ impl<W: Write> JsonOutput<W> {
 
     /// Like a regular node, but uses it's "Name" attribute.
     fn insert_data_node(&mut self, element: &XmlElement) -> Result<(), Error> {
-        trace!("inserting data node");
-        let name_attribute = element
+        trace!("inserting data node {:?}", &element);
+        match element
             .attributes
             .iter()
             .find(|a| a.name == BinXmlName::from_static_string("Name"))
-            .expect("Data node to have a name");
-
-        let data_key: &str = name_attribute.value.borrow();
-        self.insert_node_without_attributes(element, data_key)
+        {
+            Some(name) => {
+                let data_key: Cow<'_, str> = name.value.borrow().into();
+                self.insert_node_without_attributes(element, &data_key)
+            }
+            // Ignore this node
+            None => {
+                self.stack.push("Data".to_owned());
+                Ok(())
+            }
+        }
     }
 
     fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<(), Error> {
@@ -85,7 +94,7 @@ impl<W: Write> JsonOutput<W> {
         let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
             format_err!(
                 "This is a bug - expected parent container to exist, and to be an object type.\
-                 Check that the referenceing parent is not `Value::null`"
+                 Check that the referencing parent is not `Value::null`"
             )
         })?;
 
@@ -100,26 +109,43 @@ impl<W: Write> JsonOutput<W> {
     ) -> Result<(), Error> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
-        let value = self
-            .get_or_create_current_path()
-            .as_object_mut()
-            .ok_or_else(|| {
+
+        let mut attributes = Map::new();
+
+        for attribute in element.attributes.iter() {
+            let value: Value = attribute.value.clone().into();
+
+            if !value.is_null() {
+                let name: &str = attribute.name.as_str().into();
+                attributes.insert(name.to_owned(), value);
+            }
+        }
+
+        // If we have attributes, create a map as usual.
+        if attributes.len() > 0 {
+            let value = self
+                .get_or_create_current_path()
+                .as_object_mut()
+                .ok_or_else(|| {
+                    format_err!(
+                    "This is a bug - expected current value to exist, and to be an object type.\
+                     Check that the value is not `Value::null`"
+                )
+                })?;
+
+            value.insert("#attributes".to_owned(), Value::Object(attributes));
+        } else {
+            // If the object does not have attributes, replace it with a null placeholder,
+            // so it will be printed as a key-value pair
+            let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
                 format_err!(
                     "This is a bug - expected current value to exist, and to be an object type.\
                      Check that the value is not `Value::null`"
                 )
             })?;
 
-        let mut attributes = Map::new();
-
-        for attribute in element.attributes.iter() {
-            let name: &str = attribute.name.as_str().into();
-            let value_as_string: &str = attribute.value.borrow();
-
-            attributes.insert(name.to_owned(), Value::String(value_as_string.to_owned()));
+            value.insert(name.to_string(), Value::Null);
         }
-
-        value.insert("#attributes".to_owned(), Value::Object(attributes));
 
         Ok(())
     }
@@ -180,14 +206,14 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars {:?}", &self.stack);
         let current_value = self.get_or_create_current_path();
 
         // If our parent is an element without any attributes,
         // we simply swap the null with the string value.
         if current_value.is_null() {
-            mem::replace(current_value, Value::String(value.to_owned()));
+            mem::replace(current_value, value.clone().into());
         } else {
             // Should look like:
             // ----------------
@@ -201,7 +227,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
                 format_err!("This is a bug - expected current value to be an object type")
             })?;
 
-            current_object.insert("#text".to_owned(), Value::String(value.to_owned()));
+            current_object.insert("#text".to_owned(), value.clone().into());
         }
 
         Ok(())

@@ -287,7 +287,6 @@ impl<'a, 'c> Iterator for IterTokens<'a, 'c> {
 mod tests {
     use crate::ensure_env_logger_initialized;
     use crate::evtx_chunk::EvtxChunkData;
-    use pretty_assertions::assert_eq;
 
     #[test]
     fn test_reads_a_single_record() {
@@ -301,35 +300,6 @@ mod tests {
         for record in records.into_iter().take(1) {
             assert!(record.is_ok(), record.unwrap().into_xml())
         }
-    }
-
-    #[test]
-    fn test_event_xml_text_contains_all_closing_tags() {
-        ensure_env_logger_initialized();
-        let evtx_file = include_bytes!("../../samples/security.evtx");
-        let from_start_of_chunk = &evtx_file[4096..];
-
-        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.parse_records().unwrap();
-        let first_record = records
-            .into_iter()
-            .next()
-            .expect("iterator to have data")
-            .expect("record to be ok");
-
-        assert_eq!(
-            first_record
-                .into_xml()
-                .unwrap()
-                .data
-                .lines()
-                .map(|l| l.trim())
-                .collect::<String>(),
-            include_str!("../../samples/security_event_1.xml")
-                .lines()
-                .map(str::trim)
-                .collect::<String>()
-        );
     }
 
     #[test]

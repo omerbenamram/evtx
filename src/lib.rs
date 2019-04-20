@@ -16,6 +16,8 @@ mod model;
 mod ntsid;
 mod string_cache;
 mod template_cache;
+#[cfg(test)]
+mod tests;
 mod utils;
 
 mod json_output;

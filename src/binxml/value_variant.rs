@@ -11,6 +11,7 @@ use crate::utils::{
 };
 use chrono::{DateTime, Utc};
 use log::trace;
+use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
@@ -38,8 +39,8 @@ pub enum BinXmlValue<'a> {
     FileTimeType(DateTime<Utc>),
     SysTimeType(DateTime<Utc>),
     SidType(Sid),
-    HexInt32Type(String),
-    HexInt64Type(String),
+    HexInt32Type(Cow<'a, str>),
+    HexInt64Type(Cow<'a, str>),
     EvtHandle,
     // Because of the recursive type, we instantiate this enum via a method of the Deserializer
     BinXmlType(Vec<BinXMLDeserializedTokens<'a>>),
@@ -63,8 +64,8 @@ pub enum BinXmlValue<'a> {
     FileTimeArrayType(Vec<DateTime<Utc>>),
     SysTimeArrayType(Vec<DateTime<Utc>>),
     SidArrayType(Vec<Sid>),
-    HexInt32ArrayType(Vec<String>),
-    HexInt64ArrayType(Vec<String>),
+    HexInt32ArrayType(Vec<Cow<'a, str>>),
+    HexInt64ArrayType(Vec<Cow<'a, str>>),
     EvtArrayHandle,
     BinXmlArrayType,
     EvtXmlArrayType,
@@ -347,19 +348,83 @@ impl<'a> BinXmlValue<'a> {
     }
 }
 
-fn to_delimited_list<N: ToString>(ns: Vec<N>) -> String {
-    ns.iter()
+fn to_delimited_list<N: ToString>(ns: impl AsRef<Vec<N>>) -> String {
+    ns.as_ref()
+        .iter()
         .map(|n| n.to_string())
         .collect::<Vec<String>>()
         .join(",")
 }
 
-impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
+impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
+    fn into(self) -> Value {
+        match self {
+            BinXmlValue::NullType => Value::Null,
+            BinXmlValue::StringType(s) => json!(s.into_owned()),
+            BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
+            BinXmlValue::Int8Type(num) => json!(num),
+            BinXmlValue::UInt8Type(num) => json!(num),
+            BinXmlValue::Int16Type(num) => json!(num),
+            BinXmlValue::UInt16Type(num) => json!(num),
+            BinXmlValue::Int32Type(num) => json!(num),
+            BinXmlValue::UInt32Type(num) => json!(num),
+            BinXmlValue::Int64Type(num) => json!(num),
+            BinXmlValue::UInt64Type(num) => json!(num),
+            BinXmlValue::Real32Type(num) => json!(num),
+            BinXmlValue::Real64Type(num) => json!(num),
+            BinXmlValue::BoolType(num) => json!(num),
+            BinXmlValue::BinaryType(bytes) => {
+                // Bytes will be formatted as const length of 2 with '0' padding.
+                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                json!(repr)
+            }
+            BinXmlValue::GuidType(guid) => json!(guid.to_string()),
+            //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
+            BinXmlValue::FileTimeType(tm) => json!(tm),
+            BinXmlValue::SysTimeType(tm) => json!(tm),
+            BinXmlValue::SidType(sid) => json!(sid.to_string()),
+            BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
+            BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
+            BinXmlValue::StringArrayType(s) => json!(s),
+            BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt16ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Real32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Real64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::BoolArrayType(bools) => json!(bools),
+            BinXmlValue::GuidArrayType(guids) => {
+                json!(guids.iter().map(Guid::to_string).collect::<Vec<String>>())
+            }
+            BinXmlValue::FileTimeArrayType(filetimes) => json!(filetimes),
+            BinXmlValue::SysTimeArrayType(systimes) => json!(systimes),
+            BinXmlValue::SidArrayType(sids) => {
+                json!(sids.iter().map(Sid::to_string).collect::<Vec<String>>())
+            }
+            BinXmlValue::HexInt32ArrayType(hex_strings) => json!(hex_strings),
+            BinXmlValue::HexInt64ArrayType(hex_strings) => json!(hex_strings),
+            BinXmlValue::EvtHandle => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXmlValue::BinXmlType(_) => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXmlValue::EvtXml => panic!("Unsupported conversion, call `expand_templates` first"),
+            _ => unimplemented!("{:?}", self),
+        }
+    }
+}
+
+impl<'c> Into<Cow<'c, str>> for &'_ BinXmlValue<'c> {
     fn into(self) -> Cow<'c, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => s,
-            BinXmlValue::AnsiStringType(s) => s,
+            BinXmlValue::StringType(s) => s.clone(),
+            BinXmlValue::AnsiStringType(s) => s.clone(),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::Int16Type(num) => Cow::Owned(num.to_string()),
@@ -381,8 +446,8 @@ impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
             BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
-            BinXmlValue::HexInt32Type(hex_string) => Cow::Owned(hex_string),
-            BinXmlValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),
+            BinXmlValue::HexInt32Type(hex_string) => hex_string.clone(),
+            BinXmlValue::HexInt64Type(hex_string) => hex_string.clone(),
             BinXmlValue::StringArrayType(s) => Cow::Owned(s.join(",")),
             BinXmlValue::Int8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::UInt8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),

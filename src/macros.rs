@@ -74,11 +74,11 @@ macro_rules! try_read {
     };
 
     ($cursor: ident, hex32) => {
-        format!("0x{:x}", try_read!($cursor, i32))
+        Cow::Owned(format!("0x{:x}", try_read!($cursor, i32)))
     };
 
     ($cursor: ident, hex64) => {
-        format!("0x{:x}", try_read!($cursor, i64))
+        Cow::Owned(format!("0x{:x}", try_read!($cursor, i64)))
     };
 
     ($cursor: ident, filetime) => {

@@ -6,7 +6,9 @@ This is a parser for the Windows EVTX format.
 
 Note that it is complete as in the sense that it successfully parses a wide variety of samples, but I've yet to implement the full specification.
 
-This parser is implemented using 100% safe rust, and should work on recent (i'm testing against 1.34) versions of rust.
+This parser is implemented using 100% safe rust.
+
+Supported rust version is latest stable rust (minimum 1.34) or nightly.
 
 [Documentation](https://docs.rs/evtx/0.1.9/)
 
@@ -14,37 +16,26 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
 
 ## Example usage (associated binary utility):
   - `cargo install evtx`
-  - run `evtx_dump --input <evtx_file>` to dump contents of evtx records as xml.
+  - run `evtx_dump <evtx_file>` to dump contents of evtx records as xml.
+  - run `evtx_dump -o json <evtx_file>` to dump contents of evtx records as JSON.
 
 ## Example usage (as library):
 ```rust
-    use evtx::EvtxParser;
+use evtx::EvtxParser;
+use std::path::PathBuf;
+
+fn main() {
+    // Change this to a path of your .evtx sample. 
+    let fp = PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap())); 
     
-    fn main() {
-        let parser = EvtxParser::from_path(fp).unwrap();
-        for record in parser.records() {
-            match record {
-                Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
-                Err(e) => eprintln!("{}", e),
-            }
+    let mut parser = EvtxParser::from_path(fp).unwrap();
+    for record in parser.records() {
+        match record {
+            Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+            Err(e) => eprintln!("{}", e),
         }
     }
-```
-
-For parallel iteration (uses rayon):
-
-```rust
-    use evtx::EvtxParser;
-    
-    fn main() {
-        let parser = EvtxParser::from_path(fp).unwrap();
-        for record in parser.parallel_records() {
-            match record {
-                Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
-                Err(e) => eprintln!("{}", e),
-            }
-        }
-    }
+}
 ```
 
 The parallel version is enabled when compiling with feature "multithreading" (enabled by default).

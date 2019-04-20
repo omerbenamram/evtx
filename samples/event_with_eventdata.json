@@ -1,0 +1,54 @@
+{
+  "Event": {
+    "#attributes": {
+      "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+    },
+    "EventData": {
+      "CommandLine": "",
+      "MandatoryLabel": "S-1-16-16384",
+      "NewProcessId": "0x58",
+      "NewProcessName": "Registry",
+      "ParentProcessName": "",
+      "ProcessId": "0x4",
+      "SubjectDomainName": "-",
+      "SubjectLogonId": "0x3e7",
+      "SubjectUserName": "-",
+      "SubjectUserSid": "S-1-5-18",
+      "TargetDomainName": "-",
+      "TargetLogonId": "0x0",
+      "TargetUserName": "-",
+      "TargetUserSid": "S-1-0-0",
+      "TokenElevationType": "%%1936"
+    },
+    "System": {
+      "Channel": "Security",
+      "Computer": "WIN-LL0C19JS506",
+      "Correlation": null,
+      "EventID": 4688,
+      "EventRecordID": 1,
+      "Execution": {
+        "#attributes": {
+          "ProcessID": 4,
+          "ThreadID": 32
+        }
+      },
+      "Keywords": "0x8020000000000000",
+      "Level": 0,
+      "Opcode": 0,
+      "Provider": {
+        "#attributes": {
+          "Guid": "54849625-5478-4994-A5BA-3E3B0328C30D",
+          "Name": "Microsoft-Windows-Security-Auditing"
+        }
+      },
+      "Security": null,
+      "Task": 13312,
+      "TimeCreated": {
+        "#attributes": {
+          "SystemTime": "2018-07-28T07:24:45.754787Z"
+        }
+      },
+      "Version": 2
+    }
+  }
+}
