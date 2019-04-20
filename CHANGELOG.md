@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [UNRELEASED] - 2019-04-20
+
+This release contains some minor breaking changes to the API.
+
+### Added
+- Added JSON output support!
+  JSON support is powered by serde and is zero-copy! 
+  This means there isn't much performance difference between the XML output and the JSON output.
+
+- The deserializer is now lazy (thanks @ohadravid !).
+  This will allow to perform some filtering on records based on their metadata before serializing them to save time. 
+
+### Changed
+- Changed parallel iteration to rely only on `ParserSettings`, so `.parallel_records` has been removed.
+- `EvtxParser` now needs to be mutable when deserializing records. 
+
+### Fixed
+- Parser will now coerce values of booleans which are not zero or one to true.  
+
 ## [0.1.9] - 2019-04-19
 
 ### Added

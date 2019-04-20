@@ -134,7 +134,8 @@ pub fn expand_templates(
                 }
             }
             BinXMLDeserializedTokens::TemplateInstance(template) => {
-                // We would like to consume the token into a flat structure.
+                // We would like to consume the template token into an owned token tree.
+
                 // First. We clone ourselves a copy of the shared definitions.
                 let tokens: Vec<BinXMLDeserializedTokens> =
                     template.definition.tokens.iter().cloned().collect();
@@ -149,8 +150,8 @@ pub fn expand_templates(
                         if substitution_descriptor.ignore {
                             continue;
                         } else {
-                            // We swap out the relevant piece in the substitution array with a null value, since it will now be placed
-                            // In correct place in the new token tree.
+                            // We swap out the node in the substitution array with a dummy value (to avoid copying it),
+                            // moving control of the original node to the new token tree.
                             let value = mem::replace(
                                 &mut substitution_array
                                     [substitution_descriptor.substitution_index as usize],
