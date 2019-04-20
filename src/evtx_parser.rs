@@ -292,7 +292,6 @@ mod tests {
                         i as u64 + 1,
                         "Parser is skipping records!"
                     );
-                    println!("{}", r.data);
                 }
                 Err(e) => panic!("Error while reading record {}, {:?}", i, e),
             }
@@ -325,7 +324,6 @@ mod tests {
                         i as u64 + 1,
                         "Parser is skipping records!"
                     );
-                    println!("{}", r.data);
                 }
                 Err(e) => panic!("Error while reading record {}, {:?}", i, e),
             }
