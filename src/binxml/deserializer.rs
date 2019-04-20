@@ -23,23 +23,23 @@ use std::mem;
 use std::rc::Rc;
 
 // Alias that will make it easier to change context type if needed.
-pub type Context<'b> = Rc<Cache<'b>>;
+pub type Context<'a, 'b> = Rc<Cache<'a, 'b>>;
 
 #[derive(Clone, Debug, Default)]
-pub struct Cache<'c> {
-    string_cache: Option<&'c StringCache>,
-    template_cache: Option<&'c TemplateCache<'c>>,
+pub struct Cache<'a, 'c> {
+    string_cache: Option<&'a StringCache>,
+    template_cache: Option<&'c TemplateCache<'a>>,
 }
 
-impl<'c> Cache<'c> {
-    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&'c CachedString> {
+impl<'a, 'c> Cache<'a, 'c> {
+    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&'a CachedString> {
         match self.string_cache {
             Some(cache) => cache.get_string_and_hash(offset),
             None => None,
         }
     }
 
-    pub fn cached_template_at_offset(&self, offset: Offset) -> Option<CachedTemplate<'c>> {
+    pub fn cached_template_at_offset(&self, offset: Offset) -> Option<CachedTemplate<'a>> {
         match self.template_cache {
             Some(cache) => cache.get_template(offset),
             None => None,
@@ -47,26 +47,26 @@ impl<'c> Cache<'c> {
     }
 }
 
-pub struct IterTokens<'c> {
-    cursor: Cursor<&'c [u8]>,
-    ctx: Context<'c>,
+pub struct IterTokens<'a, 'c> {
+    cursor: Cursor<&'a [u8]>,
+    ctx: Context<'a, 'c>,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
 }
 
-pub struct BinXmlDeserializer<'c> {
-    data: &'c [u8],
+pub struct BinXmlDeserializer<'a, 'c> {
+    data: &'a [u8],
     offset: u64,
-    ctx: Context<'c>,
+    ctx: Context<'a, 'c>,
 }
 
-impl<'c> BinXmlDeserializer<'c> {
+impl<'a, 'c> BinXmlDeserializer<'a, 'c> {
     pub fn init(
-        data: &'c [u8],
+        data: &'a [u8],
         start_offset: u64,
-        string_cache: &'c StringCache,
-        template_cache: &'c TemplateCache<'c>,
+        string_cache: &'a StringCache,
+        template_cache: &'c TemplateCache<'a>,
     ) -> Self {
         let ctx = Cache {
             string_cache: Some(string_cache),
@@ -82,10 +82,10 @@ impl<'c> BinXmlDeserializer<'c> {
 
     /// Returns a tuple of the tokens.
     pub fn read_binxml_fragment(
-        cursor: &mut Cursor<&'c [u8]>,
-        ctx: Context<'c>,
+        cursor: &mut Cursor<&'a [u8]>,
+        ctx: Context<'a, 'c>,
         data_size: Option<u32>,
-    ) -> Result<Vec<BinXMLDeserializedTokens<'c>>, Error> {
+    ) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
         let offset = cursor.position();
 
         let de = BinXmlDeserializer {
@@ -119,7 +119,7 @@ impl<'c> BinXmlDeserializer<'c> {
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
-    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'c>, Error> {
+    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a, 'c>, Error> {
         let mut cursor = Cursor::new(self.data);
         cursor.seek(SeekFrom::Start(self.offset))?;
 
@@ -133,10 +133,10 @@ impl<'c> BinXmlDeserializer<'c> {
     }
 }
 
-impl<'c> IterTokens<'c> {
+impl<'a, 'c> IterTokens<'a, 'c> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
-    fn read_next_token(&self, cursor: &mut Cursor<&'c [u8]>) -> Result<BinXMLRawToken, Error> {
+    fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken, Error> {
         let token = cursor
             .read_u8()
             .map_err(|e| Error::unexpected_eof(e, cursor.position()))?;
@@ -147,10 +147,10 @@ impl<'c> IterTokens<'c> {
 
     fn visit_token(
         &self,
-        cursor: &mut Cursor<&'c [u8]>,
-        ctx: Context<'c>,
+        cursor: &mut Cursor<&'a [u8]>,
+        ctx: Context<'a, 'c>,
         raw_token: BinXMLRawToken,
-    ) -> Result<BinXMLDeserializedTokens<'c>, Error> {
+    ) -> Result<BinXMLDeserializedTokens<'a>, Error> {
         match raw_token {
             BinXMLRawToken::EndOfStream => Ok(BinXMLDeserializedTokens::EndOfStream),
             BinXMLRawToken::OpenStartElement(token_information) => {
@@ -199,8 +199,8 @@ impl<'c> IterTokens<'c> {
     }
 }
 
-impl<'c> IterTokens<'c> {
-    fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'c>, Error>> {
+impl<'a, 'c> IterTokens<'a, 'c> {
+    fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'a>, Error>> {
         let mut cursor = self.cursor.clone();
         let offset_from_chunk_start = cursor.position();
 
@@ -274,8 +274,8 @@ impl<'c> IterTokens<'c> {
     }
 }
 
-impl<'c> Iterator for IterTokens<'c> {
-    type Item = Result<BinXMLDeserializedTokens<'c>, Error>;
+impl<'a, 'c> Iterator for IterTokens<'a, 'c> {
+    type Item = Result<BinXMLDeserializedTokens<'a>, Error>;
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
@@ -295,11 +295,11 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.into_records().unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.parse_records().unwrap();
 
         for record in records.into_iter().take(1) {
-            assert!(record.is_ok(), record.unwrap())
+            assert!(record.is_ok(), record.unwrap().into_xml())
         }
     }
 
@@ -309,8 +309,8 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.into_records().unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.parse_records().unwrap();
         let first_record = records
             .into_iter()
             .next()
@@ -318,7 +318,13 @@ mod tests {
             .expect("record to be ok");
 
         assert_eq!(
-            first_record.data.lines().map(str::trim).collect::<String>(),
+            first_record
+                .into_xml()
+                .unwrap()
+                .data
+                .lines()
+                .map(|l| l.trim())
+                .collect::<String>(),
             include_str!("../../samples/security_event_1.xml")
                 .lines()
                 .map(str::trim)
@@ -332,11 +338,17 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.into_records().unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.parse_records().unwrap();
 
         for record in records.into_iter().take(100) {
-            assert!(!record.unwrap().data.chars().any(|c| c == '\0'))
+            assert!(!record
+                .unwrap()
+                .into_xml()
+                .unwrap()
+                .data
+                .chars()
+                .any(|c| c == '\0'))
         }
     }
 
@@ -347,11 +359,11 @@ mod tests {
             include_bytes!("../../samples/2-system-Microsoft-Windows-LiveId%4Operational.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.into_records().unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let records = chunk.parse_records().unwrap();
 
         for record in records.into_iter() {
-            let r = record.unwrap();
+            let r = record.unwrap().into_xml().unwrap();
             for line in r.data.lines() {
                 for char in line.chars() {
                     if char == '\0' {

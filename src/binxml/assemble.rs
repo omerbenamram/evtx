@@ -1,13 +1,13 @@
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::xml::{XmlElementBuilder, XmlModel};
-use crate::xml_output::BinXMLOutput;
+use crate::xml_output::BinXmlOutput;
 use failure::Error;
 use log::trace;
 use std::io::Write;
 
-pub fn parse_tokens<'c, W: Write, T: BinXMLOutput<'c, W>>(
-    tokens: Vec<BinXMLDeserializedTokens<'c>>,
+pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
+    tokens: Vec<BinXMLDeserializedTokens>,
     visitor: &mut T,
 ) -> Result<(), Error> {
     let expanded_tokens = expand_templates(tokens);

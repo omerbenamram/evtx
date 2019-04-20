@@ -1,13 +1,18 @@
+use crate::binxml::assemble::parse_tokens;
+use crate::json_output::JsonOutput;
+use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::utils::datetime_from_filetime;
+use crate::xml_output::{BinXmlOutput, XmlOutput};
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
+use failure::Error;
 use std::io::{self, Cursor, Read};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct EvtxRecord {
+pub struct EvtxRecord<'a> {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
-    pub data: String,
+    pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +20,13 @@ pub struct EvtxRecordHeader {
     pub data_size: u32,
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SerializedEvtxRecord {
+    pub event_record_id: u64,
+    pub timestamp: DateTime<Utc>,
+    pub data: String,
 }
 
 impl EvtxRecordHeader {
@@ -38,5 +50,32 @@ impl EvtxRecordHeader {
         // 24 - record header size
         // 4 - copy of size record size
         self.data_size - 24 - 4
+    }
+}
+
+impl<'a> EvtxRecord<'a> {
+    /// Consumes the record, returning a `SerializedEvtxRecord` with the serialized data.
+    pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord, Error> {
+        let mut output_builder = T::with_writer(Vec::new());
+
+        parse_tokens(self.tokens, &mut output_builder)?;
+
+        let data = String::from_utf8(output_builder.into_writer()?)?;
+
+        Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data,
+        })
+    }
+
+    /// Consumes the record and parse it, producing a JSON serialized record.
+    pub fn into_json(self) -> Result<SerializedEvtxRecord, Error> {
+        self.into_serialized::<JsonOutput<Vec<u8>>>()
+    }
+
+    /// Consumes the record and parse it, producing an XML serialized record.
+    pub fn into_xml(self) -> Result<SerializedEvtxRecord, Error> {
+        self.into_serialized::<XmlOutput<Vec<u8>>>()
     }
 }

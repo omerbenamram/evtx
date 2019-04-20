@@ -1,18 +1,22 @@
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
-use crate::evtx_record::EvtxRecord;
+use crate::evtx_record::SerializedEvtxRecord;
 #[cfg(feature = "multithreading")]
-use rayon::{current_num_threads, prelude::*};
+use rayon;
+#[cfg(feature = "multithreading")]
+use rayon::prelude::*;
 
 use failure::Error;
-use log::{debug, info};
+use log::debug;
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{Flatten, IntoIterator, Iterator};
+use std::iter::{IntoIterator, Iterator};
 
+use crate::json_output::JsonOutput;
+use crate::xml_output::{BinXmlOutput, XmlOutput};
+use std::cmp::max;
 use std::path::Path;
-use std::vec::IntoIter;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -25,12 +29,83 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
+/// Wraps a single `EvtxFileHeader`.
+///
+///
+/// Example usage (single threaded):
+///
+/// ```rust
+/// # use evtx::EvtxParser;
+/// # let fp = std::path::PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap()));
+///
+///
+/// let mut parser = EvtxParser::from_path(fp).unwrap();
+///
+/// for record in parser.records() {
+///     match record {
+///         Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+///         Err(e) => eprintln!("{}", e),
+///     }
+/// }
+///
+///
+/// ```
+/// Example usage (multi-threaded):
+///
+/// ```rust
+/// # use evtx::{EvtxParser, ParserSettings};
+/// # let fp = std::path::PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap()));
+///
+///
+/// let settings = ParserSettings::default().num_threads(0);
+/// let mut parser = EvtxParser::from_path(fp).unwrap().with_configuration(settings);
+///
+/// for record in parser.records() {
+///     match record {
+///         Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+///         Err(e) => eprintln!("{}", e),
+///     }
+/// }
+///
+/// ```
+///  
 pub struct EvtxParser<T: ReadSeek> {
     data: T,
     header: EvtxFileHeader,
+    config: ParserSettings,
+}
+
+#[derive(Clone)]
+pub struct ParserSettings {
+    num_threads: usize,
+}
+
+impl Default for ParserSettings {
+    fn default() -> Self {
+        ParserSettings { num_threads: 0 }
+    }
+}
+
+impl ParserSettings {
+    pub fn new() -> Self {
+        ParserSettings::default()
+    }
+
+    /// Sets the number of worker threads.
+    /// `0` will let rayon decide.
+    pub fn num_threads(mut self, num_threads: usize) -> Self {
+        self.num_threads = if num_threads == 0 {
+            rayon::current_num_threads()
+        } else {
+            num_threads
+        };
+        self
+    }
 }
 
 impl EvtxParser<File> {
+    /// Attempts to load an evtx file from a given path, will fail if the path does not exist,
+    /// or if evtx header is invalid.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
         let path = path.as_ref().canonicalize()?;
         let f = File::open(&path)?;
@@ -41,6 +116,7 @@ impl EvtxParser<File> {
 }
 
 impl EvtxParser<Cursor<Vec<u8>>> {
+    /// Attempts to load an evtx file from a given path, will fail the evtx header is invalid.
     pub fn from_buffer(buffer: Vec<u8>) -> Result<Self, Error> {
         let cursor = Cursor::new(buffer);
         Self::from_read_seek(cursor)
@@ -55,7 +131,13 @@ impl<T: ReadSeek> EvtxParser<T> {
         Ok(EvtxParser {
             data: read_seek,
             header: evtx_header,
+            config: ParserSettings::default(),
         })
+    }
+
+    pub fn with_configuration(mut self, configuration: ParserSettings) -> Self {
+        self.config = configuration;
+        self
     }
 
     pub fn allocate_chunk(data: &mut T, chunk_number: u16) -> Result<EvtxChunkData, Error> {
@@ -70,129 +152,101 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data)
     }
 
-    #[cfg(feature = "multithreading")]
-    pub fn parallel_records(self) -> IterRecords<T> {
-        IterRecords {
-            header: self.header,
-            data: self.data,
+    /// Return an iterator over all the chunks.
+    /// Each chunk supports iterating over it's records in their un-serialized state
+    /// (before they are converted to XML or JSON).
+    pub fn chunks(&mut self) -> IterChunks<T> {
+        IterChunks {
+            parser: self,
             current_chunk_number: 0,
-            chunk_records: None,
-            num_threads: current_num_threads(),
-            exhausted: false,
         }
     }
 
-    pub fn records(self) -> IterRecords<T> {
-        IterRecords {
-            header: self.header,
-            data: self.data,
-            current_chunk_number: 0,
-            chunk_records: None,
-            num_threads: 1,
-            exhausted: false,
-        }
-    }
-}
+    /// Return an iterator over all the records.
+    /// Records will be serialized using the given `BinXmlOutput`.
+    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+        let num_threads = max(self.config.num_threads, 1);
+        let mut chunks = self.chunks();
 
-impl<T: ReadSeek> IterRecords<T> {
-    fn allocate_chunks(&mut self) -> Result<(), Error> {
-        let mut chunks = vec![];
+        let records_per_chunk = std::iter::from_fn(move || {
+            // Allocate some chunks in advance, so they can be parsed in parallel.
+            let mut chunk_of_chunks = Vec::with_capacity(num_threads);
 
-        // Some dirty samples contains additional chunks (further than the marked number).
-        // So instead of trusting the file header, we opportunistically try to read a bit further.
-        // If we fail, we terminate iteration.
-        for _ in 0..self.num_threads {
-            info!("Allocating new chunk {}", self.current_chunk_number);
-            match EvtxParser::allocate_chunk(&mut self.data, self.current_chunk_number) {
-                Ok(chunk) => {
-                    chunks.push(chunk);
-                    self.current_chunk_number += 1;
-                }
-                Err(_) => {
-                    info!("Next block does not contain a valid chunk. terminating iteration.");
-                    self.exhausted = true;
-                    break;
-                }
+            for _ in 0..num_threads {
+                if let Some(chunk) = chunks.next() {
+                    chunk_of_chunks.push(chunk);
+                };
             }
-        }
 
-        #[cfg(feature = "multithreading")]
-        let iterators: Result<
-            Vec<Vec<Result<EvtxRecord, failure::Error>>>,
-            failure::Error,
-        > = {
-            if self.num_threads > 1 {
-                chunks
-                    .into_par_iter()
-                    .map(EvtxChunkData::into_records)
-                    .collect()
+            // We only stop once no chunks can be allocated.
+            if chunk_of_chunks.is_empty() {
+                None
             } else {
-                chunks
-                    .into_iter()
-                    .map(EvtxChunkData::into_records)
-                    .collect()
-            }
-        };
+                #[cfg(feature = "multithreading")]
+                let chunk_iter = chunk_of_chunks.into_par_iter();
 
-        #[cfg(not(feature = "multithreading"))]
-        let mut iterators: Result<
-            Vec<Vec<Result<EvtxRecord, failure::Error>>>,
-            failure::Error,
-        > = chunks
-            .into_iter()
-            .map(EvtxChunkData::into_records)
-            .collect();
+                #[cfg(not(feature = "multithreading"))]
+                let chunk_iter = chunk_of_chunks.into_iter();
 
-        match iterators {
-            Ok(inner) => {
-                self.chunk_records = Some(inner.into_iter().flatten());
-                Ok(())
+                // Serialize the records in each chunk.
+                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter
+                    .map(|chunk_res| match chunk_res {
+                        Err(err) => vec![Err(err)],
+                        Ok(mut chunk) => {
+                            let chunk_records_res = chunk.parse_serialized_records::<O>();
+
+                            match chunk_records_res {
+                                Err(err) => vec![Err(err)],
+                                Ok(chunk_records) => chunk_records.collect(),
+                            }
+                        }
+                    })
+                    .collect();
+
+                Some(iterators.into_iter().flatten().into_iter())
             }
-            Err(e) => Err(e),
-        }
+        });
+
+        records_per_chunk.flatten()
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will be XML-formatted.
+    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+        // '_ is required in the signature because the iterator is bound to &self.
+        self.serialized_records::<XmlOutput<Vec<u8>>>()
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will be JSON-formatted.
+    pub fn records_json(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+        self.serialized_records::<JsonOutput<Vec<u8>>>()
     }
 }
 
-type FlatIterator<T> = Flatten<IntoIter<Vec<T>>>;
-
-pub struct IterRecords<T: ReadSeek> {
-    header: EvtxFileHeader,
-    data: T,
+pub struct IterChunks<'c, T: ReadSeek> {
+    parser: &'c mut EvtxParser<T>,
     current_chunk_number: u16,
-    chunk_records: Option<FlatIterator<Result<EvtxRecord, failure::Error>>>,
-    num_threads: usize,
-    // This is turned on when the next chunk is invalid data.
-    exhausted: bool,
 }
 
-impl<T: ReadSeek> Iterator for IterRecords<T> {
-    type Item = Result<EvtxRecord, Error>;
+impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
+    type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        // Load first chunk
-        if self.chunk_records.is_none() {
-            if let Err(e) = self.allocate_chunks() {
-                return Some(Err(e));
-            }
+        let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number);
+
+        // We try to read past the `chunk_count` to allow for dirty files.
+        // But if we failed, it means we really are at the end of the file.
+        if next.is_err() && self.current_chunk_number >= self.parser.header.chunk_count {
+            return None;
         }
 
-        let mut next = self.chunk_records.as_mut().unwrap().next();
+        self.current_chunk_number += 1;
 
-        // Need to load a new chunk.
-        if next.is_none() {
-            // If the next chunk is going to be more than the chunk count (which is 1 based)
-            if let Err(e) = self.allocate_chunks() {
-                return Some(Err(e));
-            }
-
-            // When using multiple threads, we may reach exhaustion but still have some data left.
-            if self.exhausted && self.chunk_records.is_none() {
-                return None;
-            }
-
-            next = self.chunk_records.as_mut().unwrap().next()
-        }
-
-        next
+        Some(next)
     }
 }
 
@@ -204,7 +258,7 @@ mod tests {
     use crate::ensure_env_logger_initialized;
 
     fn process_90_records(buffer: &'static [u8]) {
-        let parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(90).enumerate() {
             match record {
@@ -226,7 +280,7 @@ mod tests {
     #[test]
     fn test_sample_2() {
         let evtx_file = include_bytes!("../samples/system.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         let records: Vec<_> = parser.records().take(10).collect();
 
@@ -261,7 +315,7 @@ mod tests {
     fn test_parses_first_10_records() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(10).enumerate() {
             match record {
@@ -282,7 +336,7 @@ mod tests {
     fn test_parses_records_from_different_chunks() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for (i, record) in parser.records().take(1000).enumerate() {
             match record {
@@ -302,10 +356,10 @@ mod tests {
 
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         let mut record_ids = HashSet::new();
-        for record in parser.parallel_records().take(1000) {
+        for record in parser.records().take(1000) {
             match record {
                 Ok(r) => {
                     record_ids.insert(r.event_record_id);
@@ -321,9 +375,10 @@ mod tests {
     fn test_file_with_only_a_single_chunk() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        assert_eq!(parser.records().count(), 4);
+        let records: Vec<_> = parser.records().collect();
+        assert_eq!(records.len(), 4);
     }
 
     #[test]
@@ -331,7 +386,7 @@ mod tests {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
 
-        let chunk = EvtxChunkData::new(
+        let mut chunk = EvtxChunkData::new(
             evtx_file[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
@@ -347,7 +402,7 @@ mod tests {
             }
 
             if let Ok(r) = record {
-                println!("{}", r.data);
+                println!("{}", r.into_xml().unwrap().data);
             }
         }
     }
@@ -358,7 +413,7 @@ mod tests {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
 
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         let mut count = 0;
         for r in parser.records() {
@@ -368,9 +423,10 @@ mod tests {
         assert_eq!(count, 14621, "Single threaded iteration failed");
 
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = parser.with_configuration(ParserSettings { num_threads: 8 });
 
         let mut count = 0;
-        for r in parser.parallel_records() {
+        for r in parser.records() {
             r.unwrap();
             count += 1;
         }
@@ -384,7 +440,7 @@ mod tests {
         // This sample contains boolean values which are not zero or one.
         let evtx_file = include_bytes!("../samples/sample-with-irregular-bool-values.evtx");
 
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for r in parser.records() {
             r.unwrap();

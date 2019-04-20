@@ -177,11 +177,11 @@ impl BinXmlValueType {
     }
 }
 
-impl<'c> BinXmlValue<'c> {
-    pub fn from_binxml_stream(
-        cursor: &mut Cursor<&'c [u8]>,
-        ctx: Context<'c>,
-    ) -> Result<BinXmlValue<'c>, Error> {
+impl<'a> BinXmlValue<'a> {
+    pub fn from_binxml_stream<'c>(
+        cursor: &mut Cursor<&'a [u8]>,
+        ctx: Context<'a, 'c>,
+    ) -> Result<BinXmlValue<'a>, Error> {
         let value_type_token = try_read!(cursor, u8);
 
         let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
@@ -193,11 +193,11 @@ impl<'c> BinXmlValue<'c> {
         Ok(data)
     }
 
-    pub fn deserialize_value_type(
+    pub fn deserialize_value_type<'c>(
         value_type: &BinXmlValueType,
-        cursor: &mut Cursor<&'c [u8]>,
-        ctx: Context<'c>,
-    ) -> Result<BinXmlValue<'c>, Error> {
+        cursor: &mut Cursor<&'a [u8]>,
+        ctx: Context<'a, 'c>,
+    ) -> Result<BinXmlValue<'a>, Error> {
         let value = match value_type {
             BinXmlValueType::NullType => BinXmlValue::NullType,
             BinXmlValueType::StringType => BinXmlValue::StringType(try_read!(cursor, utf_16_str)),
@@ -240,12 +240,12 @@ impl<'c> BinXmlValue<'c> {
         Ok(value)
     }
 
-    pub fn deserialized_sized_value_type(
+    pub fn deserialized_sized_value_type<'c>(
         value_type: &BinXmlValueType,
-        cursor: &mut Cursor<&'c [u8]>,
-        ctx: Context<'c>,
+        cursor: &mut Cursor<&'a [u8]>,
+        ctx: Context<'a, 'c>,
         size: u16,
-    ) -> Result<BinXmlValue<'c>, Error> {
+    ) -> Result<BinXmlValue<'a>, Error> {
         trace!(
             "deserialized_sized_value_type: {:?}, {:?}",
             value_type,

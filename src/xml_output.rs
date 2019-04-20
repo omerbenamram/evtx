@@ -1,25 +1,19 @@
 use crate::model::xml::XmlElement;
 use core::borrow::Borrow;
 use log::trace;
-
 use std::io::Write;
 
 use quick_xml::events::attributes::Attribute;
-use quick_xml::events::{BytesDecl, BytesStart, BytesText, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
-use crate::binxml::name::BinXmlName;
 use failure::{bail, format_err, Error};
 
-pub trait BinXMLOutput<'a, W: Write> {
+pub trait BinXmlOutput<W: Write> {
     fn with_writer(target: W) -> Self;
     fn into_writer(self) -> Result<W, Error>;
-
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
-    fn visit_open_start_element(
-        &mut self,
-        open_start_element: &XmlElement<'a>,
-    ) -> Result<(), Error>;
+    fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<(), Error>;
     fn visit_close_element(&mut self) -> Result<(), Error>;
     fn visit_characters(&mut self, value: &str) -> Result<(), Error>;
     fn visit_cdata_section(&mut self) -> Result<(), Error>;
@@ -29,18 +23,19 @@ pub trait BinXMLOutput<'a, W: Write> {
     fn visit_start_of_stream(&mut self) -> Result<(), Error>;
 }
 
-pub struct XMLOutput<'a, W: Write> {
+pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
     eof_reached: bool,
-    stack: Vec<BinXmlName<'a>>,
+    // TODO: Bring back Vec<BinXmlName<'a>> if possible.
+    stack: Vec<String>,
 }
 
 /// Adapter between binxml XmlModel type and quick-xml events.
-impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
+impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn with_writer(target: W) -> Self {
         let writer = Writer::new_with_indent(target, b' ', 2);
 
-        XMLOutput {
+        XmlOutput {
             writer,
             eof_reached: false,
             stack: vec![],
@@ -64,7 +59,7 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement<'a>) -> Result<(), Error> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element);
         if self.eof_reached {
             bail!("Impossible state - `visit_open_start_element` after EOF");
@@ -72,7 +67,7 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
 
         // TODO: we could improve performance even further if we could somehow avoid this clone,
         // and share this borrow to the end element.
-        self.stack.push(element.name.clone());
+        self.stack.push(element.name.as_str().to_owned());
 
         let mut event_builder = BytesStart::from(element.name.borrow().into());
 
@@ -95,14 +90,15 @@ impl<'a, W: Write> BinXMLOutput<'a, W> for XMLOutput<'a, W> {
             .pop()
             .ok_or_else(|| format_err!("invalid stack state"))?;
 
-        let event = name.into();
+        let event = BytesEnd::owned(name.into_bytes());
+
         self.writer.write_event(Event::End(event))?;
         Ok(())
     }
 
     fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
         trace!("visit_chars");
-        let event = BytesText::from_escaped_str(value);
+        let event = BytesText::from_plain_str(value);
         self.writer.write_event(Event::Text(event))?;
         Ok(())
     }

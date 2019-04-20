@@ -1,10 +1,9 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use failure::{self, bail, format_err};
 
-use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
+use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 use crate::utils::*;
-use crate::xml_output::BinXMLOutput;
-use crate::xml_output::XMLOutput;
+use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
 use std::{
@@ -13,7 +12,6 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
-use crate::binxml::assemble::parse_tokens;
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
@@ -48,9 +46,12 @@ impl Debug for EvtxChunkHeader {
     }
 }
 
+/// A struct which owns all the data associated with a chunk.
+/// See EvtxChunk for more.
 pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
+    pub string_cache: StringCache,
 }
 
 impl EvtxChunkData {
@@ -58,19 +59,37 @@ impl EvtxChunkData {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let chunk = EvtxChunkData { header, data };
+        let chunk = EvtxChunkData {
+            header,
+            data,
+            string_cache: StringCache::new(),
+        };
         if !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
 
         Ok(chunk)
     }
-    pub fn into_records(self) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
-        Ok(self.parse()?.into_iter().collect())
+
+    pub fn parse_records(
+        &mut self,
+    ) -> Result<impl Iterator<Item = Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
+        Ok(self.parse()?.into_iter())
     }
 
-    pub fn parse(&self) -> Result<EvtxChunk, failure::Error> {
-        EvtxChunk::new(&self.data, &self.header)
+    pub fn parse_serialized_records<O: BinXmlOutput<Vec<u8>>>(
+        &mut self,
+    ) -> Result<
+        impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + '_,
+        failure::Error,
+    > {
+        Ok(self
+            .parse_records()?
+            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>())))
+    }
+
+    pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {
+        EvtxChunk::new(&self.data, &self.header, &mut self.string_cache)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -119,10 +138,13 @@ impl EvtxChunkData {
     }
 }
 
+/// A struct which can hold references to chunk data (`EvtxChunkData`).
+/// All references are created together,
+/// and can be assume to live for the entire duration of the parsing phase.
 pub struct EvtxChunk<'a> {
     pub data: &'a [u8],
     pub header: &'a EvtxChunkHeader,
-    pub string_cache: StringCache,
+    pub string_cache: &'a StringCache,
     pub template_table: TemplateCache<'a>,
 }
 
@@ -131,21 +153,21 @@ impl<'a> EvtxChunk<'a> {
     pub fn new(
         data: &'a [u8],
         header: &'a EvtxChunkHeader,
+        string_cache: &'a mut StringCache,
     ) -> Result<EvtxChunk<'a>, failure::Error> {
         let _cursor = Cursor::new(data);
 
-        let mut string_table = StringCache::new();
         let mut template_table = TemplateCache::new();
 
         info!("Initializing string cache");
-        string_table.populate(&data, &header.strings_offsets)?;
+        string_cache.populate(&data, &header.strings_offsets)?;
         info!("Initializing template cache");
         template_table.populate(&data, &header.template_offsets)?;
 
         Ok(EvtxChunk {
             header,
             data,
-            string_cache: string_table,
+            string_cache,
             template_table,
         })
     }
@@ -158,7 +180,7 @@ pub struct IterChunkRecords<'a> {
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = Result<EvtxRecord, failure::Error>;
+    type Item = Result<EvtxRecord<'a>, failure::Error>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
@@ -176,16 +198,16 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let binxml_data_size = record_header.record_data_size();
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+
+        // `EvtxChunk` only owns `template_table`, which we want to loan to the Deserializer.
+        // `data` and `string_cache` are both references and are `Copy`ed when passed to init.
+        // We avoid creating new references so that `BinXmlDeserializer` can still generate 'a data.
         let deserializer = BinXmlDeserializer::init(
-            &self.chunk.data,
+            self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
-            &self.chunk.string_cache,
+            self.chunk.string_cache,
             &self.chunk.template_table,
         );
-
-        // Setup a buffer to receive XML output.
-        let record_buffer = Vec::new();
-        let mut output_builder = XMLOutput::with_writer(record_buffer);
 
         let mut tokens = vec![];
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)) {
@@ -220,20 +242,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
-        if let Err(e) = parse_tokens(tokens, &mut output_builder) {
-            return Some(Err(e));
-        }
-
-        let data = match output_builder.into_writer() {
-            Ok(output) => match String::from_utf8(output) {
-                Ok(s) => s,
-                Err(_utf_err) => {
-                    return Some(Err(format_err!("UTF-8 conversion of output failed")))
-                }
-            },
-            Err(e) => return Some(Err(e)),
-        };
-
         if self.chunk.header.last_event_record_id == record_header.event_record_id {
             self.exhausted = true;
         }
@@ -241,13 +249,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         Some(Ok(EvtxRecord {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            data,
+            tokens,
         }))
     }
 }
 
 impl<'a> IntoIterator for EvtxChunk<'a> {
-    type Item = Result<EvtxRecord, failure::Error>;
+    type Item = Result<EvtxRecord<'a>, failure::Error>;
     type IntoIter = IterChunkRecords<'a>;
 
     fn into_iter(self) -> <Self as IntoIterator>::IntoIter {

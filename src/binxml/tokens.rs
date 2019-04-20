@@ -13,10 +13,10 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::rc::Rc;
 
-pub fn read_template<'c>(
-    cursor: &mut Cursor<&'c [u8]>,
-    ctx: Context<'c>,
-) -> Result<BinXmlTemplate<'c>, Error> {
+pub fn read_template<'a, 'c>(
+    cursor: &mut Cursor<&'a [u8]>,
+    ctx: Context<'a, 'c>,
+) -> Result<BinXmlTemplate<'a>, Error> {
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8);
@@ -113,10 +113,10 @@ pub fn read_template<'c>(
     })
 }
 
-pub fn read_template_definition<'c>(
-    cursor: &mut Cursor<&'c [u8]>,
-    ctx: Context<'c>,
-) -> Result<BinXMLTemplateDefinition<'c>, Error> {
+pub fn read_template_definition<'a, 'c>(
+    cursor: &mut Cursor<&'a [u8]>,
+    ctx: Context<'a, 'c>,
+) -> Result<BinXMLTemplateDefinition<'a>, Error> {
     let next_template_offset = try_read!(cursor, u32);
 
     let template_guid = Guid::from_stream(cursor)
@@ -138,10 +138,10 @@ pub fn read_template_definition<'c>(
     })
 }
 
-pub fn read_entity_ref<'c>(
-    cursor: &mut Cursor<&'c [u8]>,
-    ctx: Context<'c>,
-) -> Result<BinXmlEntityReference<'c>, Error> {
+pub fn read_entity_ref<'a, 'c>(
+    cursor: &mut Cursor<&'a [u8]>,
+    ctx: Context<'a, 'c>,
+) -> Result<BinXmlEntityReference<'a>, Error> {
     trace!("EntityReference at {}", cursor.position());
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
     trace!("\t name: {:?}", name);
@@ -149,10 +149,10 @@ pub fn read_entity_ref<'c>(
     Ok(BinXmlEntityReference { name })
 }
 
-pub fn read_attribute<'c>(
-    cursor: &mut Cursor<&'c [u8]>,
-    ctx: Context<'c>,
-) -> Result<BinXMLAttribute<'c>, Error> {
+pub fn read_attribute<'a, 'c>(
+    cursor: &mut Cursor<&'a [u8]>,
+    ctx: Context<'a, 'c>,
+) -> Result<BinXMLAttribute<'a>, Error> {
     let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
 
     Ok(BinXMLAttribute { name })
@@ -188,11 +188,11 @@ pub fn read_substitution(
     })
 }
 
-pub fn read_open_start_element<'c>(
-    cursor: &mut Cursor<&'c [u8]>,
-    ctx: Context<'c>,
+pub fn read_open_start_element<'a, 'c>(
+    cursor: &mut Cursor<&'a [u8]>,
+    ctx: Context<'a, 'c>,
     has_attributes: bool,
-) -> Result<BinXMLOpenStartElement<'c>, Error> {
+) -> Result<BinXMLOpenStartElement<'a>, Error> {
     // Reserved
     let _ = try_read!(cursor, u16);
     let data_size = try_read!(cursor, u32);

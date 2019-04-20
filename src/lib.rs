@@ -3,7 +3,7 @@
 mod macros;
 
 pub mod evtx_parser;
-pub use evtx_parser::EvtxParser;
+pub use evtx_parser::{EvtxParser, ParserSettings};
 pub use evtx_record::EvtxRecord;
 
 mod binxml;
@@ -18,6 +18,7 @@ mod string_cache;
 mod template_cache;
 mod utils;
 
+mod json_output;
 mod xml_output;
 
 pub type Offset = u32;
