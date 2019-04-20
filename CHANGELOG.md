@@ -18,7 +18,8 @@ This release contains some minor breaking changes to the API.
 
 ### Changed
 - Changed parallel iteration to rely only on `ParserSettings`, so `.parallel_records` has been removed.
-- `EvtxParser` now needs to be mutable when deserializing records. 
+- `EvtxParser` now needs to be mutable when deserializing records.
+- When outputting target as XML, inner xml strings will be escaped, when using JSON, they will not be escaped. 
 
 ### Fixed
 - Parser will now coerce values of booleans which are not zero or one to true.  

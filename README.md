@@ -21,17 +21,21 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
 
 ## Example usage (as library):
 ```rust
-    use evtx::EvtxParser;
+use evtx::EvtxParser;
+use std::path::PathBuf;
+
+fn main() {
+    // Change this to a path of your .evtx sample. 
+    let fp = PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap())); 
     
-    fn main() {
-        let mut parser = EvtxParser::from_path(fp).unwrap();
-        for record in parser.records() {
-            match record {
-                Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
-                Err(e) => eprintln!("{}", e),
-            }
+    let mut parser = EvtxParser::from_path(fp).unwrap();
+    for record in parser.records() {
+        match record {
+            Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+            Err(e) => eprintln!("{}", e),
         }
     }
+}
 ```
 
 The parallel version is enabled when compiling with feature "multithreading" (enabled by default).

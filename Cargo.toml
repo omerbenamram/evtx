@@ -39,6 +39,10 @@ multithreading = ["rayon"]
 [dev-dependencies]
 pretty_assertions = "0.6.1"
 criterion = "0.2"
+skeptic = "0.13"
+
+[build-dependencies]
+skeptic = "0.13"
 
 [[bin]]
 name = "evtx_dump"
