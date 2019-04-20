@@ -97,11 +97,13 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         let mut event_builder = BytesStart::from(element.name.borrow().into());
 
         for attr in element.attributes.iter() {
-            let name_as_str = attr.name.as_str();
-
             let value_cow: Cow<'_, str> = attr.value.borrow().into();
-            let attr = Attribute::from((name_as_str, value_cow.as_ref()));
-            event_builder.push_attribute(attr);
+
+            if value_cow.len() > 0 {
+                let name_as_str = attr.name.as_str();
+                let attr = Attribute::from((name_as_str, value_cow.as_ref()));
+                event_builder.push_attribute(attr);
+            }
         }
 
         self.writer.write_event(Event::Start(event_builder))?;

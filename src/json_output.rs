@@ -102,26 +102,40 @@ impl<W: Write> JsonOutput<W> {
     ) -> Result<(), Error> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
-        let value = self
-            .get_or_create_current_path()
-            .as_object_mut()
-            .ok_or_else(|| {
+
+        let mut attributes = Map::new();
+
+        for attribute in element.attributes.iter() {
+            let value: Value = attribute.value.clone().into();
+
+            if !value.is_null() {
+                let name: &str = attribute.name.as_str().into();
+                attributes.insert(name.to_owned(), value);
+            }
+        }
+
+        if attributes.len() > 0 {
+            let value = self
+                .get_or_create_current_path()
+                .as_object_mut()
+                .ok_or_else(|| {
+                    format_err!(
+                    "This is a bug - expected current value to exist, and to be an object type.\
+                     Check that the value is not `Value::null`"
+                )
+                })?;
+
+            value.insert("#attributes".to_owned(), Value::Object(attributes));
+        } else {
+            let mut value = self.get_current_parent().as_object_mut().ok_or_else(|| {
                 format_err!(
                     "This is a bug - expected current value to exist, and to be an object type.\
                      Check that the value is not `Value::null`"
                 )
             })?;
 
-        let mut attributes = Map::new();
-
-        for attribute in element.attributes.iter() {
-            let name: &str = attribute.name.as_str().into();
-            let value: Value = attribute.value.clone().into();
-
-            attributes.insert(name.to_owned(), value);
+            value.insert(name.to_string(), Value::Null);
         }
-
-        value.insert("#attributes".to_owned(), Value::Object(attributes));
 
         Ok(())
     }
