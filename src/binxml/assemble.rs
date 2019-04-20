@@ -124,15 +124,14 @@ pub fn expand_templates(
         stack: &mut Vec<BinXMLDeserializedTokens<'c>>,
     ) {
         match token {
-            BinXMLDeserializedTokens::Value(ref value) => {
-                if let BinXmlValue::BinXmlType(tokens) = value {
-                    for token in tokens.iter() {
-                        _expand_templates(token.clone(), stack);
+            BinXMLDeserializedTokens::Value(value) => match value {
+                BinXmlValue::BinXmlType(tokens) => {
+                    for token in tokens.into_iter() {
+                        _expand_templates(token, stack);
                     }
-                } else {
-                    stack.push(token)
                 }
-            }
+                _ => stack.push(BinXMLDeserializedTokens::Value(value)),
+            },
             BinXMLDeserializedTokens::TemplateInstance(template) => {
                 // We would like to consume the template token into an owned token tree.
 
