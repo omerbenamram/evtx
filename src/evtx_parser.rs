@@ -377,4 +377,17 @@ mod tests {
 
         assert_eq!(count, 14621, "Parallel iteration failed");
     }
+
+    #[test]
+    fn test_parses_sample_with_irregular_boolean_values() {
+        ensure_env_logger_initialized();
+        // This sample contains boolean values which are not zero or one.
+        let evtx_file = include_bytes!("../samples/sample-with-irregular-bool-values.evtx");
+
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        for r in parser.records() {
+            r.unwrap();
+        }
+    }
 }

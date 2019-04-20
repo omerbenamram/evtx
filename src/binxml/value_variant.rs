@@ -10,6 +10,7 @@ use crate::utils::{
     datetime_from_filetime, read_len_prefixed_utf16_string, read_systemtime, read_utf16_by_size,
 };
 use chrono::{DateTime, Utc};
+use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
@@ -245,6 +246,11 @@ impl<'c> BinXmlValue<'c> {
         ctx: Context<'c>,
         size: u16,
     ) -> Result<BinXmlValue<'c>, Error> {
+        trace!(
+            "deserialized_sized_value_type: {:?}, {:?}",
+            value_type,
+            size
+        );
         let value = match value_type {
             // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
             BinXmlValueType::StringType => BinXmlValue::StringType(Cow::Owned(
