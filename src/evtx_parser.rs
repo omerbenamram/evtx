@@ -13,11 +13,11 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 
-use std::path::Path;
-use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::json_output::JsonOutput;
-use std::marker::PhantomData;
+use crate::xml_output::{BinXmlOutput, XmlOutput};
 use std::cmp::max;
+use std::marker::PhantomData;
+use std::path::Path;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -76,15 +76,14 @@ pub struct EvtxParser<T: ReadSeek> {
     config: ParserSettings,
 }
 
+#[derive(Clone)]
 pub struct ParserSettings {
     num_threads: usize,
 }
 
 impl Default for ParserSettings {
     fn default() -> Self {
-        ParserSettings {
-            num_threads: 0,
-        }
+        ParserSettings { num_threads: 0 }
     }
 }
 
@@ -154,7 +153,6 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data)
     }
 
-
     /// Return an iterator over all the chunks.
     /// Each chunk supports iterating over it's records in their un-serialized state
     /// (before they are converted to XML or JSON).
@@ -167,8 +165,9 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be serialized using the given `BinXmlOutput`.
-    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_
-    {
+    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
         let mut chunks = self.chunks();
 
@@ -193,17 +192,15 @@ impl<T: ReadSeek> EvtxParser<T> {
                 let chunk_iter = chunk_of_chunks.into_iter();
 
                 // Serialize the records in each chunk.
-                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter.map(
-                    |chunk_res| {
-                        match chunk_res {
-                            Err(err) => vec![Err(err)],
-                            Ok(mut chunk) => {
-                                let chunk_records_res = chunk.into_serialized_records::<O>();
+                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter
+                    .map(|chunk_res| match chunk_res {
+                        Err(err) => vec![Err(err)],
+                        Ok(mut chunk) => {
+                            let chunk_records_res = chunk.into_serialized_records::<O>();
 
-                                match chunk_records_res {
-                                    Err(err) => vec![Err(err)],
-                                    Ok(chunk_records) => chunk_records,
-                                }
+                            match chunk_records_res {
+                                Err(err) => vec![Err(err)],
+                                Ok(chunk_records) => chunk_records,
                             }
                         }
                     })
@@ -218,15 +215,16 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be XML-formatted.
-    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
+    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
         // '_ is required in the signature because the iterator is bound to &self.
         self.serialized_records::<XmlOutput<Vec<u8>>>()
     }
 
-
     /// Return an iterator over all the records.
     /// Records will be JSON-formatted.
-    pub fn records_json(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
+    pub fn records_json(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
         self.serialized_records::<JsonOutput<Vec<u8>>>()
     }
 }
@@ -394,7 +392,7 @@ mod tests {
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
         )
-            .unwrap();
+        .unwrap();
 
         assert!(chunk.validate_checksum());
 
