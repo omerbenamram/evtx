@@ -1,7 +1,6 @@
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 
-use crate::model::deserialized::BinXMLAttribute;
 use log::error;
 use std::borrow::Cow;
 
@@ -78,12 +77,6 @@ impl<'a> XmlElementBuilder<'a> {
 pub struct XmlAttribute<'a> {
     pub name: Name<'a>,
     pub value: BinXmlValue<'a>,
-}
-
-impl<'a> XmlAttribute<'a> {
-    fn into_string(self) -> Cow<'a, str> {
-        self.value.into()
-    }
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

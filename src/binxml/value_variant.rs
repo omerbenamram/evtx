@@ -39,8 +39,8 @@ pub enum BinXmlValue<'a> {
     FileTimeType(DateTime<Utc>),
     SysTimeType(DateTime<Utc>),
     SidType(Sid),
-    HexInt32Type(String),
-    HexInt64Type(String),
+    HexInt32Type(Cow<'a, str>),
+    HexInt64Type(Cow<'a, str>),
     EvtHandle,
     // Because of the recursive type, we instantiate this enum via a method of the Deserializer
     BinXmlType(Vec<BinXMLDeserializedTokens<'a>>),
@@ -64,8 +64,8 @@ pub enum BinXmlValue<'a> {
     FileTimeArrayType(Vec<DateTime<Utc>>),
     SysTimeArrayType(Vec<DateTime<Utc>>),
     SidArrayType(Vec<Sid>),
-    HexInt32ArrayType(Vec<String>),
-    HexInt64ArrayType(Vec<String>),
+    HexInt32ArrayType(Vec<Cow<'a, str>>),
+    HexInt64ArrayType(Vec<Cow<'a, str>>),
     EvtArrayHandle,
     BinXmlArrayType,
     EvtXmlArrayType,
@@ -348,8 +348,9 @@ impl<'a> BinXmlValue<'a> {
     }
 }
 
-fn to_delimited_list<N: ToString>(ns: Vec<N>) -> String {
-    ns.iter()
+fn to_delimited_list<N: ToString>(ns: impl AsRef<Vec<N>>) -> String {
+    ns.as_ref()
+        .iter()
         .map(|n| n.to_string())
         .collect::<Vec<String>>()
         .join(",")
@@ -418,12 +419,12 @@ impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
     }
 }
 
-impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
+impl<'c> Into<Cow<'c, str>> for &'_ BinXmlValue<'c> {
     fn into(self) -> Cow<'c, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => s,
-            BinXmlValue::AnsiStringType(s) => s,
+            BinXmlValue::StringType(s) => s.clone(),
+            BinXmlValue::AnsiStringType(s) => s.clone(),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::Int16Type(num) => Cow::Owned(num.to_string()),
@@ -445,8 +446,8 @@ impl<'c> Into<Cow<'c, str>> for BinXmlValue<'c> {
             BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.to_string()),
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
-            BinXmlValue::HexInt32Type(hex_string) => Cow::Owned(hex_string),
-            BinXmlValue::HexInt64Type(hex_string) => Cow::Owned(hex_string),
+            BinXmlValue::HexInt32Type(hex_string) => hex_string.clone(),
+            BinXmlValue::HexInt64Type(hex_string) => hex_string.clone(),
             BinXmlValue::StringArrayType(s) => Cow::Owned(s.join(",")),
             BinXmlValue::Int8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::UInt8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),

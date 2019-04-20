@@ -5,6 +5,7 @@ use crate::xml_output::BinXmlOutput;
 use failure::Error;
 use log::trace;
 use std::io::Write;
+use std::mem;
 
 pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     tokens: Vec<BinXMLDeserializedTokens>,
@@ -133,22 +134,30 @@ pub fn expand_templates(
                 }
             }
             BinXMLDeserializedTokens::TemplateInstance(template) => {
-                // We have to clone here since the templates **definitions** are shared.
-                for token in template.definition.tokens.iter().cloned() {
+                // We would like to consume the token into a flat structure.
+                // First. We clone ourselves a copy of the shared definitions.
+                let tokens: Vec<BinXMLDeserializedTokens> =
+                    template.definition.tokens.iter().cloned().collect();
+
+                // We move out the array from the template object, destroying the template object.
+                let mut substitution_array = template.substitution_array;
+
+                for token in tokens {
                     if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) =
                         token
                     {
                         if substitution_descriptor.ignore {
                             continue;
                         } else {
-                            // TODO: see if we can avoid this copy
-                            let value = &template.substitution_array
-                                [substitution_descriptor.substitution_index as usize];
-
-                            _expand_templates(
-                                BinXMLDeserializedTokens::Value(value.clone()),
-                                stack,
+                            // We swap out the relevant piece in the substitution array with a null value, since it will now be placed
+                            // In correct place in the new token tree.
+                            let value = mem::replace(
+                                &mut substitution_array
+                                    [substitution_descriptor.substitution_index as usize],
+                                BinXmlValue::NullType,
                             );
+
+                            _expand_templates(BinXMLDeserializedTokens::Value(value), stack);
                         }
                     } else {
                         _expand_templates(token, stack);

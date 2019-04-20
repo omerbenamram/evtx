@@ -76,7 +76,7 @@ impl<W: Write> JsonOutput<W> {
             .find(|a| a.name == BinXmlName::from_static_string("Name"))
             .expect("Data node to have a name");
 
-        let data_key: Cow<'_, str> = name_attribute.value.clone().into();
+        let data_key: Cow<'_, str> = name_attribute.value.borrow().into();
         self.insert_node_without_attributes(element, &data_key)
     }
 

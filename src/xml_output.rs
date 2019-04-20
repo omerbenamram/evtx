@@ -75,7 +75,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         for attr in element.attributes.iter() {
             let name_as_str = attr.name.as_str();
 
-            let value_cow: Cow<'_, str> = attr.value.clone().into();
+            let value_cow: Cow<'_, str> = attr.value.borrow().into();
             let attr = Attribute::from((name_as_str, value_cow.as_ref()));
             event_builder.push_attribute(attr);
         }
@@ -100,7 +100,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars");
-        let cow: Cow<'_, str> = value.clone().into();
+        let cow: Cow<'_, str> = value.into();
         let event = BytesText::from_plain_str(&cow);
         self.writer.write_event(Event::Text(event))?;
         Ok(())
