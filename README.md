@@ -4,13 +4,11 @@
 
 This is a parser for the Windows EVTX format.
 
-Note that it is complete as in the sense that it successfully parses a wide variety of samples, but I've yet to implement the full specification.
-
 This parser is implemented using 100% safe rust.
 
 Supported rust version is latest stable rust (minimum 1.34) or nightly.
 
-[Documentation](https://docs.rs/evtx/0.1.9/)
+[Documentation](https://docs.rs/evtx/0.2.0/)
 
 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (still experimental, will publish to PyPi soon)
 
@@ -18,6 +16,10 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
   - `cargo install evtx`
   - run `evtx_dump <evtx_file>` to dump contents of evtx records as xml.
   - run `evtx_dump -o json <evtx_file>` to dump contents of evtx records as JSON.
+
+Note: by default, the library will try to utilize multithreading, this means that the records may be printed out of order.
+
+To force single threaded usage (which will also ensure order), `-t 1` can be passed.
 
 ## Example usage (as library):
 ```rust
@@ -83,20 +85,27 @@ Comparison with other libraries:
     
     When using a single thread, this implementation is about 2x faster than C
     ```
-    time -- ./target/release/main --input ./samples/security_big_sample.evtx > /dev/null                                                                                     516ms  Mon Apr  1 19:53:59 2019
+    time -- ./target/release/main -t 1 --input ./samples/security_big_sample.evtx > /dev/null                                                                                     516ms  Mon Apr  1 19:53:59 2019
             4.65 real         4.53 user         0.10 sys
     ```
     
     With multi-threading enabled, it blazes through the file in just 1.5 seconds:
     ```
-    time -- ./target/release/main -t --input ./samples/security_big_sample.evtx > /dev/null                                                                                 4661ms  Mon Apr  1 19:54:14 2019
+    time -- ./target/release/main --input ./samples/security_big_sample.evtx > /dev/null                                                                                 4661ms  Mon Apr  1 19:54:14 2019
             1.51 real         7.50 user         0.26 sys
     ```
    
 ## Caveats
 
 - I haven't implemented any sort of recovery/carving of records (available in some other implementations).
-- I haven't tested this against samples which contains esotericlly encoded strings.
+
+- Currently unimplemented:
+   - [ ] ANSI encoded nodes (codepage selection).
+   - [ ] cdata nodes.
+   - [ ] entity/character refs.
+   - [ ] EVTHandle node type.
+
+If the parser errors out on any of these nodes, feel free to open an issue or drop me an email with a sample.
 
 ## License
 
