@@ -117,7 +117,8 @@ pub fn create_record_model(tokens: Vec<BinXMLDeserializedTokens>) -> Vec<XmlMode
 pub fn expand_templates(
     token_tree: Vec<BinXMLDeserializedTokens>,
 ) -> Vec<BinXMLDeserializedTokens> {
-    let mut stack = Vec::new();
+    // We can assume the new tree will be at least as big as the old one.
+    let mut stack = Vec::with_capacity(token_tree.len());
 
     fn _expand_templates<'c>(
         token: BinXMLDeserializedTokens<'c>,
