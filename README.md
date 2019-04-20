@@ -88,16 +88,16 @@ Comparison with other libraries:
    
 - evtx (this library!)
     
-    When using a single thread, this implementation is about 2x faster than C
+    When using a single thread, this implementation is about 2.8x faster than C
     ```
-    time -- ./target/release/main -t 1 --input ./samples/security_big_sample.evtx > /dev/null                                                                                     516ms  Mon Apr  1 19:53:59 2019
-            4.65 real         4.53 user         0.10 sys
+    time -- ./target/release/main -t 1 --input ./samples/security_big_sample.evtx > /dev/null                                                                                     
+            4.04 real         3.90 user         0.11 sys
     ```
     
-    With multi-threading enabled, it blazes through the file in just 1.5 seconds:
+    With multi-threading enabled, it blazes through the file in just 1.3 seconds:
     ```
-    time -- ./target/release/main --input ./samples/security_big_sample.evtx > /dev/null                                                                                 4661ms  Mon Apr  1 19:54:14 2019
-            1.51 real         7.50 user         0.26 sys
+    time -- ./target/release/main --input ./samples/security_big_sample.evtx > /dev/null                                                                                 
+            1.30 real         6.10 user         0.29 sys
     ```
    
 ## Caveats
