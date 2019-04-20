@@ -114,6 +114,7 @@ impl<W: Write> JsonOutput<W> {
             }
         }
 
+        // If we have attributes, create a map as usual.
         if attributes.len() > 0 {
             let value = self
                 .get_or_create_current_path()
@@ -127,7 +128,9 @@ impl<W: Write> JsonOutput<W> {
 
             value.insert("#attributes".to_owned(), Value::Object(attributes));
         } else {
-            let mut value = self.get_current_parent().as_object_mut().ok_or_else(|| {
+            // If the object does not have attributes, replace it with a null placeholder,
+            // so it will be printed as a key-value pair
+            let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
                 format_err!(
                     "This is a bug - expected current value to exist, and to be an object type.\
                      Check that the value is not `Value::null`"

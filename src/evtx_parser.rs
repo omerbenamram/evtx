@@ -342,7 +342,6 @@ mod tests {
             match record {
                 Ok(r) => {
                     assert_eq!(r.event_record_id, i as u64 + 1);
-                    println!("{}", r.data);
                 }
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
@@ -396,54 +395,7 @@ mod tests {
         assert!(chunk.validate_checksum());
 
         for record in chunk.parse().unwrap().into_iter() {
-            if let Err(e) = record {
-                println!("{}", e);
-                panic!();
-            }
-
-            if let Ok(r) = record {
-                println!("{}", r.into_xml().unwrap().data);
-            }
-        }
-    }
-
-    #[test]
-    // https://github.com/omerbenamram/evtx/issues/10
-    fn test_issue_10() {
-        ensure_env_logger_initialized();
-        let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
-
-        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-        let mut count = 0;
-        for r in parser.records() {
-            r.unwrap();
-            count += 1;
-        }
-        assert_eq!(count, 14621, "Single threaded iteration failed");
-
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-        let mut parser = parser.with_configuration(ParserSettings { num_threads: 8 });
-
-        let mut count = 0;
-        for r in parser.records() {
-            r.unwrap();
-            count += 1;
-        }
-
-        assert_eq!(count, 14621, "Parallel iteration failed");
-    }
-
-    #[test]
-    fn test_parses_sample_with_irregular_boolean_values() {
-        ensure_env_logger_initialized();
-        // This sample contains boolean values which are not zero or one.
-        let evtx_file = include_bytes!("../samples/sample-with-irregular-bool-values.evtx");
-
-        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-        for r in parser.records() {
-            r.unwrap();
+            record.unwrap();
         }
     }
 }
