@@ -7,7 +7,6 @@ use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesStart, BytesText, Event, BytesEnd};
 use quick_xml::Writer;
 
-use crate::binxml::name::BinXmlName;
 use failure::{bail, format_err, Error};
 
 pub trait BinXmlOutput<W: Write> {

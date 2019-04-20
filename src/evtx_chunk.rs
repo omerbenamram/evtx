@@ -71,20 +71,21 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
-    pub fn into_records(
+    pub fn parse_records(
         &mut self,
-    ) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
-        Ok(self.parse()?.into_iter().collect())
+    ) -> Result<impl Iterator<Item=Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
+        Ok(self.parse()?.into_iter())
     }
 
-    pub fn into_serialized_records<O: BinXmlOutput<Vec<u8>>>(
+    pub fn parse_serialized_records<O: BinXmlOutput<Vec<u8>>>(
         &mut self,
-    ) -> Result<Vec<Result<SerializedEvtxRecord, failure::Error>>, failure::Error> {
+    ) -> Result<impl Iterator<Item=Result<SerializedEvtxRecord, failure::Error>> + '_, failure::Error> {
         Ok(self
-            .into_records()?
-            .into_iter()
-            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>()))
-            .collect())
+            .parse_records()?
+            .map(|record_res|
+                record_res.and_then(|record| record.into_serialized::<O>())
+            )
+        )
     }
 
     pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {

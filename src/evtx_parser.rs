@@ -16,7 +16,6 @@ use std::iter::{IntoIterator, Iterator};
 use crate::json_output::JsonOutput;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use std::cmp::max;
-use std::marker::PhantomData;
 use std::path::Path;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
@@ -196,11 +195,11 @@ impl<T: ReadSeek> EvtxParser<T> {
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.into_serialized_records::<O>();
+                            let chunk_records_res = chunk.parse_serialized_records::<O>();
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(chunk_records) => chunk_records,
+                                Ok(chunk_records) => chunk_records.collect(),
                             }
                         }
                     })
