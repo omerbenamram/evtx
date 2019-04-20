@@ -1,12 +1,12 @@
+use crate::binxml::assemble::parse_tokens;
+use crate::json_output::JsonOutput;
+use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::utils::datetime_from_filetime;
+use crate::xml_output::{BinXmlOutput, XmlOutput};
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
-use std::io::{self, Cursor, Read};
-use crate::model::deserialized::BinXMLDeserializedTokens;
 use failure::Error;
-use crate::xml_output::{BinXmlOutput, XmlOutput};
-use crate::json_output::JsonOutput;
-use crate::binxml::assemble::parse_tokens;
+use std::io::{self, Cursor, Read};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {
@@ -21,7 +21,6 @@ pub struct EvtxRecordHeader {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SerializedEvtxRecord {

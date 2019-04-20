@@ -140,7 +140,7 @@ pub fn expand_templates(
                 // We have to clone here since the templates **definitions** are shared.
                 for token in template.definition.tokens.iter().cloned() {
                     if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) =
-                    token
+                        token
                     {
                         if substitution_descriptor.ignore {
                             continue;

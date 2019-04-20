@@ -243,7 +243,7 @@ impl<'a> BinXmlValue<'a> {
     pub fn deserialized_sized_value_type<'c>(
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a ,'c>,
+        ctx: Context<'a, 'c>,
         size: u16,
     ) -> Result<BinXmlValue<'a>, Error> {
         trace!(

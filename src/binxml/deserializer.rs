@@ -319,7 +319,8 @@ mod tests {
 
         assert_eq!(
             first_record
-                .into_xml().unwrap()
+                .into_xml()
+                .unwrap()
                 .data
                 .lines()
                 .map(|l| l.trim())
@@ -341,7 +342,13 @@ mod tests {
         let records = chunk.parse_records().unwrap();
 
         for record in records.into_iter().take(100) {
-            assert!(!record.unwrap().into_xml().unwrap().data.chars().any(|c| c == '\0'))
+            assert!(!record
+                .unwrap()
+                .into_xml()
+                .unwrap()
+                .data
+                .chars()
+                .any(|c| c == '\0'))
         }
     }
 

@@ -440,7 +440,7 @@ mod tests {
         // This sample contains boolean values which are not zero or one.
         let evtx_file = include_bytes!("../samples/sample-with-irregular-bool-values.evtx");
 
-        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
         for r in parser.records() {
             r.unwrap();
