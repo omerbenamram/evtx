@@ -3,6 +3,7 @@ use failure::{self, bail, format_err};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 use crate::utils::*;
+use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
 use std::{
@@ -10,7 +11,6 @@ use std::{
     io::Cursor,
     io::{Read, Seek, SeekFrom},
 };
-use crate::xml_output::BinXmlOutput;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
@@ -46,7 +46,6 @@ impl Debug for EvtxChunkHeader {
     }
 }
 
-
 /// A struct which owns all the data associated with a chunk.
 /// See EvtxChunk for more.
 pub struct EvtxChunkData {
@@ -60,7 +59,11 @@ impl EvtxChunkData {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let chunk = EvtxChunkData { header, data, string_cache: StringCache::new() };
+        let chunk = EvtxChunkData {
+            header,
+            data,
+            string_cache: StringCache::new(),
+        };
         if !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
@@ -68,16 +71,20 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
-    pub fn into_records(&mut self) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
+    pub fn into_records(
+        &mut self,
+    ) -> Result<Vec<Result<EvtxRecord, failure::Error>>, failure::Error> {
         Ok(self.parse()?.into_iter().collect())
     }
 
-    pub fn into_serialized_records<O: BinXmlOutput<Vec<u8>>>(&mut self) -> Result<Vec<Result<SerializedEvtxRecord, failure::Error>>, failure::Error> {
-        Ok(self.into_records()?.into_iter().map(|record_res| {
-            record_res.and_then(|record| {
-                record.into_serialized::<O>()
-            })
-        }).collect())
+    pub fn into_serialized_records<O: BinXmlOutput<Vec<u8>>>(
+        &mut self,
+    ) -> Result<Vec<Result<SerializedEvtxRecord, failure::Error>>, failure::Error> {
+        Ok(self
+            .into_records()?
+            .into_iter()
+            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>()))
+            .collect())
     }
 
     pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {
@@ -201,7 +208,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             &self.chunk.template_table,
         );
 
-
         let mut tokens = vec![];
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)) {
             Ok(iter) => iter,
@@ -234,7 +240,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         }
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
-
 
         if self.chunk.header.last_event_record_id == record_header.event_record_id {
             self.exhausted = true;
