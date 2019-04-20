@@ -4,20 +4,16 @@ use log::trace;
 use std::io::Write;
 
 use quick_xml::events::attributes::Attribute;
-use quick_xml::events::{BytesDecl, BytesStart, BytesText, Event, BytesEnd};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
-use crate::binxml::name::BinXmlName;
 use failure::{bail, format_err, Error};
 
 pub trait BinXmlOutput<W: Write> {
     fn with_writer(target: W) -> Self;
     fn into_writer(self) -> Result<W, Error>;
     fn visit_end_of_stream(&mut self) -> Result<(), Error>;
-    fn visit_open_start_element(
-        &mut self,
-        open_start_element: &XmlElement,
-    ) -> Result<(), Error>;
+    fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<(), Error>;
     fn visit_close_element(&mut self) -> Result<(), Error>;
     fn visit_characters(&mut self, value: &str) -> Result<(), Error>;
     fn visit_cdata_section(&mut self) -> Result<(), Error>;
@@ -102,7 +98,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: &str) -> Result<(), Error> {
         trace!("visit_chars");
-        let event = BytesText::from_escaped_str(value);
+        let event = BytesText::from_plain_str(value);
         self.writer.write_event(Event::Text(event))?;
         Ok(())
     }
