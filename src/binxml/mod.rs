@@ -2,5 +2,5 @@ pub mod deserializer;
 pub mod name;
 pub mod value_variant;
 
-mod assemble;
-mod tokens;
+pub(crate) mod assemble;
+pub(crate) mod tokens;
