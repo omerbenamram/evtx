@@ -13,7 +13,7 @@ The JSON object is being directly built from the inner representation of the bin
 
 Supported rust version is latest stable rust (minimum 1.34) or nightly.
 
-[Documentation](https://docs.rs/evtx/0.2.0/)
+[Documentation](https://docs.rs/evtx/0.2.1/)
 
 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (still experimental, will publish to PyPi soon)
 
