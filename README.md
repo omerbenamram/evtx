@@ -90,13 +90,13 @@ Comparison with other libraries:
     
     When using a single thread, this implementation is about 2.8x faster than C
     ```
-    time -- ./target/release/main -t 1 --input ./samples/security_big_sample.evtx > /dev/null                                                                                     
+    time -- ./target/release/main -t 1 ./samples/security_big_sample.evtx > /dev/null                                                                                     
             4.04 real         3.90 user         0.11 sys
     ```
     
     With multi-threading enabled, it blazes through the file in just 1.3 seconds:
     ```
-    time -- ./target/release/main --input ./samples/security_big_sample.evtx > /dev/null                                                                                 
+    time -- ./target/release/main ./samples/security_big_sample.evtx > /dev/null                                                                                 
             1.30 real         6.10 user         0.29 sys
     ```
    
