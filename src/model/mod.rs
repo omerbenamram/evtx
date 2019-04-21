@@ -1,3 +1,3 @@
 pub mod deserialized;
-pub mod raw;
-pub mod xml;
+pub(crate) mod raw;
+pub(crate) mod xml;

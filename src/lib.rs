@@ -2,17 +2,21 @@
 #[macro_use]
 mod macros;
 
-pub mod evtx_parser;
-pub use evtx_parser::{EvtxParser, ParserSettings};
-pub use evtx_record::EvtxRecord;
+pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
+pub use evtx_parser::{EvtxParser, IterChunks, ParserSettings};
+pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 
-mod binxml;
+pub mod binxml;
+pub mod model;
+// TODO: all errors in crate should return this error
+// pub use error::Error as BinXmlError;
+
 mod error;
 mod evtx_chunk;
 mod evtx_file_header;
+mod evtx_parser;
 mod evtx_record;
 mod guid;
-mod model;
 mod ntsid;
 mod string_cache;
 mod template_cache;
