@@ -3,7 +3,7 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use crate::{error::Error, guid::Guid, model::deserialized::*};
 use std::io::Cursor;
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Context};
+use crate::binxml::deserializer::{BinXmlDeserializer};
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
@@ -12,10 +12,12 @@ use log::trace;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::rc::Rc;
+use std::borrow::Cow;
+use crate::evtx_chunk::EvtxChunk;
 
 pub fn read_template<'a, 'c>(
     cursor: &mut Cursor<&'a [u8]>,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXmlTemplate<'a>, Error> {
     trace!("TemplateInstance at {}", cursor.position());
 
@@ -25,7 +27,7 @@ pub fn read_template<'a, 'c>(
 
     // If name is cached, read it and seek ahead if needed.
     let template_def =
-        if let Some(definition) = ctx.cached_template_at_offset(template_definition_data_offset) {
+        if let Some(definition) = chunk.and_then(|chunk| chunk.template_table.get_template(template_definition_data_offset)) {
             // Seek if needed
             trace!(
                 "{} Got cached template from offset {}",
@@ -38,7 +40,7 @@ pub fn read_template<'a, 'c>(
                     i64::from(definition.data_size) + (33 - 9),
                 ))?;
             }
-            Rc::clone(&definition)
+            Cow::Borrowed(definition)
         } else if template_definition_data_offset != cursor.position() as u32 {
             trace!(
                 "Need to seek to offset {} to read template",
@@ -48,13 +50,13 @@ pub fn read_template<'a, 'c>(
 
             cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
 
-            let template_def = Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?);
+            let template_def = read_template_definition(cursor, chunk)?;
 
             cursor.seek(SeekFrom::Start(position_before_seek))?;
 
-            template_def
+            Cow::Owned(template_def)
         } else {
-            Rc::new(read_template_definition(cursor, Rc::clone(&ctx))?)
+            Cow::Owned(read_template_definition(cursor, chunk)?)
         };
 
     let number_of_substitutions = try_read!(cursor, u32);
@@ -85,7 +87,7 @@ pub fn read_template<'a, 'c>(
         let value = BinXmlValue::deserialized_sized_value_type(
             &descriptor.value_type,
             cursor,
-            Rc::clone(&ctx),
+            chunk,
             descriptor.size,
         )?;
 
@@ -108,14 +110,14 @@ pub fn read_template<'a, 'c>(
     }
 
     Ok(BinXmlTemplate {
-        definition: template_def.clone(),
+        definition: template_def,
         substitution_array,
     })
 }
 
-pub fn read_template_definition<'a, 'c>(
+pub fn read_template_definition<'a>(
     cursor: &mut Cursor<&'a [u8]>,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXMLTemplateDefinition<'a>, Error> {
     let next_template_offset = try_read!(cursor, u32);
 
@@ -128,7 +130,7 @@ pub fn read_template_definition<'a, 'c>(
     // except for the first 33 bytes of the template definition (above)
     let _data = *cursor.get_ref();
     let tokens =
-        BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), Some(data_size))?;
+        BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size))?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
@@ -138,22 +140,22 @@ pub fn read_template_definition<'a, 'c>(
     })
 }
 
-pub fn read_entity_ref<'a, 'c>(
+pub fn read_entity_ref<'a>(
     cursor: &mut Cursor<&'a [u8]>,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXmlEntityReference<'a>, Error> {
     trace!("EntityReference at {}", cursor.position());
-    let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
+    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
     trace!("\t name: {:?}", name);
 
     Ok(BinXmlEntityReference { name })
 }
 
-pub fn read_attribute<'a, 'c>(
+pub fn read_attribute<'a>(
     cursor: &mut Cursor<&'a [u8]>,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXMLAttribute<'a>, Error> {
-    let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
+    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 
     Ok(BinXMLAttribute { name })
 }
@@ -190,13 +192,13 @@ pub fn read_substitution(
 
 pub fn read_open_start_element<'a, 'c>(
     cursor: &mut Cursor<&'a [u8]>,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
     has_attributes: bool,
 ) -> Result<BinXMLOpenStartElement<'a>, Error> {
     // Reserved
     let _ = try_read!(cursor, u16);
     let data_size = try_read!(cursor, u32);
-    let name = BinXmlName::from_binxml_stream(cursor, ctx)?;
+    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 
     let _attribute_list_data_size = if has_attributes {
         try_read!(cursor, u32)
@@ -215,7 +217,6 @@ mod test {
     use crate::model::deserialized::*;
     use pretty_assertions::assert_eq;
 
-    use crate::binxml::deserializer::Context;
     use crate::binxml::tokens::read_template_definition;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::ensure_env_logger_initialized;
@@ -462,7 +463,7 @@ mod test {
 
         let mut c = Cursor::new(from_start_of_chunk);
         c.seek(SeekFrom::Start(550)).unwrap();
-        let actual = read_template_definition(&mut c, Context::default()).unwrap();
+        let actual = read_template_definition(&mut c, None).unwrap();
 
         assert_eq!(actual, expected_at_550);
     }

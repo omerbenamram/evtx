@@ -1,6 +1,5 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::Context;
 use crate::error::Error;
 
 use crate::utils::read_len_prefixed_utf16_string;
@@ -11,9 +10,10 @@ use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
 use quick_xml::events::{BytesEnd, BytesStart};
+use crate::evtx_chunk::EvtxChunk;
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
-pub struct BinXmlName<'a>(Cow<'a, str>);
+pub struct BinXmlName<'a>(pub Cow<'a, str>);
 
 pub type StringHashOffset = (String, u16, Offset);
 
@@ -22,16 +22,16 @@ impl<'a> BinXmlName<'a> {
         BinXmlName(Cow::Borrowed(s))
     }
 
-    pub fn from_binxml_stream<'c>(
+    pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a, 'c>,
+        chunk: Option<&'a EvtxChunk<'a>>,
     ) -> Result<BinXmlName<'a>, Error> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = try_read!(cursor, u32);
 
         // If name is cached, read it and seek ahead if needed.
-        if let Some((name, _, n_bytes_read)) = ctx.cached_string_at_offset(name_offset) {
+        if let Some((name, _, n_bytes_read)) = chunk.and_then(|chunk| chunk.string_cache.get_string_and_hash(name_offset)) {
             // Seek if needed
             if name_offset == cursor.position() as u32 {
                 cursor.seek(SeekFrom::Current(i64::from(*n_bytes_read)))?;

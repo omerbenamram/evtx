@@ -166,7 +166,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Records will be serialized using the given `BinXmlOutput`.
     pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
         &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+    ) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
         let mut chunks = self.chunks();
 
@@ -185,21 +185,28 @@ impl<T: ReadSeek> EvtxParser<T> {
                 None
             } else {
                 #[cfg(feature = "multithreading")]
-                let chunk_iter = chunk_of_chunks.into_par_iter();
+                    let chunk_iter = chunk_of_chunks.into_par_iter();
 
                 #[cfg(not(feature = "multithreading"))]
-                let chunk_iter = chunk_of_chunks.into_iter();
+                    let chunk_iter = chunk_of_chunks.into_iter();
 
                 // Serialize the records in each chunk.
                 let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.parse_serialized_records::<O>();
+                            let chunk_records_res = chunk.parse();
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(chunk_records) => chunk_records.collect(),
+                                Ok(mut chunk_records) => {
+                                    let chunk_records_res = chunk_records.iter_serialized_records::<O>();
+
+                                    match chunk_records_res {
+                                        Err(err) => vec![Err(err)],
+                                        Ok(chunk_records) => chunk_records.collect(),
+                                    }
+                                }
                             }
                         }
                     })
@@ -214,7 +221,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be XML-formatted.
-    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+    pub fn records(&mut self) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         // '_ is required in the signature because the iterator is bound to &self.
         self.serialized_records::<XmlOutput<Vec<u8>>>()
     }
@@ -223,7 +230,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Records will be JSON-formatted.
     pub fn records_json(
         &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+    ) -> impl Iterator<Item=Result<SerializedEvtxRecord, Error>> + '_ {
         self.serialized_records::<JsonOutput<Vec<u8>>>()
     }
 }
@@ -388,11 +395,11 @@ mod tests {
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
         )
-        .unwrap();
+            .unwrap();
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse().unwrap().into_iter() {
+        for record in chunk.parse().unwrap().iter().unwrap() {
             record.unwrap();
         }
     }

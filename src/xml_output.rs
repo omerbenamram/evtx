@@ -94,10 +94,10 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         // and share this borrow to the end element.
         self.stack.push(element.name.as_str().to_owned());
 
-        let mut event_builder = BytesStart::from(element.name.borrow().into());
+        let mut event_builder = BytesStart::from(element.name.as_ref().borrow().into());
 
         for attr in element.attributes.iter() {
-            let value_cow: Cow<'_, str> = attr.value.borrow().into();
+            let value_cow: Cow<'_, str> = attr.value.as_ref().into();
 
             if value_cow.len() > 0 {
                 let name_as_str = attr.name.as_str();

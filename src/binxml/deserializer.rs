@@ -20,79 +20,45 @@ use crate::{
 
 use std::io::Cursor;
 use std::mem;
-use std::rc::Rc;
+use crate::evtx_chunk::EvtxChunk;
 
-// Alias that will make it easier to change context type if needed.
-pub type Context<'a, 'b> = Rc<Cache<'a, 'b>>;
 
-#[derive(Clone, Debug, Default)]
-pub struct Cache<'a, 'c> {
-    string_cache: Option<&'a StringCache>,
-    template_cache: Option<&'c TemplateCache<'a>>,
-}
-
-impl<'a, 'c> Cache<'a, 'c> {
-    pub fn cached_string_at_offset(&self, offset: Offset) -> Option<&'a CachedString> {
-        match self.string_cache {
-            Some(cache) => cache.get_string_and_hash(offset),
-            None => None,
-        }
-    }
-
-    pub fn cached_template_at_offset(&self, offset: Offset) -> Option<CachedTemplate<'a>> {
-        match self.template_cache {
-            Some(cache) => cache.get_template(offset),
-            None => None,
-        }
-    }
-}
-
-pub struct IterTokens<'a, 'c> {
+pub struct IterTokens<'a> {
     cursor: Cursor<&'a [u8]>,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
 }
 
-pub struct BinXmlDeserializer<'a, 'c> {
+pub struct BinXmlDeserializer<'a> {
     data: &'a [u8],
     offset: u64,
-    ctx: Context<'a, 'c>,
+    chunk: Option<&'a EvtxChunk<'a>>,
 }
 
-impl<'a, 'c> BinXmlDeserializer<'a, 'c> {
+impl<'a> BinXmlDeserializer<'a> {
     pub fn init(
         data: &'a [u8],
         start_offset: u64,
-        string_cache: &'a StringCache,
-        template_cache: &'c TemplateCache<'a>,
+        chunk: Option<&'a EvtxChunk<'a>>,
     ) -> Self {
-        let ctx = Cache {
-            string_cache: Some(string_cache),
-            template_cache: Some(template_cache),
-        };
-
         BinXmlDeserializer {
             data,
             offset: start_offset,
-            ctx: Rc::new(ctx),
+            chunk: chunk,
         }
     }
 
     /// Returns a tuple of the tokens.
     pub fn read_binxml_fragment(
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a, 'c>,
+        chunk: Option<&'a EvtxChunk<'a>>,
         data_size: Option<u32>,
     ) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
         let offset = cursor.position();
 
-        let de = BinXmlDeserializer {
-            data: *cursor.get_ref(),
-            offset,
-            ctx,
-        };
+        let de = BinXmlDeserializer::init(*cursor.get_ref(), offset, chunk);
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size)?;
@@ -119,13 +85,13 @@ impl<'a, 'c> BinXmlDeserializer<'a, 'c> {
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
-    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a, 'c>, Error> {
+    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>, Error> {
         let mut cursor = Cursor::new(self.data);
         cursor.seek(SeekFrom::Start(self.offset))?;
 
         Ok(IterTokens {
             cursor,
-            ctx: Rc::clone(&self.ctx),
+            chunk: self.chunk,
             data_size,
             data_read_so_far: 0,
             eof: false,
@@ -133,7 +99,7 @@ impl<'a, 'c> BinXmlDeserializer<'a, 'c> {
     }
 }
 
-impl<'a, 'c> IterTokens<'a, 'c> {
+impl<'a> IterTokens<'a> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken, Error> {
@@ -148,7 +114,6 @@ impl<'a, 'c> IterTokens<'a, 'c> {
     fn visit_token(
         &self,
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a, 'c>,
         raw_token: BinXMLRawToken,
     ) -> Result<BinXMLDeserializedTokens<'a>, Error> {
         match raw_token {
@@ -156,24 +121,24 @@ impl<'a, 'c> IterTokens<'a, 'c> {
             BinXMLRawToken::OpenStartElement(token_information) => {
                 // Debug print inside
                 Ok(BinXMLDeserializedTokens::OpenStartElement(
-                    read_open_start_element(cursor, ctx, token_information.has_attributes)?,
+                    read_open_start_element(cursor, self.chunk, token_information.has_attributes)?,
                 ))
             }
             BinXMLRawToken::CloseStartElement => Ok(BinXMLDeserializedTokens::CloseStartElement),
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_stream(cursor, ctx)?,
+                BinXmlValue::from_binxml_stream(cursor, self.chunk)?,
             )),
             BinXMLRawToken::Attribute(_token_information) => Ok(
-                BinXMLDeserializedTokens::Attribute(read_attribute(cursor, ctx)?),
+                BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),
             BinXMLRawToken::CDataSection => Err(Error::other(
                 "Unimplemented: BinXMLToken::CDataSection",
                 cursor.position(),
             )),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
-                read_entity_ref(cursor, ctx)?,
+                read_entity_ref(cursor, self.chunk)?,
             )),
             BinXMLRawToken::ProcessingInstructionTarget => Err(Error::other(
                 "Unimplemented: BinXMLToken::ProcessingInstructionTarget",
@@ -184,7 +149,7 @@ impl<'a, 'c> IterTokens<'a, 'c> {
                 cursor.position(),
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template(cursor, ctx)?,
+                read_template(cursor, self.chunk)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution(cursor, false)?,
@@ -199,7 +164,7 @@ impl<'a, 'c> IterTokens<'a, 'c> {
     }
 }
 
-impl<'a, 'c> IterTokens<'a, 'c> {
+impl<'a> IterTokens<'a> {
     fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'a>, Error>> {
         let mut cursor = self.cursor.clone();
         let offset_from_chunk_start = cursor.position();
@@ -233,7 +198,7 @@ impl<'a, 'c> IterTokens<'a, 'c> {
                 }
                 trace!("{:?} at {}", t, offset_from_chunk_start);
                 let deserialized_token_result =
-                    self.visit_token(&mut cursor, Rc::clone(&self.ctx), t);
+                    self.visit_token(&mut cursor, t);
 
                 trace!(
                     "{:?} position at stream {}",
@@ -274,7 +239,7 @@ impl<'a, 'c> IterTokens<'a, 'c> {
     }
 }
 
-impl<'a, 'c> Iterator for IterTokens<'a, 'c> {
+impl<'a> Iterator for IterTokens<'a> {
     type Item = Result<BinXMLDeserializedTokens<'a>, Error>;
 
     /// yields tokens from the chunk, will return once the chunk is finished.
@@ -295,7 +260,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.parse_records().unwrap();
+        let mut evtx_chunk = chunk.parse().unwrap();
+        let records = evtx_chunk.iter().unwrap();
 
         for record in records.into_iter().take(1) {
             assert!(record.is_ok(), record.unwrap().into_xml())
@@ -309,7 +275,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.parse_records().unwrap();
+        let mut evtx_chunk = chunk.parse().unwrap();
+        let records = evtx_chunk.iter().unwrap();
 
         for record in records.into_iter().take(100) {
             assert!(!record
@@ -330,7 +297,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
-        let records = chunk.parse_records().unwrap();
+        let mut evtx_chunk = chunk.parse().unwrap();
+        let records = evtx_chunk.iter().unwrap();
 
         for record in records.into_iter() {
             let r = record.unwrap().into_xml().unwrap();
@@ -343,5 +311,4 @@ mod tests {
             }
         }
     }
-
 }

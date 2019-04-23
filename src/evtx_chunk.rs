@@ -6,11 +6,7 @@ use crate::utils::*;
 use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
-use std::{
-    fmt::{Debug, Formatter},
-    io::Cursor,
-    io::{Read, Seek, SeekFrom},
-};
+use std::{fmt::{Debug, Formatter}, io::Cursor, io::{Read, Seek, SeekFrom}, mem};
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
@@ -69,23 +65,6 @@ impl EvtxChunkData {
         }
 
         Ok(chunk)
-    }
-
-    pub fn parse_records(
-        &mut self,
-    ) -> Result<impl Iterator<Item = Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
-        Ok(self.parse()?.into_iter())
-    }
-
-    pub fn parse_serialized_records<O: BinXmlOutput<Vec<u8>>>(
-        &mut self,
-    ) -> Result<
-        impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + '_,
-        failure::Error,
-    > {
-        Ok(self
-            .parse_records()?
-            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>())))
     }
 
     pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {
@@ -157,12 +136,11 @@ impl<'a> EvtxChunk<'a> {
     ) -> Result<EvtxChunk<'a>, failure::Error> {
         let _cursor = Cursor::new(data);
 
-        let mut template_table = TemplateCache::new();
-
         info!("Initializing string cache");
         string_cache.populate(&data, &header.strings_offsets)?;
+
         info!("Initializing template cache");
-        template_table.populate(&data, &header.template_offsets)?;
+        let template_table = TemplateCache::populate(data, &header.template_offsets)?;
 
         Ok(EvtxChunk {
             header,
@@ -171,10 +149,30 @@ impl<'a> EvtxChunk<'a> {
             template_table,
         })
     }
+
+    pub fn iter<'b: 'a>(&'b mut self) -> Result<IterChunkRecords, failure::Error> {
+        Ok(IterChunkRecords {
+            chunk: self,
+            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
+            exhausted: false,
+        })
+    }
+
+
+    pub fn iter_serialized_records<'b: 'a, O: BinXmlOutput<Vec<u8>>>(
+        &'b mut self,
+    ) -> Result<
+        impl Iterator<Item=Result<SerializedEvtxRecord, failure::Error>> + 'b,
+        failure::Error,
+    > {
+        Ok(self
+            .iter()?
+            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>())))
+    }
 }
 
 pub struct IterChunkRecords<'a> {
-    chunk: EvtxChunk<'a>,
+    chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
 }
@@ -205,8 +203,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let deserializer = BinXmlDeserializer::init(
             self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
-            self.chunk.string_cache,
-            &self.chunk.template_table,
+            Some(self.chunk),
         );
 
         let mut tokens = vec![];
@@ -251,19 +248,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             timestamp: record_header.timestamp,
             tokens,
         }))
-    }
-}
-
-impl<'a> IntoIterator for EvtxChunk<'a> {
-    type Item = Result<EvtxRecord<'a>, failure::Error>;
-    type IntoIter = IterChunkRecords<'a>;
-
-    fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
-        IterChunkRecords {
-            chunk: self,
-            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-            exhausted: false,
-        }
     }
 }
 
