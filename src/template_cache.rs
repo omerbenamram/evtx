@@ -19,16 +19,16 @@ impl<'c> TemplateCache<'c> {
     }
 
     pub fn populate(data: &'c [u8], offsets: &[Offset]) -> Result<Self, failure::Error> {
-        let mut cache = TemplateCache(HashMap::new());
+        let mut cache = HashMap::new();
         let mut cursor = Cursor::new(data);
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             cursor.seek(SeekFrom::Start(u64::from(*offset)))?;
             let definition = read_template_definition(&mut cursor, None)?;
-            cache.0.insert(*offset, definition);
+            cache.insert(*offset, definition);
         }
 
-        Ok(cache)
+        Ok(TemplateCache(cache))
     }
 
     pub fn get_template<'a: 'c>(&'a self, offset: Offset) -> Option<&'a CachedTemplate<'a>> {
