@@ -199,14 +199,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => {
-                                    let chunk_records_res = chunk_records.iter_serialized_records::<O>();
-
-                                    match chunk_records_res {
-                                        Err(err) => vec![Err(err)],
-                                        Ok(chunk_records) => chunk_records.collect(),
-                                    }
-                                }
+                                Ok(mut chunk_records) => chunk_records.iter_serialized_records::<O>().collect(),
                             }
                         }
                     })
@@ -399,7 +392,7 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse().unwrap().iter().unwrap() {
+        for record in chunk.parse().unwrap().iter() {
             record.unwrap();
         }
     }

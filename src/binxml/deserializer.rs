@@ -261,7 +261,7 @@ mod tests {
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
         let mut evtx_chunk = chunk.parse().unwrap();
-        let records = evtx_chunk.iter().unwrap();
+        let records = evtx_chunk.iter();
 
         for record in records.into_iter().take(1) {
             assert!(record.is_ok(), record.unwrap().into_xml())
@@ -276,7 +276,7 @@ mod tests {
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
         let mut evtx_chunk = chunk.parse().unwrap();
-        let records = evtx_chunk.iter().unwrap();
+        let records = evtx_chunk.iter();
 
         for record in records.into_iter().take(100) {
             assert!(!record
@@ -298,7 +298,7 @@ mod tests {
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
         let mut evtx_chunk = chunk.parse().unwrap();
-        let records = evtx_chunk.iter().unwrap();
+        let records = evtx_chunk.iter();
 
         for record in records.into_iter() {
             let r = record.unwrap().into_xml().unwrap();
