@@ -55,7 +55,7 @@ pub struct EvtxChunkData {
 }
 
 impl EvtxChunkData {
-    pub fn new(data: Vec<u8>) -> Result<Self, failure::Error> {
+    pub fn new(data: Vec<u8>, validate_checksum: bool) -> Result<Self, failure::Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
@@ -64,7 +64,8 @@ impl EvtxChunkData {
             data,
             string_cache: StringCache::new(),
         };
-        if !chunk.validate_checksum() {
+
+        if validate_checksum && !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
 
@@ -73,14 +74,14 @@ impl EvtxChunkData {
 
     pub fn parse_records(
         &mut self,
-    ) -> Result<impl Iterator<Item = Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
+    ) -> Result<impl Iterator<Item=Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
         Ok(self.parse()?.into_iter())
     }
 
     pub fn parse_serialized_records<O: BinXmlOutput<Vec<u8>>>(
         &mut self,
     ) -> Result<
-        impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + '_,
+        impl Iterator<Item=Result<SerializedEvtxRecord, failure::Error>> + '_,
         failure::Error,
     > {
         Ok(self
@@ -191,7 +192,16 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
 
-        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
+        let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
+            Ok(record_header) => record_header,
+            Err(err) => {
+                // We currently do not try to recover after an invalid record.
+                self.exhausted = true;
+
+                return Some(Err(err.into()));
+            }
+        };
+
         info!("Record id - {}", record_header.event_record_id);
         debug!("Record header - {:?}", record_header);
 
@@ -401,7 +411,7 @@ mod tests {
         let chunk_data =
             evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
 
-        let chunk = EvtxChunkData::new(chunk_data).unwrap();
+        let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
         assert!(chunk.validate_checksum());
     }
 }

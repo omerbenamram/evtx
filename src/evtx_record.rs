@@ -34,7 +34,10 @@ impl EvtxRecordHeader {
         let mut magic = [0_u8; 4];
         input.take(4).read_exact(&mut magic)?;
 
-        debug_assert_eq!(&magic, b"\x2a\x2a\x00\x00", "Wrong record header magic");
+        if &magic != b"\x2a\x2a\x00\x00" {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Wrong record header magic"));
+        }
+
         let size = input.read_u32::<LittleEndian>()?;
         let record_id = input.read_u64::<LittleEndian>()?;
         let timestamp = datetime_from_filetime(input.read_u64::<LittleEndian>()?);

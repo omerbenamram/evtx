@@ -95,15 +95,14 @@ pub fn read_template<'a, 'c>(
             trace!("\t Skip {}", descriptor.size);
             cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
         }
-        debug_assert_eq!(
-            position + u64::from(descriptor.size),
-            cursor.position(),
-            "{}",
-            &format!(
-                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                cursor.position(), position + u64::from(descriptor.size), &descriptor
-            )
-        );
+
+        if position + u64::from(descriptor.size) != cursor.position() {
+            return Err(Error::other(
+                &format!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                        cursor.position(), position + u64::from(descriptor.size), &descriptor),
+                cursor.position(),
+            ));
+        }
         substitution_array.push(value);
     }
 
