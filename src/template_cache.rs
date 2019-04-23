@@ -8,17 +8,17 @@ use std::io::{Cursor, Seek, SeekFrom};
 use std::rc::Rc;
 use crate::evtx_chunk::EvtxChunk;
 
-pub type CachedTemplate<'c> = BinXMLTemplateDefinition<'c>;
+pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
 #[derive(Debug, Default)]
-pub struct TemplateCache<'c>(HashMap<Offset, CachedTemplate<'c>>);
+pub struct TemplateCache<'chunk>(HashMap<Offset, CachedTemplate<'chunk>>);
 
-impl<'c> TemplateCache<'c> {
+impl<'chunk> TemplateCache<'chunk> {
     pub fn new() -> Self {
         TemplateCache(HashMap::new())
     }
 
-    pub fn populate(data: &'c [u8], offsets: &[Offset]) -> Result<Self, failure::Error> {
+    pub fn populate(data: &'chunk [u8], offsets: &[Offset]) -> Result<Self, failure::Error> {
         let mut cache = HashMap::new();
         let mut cursor = Cursor::new(data);
 
@@ -31,7 +31,7 @@ impl<'c> TemplateCache<'c> {
         Ok(TemplateCache(cache))
     }
 
-    pub fn get_template<'a: 'c>(&'a self, offset: Offset) -> Option<&'a CachedTemplate<'a>> {
+    pub fn get_template<'a: 'chunk>(&'a self, offset: Offset) -> Option<&'a CachedTemplate<'a>> {
         self.0.get(&offset).into()
     }
 

@@ -180,7 +180,7 @@ impl BinXmlValueType {
 }
 
 impl<'a> BinXmlValue<'a> {
-    pub fn from_binxml_stream<'c>(
+    pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
     ) -> Result<BinXmlValue<'a>, Error> {
@@ -195,7 +195,7 @@ impl<'a> BinXmlValue<'a> {
         Ok(data)
     }
 
-    pub fn deserialize_value_type<'c>(
+    pub fn deserialize_value_type(
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
@@ -242,7 +242,7 @@ impl<'a> BinXmlValue<'a> {
         Ok(value)
     }
 
-    pub fn deserialized_sized_value_type<'c>(
+    pub fn deserialized_sized_value_type(
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
