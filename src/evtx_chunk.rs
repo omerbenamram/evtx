@@ -54,10 +54,7 @@ impl EvtxChunkData {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let chunk = EvtxChunkData {
-            header,
-            data,
-        };
+        let chunk = EvtxChunkData { header, data };
         if !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
@@ -132,7 +129,10 @@ pub struct EvtxChunk<'chunk> {
 
 impl<'chunk> EvtxChunk<'chunk> {
     /// Will fail if the data starts with an invalid evtx chunk header.
-    pub fn new(data: &'chunk [u8], header: &'chunk EvtxChunkHeader) -> Result<EvtxChunk<'chunk>, failure::Error> {
+    pub fn new(
+        data: &'chunk [u8],
+        header: &'chunk EvtxChunkHeader,
+    ) -> Result<EvtxChunk<'chunk>, failure::Error> {
         let _cursor = Cursor::new(data);
 
         info!("Initializing string cache");
@@ -162,9 +162,8 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Return an iterator of serialized records (containing textual data, not tokens) from the chunk.
     pub fn iter_serialized_records<'a: 'chunk, O: BinXmlOutput<Vec<u8>>>(
         &'a mut self,
-    ) -> impl Iterator<Item=Result<SerializedEvtxRecord, failure::Error>> + 'a {
-        self
-            .iter()
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + 'a {
+        self.iter()
             .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>()))
     }
 }
