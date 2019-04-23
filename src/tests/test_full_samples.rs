@@ -85,3 +85,20 @@ fn test_dirty_sample_with_a_bad_checksum_2() {
 
     assert_eq!(count, 1774);
 }
+
+#[test]
+fn test_dirty_sample_with_a_chunk_past_zeros() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!("../../samples/2-vss_7-System.evtx");
+
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+    let mut count = 0;
+
+    for r in parser.records() {
+        r.unwrap();
+        count += 1;
+    }
+
+    assert_eq!(count, 1160);
+}
