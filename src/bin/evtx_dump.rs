@@ -78,7 +78,8 @@ fn main() {
             Arg::with_name("validate-checksums")
                 .long("--validate-checksums")
                 .takes_value(false)
-                .help("When passed, the checksum of each chunk will be validated."),
+                .help("When set, chunks with invalid checksums will not be parsed. \
+                Usually dirty files have bad checksums, so using this flag will result in fewer records."),
         )
         // TODO: replace `env_logger` with something nicer for the CLI.
         //        .arg(Arg::with_name("verbose").short("-v").multiple(true).max_values(3).help("1 - info, 2 - debug, 3 - trace"))

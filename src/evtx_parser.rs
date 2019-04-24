@@ -7,7 +7,7 @@ use rayon;
 use rayon::prelude::*;
 
 use failure::Error;
-use log::debug;
+use log::{debug, warn};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -105,8 +105,11 @@ impl ParserSettings {
         self
     }
 
+    /// Does nothing and emits a warning when complied without multithreading.
     #[cfg(not(feature = "multithreading"))]
     pub fn num_threads(mut self, _num_threads: usize) -> Self {
+        warn!("Setting num_threads has no effect when compiling without multithreading support.");
+
         self.num_threads = 1;
         self
     }
