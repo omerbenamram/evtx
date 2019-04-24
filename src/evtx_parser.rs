@@ -7,7 +7,7 @@ use rayon;
 use rayon::prelude::*;
 
 use failure::Error;
-use log::debug;
+use log::{debug, warn};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -78,11 +78,12 @@ pub struct EvtxParser<T: ReadSeek> {
 #[derive(Clone)]
 pub struct ParserSettings {
     num_threads: usize,
+    validate_checksums: bool,
 }
 
 impl Default for ParserSettings {
     fn default() -> Self {
-        ParserSettings { num_threads: 0 }
+        ParserSettings { num_threads: 0, validate_checksums: false }
     }
 }
 
@@ -93,12 +94,29 @@ impl ParserSettings {
 
     /// Sets the number of worker threads.
     /// `0` will let rayon decide.
+    ///
+    #[cfg(feature = "multithreading")]
     pub fn num_threads(mut self, num_threads: usize) -> Self {
         self.num_threads = if num_threads == 0 {
             rayon::current_num_threads()
         } else {
             num_threads
         };
+        self
+    }
+
+    /// Does nothing and emits a warning when complied without multithreading.
+    #[cfg(not(feature = "multithreading"))]
+    pub fn num_threads(mut self, _num_threads: usize) -> Self {
+        warn!("Setting num_threads has no effect when compiling without multithreading support.");
+
+        self.num_threads = 1;
+        self
+    }
+
+    pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
+        self.validate_checksums = validate_checksums;
+
         self
     }
 }
@@ -140,7 +158,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         self
     }
 
-    pub fn allocate_chunk(data: &mut T, chunk_number: u16) -> Result<EvtxChunkData, Error> {
+    pub fn allocate_chunk(data: &mut T, chunk_number: u16, validate_checksum: bool) -> Result<EvtxChunkData, Error> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         data.seek(SeekFrom::Start(
             (EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE) as u64,
@@ -149,7 +167,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         data.take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)?;
 
-        EvtxChunkData::new(chunk_data)
+        EvtxChunkData::new(chunk_data, validate_checksum)
     }
 
     /// Return an iterator over all the chunks.
@@ -236,7 +254,7 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number);
+        let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number, self.parser.config.validate_checksums);
 
         // We try to read past the `chunk_count` to allow for dirty files.
         // But if we failed, it means we really are at the end of the file.
@@ -387,6 +405,7 @@ mod tests {
             evtx_file[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
+            false,
         )
         .unwrap();
 

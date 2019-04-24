@@ -36,8 +36,10 @@ impl EvtxDumpConfig {
             }
         };
 
+        let validate_checksums = matches.is_present("validate-checksums");
+
         EvtxDumpConfig {
-            parser_settings: ParserSettings::new().num_threads(num_threads),
+            parser_settings: ParserSettings::new().num_threads(num_threads).validate_checksums(validate_checksums),
             output_format,
         }
     }
@@ -71,6 +73,13 @@ fn main() {
                 .possible_values(&["json", "xml"])
                 .default_value("xml")
                 .help("sets the output format"),
+        )
+        .arg(
+            Arg::with_name("validate-checksums")
+                .long("--validate-checksums")
+                .takes_value(false)
+                .help("When set, chunks with invalid checksums will not be parsed. \
+                Usually dirty files have bad checksums, so using this flag will result in fewer records."),
         )
         // TODO: replace `env_logger` with something nicer for the CLI.
         //        .arg(Arg::with_name("verbose").short("-v").multiple(true).max_values(3).help("1 - info, 2 - debug, 3 - trace"))

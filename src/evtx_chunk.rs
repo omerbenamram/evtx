@@ -55,7 +55,9 @@ pub struct EvtxChunkData {
 }
 
 impl EvtxChunkData {
-    pub fn new(data: Vec<u8>) -> Result<Self, failure::Error> {
+    /// Construct a new chunk from the given data.
+    /// Note that even when validate_checksum is set to false, the header magic is still checked.
+    pub fn new(data: Vec<u8>, validate_checksum: bool) -> Result<Self, failure::Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
@@ -64,7 +66,8 @@ impl EvtxChunkData {
             data,
             string_cache: StringCache::new(),
         };
-        if !chunk.validate_checksum() {
+
+        if validate_checksum && !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
 
@@ -191,7 +194,16 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
 
-        let record_header = EvtxRecordHeader::from_reader(&mut cursor).unwrap();
+        let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
+            Ok(record_header) => record_header,
+            Err(err) => {
+                // We currently do not try to recover after an invalid record.
+                self.exhausted = true;
+
+                return Some(Err(err.into()));
+            }
+        };
+
         info!("Record id - {}", record_header.event_record_id);
         debug!("Record header - {:?}", record_header);
 
@@ -401,7 +413,7 @@ mod tests {
         let chunk_data =
             evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
 
-        let chunk = EvtxChunkData::new(chunk_data).unwrap();
+        let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
         assert!(chunk.validate_checksum());
     }
 }
