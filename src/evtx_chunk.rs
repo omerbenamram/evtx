@@ -55,6 +55,8 @@ pub struct EvtxChunkData {
 }
 
 impl EvtxChunkData {
+    /// Construct a new chunk from the given data.
+    /// Note that even when validate_checksum is set to false, the header magic is still checked.
     pub fn new(data: Vec<u8>, validate_checksum: bool) -> Result<Self, failure::Error> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
@@ -74,14 +76,14 @@ impl EvtxChunkData {
 
     pub fn parse_records(
         &mut self,
-    ) -> Result<impl Iterator<Item=Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
+    ) -> Result<impl Iterator<Item = Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
         Ok(self.parse()?.into_iter())
     }
 
     pub fn parse_serialized_records<O: BinXmlOutput<Vec<u8>>>(
         &mut self,
     ) -> Result<
-        impl Iterator<Item=Result<SerializedEvtxRecord, failure::Error>> + '_,
+        impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + '_,
         failure::Error,
     > {
         Ok(self
