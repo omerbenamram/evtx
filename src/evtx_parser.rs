@@ -6,8 +6,8 @@ use rayon;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
-use failure::Error;
-use log::debug;
+use failure::{Error, format_err};
+use log::{debug, warn};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -78,11 +78,12 @@ pub struct EvtxParser<T: ReadSeek> {
 #[derive(Clone)]
 pub struct ParserSettings {
     num_threads: usize,
+    validate_checksums: bool,
 }
 
 impl Default for ParserSettings {
     fn default() -> Self {
-        ParserSettings { num_threads: 0 }
+        ParserSettings { num_threads: 0, validate_checksums: false }
     }
 }
 
@@ -93,12 +94,29 @@ impl ParserSettings {
 
     /// Sets the number of worker threads.
     /// `0` will let rayon decide.
+    ///
+    #[cfg(feature = "multithreading")]
     pub fn num_threads(mut self, num_threads: usize) -> Self {
         self.num_threads = if num_threads == 0 {
             rayon::current_num_threads()
         } else {
             num_threads
         };
+        self
+    }
+
+    /// Does nothing and emits a warning when complied without multithreading.
+    #[cfg(not(feature = "multithreading"))]
+    pub fn num_threads(mut self, _num_threads: usize) -> Self {
+        warn!("Setting num_threads has no effect when compiling without multithreading support.");
+
+        self.num_threads = 1;
+        self
+    }
+
+    pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
+        self.validate_checksums = validate_checksums;
+
         self
     }
 }
@@ -140,16 +158,30 @@ impl<T: ReadSeek> EvtxParser<T> {
         self
     }
 
-    pub fn allocate_chunk(data: &mut T, chunk_number: u16) -> Result<EvtxChunkData, Error> {
+    /// Allocate a new chunk from the given data, at the offset expected by `chunk_number`.
+    /// If the read chunk contains valid data, an `Ok(Some(EvtxChunkData))` will be returned.
+    /// If the read chunk contains invalid data (bad magic, bad checksum when `validate_checksum` is set to true),
+    /// of if not enough data can be read (e.g. because we reached EOF), an `Err` is returned.
+    /// If the read chunk is empty, `Ok(None)` will be returned.
+    pub fn allocate_chunk(data: &mut T, chunk_number: u16, validate_checksum: bool) -> Result<Option<EvtxChunkData>, Error> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
-        data.seek(SeekFrom::Start(
-            (EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE) as u64,
-        ))?;
+        let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
 
-        data.take(EVTX_CHUNK_SIZE as u64)
+        data.seek(SeekFrom::Start(chunk_offset as u64))?;
+
+        let amount_read = data.take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)?;
 
-        EvtxChunkData::new(chunk_data)
+        if amount_read !=  EVTX_CHUNK_SIZE {
+            return Err(format_err!("Reached EOF while trying to read a chunk"));
+        }
+
+        // There might be empty chunks in the middle of a dirty file.
+        if chunk_data.iter().all(|x| *x == 0) {
+            return Ok(None);
+        }
+
+        EvtxChunkData::new(chunk_data, validate_checksum).map(Some)
     }
 
     /// Return an iterator over all the chunks.
@@ -236,17 +268,30 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let next = EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number);
-
-        // We try to read past the `chunk_count` to allow for dirty files.
-        // But if we failed, it means we really are at the end of the file.
-        if next.is_err() && self.current_chunk_number >= self.parser.header.chunk_count {
-            return None;
+        loop {
+            match EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number, self.parser.config.validate_checksums) {
+                Err(err) => {
+                    // We try to read past the `chunk_count` to allow for dirty files.
+                    // But if we failed, it means we really are at the end of the file.
+                    if self.current_chunk_number >= self.parser.header.chunk_count {
+                        return None;
+                    } else {
+                        self.current_chunk_number += 1;
+                        return Some(Err(err));
+                    }
+                }
+                Ok(None) => {
+                    // We try to read past the `chunk_count` to allow for dirty files.
+                    // But if we get an empty chunk, we need to keep looking.
+                    // Increment and try again.
+                    self.current_chunk_number += 1;
+                }
+                Ok(Some(chunk)) => {
+                    self.current_chunk_number += 1;
+                    return Some(Ok(chunk));
+                }
+            };
         }
-
-        self.current_chunk_number += 1;
-
-        Some(next)
     }
 }
 
@@ -387,6 +432,7 @@ mod tests {
             evtx_file[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE
                 ..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
                 .to_vec(),
+            false,
         )
             .unwrap();
 

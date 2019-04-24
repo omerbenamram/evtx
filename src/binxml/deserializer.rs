@@ -216,18 +216,6 @@ impl<'a> IterTokens<'a> {
                 Some(deserialized_token_result)
             }
             Err(e) => {
-                // Cursor might have not been moved if this error was thrown in middle of seek.
-                // So seek all the way to end.
-                debug_assert!(
-                    if let Some(limit) = self.data_size {
-                        limit >= self.data_read_so_far
-                    } else {
-                        false
-                    },
-                    "Invalid state! read too much data! data_size is {:?}, read to {}",
-                    self.data_size,
-                    self.data_read_so_far
-                );
                 Some(Err(e))
             }
         };
@@ -259,7 +247,7 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
@@ -274,7 +262,7 @@ mod tests {
         let evtx_file = include_bytes!("../../samples/security.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
@@ -296,7 +284,7 @@ mod tests {
             include_bytes!("../../samples/2-system-Microsoft-Windows-LiveId%4Operational.evtx");
         let from_start_of_chunk = &evtx_file[4096..];
 
-        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec()).unwrap();
+        let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
