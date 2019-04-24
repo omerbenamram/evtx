@@ -73,6 +73,27 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
     }
 }
 
+
+pub fn read_null_terminated_utf16_string<T: ReadSeek>(
+    stream: &mut T,
+) -> io::Result<String> {
+    let mut s = String::new();
+
+    loop {
+        let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
+
+        if next_char == 0 {
+            return Ok(s);
+        }
+
+        let next_char = std::char::decode_utf16(std::iter::once(next_char)).next().unwrap().map_err(|_e|
+            Error::from(ErrorKind::InvalidData)
+        )?;
+
+        s.push(next_char);
+    }
+}
+
 pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
     let offset = cursor.position();
     let data = cursor.get_ref();

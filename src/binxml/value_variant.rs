@@ -8,6 +8,7 @@ use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{
     datetime_from_filetime, read_len_prefixed_utf16_string, read_systemtime, read_utf16_by_size,
+    read_null_terminated_utf16_string,
 };
 use chrono::{DateTime, Utc};
 use log::trace;
@@ -275,7 +276,7 @@ impl<'a> BinXmlValue<'a> {
                 ))
             }
             BinXmlValueType::StringArrayType => {
-                BinXmlValue::StringArrayType(try_read_sized_array!(cursor, utf_16_str, size))
+                BinXmlValue::StringArrayType(try_read_sized_array!(cursor, null_terminated_utf_16_str, size))
             }
             BinXmlValueType::BinaryType => {
                 // Borrow the underlying data from the cursor, and return a ref to it.

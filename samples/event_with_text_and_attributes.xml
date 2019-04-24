@@ -16,7 +16,7 @@
         </Security>
     </System>
     <EventData>
-        <Data></Data>
+        <Data>10.00.,15063,,Multiprocessor Free,0</Data>
         <Binary></Binary>
     </EventData>
 </Event>
