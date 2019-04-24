@@ -158,6 +158,11 @@ impl<T: ReadSeek> EvtxParser<T> {
         self
     }
 
+    /// Allocate a new chunk from the given data, at the offset expected by `chunk_number`.
+    /// If the read chunk contains valid data, an `Ok(Some(EvtxChunkData)0` will be returned.
+    /// If the read chunk contains invalid data (bad magic, bad checksum when `validate_checksum` is set to true),
+    /// of if not enough data can be read (e.g. because we reached EOF), an `Err` is returned.
+    /// If the read chunk is empty, `Ok(None)` will be returned.
     pub fn allocate_chunk(data: &mut T, chunk_number: u16, validate_checksum: bool) -> Result<Option<EvtxChunkData>, Error> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
@@ -172,7 +177,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
 
         // There might be empty chunks in the middle of a dirty file.
-        if chunk_data.iter().all(|&x| x == 0) {
+        if chunk_data.iter().all(|x| *x == 0) {
             return Ok(None);
         }
 
