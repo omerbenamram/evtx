@@ -8,6 +8,7 @@ use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind},
 };
+use std::char::{REPLACEMENT_CHARACTER, decode_utf16};
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,
@@ -77,21 +78,21 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
 pub fn read_null_terminated_utf16_string<T: ReadSeek>(
     stream: &mut T,
 ) -> io::Result<String> {
-    let mut s = String::new();
+    let mut buffer = vec![];
 
     loop {
         let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
 
         if next_char == 0 {
-            return Ok(s);
+            break;
         }
 
-        let next_char = std::char::decode_utf16(std::iter::once(next_char)).next().unwrap().map_err(|_e|
-            Error::from(ErrorKind::InvalidData)
-        )?;
-
-        s.push(next_char);
+        buffer.push(next_char);
     }
+
+    decode_utf16(buffer.into_iter())
+        .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
+        .collect()
 }
 
 pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
