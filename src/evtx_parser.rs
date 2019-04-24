@@ -159,7 +159,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     /// Allocate a new chunk from the given data, at the offset expected by `chunk_number`.
-    /// If the read chunk contains valid data, an `Ok(Some(EvtxChunkData)0` will be returned.
+    /// If the read chunk contains valid data, an `Ok(Some(EvtxChunkData))` will be returned.
     /// If the read chunk contains invalid data (bad magic, bad checksum when `validate_checksum` is set to true),
     /// of if not enough data can be read (e.g. because we reached EOF), an `Err` is returned.
     /// If the read chunk is empty, `Ok(None)` will be returned.
