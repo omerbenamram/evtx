@@ -237,48 +237,38 @@ fn expand_borrowed_template<'a>(
     }
 }
 
+
 fn _expand_templates<'a>(
     token: Cow<'a, BinXMLDeserializedTokens<'a>>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) {
     match token {
-        Cow::Owned(owned_token) => {
-            match owned_token {
-                BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens))) => {
-                    for token in tokens.into_iter() {
-                        _expand_templates(Cow::Owned(token), stack);
-                    }
-                }
-                BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens))) => {
-                    for token in tokens.iter() {
-                        _expand_templates(Cow::Borrowed(token), stack);
-                    }
-                }
-                BinXMLDeserializedTokens::TemplateInstance(template) => {
-                    expand_owned_template(template, stack);
-                }
-                _ => stack.push(Cow::Owned(owned_token)),
+        // Owned values can be consumed when flatting, and passed on as owned.
+        Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens)))) => {
+            for token in tokens.into_iter() {
+                _expand_templates(Cow::Owned(token), stack);
             }
         }
-        Cow::Borrowed(ref_token) => {
-            match ref_token {
-                BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens))) => {
-                    for token in tokens.iter() {
-                        _expand_templates(Cow::Borrowed(token), stack);
-                    }
-                }
-                BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens))) => {
-                    for token in tokens.iter() {
-                        _expand_templates(Cow::Borrowed(token), stack);
-                    }
-                }
-                BinXMLDeserializedTokens::TemplateInstance(template) => {
-                    expand_borrowed_template(template, stack);
 
-                }
-                _ => stack.push(Cow::Borrowed(ref_token)),
+        // All borrowed values are flattened and kept borrowed.
+        Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens)))) |
+        Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens)))) |
+        Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens))))
+        => {
+            for token in tokens.iter() {
+                _expand_templates(Cow::Borrowed(token), stack);
             }
         }
+
+        // Actual template handling.
+        Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
+            expand_owned_template(template, stack);
+        }
+        Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(template)) => {
+            expand_borrowed_template(template, stack);
+        }
+
+        _ => stack.push(token),
     }
 }
 
