@@ -252,9 +252,9 @@ mod test {
                     name: n!("Event"),
                 }),
                 Attribute(BinXMLAttribute { name: n!("xmlns") }),
-                Value(BinXmlValue::StringType(Cow::Borrowed(
+                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed(
                     "http://schemas.microsoft.com/win/2004/08/events/event",
-                ))),
+                )))),
                 CloseStartElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 982,
@@ -434,7 +434,7 @@ mod test {
                     name: n!("Computer"),
                 }),
                 CloseStartElement,
-                Value(BinXmlValue::StringType(Cow::Borrowed("37L4247F27-25"))),
+                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed("37L4247F27-25")))),
                 CloseElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 66,

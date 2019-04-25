@@ -21,6 +21,7 @@ use crate::{
 use std::io::Cursor;
 use std::mem;
 use crate::evtx_chunk::EvtxChunk;
+use std::borrow::Cow;
 
 
 pub struct IterTokens<'a> {
@@ -128,7 +129,7 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_stream(cursor, self.chunk)?,
+                Cow::Owned(BinXmlValue::from_binxml_stream(cursor, self.chunk)?),
             )),
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),

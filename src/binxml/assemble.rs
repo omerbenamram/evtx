@@ -39,190 +39,140 @@ pub fn create_record_model<'a>(tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>
     let mut model: Vec<XmlModel> = Vec::with_capacity(tokens.len());
 
     for token in tokens {
+        // Handle all places where we don't care if it's an Owned or a Borrowed value.
         match token {
-            Cow::Owned(owned_token) => {
-                match owned_token {
-                    BinXMLDeserializedTokens::FragmentHeader(_) => {}
-                    BinXMLDeserializedTokens::TemplateInstance(_) => {
-                        panic!("Call `expand_templates` before calling this function")
-                    }
-                    BinXMLDeserializedTokens::AttributeList => {}
-                    BinXMLDeserializedTokens::Attribute(attr) => {
-                        trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
-                        match current_element.take() {
-                            None => panic!("attribute - Bad parser state"),
-                            Some(builder) => {
-                                current_element = Some(builder.attribute_name(Cow::Owned(attr.name)));
-                            }
-                        };
-                    }
-                    BinXMLDeserializedTokens::OpenStartElement(elem) => {
-                        trace!(
-                            "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
-                            elem.name
-                        );
-                        let builder = XmlElementBuilder::new();
-                        current_element = Some(builder.name(Cow::Owned(elem.name)));
-                    }
-                    BinXMLDeserializedTokens::CloseStartElement => {
-                        trace!("BinXMLDeserializedTokens::CloseStartElement");
-                        match current_element.take() {
-                            None => panic!("close start - Bad parser state"),
-                            Some(builder) => model.push(XmlModel::OpenElement(builder.finish())),
-                        };
-                    }
-                    BinXMLDeserializedTokens::CloseEmptyElement => {
-                        trace!("BinXMLDeserializedTokens::CloseEmptyElement");
-                        match current_element.take() {
-                            None => panic!("close empty - Bad parser state"),
-                            Some(builder) => {
-                                model.push(XmlModel::OpenElement(builder.finish()));
-                                model.push(XmlModel::CloseElement);
-                            }
-                        };
-                    }
-                    BinXMLDeserializedTokens::CloseElement => {
-                        model.push(XmlModel::CloseElement);
-                    }
-                    BinXMLDeserializedTokens::Value(value) => {
-                        trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                        match current_element.take() {
-                            // A string that is not inside any element, yield it
-                            None => match value {
-                                BinXmlValue::EvtXml => {
-                                    panic!("Call `expand_templates` before calling this function")
-                                }
-                                _ => {
-                                    model.push(XmlModel::Value(Cow::Owned(value)));
-                                }
-                            },
-                            // A string that is bound to an attribute
-                            Some(builder) => {
-                                current_element = Some(builder.attribute_value(Cow::Owned(value)));
-                            }
-                        };
-                    }
-                    BinXMLDeserializedTokens::RefValue(value) => {
-                        trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                        match current_element.take() {
-                            // A string that is not inside any element, yield it
-                            None => match value {
-                                BinXmlValue::EvtXml => {
-                                    panic!("Call `expand_templates` before calling this function")
-                                }
-                                _ => {
-                                    model.push(XmlModel::Value(Cow::Borrowed(value)));
-                                }
-                            },
-                            // A string that is bound to an attribute
-                            Some(builder) => {
-                                current_element = Some(builder.attribute_value(Cow::Borrowed(value)));
-                            }
-                        };
-                    }
-                    BinXMLDeserializedTokens::CDATASection => {}
-                    BinXMLDeserializedTokens::CharRef => {}
-                    BinXMLDeserializedTokens::EntityRef(e) => unimplemented!("{}", &format!("{:?}", e)),
-                    BinXMLDeserializedTokens::PITarget => {}
-                    BinXMLDeserializedTokens::PIData => {}
-                    BinXMLDeserializedTokens::Substitution(_) => {
-                        panic!("Call `expand_templates` before calling this function")
-                    }
-                    BinXMLDeserializedTokens::EndOfStream => model.push(XmlModel::EndOfStream),
-                    BinXMLDeserializedTokens::StartOfStream => model.push(XmlModel::StartOfStream),
-                }
+            Cow::Owned(BinXMLDeserializedTokens::FragmentHeader(_)) | Cow::Borrowed(BinXMLDeserializedTokens::FragmentHeader(_)) => {}
+            Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(_)) | Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(_)) => {
+                panic!("Call `expand_templates` before calling this function")
             }
-            Cow::Borrowed(ref_token) => {
-                match ref_token {
-                    BinXMLDeserializedTokens::FragmentHeader(_) => {}
-                    BinXMLDeserializedTokens::TemplateInstance(_) => {
-                        panic!("Call `expand_templates` before calling this function")
-                    }
-                    BinXMLDeserializedTokens::AttributeList => {}
-                    BinXMLDeserializedTokens::Attribute(attr) => {
-                        trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
-                        match current_element.take() {
-                            None => panic!("attribute - Bad parser state"),
-                            Some(builder) => {
-                                current_element = Some(builder.attribute_name(Cow::Borrowed(&attr.name)));
-                            }
-                        };
-                    }
-                    BinXMLDeserializedTokens::OpenStartElement(elem) => {
-                        trace!(
-                            "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
-                            elem.name
-                        );
-                        let builder = XmlElementBuilder::new();
-                        current_element = Some(builder.name(Cow::Borrowed(&elem.name)));
-                    }
-                    BinXMLDeserializedTokens::CloseStartElement => {
-                        trace!("BinXMLDeserializedTokens::CloseStartElement");
-                        match current_element.take() {
-                            None => panic!("close start - Bad parser state"),
-                            Some(builder) => model.push(XmlModel::OpenElement(builder.finish())),
-                        };
-                    }
-                    BinXMLDeserializedTokens::CloseEmptyElement => {
-                        trace!("BinXMLDeserializedTokens::CloseEmptyElement");
-                        match current_element.take() {
-                            None => panic!("close empty - Bad parser state"),
-                            Some(builder) => {
-                                model.push(XmlModel::OpenElement(builder.finish()));
-                                model.push(XmlModel::CloseElement);
-                            }
-                        };
-                    }
-                    BinXMLDeserializedTokens::CloseElement => {
+            Cow::Owned(BinXMLDeserializedTokens::AttributeList) | Cow::Borrowed(BinXMLDeserializedTokens::AttributeList) => {}
+
+            Cow::Owned(BinXMLDeserializedTokens::CloseElement) | Cow::Borrowed(BinXMLDeserializedTokens::CloseElement) => {
+                model.push(XmlModel::CloseElement);
+            }
+
+            Cow::Owned(BinXMLDeserializedTokens::CloseStartElement) | Cow::Borrowed(BinXMLDeserializedTokens::CloseStartElement) => {
+                trace!("BinXMLDeserializedTokens::CloseStartElement");
+                match current_element.take() {
+                    None => panic!("close start - Bad parser state"),
+                    Some(builder) => model.push(XmlModel::OpenElement(builder.finish())),
+                };
+            }
+            Cow::Owned(BinXMLDeserializedTokens::CDATASection) | Cow::Borrowed(BinXMLDeserializedTokens::CDATASection) => {}
+            Cow::Owned(BinXMLDeserializedTokens::CharRef) | Cow::Borrowed(BinXMLDeserializedTokens::CharRef) => {}
+            Cow::Owned(BinXMLDeserializedTokens::EntityRef(_)) | Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(_)) => unimplemented!("EntityRef not implemented"),
+            Cow::Owned(BinXMLDeserializedTokens::PITarget) | Cow::Borrowed(BinXMLDeserializedTokens::PITarget) => {}
+            Cow::Owned(BinXMLDeserializedTokens::PIData) | Cow::Borrowed(BinXMLDeserializedTokens::PIData) => {}
+            Cow::Owned(BinXMLDeserializedTokens::Substitution(_)) | Cow::Borrowed(BinXMLDeserializedTokens::Substitution(_)) => {
+                panic!("Call `expand_templates` before calling this function")
+            }
+            Cow::Owned(BinXMLDeserializedTokens::EndOfStream) | Cow::Borrowed(BinXMLDeserializedTokens::EndOfStream) => model.push(XmlModel::EndOfStream),
+            Cow::Owned(BinXMLDeserializedTokens::StartOfStream) | Cow::Borrowed(BinXMLDeserializedTokens::StartOfStream) => model.push(XmlModel::StartOfStream),
+
+            Cow::Owned(BinXMLDeserializedTokens::CloseEmptyElement) | Cow::Borrowed(BinXMLDeserializedTokens::CloseEmptyElement) => {
+                trace!("BinXMLDeserializedTokens::CloseEmptyElement");
+                match current_element.take() {
+                    None => panic!("close empty - Bad parser state"),
+                    Some(builder) => {
+                        model.push(XmlModel::OpenElement(builder.finish()));
                         model.push(XmlModel::CloseElement);
                     }
-                    BinXMLDeserializedTokens::Value(value) => {
-                        trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                        match current_element.take() {
-                            // A string that is not inside any element, yield it
-                            None => match value {
-                                BinXmlValue::EvtXml => {
-                                    panic!("Call `expand_templates` before calling this function")
-                                }
-                                _ => {
-                                    model.push(XmlModel::Value(Cow::Borrowed(value)));
-                                }
-                            },
-                            // A string that is bound to an attribute
-                            Some(builder) => {
-                                current_element = Some(builder.attribute_value(Cow::Borrowed(value)));
-                            }
-                        };
+                };
+            }
+
+            Cow::Owned(BinXMLDeserializedTokens::Attribute(attr)) => {
+                trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
+                match current_element.take() {
+                    None => panic!("attribute - Bad parser state"),
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_name(Cow::Owned(attr.name)));
                     }
-                    BinXMLDeserializedTokens::RefValue(value) => {
-                        trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                        match current_element.take() {
-                            // A string that is not inside any element, yield it
-                            None => match value {
-                                BinXmlValue::EvtXml => {
-                                    panic!("Call `expand_templates` before calling this function")
-                                }
-                                _ => {
-                                    model.push(XmlModel::Value(Cow::Borrowed(value)));
-                                }
-                            },
-                            // A string that is bound to an attribute
-                            Some(builder) => {
-                                current_element = Some(builder.attribute_value(Cow::Borrowed(value)));
-                            }
-                        };
+                };
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::Attribute(attr)) => {
+                trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
+                match current_element.take() {
+                    None => panic!("attribute - Bad parser state"),
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_name(Cow::Borrowed(&attr.name)));
                     }
-                    BinXMLDeserializedTokens::CDATASection => {}
-                    BinXMLDeserializedTokens::CharRef => {}
-                    BinXMLDeserializedTokens::EntityRef(e) => unimplemented!("{}", &format!("{:?}", e)),
-                    BinXMLDeserializedTokens::PITarget => {}
-                    BinXMLDeserializedTokens::PIData => {}
-                    BinXMLDeserializedTokens::Substitution(_) => {
-                        panic!("Call `expand_templates` before calling this function")
+                };
+            }
+
+            Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
+                trace!(
+                    "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
+                    elem.name
+                );
+                let builder = XmlElementBuilder::new();
+                current_element = Some(builder.name(Cow::Owned(elem.name)));
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
+                trace!(
+                    "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
+                    elem.name
+                );
+                let builder = XmlElementBuilder::new();
+                current_element = Some(builder.name(Cow::Borrowed(&elem.name)));
+            }
+
+            Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(value))) => {
+                trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
+                match current_element.take() {
+                    // A string that is not inside any element, yield it
+                    None => match value {
+                        BinXmlValue::EvtXml => {
+                            panic!("Call `expand_templates` before calling this function")
+                        }
+                        _ => {
+                            model.push(XmlModel::Value(Cow::Owned(value)));
+                        }
+                    },
+                    // A string that is bound to an attribute
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_value(Cow::Owned(value)));
                     }
-                    BinXMLDeserializedTokens::EndOfStream => model.push(XmlModel::EndOfStream),
-                    BinXMLDeserializedTokens::StartOfStream => model.push(XmlModel::StartOfStream),
-                }
+                };
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Owned(value))) | Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))) => {
+                trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
+                match current_element.take() {
+                    // A string that is not inside any element, yield it
+                    None => match value {
+                        BinXmlValue::EvtXml => {
+                            panic!("Call `expand_templates` before calling this function")
+                        }
+                        _ => {
+                            model.push(XmlModel::Value(Cow::Borrowed(value)));
+                        }
+                    },
+                    // A string that is bound to an attribute
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_value(Cow::Borrowed(value)));
+                    }
+                };
+            }
+
+            // Same as above, but `value` is `&&BinXmlValue` which is not compatible with the match.
+            Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))) => {
+                trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
+
+                match current_element.take() {
+                    // A string that is not inside any element, yield it
+                    None => match value {
+                        BinXmlValue::EvtXml => {
+                            panic!("Call `expand_templates` before calling this function")
+                        }
+                        _ => {
+                            model.push(XmlModel::Value(Cow::Borrowed(value)));
+                        }
+                    },
+                    // A string that is bound to an attribute
+                    Some(builder) => {
+                        current_element = Some(builder.attribute_value(Cow::Borrowed(value)));
+                    }
+                };
             }
         }
     }
@@ -242,9 +192,14 @@ pub fn expand_templates(
         match token {
             Cow::Owned(owned_token) => {
                 match owned_token {
-                    BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens)) => {
+                    BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens))) => {
                         for token in tokens.into_iter() {
                             _expand_templates(Cow::Owned(token), stack);
+                        }
+                    }
+                    BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens))) => {
+                        for token in tokens.iter() {
+                            _expand_templates(Cow::Borrowed(token), stack);
                         }
                     }
                     BinXMLDeserializedTokens::TemplateInstance(mut template) => {
@@ -270,7 +225,7 @@ pub fn expand_templates(
                                         BinXmlValue::NullType,
                                     );
 
-                                    _expand_templates(Cow::Owned(BinXMLDeserializedTokens::Value(value)), stack);
+                                    _expand_templates(Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(value))), stack);
                                 }
                             } else {
                                 _expand_templates(token, stack);
@@ -282,7 +237,12 @@ pub fn expand_templates(
             }
             Cow::Borrowed(ref_token) => {
                 match ref_token {
-                    BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens)) => {
+                    BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens))) => {
+                        for token in tokens.iter() {
+                            _expand_templates(Cow::Borrowed(token), stack);
+                        }
+                    }
+                    BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens))) => {
                         for token in tokens.iter() {
                             _expand_templates(Cow::Borrowed(token), stack);
                         }
@@ -296,7 +256,7 @@ pub fn expand_templates(
                                 } else {
                                     let value = &template.substitution_array[substitution_descriptor.substitution_index as usize];
 
-                                    _expand_templates(Cow::Owned(BinXMLDeserializedTokens::RefValue(value)), stack);
+                                    _expand_templates(Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))), stack);
                                 }
                             } else {
                                 _expand_templates(Cow::Borrowed(token), stack);
