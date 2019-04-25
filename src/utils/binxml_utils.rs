@@ -15,7 +15,8 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     is_null_terminated: bool,
 ) -> io::Result<Option<String>> {
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
-    let needed_bytes = (expected_number_of_characters * 2) as usize;
+    let needed_bytes = (expected_number_of_characters * 2) as u64;
+
     trace!(
         "Going to read a{}string of len {} from stream",
         if is_null_terminated {
@@ -26,51 +27,42 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
         expected_number_of_characters
     );
 
-    read_utf16_by_size(stream, needed_bytes as u64)
-        .and_then(|s| {
-            if let Some(string) = s {
-                if string.len() == expected_number_of_characters as usize {
-                    return Ok(Some(string));
-                } else {
-                    error!(
-                        "Expected string of length {}, found string of length {} - {}",
-                        expected_number_of_characters,
-                        string.len(),
-                        string
-                    );
-                    return Err(Error::from(ErrorKind::InvalidData));
-                }
-            }
-            Ok(Some("".to_string()))
-        })
-        .and_then(|s| {
-            // Seek null terminator if needed (we can't feed it to the decoder)
-            if is_null_terminated {
-                stream.read_u16::<LittleEndian>()?;
-            };
-            Ok(s)
-        })
+    let s = read_utf16_by_size(stream, needed_bytes)?;
+
+    if is_null_terminated {
+        stream.read_u16::<LittleEndian>()?;
+    };
+
+    let s_len = s.as_ref().map(|s| s.len()).unwrap_or(0);
+
+    if s_len == expected_number_of_characters as usize {
+        Ok(s)
+
+    } else {
+        error!(
+            "Expected string of length {}, found string of length {} - {:?}",
+            expected_number_of_characters,
+            s_len,
+            s
+        );
+
+        Err(Error::from(ErrorKind::InvalidData))
+    }
 }
 
-pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<Option<String>> {
-    let _p = stream.tell()? as usize;
 
-    let mut buffer = vec![0; size as usize];
-    let _ref_to_utf16_bytes = stream.read_exact(&mut buffer);
-
+/// Reads a utf16 string from the given stream.
+/// size is the actual byte representation of the string (not the number of characters).
+pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size : u64) -> io::Result<Option<String>> {
     match size {
         0 => Ok(None),
-        _ => match UTF_16LE.decode(&buffer, DecoderTrap::Strict) {
-            Ok(mut s) => {
-                // Strip nul terminator if needed
-                if let Some('\0') = s.chars().last() {
-                    s.pop();
-                }
-
-                Ok(Some(s))
+        _ => read_utf16_string(stream, Some(size as usize / 2)).map(|mut s| {
+            // Strip nul terminator if needed
+            if let Some('\0') = s.chars().last() {
+                s.pop();
             }
-            Err(_s) => Err(Error::from(ErrorKind::InvalidData)),
-        },
+            Some(s)
+        }),
     }
 }
 
@@ -78,16 +70,40 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
 pub fn read_null_terminated_utf16_string<T: ReadSeek>(
     stream: &mut T,
 ) -> io::Result<String> {
-    let mut buffer = vec![];
+    read_utf16_string(stream, None)
+}
 
-    loop {
-        let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
 
-        if next_char == 0 {
-            break;
+/// Reads a utf16 string from the given stream.
+/// If `len` is given, exactly `len` u16 values are read from the stream.
+/// If `len` is None, the string is assumed to be null terminated and the stream will be read to the first null (0).
+fn read_utf16_string<T: ReadSeek>(
+    stream: &mut T,
+    len: Option<usize>,
+) -> io::Result<String> {
+    let mut buffer = match len {
+        Some(len) => Vec::with_capacity(len),
+        None => Vec::new(),
+    };
+
+    match len {
+        Some(len) => {
+            for _ in 0..len {
+                let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
+                buffer.push(next_char);
+            }
         }
+        None => {
+            loop {
+                let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
 
-        buffer.push(next_char);
+                if next_char == 0 {
+                    break;
+                }
+
+                buffer.push(next_char);
+            }
+        }
     }
 
     decode_utf16(buffer.into_iter())
