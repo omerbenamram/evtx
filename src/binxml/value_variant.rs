@@ -484,12 +484,12 @@ impl<'c> Into<serde_json::Value> for &'c BinXmlValue<'c> {
     }
 }
 
-impl<'c> Into<Cow<'c, str>> for &'_ BinXmlValue<'c> {
-    fn into(self) -> Cow<'c, str> {
+impl<'a> BinXmlValue<'a> {
+    pub fn as_cow_str(&self) -> Cow<str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => s.clone(),
-            BinXmlValue::AnsiStringType(s) => s.clone(),
+            BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),
+            BinXmlValue::AnsiStringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::Int16Type(num) => Cow::Owned(num.to_string()),

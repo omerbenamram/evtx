@@ -90,7 +90,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         let mut event_builder = BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
 
         for attr in element.attributes.iter() {
-            let value_cow: Cow<'_, str> = attr.value.as_ref().into();
+            let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
 
             if value_cow.len() > 0 {
                 let name_as_str = attr.name.as_str();
@@ -114,7 +114,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars");
-        let cow: Cow<'_, str> = value.into();
+        let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);
         self.writer.write_event(Event::Text(event))?;
         Ok(())

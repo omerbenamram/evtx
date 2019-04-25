@@ -76,7 +76,7 @@ impl<W: Write> JsonOutput<W> {
             .find(|a| a.name.as_ref().0 == "Name")
         {
             Some(name) => {
-                let data_key: Cow<'_, str> = name.value.as_ref().into();
+                let data_key: Cow<'_, str> = name.value.as_ref().as_cow_str();
 
                 self.insert_node_without_attributes(element, &data_key)
             }
