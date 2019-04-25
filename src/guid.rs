@@ -1,6 +1,6 @@
 use std::fmt::{self, Debug, Display};
 use std::io;
-
+use std::fmt::Write;
 use crate::evtx_parser::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -34,7 +34,12 @@ impl Guid {
     }
 
     pub fn to_string(&self) -> String {
-        format!(
+        // Using `format!` will extend the string multiple time,
+        // but we know ahead of time how much space we need.
+        let mut s = String::with_capacity(63);
+
+        write!(
+            &mut s,
             "{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
             self.data1,
             self.data2,
@@ -47,7 +52,9 @@ impl Guid {
             self.data4[5],
             self.data4[6],
             self.data4[7]
-        )
+        ).expect("writing to a preallocated buffer cannot fail");
+
+        s
     }
 }
 
