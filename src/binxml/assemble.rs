@@ -17,12 +17,18 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
 
     visitor.visit_start_of_stream()?;
 
+    let mut stack = vec![];
+
     for owned_token in record_model {
         match owned_token {
             XmlModel::OpenElement(open_element) => {
-                visitor.visit_open_start_element(&open_element)?
+                stack.push(open_element);
+                visitor.visit_open_start_element(stack.last().expect("Invalid state"))?
             }
-            XmlModel::CloseElement => visitor.visit_close_element()?,
+            XmlModel::CloseElement => {
+                let close_element = stack.pop().expect("Invalid state");
+                visitor.visit_close_element(&close_element)?
+            },
             XmlModel::Value(s) => visitor.visit_characters(&s)?,
             XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
             // Sometimes there are multiple fragment headers,

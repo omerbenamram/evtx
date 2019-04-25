@@ -202,7 +202,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(&mut self) -> Result<(), Error> {
+    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
