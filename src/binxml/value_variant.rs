@@ -17,6 +17,7 @@ use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
 use crate::evtx_chunk::EvtxChunk;
+use std::fmt::Write;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXmlValue<'a> {
@@ -503,7 +504,12 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BinaryType(bytes) => {
                 // Bytes will be formatted as const length of 2 with '0' padding.
-                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                let mut repr = String::with_capacity(bytes.len() * 2);
+
+                for b in bytes.iter() {
+                    write!(repr, "{:02X}", b).expect("Writing to a String cannot fail");
+                }
+
                 Cow::Owned(repr)
             }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
