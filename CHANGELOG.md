@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2019-04-29
+
+### Added
+- Performance improvements. Parser should be ~15% faster (thanks @ohadravid)
+- `--validate-checksums` flag to optionally be strict about checksum checks for chunk headers.
+
+### Fixed
+- Fixed missing data when parsing `StringArray` nodes. (thanks @ohadravid)  
+- Samples containing empty chunks (thanks @ohadravid)
+
 ## [0.2.1] - 2019-04-21
 
 ### Changed
