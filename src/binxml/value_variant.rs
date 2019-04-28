@@ -1,20 +1,21 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{BinXmlDeserializer};
+use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::error::Error;
 
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{
-    datetime_from_filetime, read_len_prefixed_utf16_string, read_systemtime, read_utf16_by_size,
-    read_null_terminated_utf16_string,
+    datetime_from_filetime, read_len_prefixed_utf16_string, read_null_terminated_utf16_string,
+    read_systemtime, read_utf16_by_size,
 };
 use chrono::{DateTime, Utc};
 use log::trace;
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::string::ToString;
 
 use crate::evtx_chunk::EvtxChunk;
 use std::fmt::Write;
@@ -230,8 +231,7 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::HexInt32Type => BinXmlValue::HexInt32Type(try_read!(cursor, hex32)),
             BinXmlValueType::HexInt64Type => BinXmlValue::HexInt64Type(try_read!(cursor, hex64)),
             BinXmlValueType::BinXmlType => {
-                let tokens =
-                    BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None)?;
+                let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None)?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
@@ -277,9 +277,9 @@ impl<'a> BinXmlValue<'a> {
                         .map_err(|e| Error::utf8_decode_error(e, cursor.position()))?,
                 ))
             }
-            BinXmlValueType::StringArrayType => {
-                BinXmlValue::StringArrayType(try_read_sized_array!(cursor, null_terminated_utf_16_str, size))
-            }
+            BinXmlValueType::StringArrayType => BinXmlValue::StringArrayType(
+                try_read_sized_array!(cursor, null_terminated_utf_16_str, size),
+            ),
             BinXmlValueType::BinaryType => {
                 // Borrow the underlying data from the cursor, and return a ref to it.
                 let data = *cursor.get_ref();
@@ -354,7 +354,7 @@ impl<'a> BinXmlValue<'a> {
 fn to_delimited_list<N: ToString>(ns: impl AsRef<Vec<N>>) -> String {
     ns.as_ref()
         .iter()
-        .map(|n| n.to_string())
+        .map(ToString::to_string)
         .collect::<Vec<String>>()
         .join(",")
 }

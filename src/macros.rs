@@ -103,7 +103,7 @@ macro_rules! try_read_sized_array {
         let start_pos = $cursor.position();
 
         loop {
-            if ($cursor.position() - start_pos) >= $size as u64 {
+            if ($cursor.position() - start_pos) >= u64::from($size) {
                 break;
             }
 

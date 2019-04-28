@@ -6,8 +6,8 @@ use rayon;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
-use failure::{Error, format_err};
-use log::{debug};
+use failure::{format_err, Error};
+use log::debug;
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -68,7 +68,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// }
 ///
 /// ```
-///  
+///
 pub struct EvtxParser<T: ReadSeek> {
     data: T,
     header: EvtxFileHeader,
@@ -83,7 +83,10 @@ pub struct ParserSettings {
 
 impl Default for ParserSettings {
     fn default() -> Self {
-        ParserSettings { num_threads: 0, validate_checksums: false }
+        ParserSettings {
+            num_threads: 0,
+            validate_checksums: false,
+        }
     }
 }
 
@@ -163,16 +166,21 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// If the read chunk contains invalid data (bad magic, bad checksum when `validate_checksum` is set to true),
     /// of if not enough data can be read (e.g. because we reached EOF), an `Err` is returned.
     /// If the read chunk is empty, `Ok(None)` will be returned.
-    pub fn allocate_chunk(data: &mut T, chunk_number: u16, validate_checksum: bool) -> Result<Option<EvtxChunkData>, Error> {
+    pub fn allocate_chunk(
+        data: &mut T,
+        chunk_number: u16,
+        validate_checksum: bool,
+    ) -> Result<Option<EvtxChunkData>, Error> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
 
         data.seek(SeekFrom::Start(chunk_offset as u64))?;
 
-        let amount_read = data.take(EVTX_CHUNK_SIZE as u64)
+        let amount_read = data
+            .take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)?;
 
-        if amount_read !=  EVTX_CHUNK_SIZE {
+        if amount_read != EVTX_CHUNK_SIZE {
             return Err(format_err!("Reached EOF while trying to read a chunk"));
         }
 
@@ -231,13 +239,15 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => chunk_records.iter_serialized_records::<O>().collect(),
+                                Ok(mut chunk_records) => {
+                                    chunk_records.iter_serialized_records::<O>().collect()
+                                }
                             }
                         }
                     })
                     .collect();
 
-                Some(iterators.into_iter().flatten().into_iter())
+                Some(iterators.into_iter().flatten())
             }
         });
 
@@ -269,7 +279,11 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         loop {
-            match EvtxParser::allocate_chunk(&mut self.parser.data, self.current_chunk_number, self.parser.config.validate_checksums) {
+            match EvtxParser::allocate_chunk(
+                &mut self.parser.data,
+                self.current_chunk_number,
+                self.parser.config.validate_checksums,
+            ) {
                 Err(err) => {
                     // We try to read past the `chunk_count` to allow for dirty files.
                     // But if we failed, it means we really are at the end of the file.
@@ -434,7 +448,7 @@ mod tests {
                 .to_vec(),
             false,
         )
-            .unwrap();
+        .unwrap();
 
         assert!(chunk.validate_checksum());
 

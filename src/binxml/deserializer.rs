@@ -44,7 +44,7 @@ impl<'a> BinXmlDeserializer<'a> {
         BinXmlDeserializer {
             data,
             offset: start_offset,
-            chunk: chunk,
+            chunk,
         }
     }
 
@@ -249,7 +249,7 @@ mod tests {
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
-        for record in records.into_iter().take(1) {
+        for record in records.take(1) {
             assert!(record.is_ok(), record.unwrap().into_xml())
         }
     }
@@ -264,7 +264,7 @@ mod tests {
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
-        for record in records.into_iter().take(100) {
+        for record in records.take(100) {
             assert!(!record
                 .unwrap()
                 .into_xml()

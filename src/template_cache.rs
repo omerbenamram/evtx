@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
 
-
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
 #[derive(Debug, Default)]
@@ -32,7 +31,7 @@ impl<'chunk> TemplateCache<'chunk> {
     }
 
     pub fn get_template<'a: 'chunk>(&'a self, offset: Offset) -> Option<&'a CachedTemplate<'a>> {
-        self.0.get(&offset).into()
+        self.0.get(&offset)
     }
 
     pub fn len(&self) -> usize {

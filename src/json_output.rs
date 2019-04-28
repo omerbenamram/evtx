@@ -6,7 +6,7 @@ use log::trace;
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::xml_output::BinXmlOutput;
-use core::borrow::{BorrowMut};
+use core::borrow::BorrowMut;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::io::Write;
@@ -118,13 +118,13 @@ impl<W: Write> JsonOutput<W> {
             let value: Value = value.into();
 
             if !value.is_null() {
-                let name: &str = attribute.name.as_str().into();
+                let name: &str = attribute.name.as_str();
                 attributes.insert(name.to_owned(), value);
             }
         }
 
         // If we have attributes, create a map as usual.
-        if attributes.len() > 0 {
+        if !attributes.is_empty() {
             let value = self
                 .get_or_create_current_path()
                 .as_object_mut()
