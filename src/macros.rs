@@ -68,6 +68,13 @@ macro_rules! try_read {
         Cow::Owned(s)
     }};
 
+    ($cursor: ident, null_terminated_utf_16_str) => {{
+        let s = read_null_terminated_utf16_string($cursor)
+            .map_err(|e| Error::utf16_decode_error(e, $cursor.position()))?;
+
+        Cow::Owned(s)
+    }};
+
     ($cursor: ident, sid) => {
         Sid::from_stream($cursor)
             .map_err(|_e| Error::other("Failed to read NTSID from stream", $cursor.position()))?
@@ -92,21 +99,18 @@ macro_rules! try_read {
 
 macro_rules! try_read_sized_array {
     ($cursor: ident, $unit: ident, $size: ident) => {{
-        let mut data = vec![0; $size as usize];
-        $cursor.read_exact(&mut data)?;
-
-        let mut local_cursor = Cursor::new(&data);
         let mut array = vec![];
+        let start_pos = $cursor.position();
 
         loop {
-            if $cursor.position() >= data.len() as u64 {
+            if ($cursor.position() - start_pos) >= $size as u64 {
                 break;
             }
 
-            let b = &mut local_cursor;
-            let val = try_read!(b, $unit);
-            array.push(val)
+            let val = try_read!($cursor, $unit);
+            array.push(val);
         }
+
         array
     }};
 }

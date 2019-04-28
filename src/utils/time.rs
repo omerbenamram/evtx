@@ -3,7 +3,7 @@ use chrono::prelude::*;
 use std::io::Read;
 use time::Duration;
 
-pub fn read_systemtime<R: Read>(mut r: R) -> Result<DateTime<Utc>, crate::error::Error> {
+pub fn read_systemtime<R: Read>(r: &mut R) -> Result<DateTime<Utc>, crate::error::Error> {
     let year = try_read!(r, u16);
     let month = try_read!(r, u16);
     let _day_of_week = try_read!(r, u16);
