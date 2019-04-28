@@ -2,7 +2,7 @@ use crate::binxml::name::BinXmlName;
 use crate::guid::Guid;
 
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
-use std::rc::Rc;
+
 use std::borrow::Cow;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

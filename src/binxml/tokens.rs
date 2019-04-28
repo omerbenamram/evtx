@@ -11,7 +11,7 @@ use log::trace;
 
 use std::io::Seek;
 use std::io::SeekFrom;
-use std::rc::Rc;
+
 use std::borrow::Cow;
 use crate::evtx_chunk::EvtxChunk;
 

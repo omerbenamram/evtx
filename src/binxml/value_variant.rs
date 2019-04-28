@@ -15,7 +15,7 @@ use log::trace;
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::rc::Rc;
+
 use crate::evtx_chunk::EvtxChunk;
 use std::fmt::Write;
 

@@ -1,4 +1,4 @@
-use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
+
 
 use crate::evtx_parser::ReadSeek;
 use crate::utils::print_hexdump;
@@ -8,7 +8,7 @@ use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind},
 };
-use std::char::{REPLACEMENT_CHARACTER, decode_utf16};
+use std::char::{decode_utf16};
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,

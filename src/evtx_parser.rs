@@ -7,7 +7,7 @@ use rayon;
 use rayon::prelude::*;
 
 use failure::{Error, format_err};
-use log::{debug, warn};
+use log::{debug};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};

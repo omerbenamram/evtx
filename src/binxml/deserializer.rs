@@ -5,17 +5,14 @@ use std::io::{Seek, SeekFrom};
 
 use crate::binxml::tokens::read_open_start_element;
 use crate::binxml::value_variant::BinXmlValue;
-use crate::string_cache::CachedString;
-use crate::template_cache::CachedTemplate;
+
+
 use crate::{
     binxml::tokens::{
         read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
     },
     error::Error,
     model::{deserialized::*, raw::*},
-    string_cache::StringCache,
-    template_cache::TemplateCache,
-    Offset,
 };
 
 use std::io::Cursor;
