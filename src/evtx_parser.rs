@@ -227,11 +227,11 @@ impl<T: ReadSeek> EvtxParser<T> {
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.parse_serialized_records::<O>();
+                            let chunk_records_res = chunk.parse();
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(chunk_records) => chunk_records.collect(),
+                                Ok(mut chunk_records) => chunk_records.iter_serialized_records::<O>().collect(),
                             }
                         }
                     })
@@ -434,11 +434,11 @@ mod tests {
                 .to_vec(),
             false,
         )
-        .unwrap();
+            .unwrap();
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse().unwrap().into_iter() {
+        for record in chunk.parse().unwrap().iter() {
             record.unwrap();
         }
     }

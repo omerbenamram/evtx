@@ -6,11 +6,7 @@ use crate::utils::*;
 use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
-use std::{
-    fmt::{Debug, Formatter},
-    io::Cursor,
-    io::{Read, Seek, SeekFrom},
-};
+use std::{fmt::{Debug, Formatter}, io::Cursor, io::{Read, Seek, SeekFrom}, mem};
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
@@ -51,7 +47,6 @@ impl Debug for EvtxChunkHeader {
 pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
-    pub string_cache: StringCache,
 }
 
 impl EvtxChunkData {
@@ -61,12 +56,7 @@ impl EvtxChunkData {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let chunk = EvtxChunkData {
-            header,
-            data,
-            string_cache: StringCache::new(),
-        };
-
+        let chunk = EvtxChunkData { header, data };
         if validate_checksum && !chunk.validate_checksum() {
             bail!("Invalid header checksum");
         }
@@ -74,25 +64,8 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
-    pub fn parse_records(
-        &mut self,
-    ) -> Result<impl Iterator<Item = Result<EvtxRecord, failure::Error>> + '_, failure::Error> {
-        Ok(self.parse()?.into_iter())
-    }
-
-    pub fn parse_serialized_records<O: BinXmlOutput<Vec<u8>>>(
-        &mut self,
-    ) -> Result<
-        impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + '_,
-        failure::Error,
-    > {
-        Ok(self
-            .parse_records()?
-            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>())))
-    }
-
     pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {
-        EvtxChunk::new(&self.data, &self.header, &mut self.string_cache)
+        EvtxChunk::new(&self.data, &self.header)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -144,28 +117,31 @@ impl EvtxChunkData {
 /// A struct which can hold references to chunk data (`EvtxChunkData`).
 /// All references are created together,
 /// and can be assume to live for the entire duration of the parsing phase.
-pub struct EvtxChunk<'a> {
-    pub data: &'a [u8],
-    pub header: &'a EvtxChunkHeader,
-    pub string_cache: &'a StringCache,
-    pub template_table: TemplateCache<'a>,
+/// See more info about lifetimes in `IterChunkRecords`.
+pub struct EvtxChunk<'chunk> {
+    pub data: &'chunk [u8],
+    pub header: &'chunk EvtxChunkHeader,
+
+    // For now, `StringCache` does not reference the `chunk lifetime,
+    // but in the future we might want to change that, so it's here.
+    pub string_cache: StringCache,
+
+    pub template_table: TemplateCache<'chunk>,
 }
 
-impl<'a> EvtxChunk<'a> {
+impl<'chunk> EvtxChunk<'chunk> {
     /// Will fail if the data starts with an invalid evtx chunk header.
     pub fn new(
-        data: &'a [u8],
-        header: &'a EvtxChunkHeader,
-        string_cache: &'a mut StringCache,
-    ) -> Result<EvtxChunk<'a>, failure::Error> {
+        data: &'chunk [u8],
+        header: &'chunk EvtxChunkHeader,
+    ) -> Result<EvtxChunk<'chunk>, failure::Error> {
         let _cursor = Cursor::new(data);
 
-        let mut template_table = TemplateCache::new();
-
         info!("Initializing string cache");
-        string_cache.populate(&data, &header.strings_offsets)?;
+        let string_cache = StringCache::populate(&data, &header.strings_offsets)?;
+
         info!("Initializing template cache");
-        template_table.populate(&data, &header.template_offsets)?;
+        let template_table = TemplateCache::populate(data, &header.template_offsets)?;
 
         Ok(EvtxChunk {
             header,
@@ -174,10 +150,48 @@ impl<'a> EvtxChunk<'a> {
             template_table,
         })
     }
+
+    /// Return an iterator of records from the chunk.
+    /// See `IterChunkRecords` for more lifetime info.
+    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
+        IterChunkRecords {
+            chunk: self,
+            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
+            exhausted: false,
+        }
+    }
+
+    /// Return an iterator of serialized records (containing textual data, not tokens) from the chunk.
+    pub fn iter_serialized_records<'a: 'chunk, O: BinXmlOutput<Vec<u8>>>(
+        &'a mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + 'a {
+        self.iter()
+            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>()))
+    }
 }
 
+/// An iterator over a chunk, yielding records.
+/// This iterator can be created using the `iter` function on `EvtxChunk`.
+///
+/// The 'a lifetime is (as can be seen in `iter`), smaller than the `chunk lifetime.
+/// This is because we can only guarantee that the `EvtxRecord`s we are creating are valid for
+/// the duration of the `EvtxChunk` borrow (because we reference the `TemplateCache` which is
+/// owned by it).
+///
+/// In practice we have
+///
+/// | EvtxChunkData ---------------------------------------| Must live the longest, contain the actual data we refer to.
+///
+/// | EvtxChunk<'chunk>: ---------------------------- | Borrows `EvtxChunkData`.
+///     &'chunk EvtxChunkData, TemplateCache<'chunk>
+///
+/// | IterChunkRecords<'a: 'chunk>:  ----- | Borrows `EvtxChunk` for 'a, but will only yield `EvtxRecord<'a>`.
+///     &'a EvtxChunkData<'chunk>
+///
+/// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
+/// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
 pub struct IterChunkRecords<'a> {
-    chunk: EvtxChunk<'a>,
+    chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
 }
@@ -217,8 +231,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let deserializer = BinXmlDeserializer::init(
             self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
-            self.chunk.string_cache,
-            &self.chunk.template_table,
+            Some(self.chunk),
         );
 
         let mut tokens = vec![];
@@ -263,19 +276,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             timestamp: record_header.timestamp,
             tokens,
         }))
-    }
-}
-
-impl<'a> IntoIterator for EvtxChunk<'a> {
-    type Item = Result<EvtxRecord<'a>, failure::Error>;
-    type IntoIter = IterChunkRecords<'a>;
-
-    fn into_iter(self) -> <Self as IntoIterator>::IntoIter {
-        IterChunkRecords {
-            chunk: self,
-            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-            exhausted: false,
-        }
     }
 }
 

@@ -2,6 +2,7 @@ use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 
 use log::error;
+use std::borrow::Cow;
 
 type Name<'a> = BinXmlName<'a>;
 
@@ -9,16 +10,16 @@ type Name<'a> = BinXmlName<'a>;
 pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
-    Value(BinXmlValue<'a>),
+    Value(Cow<'a, BinXmlValue<'a>>),
     EndOfStream,
     StartOfStream,
 }
 
 pub struct XmlElementBuilder<'a> {
-    name: Option<Name<'a>>,
+    name: Option<Cow<'a, Name<'a>>>,
     attributes: Vec<XmlAttribute<'a>>,
-    current_attribute_name: Option<Name<'a>>,
-    current_attribute_value: Option<BinXmlValue<'a>>,
+    current_attribute_name: Option<Cow<'a, Name<'a>>>,
+    current_attribute_value: Option<Cow<'a, BinXmlValue<'a>>>,
 }
 
 impl<'a> XmlElementBuilder<'a> {
@@ -30,12 +31,12 @@ impl<'a> XmlElementBuilder<'a> {
             current_attribute_value: None,
         }
     }
-    pub fn name(mut self, name: Name<'a>) -> Self {
+    pub fn name(mut self, name: Cow<'a, Name<'a>>) -> Self {
         self.name = Some(name);
         self
     }
 
-    pub fn attribute_name(mut self, name: Name<'a>) -> Self {
+    pub fn attribute_name(mut self, name: Cow<'a, Name<'a>>) -> Self {
         match self.current_attribute_name {
             None => self.current_attribute_name = Some(name),
             Some(name) => {
@@ -46,7 +47,7 @@ impl<'a> XmlElementBuilder<'a> {
         self
     }
 
-    pub fn attribute_value(mut self, value: BinXmlValue<'a>) -> Self {
+    pub fn attribute_value(mut self, value: Cow<'a, BinXmlValue<'a>>) -> Self {
         debug_assert!(
             self.current_attribute_name.is_some(),
             "There should be a name"
@@ -74,12 +75,12 @@ impl<'a> XmlElementBuilder<'a> {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct XmlAttribute<'a> {
-    pub name: Name<'a>,
-    pub value: BinXmlValue<'a>,
+    pub name: Cow<'a, Name<'a>>,
+    pub value: Cow<'a, BinXmlValue<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct XmlElement<'a> {
-    pub name: Name<'a>,
+    pub name: Cow<'a, Name<'a>>,
     pub attributes: Vec<XmlAttribute<'a>>,
 }

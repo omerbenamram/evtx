@@ -1,6 +1,6 @@
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::binxml::deserializer::{BinXmlDeserializer, Context};
+use crate::binxml::deserializer::{BinXmlDeserializer};
 use crate::error::Error;
 
 use crate::guid::Guid;
@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
+use crate::evtx_chunk::EvtxChunk;
+use std::fmt::Write;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXmlValue<'a> {
@@ -180,9 +182,9 @@ impl BinXmlValueType {
 }
 
 impl<'a> BinXmlValue<'a> {
-    pub fn from_binxml_stream<'c>(
+    pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a, 'c>,
+        chunk: Option<&'a EvtxChunk<'a>>,
     ) -> Result<BinXmlValue<'a>, Error> {
         let value_type_token = try_read!(cursor, u8);
 
@@ -190,15 +192,15 @@ impl<'a> BinXmlValue<'a> {
             Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
         })?;
 
-        let data = Self::deserialize_value_type(&value_type, cursor, Rc::clone(&ctx))?;
+        let data = Self::deserialize_value_type(&value_type, cursor, chunk)?;
 
         Ok(data)
     }
 
-    pub fn deserialize_value_type<'c>(
+    pub fn deserialize_value_type(
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a, 'c>,
+        chunk: Option<&'a EvtxChunk<'a>>,
     ) -> Result<BinXmlValue<'a>, Error> {
         let value = match value_type {
             BinXmlValueType::NullType => BinXmlValue::NullType,
@@ -229,7 +231,7 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::HexInt64Type => BinXmlValue::HexInt64Type(try_read!(cursor, hex64)),
             BinXmlValueType::BinXmlType => {
                 let tokens =
-                    BinXmlDeserializer::read_binxml_fragment(cursor, Rc::clone(&ctx), None)?;
+                    BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None)?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
@@ -242,10 +244,10 @@ impl<'a> BinXmlValue<'a> {
         Ok(value)
     }
 
-    pub fn deserialized_sized_value_type<'c>(
+    pub fn deserialized_sized_value_type(
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
-        ctx: Context<'a, 'c>,
+        chunk: Option<&'a EvtxChunk<'a>>,
         size: u16,
     ) -> Result<BinXmlValue<'a>, Error> {
         trace!(
@@ -342,7 +344,7 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::HexInt64ArrayType(try_read_sized_array!(cursor, hex64, size))
             }
             // Fallback to un-sized variant.
-            _ => BinXmlValue::deserialize_value_type(&value_type, cursor, Rc::clone(&ctx))?,
+            _ => BinXmlValue::deserialize_value_type(&value_type, cursor, chunk)?,
         };
 
         Ok(value)
@@ -420,12 +422,75 @@ impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
     }
 }
 
-impl<'c> Into<Cow<'c, str>> for &'_ BinXmlValue<'c> {
-    fn into(self) -> Cow<'c, str> {
+impl<'c> Into<serde_json::Value> for &'c BinXmlValue<'c> {
+    fn into(self) -> Value {
+        match self {
+            BinXmlValue::NullType => Value::Null,
+            BinXmlValue::StringType(s) => json!(s.as_ref()),
+            BinXmlValue::AnsiStringType(s) => json!(s.as_ref()),
+            BinXmlValue::Int8Type(num) => json!(num),
+            BinXmlValue::UInt8Type(num) => json!(num),
+            BinXmlValue::Int16Type(num) => json!(num),
+            BinXmlValue::UInt16Type(num) => json!(num),
+            BinXmlValue::Int32Type(num) => json!(num),
+            BinXmlValue::UInt32Type(num) => json!(num),
+            BinXmlValue::Int64Type(num) => json!(num),
+            BinXmlValue::UInt64Type(num) => json!(num),
+            BinXmlValue::Real32Type(num) => json!(num),
+            BinXmlValue::Real64Type(num) => json!(num),
+            BinXmlValue::BoolType(num) => json!(num),
+            BinXmlValue::BinaryType(bytes) => {
+                // Bytes will be formatted as const length of 2 with '0' padding.
+                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                json!(repr)
+            }
+            BinXmlValue::GuidType(guid) => json!(guid.to_string()),
+            //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
+            BinXmlValue::FileTimeType(tm) => json!(tm),
+            BinXmlValue::SysTimeType(tm) => json!(tm),
+            BinXmlValue::SidType(sid) => json!(sid.to_string()),
+            BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
+            BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
+            BinXmlValue::StringArrayType(s) => json!(s),
+            BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt16ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Int64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::UInt64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Real32ArrayType(numbers) => json!(numbers),
+            BinXmlValue::Real64ArrayType(numbers) => json!(numbers),
+            BinXmlValue::BoolArrayType(bools) => json!(bools),
+            BinXmlValue::GuidArrayType(guids) => {
+                json!(guids.iter().map(Guid::to_string).collect::<Vec<String>>())
+            }
+            BinXmlValue::FileTimeArrayType(filetimes) => json!(filetimes),
+            BinXmlValue::SysTimeArrayType(systimes) => json!(systimes),
+            BinXmlValue::SidArrayType(sids) => {
+                json!(sids.iter().map(Sid::to_string).collect::<Vec<String>>())
+            }
+            BinXmlValue::HexInt32ArrayType(hex_strings) => json!(hex_strings),
+            BinXmlValue::HexInt64ArrayType(hex_strings) => json!(hex_strings),
+            BinXmlValue::EvtHandle => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXmlValue::BinXmlType(_) => {
+                panic!("Unsupported conversion, call `expand_templates` first")
+            }
+            BinXmlValue::EvtXml => panic!("Unsupported conversion, call `expand_templates` first"),
+            _ => unimplemented!("{:?}", self),
+        }
+    }
+}
+
+impl<'a> BinXmlValue<'a> {
+    pub fn as_cow_str(&self) -> Cow<str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => s.clone(),
-            BinXmlValue::AnsiStringType(s) => s.clone(),
+            BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),
+            BinXmlValue::AnsiStringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::Int16Type(num) => Cow::Owned(num.to_string()),
@@ -439,7 +504,12 @@ impl<'c> Into<Cow<'c, str>> for &'_ BinXmlValue<'c> {
             BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BinaryType(bytes) => {
                 // Bytes will be formatted as const length of 2 with '0' padding.
-                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
+                let mut repr = String::with_capacity(bytes.len() * 2);
+
+                for b in bytes.iter() {
+                    write!(repr, "{:02X}", b).expect("Writing to a String cannot fail");
+                }
+
                 Cow::Owned(repr)
             }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),

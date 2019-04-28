@@ -25,7 +25,7 @@ pub trait BinXmlOutput<W: Write> {
     fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<(), Error>;
 
     /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
-    fn visit_close_element(&mut self) -> Result<(), Error>;
+    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error>;
 
     ///
     /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
@@ -51,8 +51,6 @@ pub trait BinXmlOutput<W: Write> {
 pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
     eof_reached: bool,
-    // TODO: Bring back Vec<BinXmlName<'a>> if possible.
-    stack: Vec<String>,
 }
 
 /// Adapter between binxml XmlModel type and quick-xml events.
@@ -63,7 +61,6 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         XmlOutput {
             writer,
             eof_reached: false,
-            stack: vec![],
         }
     }
 
@@ -90,14 +87,10 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
             bail!("Impossible state - `visit_open_start_element` after EOF");
         }
 
-        // TODO: we could improve performance even further if we could somehow avoid this clone,
-        // and share this borrow to the end element.
-        self.stack.push(element.name.as_str().to_owned());
-
-        let mut event_builder = BytesStart::from(element.name.borrow().into());
+        let mut event_builder = BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
 
         for attr in element.attributes.iter() {
-            let value_cow: Cow<'_, str> = attr.value.borrow().into();
+            let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
 
             if value_cow.len() > 0 {
                 let name_as_str = attr.name.as_str();
@@ -111,14 +104,9 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_close_element(&mut self) -> Result<(), Error> {
+    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error> {
         trace!("visit_close_element");
-        let name = self
-            .stack
-            .pop()
-            .ok_or_else(|| format_err!("invalid stack state"))?;
-
-        let event = BytesEnd::owned(name.into_bytes());
+        let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
 
         self.writer.write_event(Event::End(event))?;
         Ok(())
@@ -126,7 +114,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars");
-        let cow: Cow<'_, str> = value.into();
+        let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);
         self.writer.write_event(Event::Text(event))?;
         Ok(())

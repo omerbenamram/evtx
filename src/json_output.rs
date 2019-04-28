@@ -73,10 +73,11 @@ impl<W: Write> JsonOutput<W> {
         match element
             .attributes
             .iter()
-            .find(|a| a.name == BinXmlName::from_static_string("Name"))
+            .find(|a| a.name.as_ref().0 == "Name")
         {
             Some(name) => {
-                let data_key: Cow<'_, str> = name.value.borrow().into();
+                let data_key: Cow<'_, str> = name.value.as_ref().as_cow_str();
+
                 self.insert_node_without_attributes(element, &data_key)
             }
             // Ignore this node
@@ -113,7 +114,8 @@ impl<W: Write> JsonOutput<W> {
         let mut attributes = Map::new();
 
         for attribute in element.attributes.iter() {
-            let value: Value = attribute.value.clone().into();
+            let value = attribute.value.clone().into_owned();
+            let value: Value = value.into();
 
             if !value.is_null() {
                 let name: &str = attribute.name.as_str().into();
@@ -200,7 +202,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(&mut self) -> Result<(), Error> {
+    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
