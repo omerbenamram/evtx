@@ -6,7 +6,11 @@ use crate::utils::*;
 use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, error, info, trace};
-use std::{fmt::{Debug, Formatter}, io::Cursor, io::{Read, Seek, SeekFrom}, mem};
+use std::{
+    fmt::{Debug, Formatter},
+    io::Cursor,
+    io::{Read, Seek, SeekFrom},
+};
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;

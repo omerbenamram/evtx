@@ -5,8 +5,7 @@ use crate::Offset;
 pub use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
-use std::rc::Rc;
-use crate::evtx_chunk::EvtxChunk;
+
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
@@ -32,7 +31,7 @@ impl<'chunk> TemplateCache<'chunk> {
     }
 
     pub fn get_template<'a: 'chunk>(&'a self, offset: Offset) -> Option<&'a CachedTemplate<'a>> {
-        self.0.get(&offset).into()
+        self.0.get(&offset)
     }
 
     pub fn len(&self) -> usize {

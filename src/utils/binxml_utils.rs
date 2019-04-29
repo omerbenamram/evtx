@@ -1,21 +1,21 @@
-use encoding::{all::UTF_16LE, DecoderTrap, Encoding};
 
 use crate::evtx_parser::ReadSeek;
 use crate::utils::print_hexdump;
 use byteorder::{LittleEndian, ReadBytesExt};
 use log::{error, trace};
+use std::char::decode_utf16;
 use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind},
 };
-use std::char::{REPLACEMENT_CHARACTER, decode_utf16};
+
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,
     is_null_terminated: bool,
 ) -> io::Result<Option<String>> {
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
-    let needed_bytes = (expected_number_of_characters * 2) as u64;
+    let needed_bytes = u64::from(expected_number_of_characters * 2);
 
     trace!(
         "Going to read a{}string of len {} from stream",
@@ -33,7 +33,7 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
         stream.read_u16::<LittleEndian>()?;
     };
 
-    let s_len = s.as_ref().map(|s| s.len()).unwrap_or(0);
+    let s_len = s.as_ref().map(String::len).unwrap_or(0);
 
     if s_len == expected_number_of_characters as usize {
         Ok(s)
@@ -41,9 +41,7 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     } else {
         error!(
             "Expected string of length {}, found string of length {} - {:?}",
-            expected_number_of_characters,
-            s_len,
-            s
+            expected_number_of_characters, s_len, s
         );
 
         Err(Error::from(ErrorKind::InvalidData))
@@ -53,7 +51,7 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
 
 /// Reads a utf16 string from the given stream.
 /// size is the actual byte representation of the string (not the number of characters).
-pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size : u64) -> io::Result<Option<String>> {
+pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<Option<String>> {
     match size {
         0 => Ok(None),
         _ => read_utf16_string(stream, Some(size as usize / 2)).map(|mut s| {
@@ -66,10 +64,7 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size : u64) -> io::Result
     }
 }
 
-
-pub fn read_null_terminated_utf16_string<T: ReadSeek>(
-    stream: &mut T,
-) -> io::Result<String> {
+pub fn read_null_terminated_utf16_string<T: ReadSeek>(stream: &mut T) -> io::Result<String> {
     read_utf16_string(stream, None)
 }
 
@@ -77,10 +72,7 @@ pub fn read_null_terminated_utf16_string<T: ReadSeek>(
 /// Reads a utf16 string from the given stream.
 /// If `len` is given, exactly `len` u16 values are read from the stream.
 /// If `len` is None, the string is assumed to be null terminated and the stream will be read to the first null (0).
-fn read_utf16_string<T: ReadSeek>(
-    stream: &mut T,
-    len: Option<usize>,
-) -> io::Result<String> {
+fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Result<String> {
     let mut buffer = match len {
         Some(len) => Vec::with_capacity(len),
         None => Vec::new(),
@@ -93,17 +85,15 @@ fn read_utf16_string<T: ReadSeek>(
                 buffer.push(next_char);
             }
         }
-        None => {
-            loop {
-                let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
+        None => loop {
+            let next_char = stream.read_u16::<byteorder::LittleEndian>()?;
 
-                if next_char == 0 {
-                    break;
-                }
-
-                buffer.push(next_char);
+            if next_char == 0 {
+                break;
             }
-        }
+
+            buffer.push(next_char);
+        },
     }
 
     decode_utf16(buffer.into_iter())

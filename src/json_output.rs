@@ -1,4 +1,4 @@
-use crate::binxml::name::BinXmlName;
+
 use crate::model::xml::XmlElement;
 
 use failure::{format_err, Error};
@@ -6,7 +6,7 @@ use log::trace;
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::xml_output::BinXmlOutput;
-use core::borrow::{Borrow, BorrowMut};
+use core::borrow::BorrowMut;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::io::Write;
@@ -118,13 +118,13 @@ impl<W: Write> JsonOutput<W> {
             let value: Value = value.into();
 
             if !value.is_null() {
-                let name: &str = attribute.name.as_str().into();
+                let name: &str = attribute.name.as_str();
                 attributes.insert(name.to_owned(), value);
             }
         }
 
         // If we have attributes, create a map as usual.
-        if attributes.len() > 0 {
+        if !attributes.is_empty() {
             let value = self
                 .get_or_create_current_path()
                 .as_object_mut()
@@ -202,7 +202,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn visit_close_element(&mut self, _element: &XmlElement) -> Result<(), Error> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())

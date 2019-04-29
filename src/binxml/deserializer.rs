@@ -5,17 +5,14 @@ use std::io::{Seek, SeekFrom};
 
 use crate::binxml::tokens::read_open_start_element;
 use crate::binxml::value_variant::BinXmlValue;
-use crate::string_cache::CachedString;
-use crate::template_cache::CachedTemplate;
+
+
 use crate::{
     binxml::tokens::{
         read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
     },
     error::Error,
     model::{deserialized::*, raw::*},
-    string_cache::StringCache,
-    template_cache::TemplateCache,
-    Offset,
 };
 
 use std::io::Cursor;
@@ -47,7 +44,7 @@ impl<'a> BinXmlDeserializer<'a> {
         BinXmlDeserializer {
             data,
             offset: start_offset,
-            chunk: chunk,
+            chunk,
         }
     }
 
@@ -252,7 +249,7 @@ mod tests {
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
-        for record in records.into_iter().take(1) {
+        for record in records.take(1) {
             assert!(record.is_ok(), record.unwrap().into_xml())
         }
     }
@@ -267,7 +264,7 @@ mod tests {
         let mut evtx_chunk = chunk.parse().unwrap();
         let records = evtx_chunk.iter();
 
-        for record in records.into_iter().take(100) {
+        for record in records.take(100) {
             assert!(!record
                 .unwrap()
                 .into_xml()

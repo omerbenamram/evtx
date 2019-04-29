@@ -8,7 +8,7 @@ use quick_xml::Writer;
 
 use crate::binxml::value_variant::BinXmlValue;
 use failure::{bail, format_err, Error};
-use std::borrow::{Borrow, Cow};
+use std::borrow::{Cow};
 
 pub trait BinXmlOutput<W: Write> {
     /// Implementors are expected to provide a `std::Write` target.

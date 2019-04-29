@@ -14,11 +14,11 @@ pub fn read_systemtime<R: Read>(r: &mut R) -> Result<DateTime<Utc>, crate::error
     let milliseconds = try_read!(r, u16);
 
     Ok(DateTime::from_utc(
-        NaiveDate::from_ymd(year as i32, month as u32, day as u32).and_hms_nano(
-            hour as u32,
-            minute as u32,
-            second as u32,
-            milliseconds as u32,
+        NaiveDate::from_ymd(i32::from(year), u32::from(month), u32::from(day)).and_hms_nano(
+            u32::from(hour),
+            u32::from(minute),
+            u32::from(second),
+            u32::from(milliseconds),
         ),
         Utc,
     ))

@@ -16,11 +16,7 @@ fn test_event_xml_sample() {
         .expect("record to parse correctly");
 
     assert_eq!(
-        first_record
-            .data
-            .lines()
-            .map(|l| l.trim())
-            .collect::<String>(),
+        first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/security_event_1.xml")
             .lines()
             .map(str::trim)
@@ -43,11 +39,7 @@ fn test_event_json_sample() {
         .expect("record to parse correctly");
 
     assert_eq!(
-        first_record
-            .data
-            .lines()
-            .map(|l| l.trim())
-            .collect::<String>(),
+        first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/security_event_1.json")
             .lines()
             .map(str::trim)
@@ -70,11 +62,7 @@ fn test_event_json_sample_with_event_data() {
         .expect("record to parse correctly");
 
     assert_eq!(
-        first_record
-            .data
-            .lines()
-            .map(|l| l.trim())
-            .collect::<String>(),
+        first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/event_with_eventdata.json")
             .lines()
             .map(str::trim)
@@ -97,11 +85,7 @@ fn test_event_xml_sample_with_event_data() {
         .expect("record to parse correctly");
 
     assert_eq!(
-        first_record
-            .data
-            .lines()
-            .map(|l| l.trim())
-            .collect::<String>(),
+        first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/event_with_eventdata.xml")
             .lines()
             .map(str::trim)
@@ -124,11 +108,7 @@ fn test_event_json_sample_with_event_data_with_attributes_and_text() {
         .expect("record to parse correctly");
 
     assert_eq!(
-        first_record
-            .data
-            .lines()
-            .map(|l| l.trim())
-            .collect::<String>(),
+        first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/event_with_text_and_attributes.json")
             .lines()
             .map(str::trim)
@@ -151,11 +131,7 @@ fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
         .expect("record to parse correctly");
 
     assert_eq!(
-        first_record
-            .data
-            .lines()
-            .map(|l| l.trim())
-            .collect::<String>(),
+        first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/event_with_text_and_attributes.xml")
             .lines()
             .map(str::trim)

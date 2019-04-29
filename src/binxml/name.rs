@@ -9,9 +9,9 @@ use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-use quick_xml::events::{BytesEnd, BytesStart};
-use crate::evtx_chunk::EvtxChunk;
 
+use crate::evtx_chunk::EvtxChunk;
+use quick_xml::events::{BytesEnd, BytesStart};
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub struct BinXmlName<'a>(pub Cow<'a, str>);
 
@@ -31,7 +31,9 @@ impl<'a> BinXmlName<'a> {
         let name_offset = try_read!(cursor, u32);
 
         // If name is cached, read it and seek ahead if needed.
-        if let Some((name, _, n_bytes_read)) = chunk.and_then(|chunk| chunk.string_cache.get_string_and_hash(name_offset)) {
+        if let Some((name, _, n_bytes_read)) =
+            chunk.and_then(|chunk| chunk.string_cache.get_string_and_hash(name_offset))
+        {
             // Seek if needed
             if name_offset == cursor.position() as u32 {
                 cursor.seek(SeekFrom::Current(i64::from(*n_bytes_read)))?;

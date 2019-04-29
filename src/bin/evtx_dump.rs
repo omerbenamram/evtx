@@ -39,7 +39,9 @@ impl EvtxDumpConfig {
         let validate_checksums = matches.is_present("validate-checksums");
 
         EvtxDumpConfig {
-            parser_settings: ParserSettings::new().num_threads(num_threads).validate_checksums(validate_checksums),
+            parser_settings: ParserSettings::new()
+                .num_threads(num_threads)
+                .validate_checksums(validate_checksums),
             output_format,
         }
     }
@@ -92,7 +94,7 @@ fn main() {
     let config = EvtxDumpConfig::from_cli_matches(&matches);
 
     let mut parser = EvtxParser::from_path(fp)
-        .expect(&format!("Failed to load evtx file located at {}", fp))
+        .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
         .with_configuration(config.parser_settings.clone());
 
     match config.output_format {
