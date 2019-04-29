@@ -18,7 +18,6 @@ use crate::xml_output::{BinXmlOutput, XmlOutput};
 use std::cmp::max;
 use std::path::Path;
 
-
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
@@ -91,7 +90,7 @@ impl Default for ParserSettings {
         ParserSettings {
             num_threads: 0,
             validate_checksums: false,
-            pretty: false,
+            pretty: true,
         }
     }
 }
@@ -130,7 +129,7 @@ impl ParserSettings {
     }
 
     pub fn pretty(mut self, pretty: bool) -> Self {
-        self.validate_checksums = pretty;
+        self.pretty = pretty;
 
         self
     }
