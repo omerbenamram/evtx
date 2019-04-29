@@ -105,7 +105,7 @@ fn is_a_non_negative_number(value: String) -> Result<(), String> {
 
 fn main() {
     let matches = App::new("EVTX Parser")
-        .version("0.1")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
         .arg(Arg::with_name("INPUT").required(true))
