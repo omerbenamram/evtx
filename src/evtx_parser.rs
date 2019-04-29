@@ -17,6 +17,7 @@ use crate::json_output::JsonOutput;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use std::cmp::max;
 use std::path::Path;
+use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -75,9 +76,11 @@ pub struct EvtxParser<T: ReadSeek> {
     config: ParserSettings,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParserSettings {
+    /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
+    /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
 }
 
@@ -208,6 +211,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
+        let chunk_settings = self.config.clone();
+
         let mut chunks = self.chunks();
 
         let records_per_chunk = std::iter::from_fn(move || {
@@ -235,7 +240,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.parse();
+                            let chunk_records_res = chunk.parse(&chunk_settings);
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
@@ -452,7 +457,7 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse().unwrap().iter() {
+        for record in chunk.parse(&ParserSettings::default()).unwrap().iter() {
             record.unwrap();
         }
     }

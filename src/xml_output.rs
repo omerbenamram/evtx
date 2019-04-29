@@ -7,45 +7,63 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
 use crate::binxml::value_variant::BinXmlValue;
+use crate::ParserSettings;
 use failure::{bail, format_err, Error};
-use std::borrow::{Cow};
+use std::borrow::Cow;
+use std::sync::Arc;
 
 pub trait BinXmlOutput<W: Write> {
     /// Implementors are expected to provide a `std::Write` target.
     /// The record will be written to the target.
-    fn with_writer(target: W) -> Self;
+    fn with_writer(target: W, settings: &ParserSettings) -> Self;
 
     /// Consumes the output, returning control of the inner writer to the caller.
-    fn into_writer(self) -> Result<W, Error>;
+    fn into_writer(self, settings: &ParserSettings) -> Result<W, Error>;
 
     /// Called once when EOF is reached.
-    fn visit_end_of_stream(&mut self) -> Result<(), Error>;
+    fn visit_end_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error>;
 
     /// Called on <Tag attr="value" another_attr="value">.
-    fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<(), Error>;
+    fn visit_open_start_element(
+        &mut self,
+        open_start_element: &XmlElement,
+        settings: &ParserSettings,
+    ) -> Result<(), Error>;
 
     /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error>;
+    fn visit_close_element(
+        &mut self,
+        element: &XmlElement,
+        settings: &ParserSettings,
+    ) -> Result<(), Error>;
 
     ///
     /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
     ///                                                     ~~~~~~~~~~~~~~~
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error>;
+    fn visit_characters(
+        &mut self,
+        value: &BinXmlValue,
+        settings: &ParserSettings,
+    ) -> Result<(), Error>;
 
     /// Unimplemented
-    fn visit_cdata_section(&mut self) -> Result<(), Error>;
+    fn visit_cdata_section(&mut self, settings: &ParserSettings) -> Result<(), Error>;
 
     /// Unimplemented
-    fn visit_entity_reference(&mut self) -> Result<(), Error>;
+    fn visit_entity_reference(&mut self, settings: &ParserSettings) -> Result<(), Error>;
 
     /// Unimplemented
-    fn visit_processing_instruction_target(&mut self) -> Result<(), Error>;
+    fn visit_processing_instruction_target(
+        &mut self,
+        settings: &ParserSettings,
+    ) -> Result<(), Error>;
 
     /// Unimplemented
-    fn visit_processing_instruction_data(&mut self) -> Result<(), Error>;
+    fn visit_processing_instruction_data(&mut self, settings: &ParserSettings)
+        -> Result<(), Error>;
 
     /// Called once on beginning of parsing.
-    fn visit_start_of_stream(&mut self) -> Result<(), Error>;
+    fn visit_start_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error>;
 }
 
 pub struct XmlOutput<W: Write> {
@@ -55,7 +73,7 @@ pub struct XmlOutput<W: Write> {
 
 /// Adapter between binxml XmlModel type and quick-xml events.
 impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
-    fn with_writer(target: W) -> Self {
+    fn with_writer(target: W, settings: &ParserSettings) -> Self {
         let writer = Writer::new_with_indent(target, b' ', 2);
 
         XmlOutput {
@@ -64,7 +82,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         }
     }
 
-    fn into_writer(self) -> Result<W, Error> {
+    fn into_writer(self, settings: &ParserSettings) -> Result<W, Error> {
         if self.eof_reached {
             Ok(self.writer.into_inner())
         } else {
@@ -74,20 +92,25 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         }
     }
 
-    fn visit_end_of_stream(&mut self) -> Result<(), Error> {
+    fn visit_end_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;
         self.writer.write_event(Event::Eof)?;
         Ok(())
     }
 
-    fn visit_open_start_element<'a>(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn visit_open_start_element<'a>(
+        &mut self,
+        element: &XmlElement,
+        settings: &ParserSettings,
+    ) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element);
         if self.eof_reached {
             bail!("Impossible state - `visit_open_start_element` after EOF");
         }
 
-        let mut event_builder = BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
+        let mut event_builder =
+            BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
 
         for attr in element.attributes.iter() {
             let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
@@ -104,7 +127,11 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn visit_close_element(
+        &mut self,
+        element: &XmlElement,
+        settings: &ParserSettings,
+    ) -> Result<(), Error> {
         trace!("visit_close_element");
         let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
 
@@ -112,7 +139,11 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
+    fn visit_characters(
+        &mut self,
+        value: &BinXmlValue,
+        settings: &ParserSettings,
+    ) -> Result<(), Error> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);
@@ -120,23 +151,29 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self) -> Result<(), Error> {
+    fn visit_cdata_section(&mut self, settings: &ParserSettings) -> Result<(), Error> {
         bail!("Unimplemented: visit_cdata_section")
     }
 
-    fn visit_entity_reference(&mut self) -> Result<(), Error> {
+    fn visit_entity_reference(&mut self, settings: &ParserSettings) -> Result<(), Error> {
         bail!("Unimplemented: visit_entity_reference")
     }
 
-    fn visit_processing_instruction_target(&mut self) -> Result<(), Error> {
+    fn visit_processing_instruction_target(
+        &mut self,
+        settings: &ParserSettings,
+    ) -> Result<(), Error> {
         bail!("Unimplemented: visit_processing_instruction_target")
     }
 
-    fn visit_processing_instruction_data(&mut self) -> Result<(), Error> {
+    fn visit_processing_instruction_data(
+        &mut self,
+        settings: &ParserSettings,
+    ) -> Result<(), Error> {
         bail!("Unimplemented: visit_processing_instruction_data")
     }
 
-    fn visit_start_of_stream(&mut self) -> Result<(), Error> {
+    fn visit_start_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
         trace!("visit_start_of_stream");
         let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 
