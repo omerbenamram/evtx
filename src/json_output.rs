@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
-use std::sync::Arc;
+
 
 pub struct JsonOutput<W: Write> {
     writer: W,
@@ -155,7 +155,7 @@ impl<W: Write> JsonOutput<W> {
 }
 
 impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
-    fn with_writer(target: W, settings: &ParserSettings) -> Self {
+    fn with_writer(target: W, _settings: &ParserSettings) -> Self {
         JsonOutput {
             writer: target,
             map: Value::Object(Map::new()),
@@ -185,7 +185,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         }
     }
 
-    fn visit_end_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_end_of_stream(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;
         Ok(())
@@ -194,7 +194,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
     fn visit_open_start_element(
         &mut self,
         element: &XmlElement,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element.name);
         let element_name = element.name.as_str();
@@ -214,7 +214,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
     fn visit_close_element(
         &mut self,
         _element: &XmlElement,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
@@ -224,7 +224,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
     fn visit_characters(
         &mut self,
         value: &BinXmlValue,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         trace!("visit_chars {:?}", &self.stack);
         let current_value = self.get_or_create_current_path();
@@ -252,29 +252,29 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_cdata_section(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         unimplemented!()
     }
 
-    fn visit_entity_reference(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_entity_reference(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         unimplemented!()
     }
 
     fn visit_processing_instruction_target(
         &mut self,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         unimplemented!()
     }
 
     fn visit_processing_instruction_data(
         &mut self,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         unimplemented!()
     }
 
-    fn visit_start_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_start_of_stream(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         trace!("visit_start_of_stream");
         Ok(())
     }

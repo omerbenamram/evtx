@@ -10,7 +10,7 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::ParserSettings;
 use failure::{bail, format_err, Error};
 use std::borrow::Cow;
-use std::sync::Arc;
+
 
 pub trait BinXmlOutput<W: Write> {
     /// Implementors are expected to provide a `std::Write` target.
@@ -86,7 +86,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         }
     }
 
-    fn into_writer(self, settings: &ParserSettings) -> Result<W, Error> {
+    fn into_writer(self, _settings: &ParserSettings) -> Result<W, Error> {
         if self.eof_reached {
             Ok(self.writer.into_inner())
         } else {
@@ -96,7 +96,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         }
     }
 
-    fn visit_end_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_end_of_stream(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;
         self.writer.write_event(Event::Eof)?;
@@ -106,7 +106,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn visit_open_start_element<'a>(
         &mut self,
         element: &XmlElement,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element);
         if self.eof_reached {
@@ -134,7 +134,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn visit_close_element(
         &mut self,
         element: &XmlElement,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         trace!("visit_close_element");
         let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
@@ -146,7 +146,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn visit_characters(
         &mut self,
         value: &BinXmlValue,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
@@ -155,29 +155,29 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_cdata_section(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         bail!("Unimplemented: visit_cdata_section")
     }
 
-    fn visit_entity_reference(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_entity_reference(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         bail!("Unimplemented: visit_entity_reference")
     }
 
     fn visit_processing_instruction_target(
         &mut self,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         bail!("Unimplemented: visit_processing_instruction_target")
     }
 
     fn visit_processing_instruction_data(
         &mut self,
-        settings: &ParserSettings,
+        _settings: &ParserSettings,
     ) -> Result<(), Error> {
         bail!("Unimplemented: visit_processing_instruction_data")
     }
 
-    fn visit_start_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_start_of_stream(&mut self, _settings: &ParserSettings) -> Result<(), Error> {
         trace!("visit_start_of_stream");
         let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 

@@ -17,7 +17,7 @@ use crate::json_output::JsonOutput;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use std::cmp::max;
 use std::path::Path;
-use std::sync::Arc;
+
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;

@@ -18,7 +18,7 @@ use crate::template_cache::TemplateCache;
 use crate::ParserSettings;
 use log::Level;
 
-use std::sync::Arc;
+
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
