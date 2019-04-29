@@ -8,7 +8,6 @@ use log::trace;
 use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
-use std::sync::Arc;
 
 pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     tokens: Vec<BinXMLDeserializedTokens>,
@@ -18,7 +17,7 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
 
-    visitor.visit_start_of_stream(settings)?;
+    visitor.visit_start_of_stream(&settings)?;
 
     let mut stack = vec![];
 
@@ -27,20 +26,20 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
                 visitor.visit_open_start_element(
-                    stack.last().ok_or(format_err!(
-                        "Invalid parser state - expected stack to be non-empty"
-                    ))?,
-                    settings,
+                    stack.last().ok_or_else(|| {
+                        format_err!("Invalid parser state - expected stack to be non-empty")
+                    })?,
+                    &settings,
                 )?
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or(format_err!(
-                    "Invalid parser state - expected stack to be non-empty"
-                ))?;
-                visitor.visit_close_element(&close_element, settings)?
+                let close_element = stack.pop().ok_or_else(|| {
+                    format_err!("Invalid parser state - expected stack to be non-empty")
+                })?;
+                visitor.visit_close_element(&close_element, &settings)?
             }
-            XmlModel::Value(s) => visitor.visit_characters(&s, settings)?,
-            XmlModel::EndOfStream => visitor.visit_end_of_stream(settings)?,
+            XmlModel::Value(s) => visitor.visit_characters(&s, &settings)?,
+            XmlModel::EndOfStream => visitor.visit_end_of_stream(&settings)?,
             // Sometimes there are multiple fragment headers,
             // but we only need to write start of stream once.
             XmlModel::StartOfStream => {}
