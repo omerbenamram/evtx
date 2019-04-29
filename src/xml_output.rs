@@ -74,7 +74,11 @@ pub struct XmlOutput<W: Write> {
 /// Adapter between binxml XmlModel type and quick-xml events.
 impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
     fn with_writer(target: W, settings: &ParserSettings) -> Self {
-        let writer = Writer::new_with_indent(target, b' ', 2);
+        let writer = if settings.is_pretty() {
+            Writer::new_with_indent(target, b' ', 2)
+        } else {
+            Writer::new(target)
+        };
 
         XmlOutput {
             writer,

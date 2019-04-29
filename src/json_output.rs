@@ -171,7 +171,11 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
                     "Invalid stream, EOF reached before closing all attributes"
                 ))
             } else {
-                serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                if settings.is_pretty() {
+                    serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                } else {
+                    serde_json::to_writer(&mut self.writer, &self.map)?;
+                }
                 Ok(self.writer)
             }
         } else {
