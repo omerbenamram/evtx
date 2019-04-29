@@ -71,8 +71,9 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
-    pub fn parse(&mut self, settings: &ParserSettings) -> Result<EvtxChunk, failure::Error> {
-        EvtxChunk::new(&self.data, &self.header, settings.clone())
+    /// Require that the settings live at least as long as &self.
+    pub fn parse<'chunk, 'b: 'chunk>(&'chunk mut self, settings: &'b ParserSettings) -> Result<EvtxChunk<'chunk>, failure::Error> {
+        EvtxChunk::new(&self.data, &self.header, settings)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -135,7 +136,7 @@ pub struct EvtxChunk<'chunk> {
 
     pub template_table: TemplateCache<'chunk>,
 
-    settings: ParserSettings,
+    settings: &'chunk ParserSettings,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -143,7 +144,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
-        settings: ParserSettings,
+        settings: &'chunk ParserSettings,
     ) -> Result<EvtxChunk<'chunk>, failure::Error> {
         let _cursor = Cursor::new(data);
 
@@ -158,7 +159,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             data,
             string_cache,
             template_table,
-            settings: settings.clone(),
+            settings,
         })
     }
 
@@ -166,7 +167,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// See `IterChunkRecords` for more lifetime info.
     pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
         IterChunkRecords {
-            settings: &self.settings,
+            settings: self.settings,
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,

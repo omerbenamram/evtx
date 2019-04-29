@@ -162,7 +162,7 @@ fn main() {
 
     let mut parser = EvtxParser::from_path(fp)
         .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
-        .with_configuration(config.parser_settings.clone());
+        .with_configuration(config.parser_settings);
 
     match config.output_format {
         EvtxOutputFormat::XML => {

@@ -238,7 +238,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
-        let mut evtx_chunk = chunk.parse(&ParserSettings::default()).unwrap();
+        let settings = ParserSettings::default();
+        let mut evtx_chunk = chunk.parse(&settings).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.take(1) {
@@ -253,7 +254,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
-        let mut evtx_chunk = chunk.parse(&ParserSettings::default()).unwrap();
+        let settings = ParserSettings::default();
+        let mut evtx_chunk = chunk.parse(&settings).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.take(100) {
@@ -275,7 +277,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
-        let mut evtx_chunk = chunk.parse(&ParserSettings::default()).unwrap();
+        let settings = ParserSettings::default();
+        let mut evtx_chunk = chunk.parse(&settings).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.into_iter() {
