@@ -2,7 +2,6 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXmlOutput;
-use crate::ParserSettings;
 use failure::{format_err, Error};
 use log::trace;
 use std::borrow::Cow;
@@ -12,12 +11,11 @@ use std::mem;
 pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     tokens: Vec<BinXMLDeserializedTokens>,
     visitor: &mut T,
-    settings: &ParserSettings,
 ) -> Result<(), Error> {
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
 
-    visitor.visit_start_of_stream(&settings)?;
+    visitor.visit_start_of_stream()?;
 
     let mut stack = vec![];
 
@@ -25,21 +23,18 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(
-                    stack.last().ok_or_else(|| {
-                        format_err!("Invalid parser state - expected stack to be non-empty")
-                    })?,
-                    &settings,
-                )?
+                visitor.visit_open_start_element(stack.last().ok_or_else(|| {
+                    format_err!("Invalid parser state - expected stack to be non-empty")
+                })?)?
             }
             XmlModel::CloseElement => {
                 let close_element = stack.pop().ok_or_else(|| {
                     format_err!("Invalid parser state - expected stack to be non-empty")
                 })?;
-                visitor.visit_close_element(&close_element, &settings)?
+                visitor.visit_close_element(&close_element)?
             }
-            XmlModel::Value(s) => visitor.visit_characters(&s, &settings)?,
-            XmlModel::EndOfStream => visitor.visit_end_of_stream(&settings)?,
+            XmlModel::Value(s) => visitor.visit_characters(&s)?,
+            XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
             // Sometimes there are multiple fragment headers,
             // but we only need to write start of stream once.
             XmlModel::StartOfStream => {}

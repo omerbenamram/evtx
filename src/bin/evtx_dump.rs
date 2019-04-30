@@ -89,7 +89,7 @@ impl EvtxDumpConfig {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
-                .pretty(!no_indent),
+                .indent(!no_indent),
             show_record_number: !no_show_record_number,
             output_format,
         }

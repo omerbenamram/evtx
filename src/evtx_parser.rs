@@ -82,7 +82,7 @@ pub struct ParserSettings {
     /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
     /// If true, output will be indented.
-    pretty: bool,
+    indent: bool,
 }
 
 impl Default for ParserSettings {
@@ -90,7 +90,7 @@ impl Default for ParserSettings {
         ParserSettings {
             num_threads: 0,
             validate_checksums: false,
-            pretty: true,
+            indent: true,
         }
     }
 }
@@ -128,14 +128,14 @@ impl ParserSettings {
         self
     }
 
-    pub fn pretty(mut self, pretty: bool) -> Self {
-        self.pretty = pretty;
+    pub fn indent(mut self, pretty: bool) -> Self {
+        self.indent = pretty;
 
         self
     }
 
-    pub fn is_pretty(&self) -> bool {
-        self.pretty
+    pub fn should_indent(&self) -> bool {
+        self.indent
     }
 
     pub fn should_validate_checksums(&self) -> bool {
