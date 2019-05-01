@@ -3,17 +3,17 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use crate::{error::Error, guid::Guid, model::deserialized::*};
 use std::io::Cursor;
 
-use crate::binxml::deserializer::{BinXmlDeserializer};
+use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
-use log::trace;
+use log::{trace, warn};
 
 use std::io::Seek;
 use std::io::SeekFrom;
 
-use std::borrow::Cow;
 use crate::evtx_chunk::EvtxChunk;
+use std::borrow::Cow;
 
 pub fn read_template<'a, 'c>(
     cursor: &mut Cursor<&'a [u8]>,
@@ -26,38 +26,41 @@ pub fn read_template<'a, 'c>(
     let template_definition_data_offset = try_read!(cursor, u32);
 
     // If name is cached, read it and seek ahead if needed.
-    let template_def =
-        if let Some(definition) = chunk.and_then(|chunk| chunk.template_table.get_template(template_definition_data_offset)) {
-            // Seek if needed
-            trace!(
-                "{} Got cached template from offset {}",
-                cursor.position(),
-                template_definition_data_offset
-            );
-            // 33 is template definition data size, we've read 9 bytes so far.
-            if template_definition_data_offset == cursor.position() as u32 {
-                cursor.seek(SeekFrom::Current(
-                    i64::from(definition.data_size) + (33 - 9),
-                ))?;
-            }
-            Cow::Borrowed(definition)
-        } else if template_definition_data_offset != cursor.position() as u32 {
-            trace!(
-                "Need to seek to offset {} to read template",
-                template_definition_data_offset
-            );
-            let position_before_seek = cursor.position();
+    let template_def = if let Some(definition) = chunk.and_then(|chunk| {
+        chunk
+            .template_table
+            .get_template(template_definition_data_offset)
+    }) {
+        // Seek if needed
+        trace!(
+            "{} Got cached template from offset {}",
+            cursor.position(),
+            template_definition_data_offset
+        );
+        // 33 is template definition data size, we've read 9 bytes so far.
+        if template_definition_data_offset == cursor.position() as u32 {
+            cursor.seek(SeekFrom::Current(
+                i64::from(definition.data_size) + (33 - 9),
+            ))?;
+        }
+        Cow::Borrowed(definition)
+    } else if template_definition_data_offset != cursor.position() as u32 {
+        trace!(
+            "Need to seek to offset {} to read template",
+            template_definition_data_offset
+        );
+        let position_before_seek = cursor.position();
 
-            cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
+        cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
 
-            let template_def = read_template_definition(cursor, chunk)?;
+        let template_def = read_template_definition(cursor, chunk)?;
 
-            cursor.seek(SeekFrom::Start(position_before_seek))?;
+        cursor.seek(SeekFrom::Start(position_before_seek))?;
 
-            Cow::Owned(template_def)
-        } else {
-            Cow::Owned(read_template_definition(cursor, chunk)?)
-        };
+        Cow::Owned(template_def)
+    } else {
+        Cow::Owned(read_template_definition(cursor, chunk)?)
+    };
 
     let number_of_substitutions = try_read!(cursor, u32);
 
@@ -99,11 +102,15 @@ pub fn read_template<'a, 'c>(
         }
 
         if position + u64::from(descriptor.size) != cursor.position() {
-            return Err(Error::other(
-                &format!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                        cursor.position(), position + u64::from(descriptor.size), &descriptor),
-                cursor.position(),
-            ));
+            let diff = (position + u64::from(descriptor.size)) - cursor.position();
+            cursor.seek(SeekFrom::Current(diff as i64))?;
+
+            // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
+            // Sometimes however the log will contain a lot of zero fields.
+            warn!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                  cursor.position(),
+                  position + u64::from(descriptor.size),
+                  &descriptor);
         }
         substitution_array.push(value);
     }
@@ -128,8 +135,7 @@ pub fn read_template_definition<'a>(
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
     let _data = *cursor.get_ref();
-    let tokens =
-        BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size))?;
+    let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size))?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
@@ -434,7 +440,9 @@ mod test {
                     name: n!("Computer"),
                 }),
                 CloseStartElement,
-                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed("37L4247F27-25")))),
+                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed(
+                    "37L4247F27-25",
+                )))),
                 CloseElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 66,

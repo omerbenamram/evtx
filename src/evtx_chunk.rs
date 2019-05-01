@@ -18,8 +18,6 @@ use crate::template_cache::TemplateCache;
 use crate::ParserSettings;
 use log::Level;
 
-
-
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 pub struct EvtxChunkHeader {
@@ -72,7 +70,10 @@ impl EvtxChunkData {
     }
 
     /// Require that the settings live at least as long as &self.
-    pub fn parse<'chunk, 'b: 'chunk>(&'chunk mut self, settings: &'b ParserSettings) -> Result<EvtxChunk<'chunk>, failure::Error> {
+    pub fn parse<'chunk, 'b: 'chunk>(
+        &'chunk mut self,
+        settings: &'b ParserSettings,
+    ) -> Result<EvtxChunk<'chunk>, failure::Error> {
         EvtxChunk::new(&self.data, &self.header, settings)
     }
 

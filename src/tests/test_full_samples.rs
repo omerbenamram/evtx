@@ -1,5 +1,29 @@
 use crate::{ensure_env_logger_initialized, EvtxParser, ParserSettings};
 
+/// Tests an .evtx file, asserting the number of parsed records matches `count`.
+macro_rules! test_full_sample {
+    ($path: expr, $count: expr) => {{
+        use log::Level;
+
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!($path);
+
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let mut count = 0;
+
+        for r in parser.records() {
+            if r.is_ok() {
+                count += 1;
+                if log::log_enabled!(Level::Debug) {
+                    println!("{}", r.unwrap().data);
+                }
+            }
+        }
+        assert_eq!(count, $count);
+    };};
+}
+
 #[test]
 // https://github.com/omerbenamram/evtx/issues/10
 fn test_dirty_sample_single_threaded() {
@@ -88,55 +112,29 @@ fn test_dirty_sample_with_a_bad_checksum_2() {
 
 #[test]
 fn test_dirty_sample_with_a_chunk_past_zeros() {
-    ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/2-vss_7-System.evtx");
-
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-    let mut count = 0;
-
-    for r in parser.records() {
-        r.unwrap();
-        count += 1;
-    }
-
-    assert_eq!(count, 1160);
+    test_full_sample!("../../samples/2-vss_7-System.evtx", 1170)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic() {
-    ensure_env_logger_initialized();
-    let evtx_file =
-        include_bytes!("../../samples/2-vss_7-Microsoft-Windows-AppXDeployment%4Operational.evtx");
-
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-    let mut count = 0;
-
-    for r in parser.records() {
-        if r.is_ok() {
-            count += 1;
-        }
-    }
-
-    assert_eq!(count, 270);
+    test_full_sample!(
+        "../../samples/2-vss_7-Microsoft-Windows-AppXDeployment%4Operational.evtx",
+        270
+    )
 }
 
 #[test]
-fn test_dirty_sample_binxml_template_issue() {
-    ensure_env_logger_initialized();
-    let evtx_file =
-        include_bytes!("../../samples/Microsoft-Windows-HelloForBusiness%4Operational.evtx");
+fn test_dirty_sample_binxml_with_incomplete_token() {
+    test_full_sample!(
+        "../../samples/Microsoft-Windows-HelloForBusiness%4Operational.evtx",
+        6
+    )
+}
 
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-    let mut count = 0;
-
-    for r in parser.records() {
-        if r.is_ok() {
-            count += 1;
-        }
-    }
-
-    assert_eq!(count, 6);
+#[test]
+fn test_dirty_sample_binxml_with_incomplete_template() {
+    test_full_sample!(
+        "../../samples/Microsoft-Windows-LanguagePackSetup%4Operational.evtx",
+        17
+    )
 }
