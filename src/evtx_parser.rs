@@ -195,6 +195,40 @@ impl<T: ReadSeek> EvtxParser<T> {
         EvtxChunkData::new(chunk_data, validate_checksum).map(Some)
     }
 
+    pub fn find_next_chunk(
+        &mut self,
+        chunk_number: &mut u16
+    ) -> Option<Result<EvtxChunkData, Error>> {
+        loop {
+            match EvtxParser::allocate_chunk(
+                &mut self.data,
+                *chunk_number,
+                self.config.validate_checksums,
+            ) {
+                Err(err) => {
+                    // We try to read past the `chunk_count` to allow for dirty files.
+                    // But if we failed, it means we really are at the end of the file.
+                    if *chunk_number >= self.header.chunk_count {
+                        return None;
+                    } else {
+                        *chunk_number += 1;
+                        return Some(Err(err));
+                    }
+                }
+                Ok(None) => {
+                    // We try to read past the `chunk_count` to allow for dirty files.
+                    // But if we get an empty chunk, we need to keep looking.
+                    // Increment and try again.
+                    *chunk_number += 1;
+                }
+                Ok(Some(chunk)) => {
+                    *chunk_number += 1;
+                    return Some(Ok(chunk));
+                }
+            };
+        }
+    }
+
     /// Return an iterator over all the chunks.
     /// Each chunk supports iterating over it's records in their un-serialized state
     /// (before they are converted to XML or JSON).
@@ -293,34 +327,7 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        loop {
-            match EvtxParser::allocate_chunk(
-                &mut self.parser.data,
-                self.current_chunk_number,
-                self.parser.config.validate_checksums,
-            ) {
-                Err(err) => {
-                    // We try to read past the `chunk_count` to allow for dirty files.
-                    // But if we failed, it means we really are at the end of the file.
-                    if self.current_chunk_number >= self.parser.header.chunk_count {
-                        return None;
-                    } else {
-                        self.current_chunk_number += 1;
-                        return Some(Err(err));
-                    }
-                }
-                Ok(None) => {
-                    // We try to read past the `chunk_count` to allow for dirty files.
-                    // But if we get an empty chunk, we need to keep looking.
-                    // Increment and try again.
-                    self.current_chunk_number += 1;
-                }
-                Ok(Some(chunk)) => {
-                    self.current_chunk_number += 1;
-                    return Some(Ok(chunk));
-                }
-            };
-        }
+        self.parser.find_next_chunk(&mut self.current_chunk_number)
     }
 }
 
@@ -333,34 +340,7 @@ pub struct IntoIterChunks<T: ReadSeek> {
 impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        loop {
-            match EvtxParser::allocate_chunk(
-                &mut self.parser.data,
-                self.current_chunk_number,
-                self.parser.config.validate_checksums,
-            ) {
-                Err(err) => {
-                    // We try to read past the `chunk_count` to allow for dirty files.
-                    // But if we failed, it means we really are at the end of the file.
-                    if self.current_chunk_number >= self.parser.header.chunk_count {
-                        return None;
-                    } else {
-                        self.current_chunk_number += 1;
-                        return Some(Err(err));
-                    }
-                }
-                Ok(None) => {
-                    // We try to read past the `chunk_count` to allow for dirty files.
-                    // But if we get an empty chunk, we need to keep looking.
-                    // Increment and try again.
-                    self.current_chunk_number += 1;
-                }
-                Ok(Some(chunk)) => {
-                    self.current_chunk_number += 1;
-                    return Some(Ok(chunk));
-                }
-            };
-        }
+        self.parser.find_next_chunk(&mut self.current_chunk_number)
     }
 }
 
@@ -503,7 +483,7 @@ mod tests {
                 .to_vec(),
             false,
         )
-        .unwrap();
+            .unwrap();
 
         assert!(chunk.validate_checksum());
 

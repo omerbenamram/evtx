@@ -3,8 +3,10 @@
 mod macros;
 
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
-pub use evtx_parser::{EvtxParser, IterChunks, ParserSettings};
+pub use evtx_parser::{EvtxParser, IterChunks, IntoIterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
+pub use xml_output::{XmlOutput, BinXmlOutput};
+pub use json_output::JsonOutput;
 
 pub mod binxml;
 pub mod model;
@@ -24,8 +26,8 @@ mod template_cache;
 mod tests;
 mod utils;
 
-pub mod json_output;
-pub mod xml_output;
+mod json_output;
+mod xml_output;
 
 pub type Offset = u32;
 
