@@ -121,3 +121,22 @@ fn test_dirty_sample_with_a_bad_chunk_magic() {
 
     assert_eq!(count, 270);
 }
+
+#[test]
+fn test_dirty_sample_binxml_template_issue() {
+    ensure_env_logger_initialized();
+    let evtx_file =
+        include_bytes!("../../samples/Microsoft-Windows-HelloForBusiness%4Operational.evtx");
+
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+    let mut count = 0;
+
+    for r in parser.records() {
+        if r.is_ok() {
+            count += 1;
+        }
+    }
+
+    assert_eq!(count, 6);
+}
