@@ -3,10 +3,10 @@
 mod macros;
 
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
-pub use evtx_parser::{EvtxParser, IterChunks, IntoIterChunks, ParserSettings};
+pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
-pub use xml_output::{XmlOutput, BinXmlOutput};
 pub use json_output::JsonOutput;
+pub use xml_output::{BinXmlOutput, XmlOutput};
 
 pub mod binxml;
 pub mod model;

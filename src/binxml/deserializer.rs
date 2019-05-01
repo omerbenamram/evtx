@@ -229,7 +229,6 @@ impl<'a> Iterator for IterTokens<'a> {
 mod tests {
     use crate::evtx_chunk::EvtxChunkData;
     use crate::{ensure_env_logger_initialized, ParserSettings};
-    
 
     #[test]
     fn test_reads_a_single_record() {

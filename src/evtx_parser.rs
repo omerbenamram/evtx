@@ -217,7 +217,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     pub fn find_next_chunk(
         &mut self,
-        chunk_number: &mut u16
+        chunk_number: &mut u16,
     ) -> Option<Result<EvtxChunkData, Error>> {
         loop {
             match EvtxParser::allocate_chunk(
@@ -351,7 +351,6 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     }
 }
 
-
 pub struct IntoIterChunks<T: ReadSeek> {
     parser: EvtxParser<T>,
     current_chunk_number: u16,
@@ -362,7 +361,6 @@ impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         info!("Chunk {}", self.current_chunk_number);
         self.parser.find_next_chunk(&mut self.current_chunk_number)
-
     }
 }
 
@@ -505,7 +503,7 @@ mod tests {
                 .to_vec(),
             false,
         )
-            .unwrap();
+        .unwrap();
 
         assert!(chunk.validate_checksum());
 

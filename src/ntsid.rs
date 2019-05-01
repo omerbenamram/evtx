@@ -5,8 +5,8 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use std::fmt;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::io;
 use std::fmt::Write;
+use std::io;
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Sid {
@@ -43,11 +43,13 @@ impl Sid {
     pub fn to_string(&self) -> String {
         let mut repr = String::new();
 
-        write!(repr,
+        write!(
+            repr,
             "S-{}-{}",
             self.version,
             (self.id_high as u16) ^ (self.id_low),
-        ).expect("Writing to a String cannot fail");
+        )
+        .expect("Writing to a String cannot fail");
 
         for element in self.elements.iter() {
             write!(repr, "-{}", element).expect("Writing to a String cannot fail");
