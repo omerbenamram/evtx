@@ -7,7 +7,7 @@ use rayon;
 use rayon::prelude::*;
 
 use failure::{format_err, Error};
-use log::debug;
+use log::{debug, info};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -303,6 +303,7 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        info!("Chunk {}", self.current_chunk_number);
         loop {
             match EvtxParser::allocate_chunk(
                 &mut self.parser.data,
