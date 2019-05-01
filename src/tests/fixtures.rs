@@ -23,8 +23,9 @@ pub fn sample_with_a_bad_checksum() -> PathBuf {
 }
 
 pub fn sample_with_a_bad_checksum_2() -> PathBuf {
-    samples_dir()
-        .join("../../samples/2-vss_0-Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx")
+    samples_dir().join(
+        "2-vss_0-Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx",
+    )
 }
 
 pub fn sample_with_a_chunk_past_zeroes() -> PathBuf {

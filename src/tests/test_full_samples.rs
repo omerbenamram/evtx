@@ -68,12 +68,12 @@ fn test_dirty_sample_with_a_bad_checksum() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2() {
-    test_full_sample(sample_with_a_bad_checksum_2(), 1174)
+    test_full_sample(sample_with_a_bad_checksum_2(), 1774)
 }
 
 #[test]
 fn test_dirty_sample_with_a_chunk_past_zeros() {
-    test_full_sample(sample_with_a_chunk_past_zeroes(), 1170)
+    test_full_sample(sample_with_a_chunk_past_zeroes(), 1160)
 }
 
 #[test]
