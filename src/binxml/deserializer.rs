@@ -6,7 +6,6 @@ use std::io::{Seek, SeekFrom};
 use crate::binxml::tokens::read_open_start_element;
 use crate::binxml::value_variant::BinXmlValue;
 
-
 use crate::{
     binxml::tokens::{
         read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
@@ -15,11 +14,10 @@ use crate::{
     model::{deserialized::*, raw::*},
 };
 
-use std::io::Cursor;
-use std::mem;
 use crate::evtx_chunk::EvtxChunk;
 use std::borrow::Cow;
-
+use std::io::Cursor;
+use std::mem;
 
 pub struct IterTokens<'a> {
     cursor: Cursor<&'a [u8]>,
@@ -36,11 +34,7 @@ pub struct BinXmlDeserializer<'a> {
 }
 
 impl<'a> BinXmlDeserializer<'a> {
-    pub fn init(
-        data: &'a [u8],
-        start_offset: u64,
-        chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Self {
+    pub fn init(data: &'a [u8], start_offset: u64, chunk: Option<&'a EvtxChunk<'a>>) -> Self {
         BinXmlDeserializer {
             data,
             offset: start_offset,
@@ -125,9 +119,9 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseStartElement => Ok(BinXMLDeserializedTokens::CloseStartElement),
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
-            BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                Cow::Owned(BinXmlValue::from_binxml_stream(cursor, self.chunk)?),
-            )),
+            BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(Cow::Owned(
+                BinXmlValue::from_binxml_stream(cursor, self.chunk)?,
+            ))),
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),
@@ -195,8 +189,7 @@ impl<'a> IterTokens<'a> {
                     self.eof = true;
                 }
                 trace!("{:?} at {}", t, offset_from_chunk_start);
-                let deserialized_token_result =
-                    self.visit_token(&mut cursor, t);
+                let deserialized_token_result = self.visit_token(&mut cursor, t);
 
                 trace!(
                     "{:?} position at stream {}",
@@ -213,9 +206,7 @@ impl<'a> IterTokens<'a> {
 
                 Some(deserialized_token_result)
             }
-            Err(e) => {
-                Some(Err(e))
-            }
+            Err(e) => Some(Err(e)),
         };
         let total_read = cursor.position() - offset_from_chunk_start;
         self.data_read_so_far += total_read as u32;
@@ -236,8 +227,9 @@ impl<'a> Iterator for IterTokens<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ensure_env_logger_initialized;
     use crate::evtx_chunk::EvtxChunkData;
+    use crate::{ensure_env_logger_initialized, ParserSettings};
+    
 
     #[test]
     fn test_reads_a_single_record() {
@@ -246,7 +238,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
-        let mut evtx_chunk = chunk.parse().unwrap();
+        let settings = ParserSettings::default();
+        let mut evtx_chunk = chunk.parse(&settings).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.take(1) {
@@ -261,7 +254,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
-        let mut evtx_chunk = chunk.parse().unwrap();
+        let settings = ParserSettings::default();
+        let mut evtx_chunk = chunk.parse(&settings).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.take(100) {
@@ -283,7 +277,8 @@ mod tests {
         let from_start_of_chunk = &evtx_file[4096..];
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
-        let mut evtx_chunk = chunk.parse().unwrap();
+        let settings = ParserSettings::default();
+        let mut evtx_chunk = chunk.parse(&settings).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.into_iter() {

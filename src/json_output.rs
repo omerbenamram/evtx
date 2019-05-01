@@ -1,4 +1,3 @@
-
 use crate::model::xml::XmlElement;
 
 use failure::{format_err, Error};
@@ -6,6 +5,7 @@ use log::trace;
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::xml_output::BinXmlOutput;
+use crate::ParserSettings;
 use core::borrow::BorrowMut;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
@@ -17,6 +17,7 @@ pub struct JsonOutput<W: Write> {
     map: Value,
     stack: Vec<String>,
     eof_reached: bool,
+    indent: bool,
 }
 
 impl<W: Write> JsonOutput<W> {
@@ -154,12 +155,13 @@ impl<W: Write> JsonOutput<W> {
 }
 
 impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
-    fn with_writer(target: W) -> Self {
+    fn with_writer(target: W, settings: &ParserSettings) -> Self {
         JsonOutput {
             writer: target,
             map: Value::Object(Map::new()),
             stack: vec![],
             eof_reached: false,
+            indent: settings.should_indent(),
         }
     }
 
@@ -170,7 +172,11 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
                     "Invalid stream, EOF reached before closing all attributes"
                 ))
             } else {
-                serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                if self.indent {
+                    serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                } else {
+                    serde_json::to_writer(&mut self.writer, &self.map)?;
+                }
                 Ok(self.writer)
             }
         } else {

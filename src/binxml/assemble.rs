@@ -2,10 +2,10 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXmlOutput;
-use failure::Error;
+use failure::{format_err, Error};
 use log::trace;
-use std::io::Write;
 use std::borrow::Cow;
+use std::io::Write;
 use std::mem;
 
 pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
@@ -23,12 +23,16 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().expect("Invalid state"))?
+                visitor.visit_open_start_element(stack.last().ok_or_else(|| {
+                    format_err!("Invalid parser state - expected stack to be non-empty")
+                })?)?
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().expect("Invalid state");
+                let close_element = stack.pop().ok_or_else(|| {
+                    format_err!("Invalid parser state - expected stack to be non-empty")
+                })?;
                 visitor.visit_close_element(&close_element)?
-            },
+            }
             XmlModel::Value(s) => visitor.visit_characters(&s)?,
             XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
             // Sometimes there are multiple fragment headers,
@@ -40,42 +44,64 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     Ok(())
 }
 
-pub fn create_record_model<'a>(tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>) -> Vec<XmlModel<'a>> {
+pub fn create_record_model<'a>(
+    tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
+) -> Vec<XmlModel<'a>> {
     let mut current_element: Option<XmlElementBuilder> = None;
     let mut model: Vec<XmlModel> = Vec::with_capacity(tokens.len());
 
     for token in tokens {
         // Handle all places where we don't care if it's an Owned or a Borrowed value.
         match token {
-            Cow::Owned(BinXMLDeserializedTokens::FragmentHeader(_)) | Cow::Borrowed(BinXMLDeserializedTokens::FragmentHeader(_)) => {}
-            Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(_)) | Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(_)) => {
+            Cow::Owned(BinXMLDeserializedTokens::FragmentHeader(_))
+            | Cow::Borrowed(BinXMLDeserializedTokens::FragmentHeader(_)) => {}
+            Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(_))
+            | Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(_)) => {
                 panic!("Call `expand_templates` before calling this function")
             }
-            Cow::Owned(BinXMLDeserializedTokens::AttributeList) | Cow::Borrowed(BinXMLDeserializedTokens::AttributeList) => {}
+            Cow::Owned(BinXMLDeserializedTokens::AttributeList)
+            | Cow::Borrowed(BinXMLDeserializedTokens::AttributeList) => {}
 
-            Cow::Owned(BinXMLDeserializedTokens::CloseElement) | Cow::Borrowed(BinXMLDeserializedTokens::CloseElement) => {
+            Cow::Owned(BinXMLDeserializedTokens::CloseElement)
+            | Cow::Borrowed(BinXMLDeserializedTokens::CloseElement) => {
                 model.push(XmlModel::CloseElement);
             }
 
-            Cow::Owned(BinXMLDeserializedTokens::CloseStartElement) | Cow::Borrowed(BinXMLDeserializedTokens::CloseStartElement) => {
+            Cow::Owned(BinXMLDeserializedTokens::CloseStartElement)
+            | Cow::Borrowed(BinXMLDeserializedTokens::CloseStartElement) => {
                 trace!("BinXMLDeserializedTokens::CloseStartElement");
                 match current_element.take() {
                     None => panic!("close start - Bad parser state"),
                     Some(builder) => model.push(XmlModel::OpenElement(builder.finish())),
                 };
             }
-            Cow::Owned(BinXMLDeserializedTokens::CDATASection) | Cow::Borrowed(BinXMLDeserializedTokens::CDATASection) => {}
-            Cow::Owned(BinXMLDeserializedTokens::CharRef) | Cow::Borrowed(BinXMLDeserializedTokens::CharRef) => {}
-            Cow::Owned(BinXMLDeserializedTokens::EntityRef(_)) | Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(_)) => unimplemented!("EntityRef not implemented"),
-            Cow::Owned(BinXMLDeserializedTokens::PITarget) | Cow::Borrowed(BinXMLDeserializedTokens::PITarget) => {}
-            Cow::Owned(BinXMLDeserializedTokens::PIData) | Cow::Borrowed(BinXMLDeserializedTokens::PIData) => {}
-            Cow::Owned(BinXMLDeserializedTokens::Substitution(_)) | Cow::Borrowed(BinXMLDeserializedTokens::Substitution(_)) => {
+            Cow::Owned(BinXMLDeserializedTokens::CDATASection)
+            | Cow::Borrowed(BinXMLDeserializedTokens::CDATASection) => {}
+            Cow::Owned(BinXMLDeserializedTokens::CharRef)
+            | Cow::Borrowed(BinXMLDeserializedTokens::CharRef) => {}
+            Cow::Owned(BinXMLDeserializedTokens::EntityRef(_))
+            | Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(_)) => {
+                unimplemented!("EntityRef not implemented")
+            }
+            Cow::Owned(BinXMLDeserializedTokens::PITarget)
+            | Cow::Borrowed(BinXMLDeserializedTokens::PITarget) => {}
+            Cow::Owned(BinXMLDeserializedTokens::PIData)
+            | Cow::Borrowed(BinXMLDeserializedTokens::PIData) => {}
+            Cow::Owned(BinXMLDeserializedTokens::Substitution(_))
+            | Cow::Borrowed(BinXMLDeserializedTokens::Substitution(_)) => {
                 panic!("Call `expand_templates` before calling this function")
             }
-            Cow::Owned(BinXMLDeserializedTokens::EndOfStream) | Cow::Borrowed(BinXMLDeserializedTokens::EndOfStream) => model.push(XmlModel::EndOfStream),
-            Cow::Owned(BinXMLDeserializedTokens::StartOfStream) | Cow::Borrowed(BinXMLDeserializedTokens::StartOfStream) => model.push(XmlModel::StartOfStream),
+            Cow::Owned(BinXMLDeserializedTokens::EndOfStream)
+            | Cow::Borrowed(BinXMLDeserializedTokens::EndOfStream) => {
+                model.push(XmlModel::EndOfStream)
+            }
+            Cow::Owned(BinXMLDeserializedTokens::StartOfStream)
+            | Cow::Borrowed(BinXMLDeserializedTokens::StartOfStream) => {
+                model.push(XmlModel::StartOfStream)
+            }
 
-            Cow::Owned(BinXMLDeserializedTokens::CloseEmptyElement) | Cow::Borrowed(BinXMLDeserializedTokens::CloseEmptyElement) => {
+            Cow::Owned(BinXMLDeserializedTokens::CloseEmptyElement)
+            | Cow::Borrowed(BinXMLDeserializedTokens::CloseEmptyElement) => {
                 trace!("BinXMLDeserializedTokens::CloseEmptyElement");
                 match current_element.take() {
                     None => panic!("close empty - Bad parser state"),
@@ -141,7 +167,8 @@ pub fn create_record_model<'a>(tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>
                     }
                 };
             }
-            Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Owned(value))) | Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))) => {
+            Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Owned(value)))
+            | Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))) => {
                 trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
                 match current_element.take() {
                     // A string that is not inside any element, yield it
@@ -185,19 +212,14 @@ pub fn create_record_model<'a>(tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>
     model
 }
 
-
 fn expand_owned_template<'a>(
     mut template: BinXmlTemplate<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) {
     // If the template owns the definition, we can consume the tokens.
     let tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = match template.definition {
-        Cow::Owned(owned_def) => {
-            owned_def.tokens.into_iter().map(Cow::Owned).collect()
-        }
-        Cow::Borrowed(ref_def) => {
-            ref_def.tokens.iter().map(Cow::Borrowed).collect()
-        }
+        Cow::Owned(owned_def) => owned_def.tokens.into_iter().map(Cow::Owned).collect(),
+        Cow::Borrowed(ref_def) => ref_def.tokens.iter().map(Cow::Borrowed).collect(),
     };
 
     for token in tokens {
@@ -209,11 +231,15 @@ fn expand_owned_template<'a>(
                 // We swap out the node in the substitution array with a dummy value (to avoid copying it),
                 // moving control of the original node to the new token tree.
                 let value = mem::replace(
-                    &mut template.substitution_array[substitution_descriptor.substitution_index as usize],
+                    &mut template.substitution_array
+                        [substitution_descriptor.substitution_index as usize],
                     BinXmlValue::NullType,
                 );
 
-                _expand_templates(Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(value))), stack);
+                _expand_templates(
+                    Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(value))),
+                    stack,
+                );
             }
         } else {
             _expand_templates(token, stack);
@@ -228,14 +254,17 @@ fn expand_borrowed_template<'a>(
     // Here we can always use refs, since even if the definition is owned by the template,
     // we do not own it.
     for token in template.definition.as_ref().tokens.iter() {
-        if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token
-        {
+        if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
             if substitution_descriptor.ignore {
                 continue;
             } else {
-                let value = &template.substitution_array[substitution_descriptor.substitution_index as usize];
+                let value = &template.substitution_array
+                    [substitution_descriptor.substitution_index as usize];
 
-                _expand_templates(Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))), stack);
+                _expand_templates(
+                    Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))),
+                    stack,
+                );
             }
         } else {
             _expand_templates(Cow::Borrowed(token), stack);
@@ -243,24 +272,30 @@ fn expand_borrowed_template<'a>(
     }
 }
 
-
 fn _expand_templates<'a>(
     token: Cow<'a, BinXMLDeserializedTokens<'a>>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) {
     match token {
         // Owned values can be consumed when flatting, and passed on as owned.
-        Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens)))) => {
+        Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(
+            tokens,
+        )))) => {
             for token in tokens.into_iter() {
                 _expand_templates(Cow::Owned(token), stack);
             }
         }
 
         // All borrowed values are flattened and kept borrowed.
-        Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens)))) |
-        Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(tokens)))) |
-        Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(tokens))))
-        => {
+        Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(
+            tokens,
+        ))))
+        | Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Owned(BinXmlValue::BinXmlType(
+            tokens,
+        ))))
+        | Cow::Borrowed(BinXMLDeserializedTokens::Value(Cow::Borrowed(BinXmlValue::BinXmlType(
+            tokens,
+        )))) => {
             for token in tokens.iter() {
                 _expand_templates(Cow::Borrowed(token), stack);
             }
@@ -277,7 +312,6 @@ fn _expand_templates<'a>(
         _ => stack.push(token),
     }
 }
-
 
 pub fn expand_templates(
     token_tree: Vec<BinXMLDeserializedTokens>,

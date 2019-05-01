@@ -75,10 +75,14 @@ pub struct EvtxParser<T: ReadSeek> {
     config: ParserSettings,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParserSettings {
+    /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
+    /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
+    /// If true, output will be indented.
+    indent: bool,
 }
 
 impl Default for ParserSettings {
@@ -86,6 +90,7 @@ impl Default for ParserSettings {
         ParserSettings {
             num_threads: 0,
             validate_checksums: false,
+            indent: true,
         }
     }
 }
@@ -121,6 +126,24 @@ impl ParserSettings {
         self.validate_checksums = validate_checksums;
 
         self
+    }
+
+    pub fn indent(mut self, pretty: bool) -> Self {
+        self.indent = pretty;
+
+        self
+    }
+
+    pub fn should_indent(&self) -> bool {
+        self.indent
+    }
+
+    pub fn should_validate_checksums(&self) -> bool {
+        self.validate_checksums
+    }
+
+    pub fn get_num_threads(&self) -> &usize {
+        &self.num_threads
     }
 }
 
@@ -208,6 +231,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
+        let chunk_settings = self.config.clone();
+
         let mut chunks = self.chunks();
 
         let records_per_chunk = std::iter::from_fn(move || {
@@ -235,7 +260,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.parse();
+                            let chunk_records_res = chunk.parse(&chunk_settings);
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
@@ -452,7 +477,7 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse().unwrap().iter() {
+        for record in chunk.parse(&ParserSettings::default()).unwrap().iter() {
             record.unwrap();
         }
     }

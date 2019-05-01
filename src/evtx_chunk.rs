@@ -15,7 +15,10 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
+use crate::ParserSettings;
 use log::Level;
+
+
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -68,8 +71,9 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
-    pub fn parse(&mut self) -> Result<EvtxChunk, failure::Error> {
-        EvtxChunk::new(&self.data, &self.header)
+    /// Require that the settings live at least as long as &self.
+    pub fn parse<'chunk, 'b: 'chunk>(&'chunk mut self, settings: &'b ParserSettings) -> Result<EvtxChunk<'chunk>, failure::Error> {
+        EvtxChunk::new(&self.data, &self.header, settings)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -131,6 +135,8 @@ pub struct EvtxChunk<'chunk> {
     pub string_cache: StringCache,
 
     pub template_table: TemplateCache<'chunk>,
+
+    settings: &'chunk ParserSettings,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -138,6 +144,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
+        settings: &'chunk ParserSettings,
     ) -> Result<EvtxChunk<'chunk>, failure::Error> {
         let _cursor = Cursor::new(data);
 
@@ -152,6 +159,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             data,
             string_cache,
             template_table,
+            settings,
         })
     }
 
@@ -159,6 +167,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// See `IterChunkRecords` for more lifetime info.
     pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
         IterChunkRecords {
+            settings: self.settings,
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
@@ -198,6 +207,7 @@ pub struct IterChunkRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
+    settings: &'a ParserSettings,
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
@@ -279,6 +289,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens,
+            settings: &self.settings,
         }))
     }
 }

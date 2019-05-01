@@ -3,6 +3,7 @@ use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::utils::datetime_from_filetime;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
+use crate::ParserSettings;
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::prelude::*;
 use failure::Error;
@@ -13,6 +14,7 @@ pub struct EvtxRecord<'a> {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
+    pub settings: &'a ParserSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +37,10 @@ impl EvtxRecordHeader {
         input.take(4).read_exact(&mut magic)?;
 
         if &magic != b"\x2a\x2a\x00\x00" {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Wrong record header magic"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Wrong record header magic",
+            ));
         }
 
         let size = input.read_u32::<LittleEndian>()?;
@@ -59,7 +64,7 @@ impl EvtxRecordHeader {
 impl<'a> EvtxRecord<'a> {
     /// Consumes the record, returning a `SerializedEvtxRecord` with the serialized data.
     pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord, Error> {
-        let mut output_builder = T::with_writer(Vec::new());
+        let mut output_builder = T::with_writer(Vec::new(), &self.settings);
 
         parse_tokens(self.tokens, &mut output_builder)?;
 

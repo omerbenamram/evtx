@@ -7,13 +7,14 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
 use crate::binxml::value_variant::BinXmlValue;
+use crate::ParserSettings;
 use failure::{bail, format_err, Error};
-use std::borrow::{Cow};
+use std::borrow::Cow;
 
 pub trait BinXmlOutput<W: Write> {
     /// Implementors are expected to provide a `std::Write` target.
     /// The record will be written to the target.
-    fn with_writer(target: W) -> Self;
+    fn with_writer(target: W, settings: &ParserSettings) -> Self;
 
     /// Consumes the output, returning control of the inner writer to the caller.
     fn into_writer(self) -> Result<W, Error>;
@@ -55,8 +56,12 @@ pub struct XmlOutput<W: Write> {
 
 /// Adapter between binxml XmlModel type and quick-xml events.
 impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
-    fn with_writer(target: W) -> Self {
-        let writer = Writer::new_with_indent(target, b' ', 2);
+    fn with_writer(target: W, settings: &ParserSettings) -> Self {
+        let writer = if settings.should_indent() {
+            Writer::new_with_indent(target, b' ', 2)
+        } else {
+            Writer::new(target)
+        };
 
         XmlOutput {
             writer,
@@ -87,7 +92,8 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
             bail!("Impossible state - `visit_open_start_element` after EOF");
         }
 
-        let mut event_builder = BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
+        let mut event_builder =
+            BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
 
         for attr in element.attributes.iter() {
             let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
