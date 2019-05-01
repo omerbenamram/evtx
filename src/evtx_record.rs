@@ -66,9 +66,9 @@ impl<'a> EvtxRecord<'a> {
     pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord, Error> {
         let mut output_builder = T::with_writer(Vec::new(), &self.settings);
 
-        parse_tokens(self.tokens, &mut output_builder, &self.settings)?;
+        parse_tokens(self.tokens, &mut output_builder)?;
 
-        let data = String::from_utf8(output_builder.into_writer(&self.settings)?)?;
+        let data = String::from_utf8(output_builder.into_writer()?)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id: self.event_record_id,

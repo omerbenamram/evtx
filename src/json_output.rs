@@ -11,13 +11,13 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
-use std::sync::Arc;
 
 pub struct JsonOutput<W: Write> {
     writer: W,
     map: Value,
     stack: Vec<String>,
     eof_reached: bool,
+    indent: bool,
 }
 
 impl<W: Write> JsonOutput<W> {
@@ -161,17 +161,22 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
             map: Value::Object(Map::new()),
             stack: vec![],
             eof_reached: false,
+            indent: settings.should_indent(),
         }
     }
 
-    fn into_writer(mut self, settings: &ParserSettings) -> Result<W, Error> {
+    fn into_writer(mut self) -> Result<W, Error> {
         if self.eof_reached {
             if !self.stack.is_empty() {
                 Err(format_err!(
                     "Invalid stream, EOF reached before closing all attributes"
                 ))
             } else {
-                serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                if self.indent {
+                    serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+                } else {
+                    serde_json::to_writer(&mut self.writer, &self.map)?;
+                }
                 Ok(self.writer)
             }
         } else {
@@ -181,17 +186,13 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         }
     }
 
-    fn visit_end_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_end_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_end_of_stream");
         self.eof_reached = true;
         Ok(())
     }
 
-    fn visit_open_start_element(
-        &mut self,
-        element: &XmlElement,
-        settings: &ParserSettings,
-    ) -> Result<(), Error> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element.name);
         let element_name = element.name.as_str();
 
@@ -207,21 +208,13 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(
-        &mut self,
-        _element: &XmlElement,
-        settings: &ParserSettings,
-    ) -> Result<(), Error> {
+    fn visit_close_element(&mut self, _element: &XmlElement) -> Result<(), Error> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
     }
 
-    fn visit_characters(
-        &mut self,
-        value: &BinXmlValue,
-        settings: &ParserSettings,
-    ) -> Result<(), Error> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
         trace!("visit_chars {:?}", &self.stack);
         let current_value = self.get_or_create_current_path();
 
@@ -248,29 +241,23 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_cdata_section(&mut self) -> Result<(), Error> {
         unimplemented!()
     }
 
-    fn visit_entity_reference(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_entity_reference(&mut self) -> Result<(), Error> {
         unimplemented!()
     }
 
-    fn visit_processing_instruction_target(
-        &mut self,
-        settings: &ParserSettings,
-    ) -> Result<(), Error> {
+    fn visit_processing_instruction_target(&mut self) -> Result<(), Error> {
         unimplemented!()
     }
 
-    fn visit_processing_instruction_data(
-        &mut self,
-        settings: &ParserSettings,
-    ) -> Result<(), Error> {
+    fn visit_processing_instruction_data(&mut self) -> Result<(), Error> {
         unimplemented!()
     }
 
-    fn visit_start_of_stream(&mut self, settings: &ParserSettings) -> Result<(), Error> {
+    fn visit_start_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_start_of_stream");
         Ok(())
     }

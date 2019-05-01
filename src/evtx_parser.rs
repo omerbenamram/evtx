@@ -7,7 +7,7 @@ use rayon;
 use rayon::prelude::*;
 
 use failure::{format_err, Error};
-use log::debug;
+use log::{debug, info};
 
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -17,7 +17,6 @@ use crate::json_output::JsonOutput;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use std::cmp::max;
 use std::path::Path;
-use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -82,6 +81,8 @@ pub struct ParserSettings {
     num_threads: usize,
     /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
+    /// If true, output will be indented.
+    indent: bool,
 }
 
 impl Default for ParserSettings {
@@ -89,6 +90,7 @@ impl Default for ParserSettings {
         ParserSettings {
             num_threads: 0,
             validate_checksums: false,
+            indent: true,
         }
     }
 }
@@ -124,6 +126,24 @@ impl ParserSettings {
         self.validate_checksums = validate_checksums;
 
         self
+    }
+
+    pub fn indent(mut self, pretty: bool) -> Self {
+        self.indent = pretty;
+
+        self
+    }
+
+    pub fn should_indent(&self) -> bool {
+        self.indent
+    }
+
+    pub fn should_validate_checksums(&self) -> bool {
+        self.validate_checksums
+    }
+
+    pub fn get_num_threads(&self) -> &usize {
+        &self.num_threads
     }
 }
 
@@ -340,7 +360,9 @@ pub struct IntoIterChunks<T: ReadSeek> {
 impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        info!("Chunk {}", self.current_chunk_number);
         self.parser.find_next_chunk(&mut self.current_chunk_number)
+
     }
 }
 

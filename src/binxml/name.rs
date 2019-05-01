@@ -9,7 +9,6 @@ use log::trace;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-
 use crate::evtx_chunk::EvtxChunk;
 use quick_xml::events::{BytesEnd, BytesStart};
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
@@ -53,7 +52,7 @@ impl<'a> BinXmlName<'a> {
         let name_hash = try_read!(cursor, u16);
         let name = read_len_prefixed_utf16_string(cursor, true)
             .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-            .expect("Expected string");
+            .unwrap_or_else(|| String::new());
 
         let position_after_read = cursor.position();
 
