@@ -71,9 +71,9 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// ```
 ///
 pub struct EvtxParser<T: ReadSeek> {
-    pub data: T,
-    pub header: EvtxFileHeader,
-    pub config: ParserSettings,
+    data: T,
+    header: EvtxFileHeader,
+    config: ParserSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +81,7 @@ pub struct ParserSettings {
     /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
     /// If enabled, chunk with bad checksums will be skipped.
-    pub validate_checksums: bool,
+    validate_checksums: bool,
 }
 
 impl Default for ParserSettings {
