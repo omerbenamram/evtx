@@ -71,9 +71,9 @@ impl<T: Read + Seek> ReadSeek for T {}
 /// ```
 ///
 pub struct EvtxParser<T: ReadSeek> {
-    data: T,
-    header: EvtxFileHeader,
-    config: ParserSettings,
+    pub data: T,
+    pub header: EvtxFileHeader,
+    pub config: ParserSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +81,7 @@ pub struct ParserSettings {
     /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
     /// If enabled, chunk with bad checksums will be skipped.
-    validate_checksums: bool,
+    pub validate_checksums: bool,
 }
 
 impl Default for ParserSettings {
@@ -205,6 +205,16 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
+    /// Consumes the parser, returning an iterator over all the chunks.
+    /// Each chunk supports iterating over it's records in their un-serialized state
+    /// (before they are converted to XML or JSON).
+    pub fn into_chunks(self) -> IntoIterChunks<T> {
+        IntoIterChunks {
+            parser: self,
+            current_chunk_number: 0,
+        }
+    }
+
     /// Return an iterator over all the records.
     /// Records will be serialized using the given `BinXmlOutput`.
     pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
@@ -281,6 +291,46 @@ pub struct IterChunks<'c, T: ReadSeek> {
 }
 
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
+    type Item = Result<EvtxChunkData, Error>;
+    fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        loop {
+            match EvtxParser::allocate_chunk(
+                &mut self.parser.data,
+                self.current_chunk_number,
+                self.parser.config.validate_checksums,
+            ) {
+                Err(err) => {
+                    // We try to read past the `chunk_count` to allow for dirty files.
+                    // But if we failed, it means we really are at the end of the file.
+                    if self.current_chunk_number >= self.parser.header.chunk_count {
+                        return None;
+                    } else {
+                        self.current_chunk_number += 1;
+                        return Some(Err(err));
+                    }
+                }
+                Ok(None) => {
+                    // We try to read past the `chunk_count` to allow for dirty files.
+                    // But if we get an empty chunk, we need to keep looking.
+                    // Increment and try again.
+                    self.current_chunk_number += 1;
+                }
+                Ok(Some(chunk)) => {
+                    self.current_chunk_number += 1;
+                    return Some(Ok(chunk));
+                }
+            };
+        }
+    }
+}
+
+
+pub struct IntoIterChunks<T: ReadSeek> {
+    parser: EvtxParser<T>,
+    current_chunk_number: u16,
+}
+
+impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     type Item = Result<EvtxChunkData, Error>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         loop {

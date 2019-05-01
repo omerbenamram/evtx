@@ -24,8 +24,8 @@ mod template_cache;
 mod tests;
 mod utils;
 
-mod json_output;
-mod xml_output;
+pub mod json_output;
+pub mod xml_output;
 
 pub type Offset = u32;
 
