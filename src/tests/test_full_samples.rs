@@ -1,27 +1,24 @@
+use crate::tests::fixtures::*;
 use crate::{ensure_env_logger_initialized, EvtxParser, ParserSettings};
+use log::Level;
+use std::path::Path;
 
 /// Tests an .evtx file, asserting the number of parsed records matches `count`.
-macro_rules! test_full_sample {
-    ($path: expr, $count: expr) => {{
-        use log::Level;
+fn test_full_sample(path: impl AsRef<Path>, count: usize) {
+    ensure_env_logger_initialized();
+    let mut parser = EvtxParser::from_path(path).unwrap();
 
-        ensure_env_logger_initialized();
-        let evtx_file = include_bytes!($path);
+    let mut real_count = 0;
 
-        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-        let mut count = 0;
-
-        for r in parser.records() {
-            if r.is_ok() {
-                count += 1;
-                if log::log_enabled!(Level::Debug) {
-                    println!("{}", r.unwrap().data);
-                }
+    for r in parser.records() {
+        if r.is_ok() {
+            real_count += 1;
+            if log::log_enabled!(Level::Debug) {
+                println!("{}", r.unwrap().data);
             }
         }
-        assert_eq!(count, $count);
-    };};
+    }
+    assert_eq!(real_count, count);
 }
 
 #[test]
@@ -61,80 +58,35 @@ fn test_dirty_sample_parallel() {
 
 #[test]
 fn test_parses_sample_with_irregular_boolean_values() {
-    ensure_env_logger_initialized();
-    // This sample contains boolean values which are not zero or one.
-    let evtx_file = include_bytes!("../../samples/sample-with-irregular-bool-values.evtx");
-
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-    for r in parser.records() {
-        r.unwrap();
-    }
+    test_full_sample(sample_with_irregular_values(), 3028);
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum() {
-    ensure_env_logger_initialized();
-    let evtx_file = include_bytes!(
-        "../../samples/2-vss_0-Microsoft-Windows-RemoteDesktopServices-RdpCoreTS%4Operational.evtx"
-    );
-
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-    let mut count = 0;
-
-    for r in parser.records() {
-        if r.is_ok() {
-            count += 1;
-        }
-    }
-
-    assert_eq!(count, 1910);
+    test_full_sample(sample_with_a_bad_checksum(), 1910)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2() {
-    ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/2-vss_0-Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx");
-
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
-
-    let mut count = 0;
-
-    for r in parser.records() {
-        if r.is_ok() {
-            count += 1;
-        }
-    }
-
-    assert_eq!(count, 1774);
+    test_full_sample(sample_with_a_bad_checksum_2(), 1174)
 }
 
 #[test]
 fn test_dirty_sample_with_a_chunk_past_zeros() {
-    test_full_sample!("../../samples/2-vss_7-System.evtx", 1170)
+    test_full_sample(sample_with_a_chunk_past_zeroes(), 1170)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic() {
-    test_full_sample!(
-        "../../samples/2-vss_7-Microsoft-Windows-AppXDeployment%4Operational.evtx",
-        270
-    )
+    test_full_sample(sample_with_a_bad_chunk_magic(), 270)
 }
 
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_token() {
-    test_full_sample!(
-        "../../samples/Microsoft-Windows-HelloForBusiness%4Operational.evtx",
-        6
-    )
+    test_full_sample(sample_binxml_with_incomplete_sid(), 6)
 }
 
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_template() {
-    test_full_sample!(
-        "../../samples/Microsoft-Windows-LanguagePackSetup%4Operational.evtx",
-        17
-    )
+    test_full_sample(sample_binxml_with_incomplete_template(), 17)
 }
