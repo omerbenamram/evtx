@@ -4,7 +4,7 @@
 
 This is a parser for the Windows EVTX format.
 
-This parser is implemented using 100% safe rust.
+This parser is implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
 
 The parser supports XML and JSON outputs, both being zero-copy and independent of each other.
 
