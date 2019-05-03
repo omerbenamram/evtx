@@ -1,4 +1,3 @@
-
 use crate::evtx_parser::ReadSeek;
 use crate::utils::print_hexdump;
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -8,7 +7,6 @@ use std::{
     cmp::min,
     io::{self, Cursor, Error, ErrorKind},
 };
-
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,
@@ -37,7 +35,6 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
 
     if s_len == expected_number_of_characters as usize {
         Ok(s)
-
     } else {
         error!(
             "Expected string of length {}, found string of length {} - {:?}",
@@ -47,7 +44,6 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
         Err(Error::from(ErrorKind::InvalidData))
     }
 }
-
 
 /// Reads a utf16 string from the given stream.
 /// size is the actual byte representation of the string (not the number of characters).
@@ -67,7 +63,6 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
 pub fn read_null_terminated_utf16_string<T: ReadSeek>(stream: &mut T) -> io::Result<String> {
     read_utf16_string(stream, None)
 }
-
 
 /// Reads a utf16 string from the given stream.
 /// If `len` is given, exactly `len` u16 values are read from the stream.

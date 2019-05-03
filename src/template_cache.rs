@@ -6,7 +6,6 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
-
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
 #[derive(Debug, Default)]

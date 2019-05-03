@@ -1,8 +1,8 @@
-use std::fmt::{self, Debug, Display};
-use std::io;
-use std::fmt::Write;
 use crate::evtx_parser::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
+use std::fmt::Write;
+use std::fmt::{self, Debug, Display};
+use std::io;
 
 #[derive(PartialOrd, PartialEq, Clone)]
 pub struct Guid {
@@ -52,7 +52,8 @@ impl Guid {
             self.data4[5],
             self.data4[6],
             self.data4[7]
-        ).expect("writing to a preallocated buffer cannot fail");
+        )
+        .expect("writing to a preallocated buffer cannot fail");
 
         s
     }
