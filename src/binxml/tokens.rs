@@ -15,7 +15,7 @@ use std::io::SeekFrom;
 use crate::evtx_chunk::EvtxChunk;
 use std::borrow::Cow;
 
-pub fn read_template<'a, 'c>(
+pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXmlTemplate<'a>, Error> {
@@ -195,7 +195,7 @@ pub fn read_substitution(
     })
 }
 
-pub fn read_open_start_element<'a, 'c>(
+pub fn read_open_start_element<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
     has_attributes: bool,

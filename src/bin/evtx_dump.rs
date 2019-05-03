@@ -29,13 +29,7 @@ impl EvtxDumpConfig {
             matches.value_of("output-format"),
         ) {
             // "jsonl" --> --no-indent
-            (false, Some(fmt)) => {
-                if fmt == "jsonl" {
-                    true
-                } else {
-                    false
-                }
-            }
+            (false, Some(fmt)) => fmt == "jsonl",
             (true, Some(fmt)) => {
                 if fmt == "jsonl" {
                     eprintln!("no need to pass both `--no-indent` and `-o jsonl`");
@@ -52,13 +46,7 @@ impl EvtxDumpConfig {
             matches.value_of("output-format"),
         ) {
             // "jsonl" --> --no-show-record-number
-            (false, Some(fmt)) => {
-                if fmt == "jsonl" {
-                    true
-                } else {
-                    false
-                }
-            }
+            (false, Some(fmt)) => fmt == "jsonl",
             (true, Some(fmt)) => {
                 if fmt == "jsonl" {
                     eprintln!("no need to pass both `--no-show-record-number` and `-o jsonl`");
