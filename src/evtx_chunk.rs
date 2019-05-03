@@ -15,7 +15,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::ParserSettings;
+use crate::{evtx_record, ParserSettings};
 use log::Level;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
@@ -180,7 +180,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         &'a mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord, failure::Error>> + 'a {
         self.iter()
-            .map(|record_res| record_res.and_then(|record| record.into_serialized::<O>()))
+            .map(|record_res| record_res.and_then(evtx_record::EvtxRecord::into_serialized::<O>))
     }
 }
 

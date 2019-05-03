@@ -52,7 +52,7 @@ impl<'a> BinXmlName<'a> {
         let name_hash = try_read!(cursor, u16);
         let name = read_len_prefixed_utf16_string(cursor, true)
             .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
-            .unwrap_or_else(|| String::new());
+            .unwrap_or_else(String::new);
 
         let position_after_read = cursor.position();
 
