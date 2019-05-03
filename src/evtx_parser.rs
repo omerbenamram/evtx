@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn test_into_chunsk() {
+    fn test_into_chunks() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
