@@ -15,7 +15,7 @@ Supported rust version is latest stable rust (minimum 1.34) or nightly.
 
 [Documentation](https://docs.rs/evtx/0.2.5/)
 
-Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (still experimental, will publish to PyPi soon)
+Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (and at PyPi https://pypi.org/project/evtx/)
 
 ## Example usage (associated binary utility):
   - `cargo install evtx`
