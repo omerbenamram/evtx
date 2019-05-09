@@ -90,3 +90,8 @@ fn test_dirty_sample_binxml_with_incomplete_token() {
 fn test_dirty_sample_binxml_with_incomplete_template() {
     test_full_sample(sample_binxml_with_incomplete_template(), 17)
 }
+
+#[test]
+fn test_sample_with_multiple_xml_fragments() {
+    test_full_sample(sample_with_multiple_xml_fragments(), 1146)
+}
