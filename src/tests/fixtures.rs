@@ -43,3 +43,8 @@ pub fn sample_binxml_with_incomplete_sid() -> PathBuf {
 pub fn sample_binxml_with_incomplete_template() -> PathBuf {
     samples_dir().join("Microsoft-Windows-LanguagePackSetup%4Operational.evtx")
 }
+
+pub fn sample_with_multiple_xml_fragments() -> PathBuf {
+    samples_dir()
+        .join("E_Windows_system32_winevt_logs_Microsoft-Windows-Shell-Core%4Operational.evtx")
+}
