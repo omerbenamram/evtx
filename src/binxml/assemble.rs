@@ -34,12 +34,12 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
                 visitor.visit_close_element(&close_element)?
             }
             XmlModel::Value(s) => visitor.visit_characters(&s)?,
-            XmlModel::EndOfStream => visitor.visit_end_of_stream()?,
-            // Sometimes there are multiple fragment headers,
-            // but we only need to write start of stream once.
+            XmlModel::EndOfStream => {}
             XmlModel::StartOfStream => {}
         };
     }
+
+    visitor.visit_end_of_stream()?;
 
     Ok(())
 }

@@ -16,7 +16,6 @@ pub struct JsonOutput<W: Write> {
     writer: W,
     map: Value,
     stack: Vec<String>,
-    eof_reached: bool,
     indent: bool,
 }
 
@@ -160,35 +159,27 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
             writer: target,
             map: Value::Object(Map::new()),
             stack: vec![],
-            eof_reached: false,
             indent: settings.should_indent(),
         }
     }
 
     fn into_writer(mut self) -> Result<W, Error> {
-        if self.eof_reached {
-            if !self.stack.is_empty() {
-                Err(format_err!(
-                    "Invalid stream, EOF reached before closing all attributes"
-                ))
-            } else {
-                if self.indent {
-                    serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
-                } else {
-                    serde_json::to_writer(&mut self.writer, &self.map)?;
-                }
-                Ok(self.writer)
-            }
-        } else {
+        if !self.stack.is_empty() {
             Err(format_err!(
-                "Tried to return writer before EOF marked, incomplete output."
+                "Invalid stream, EOF reached before closing all attributes"
             ))
+        } else {
+            if self.indent {
+                serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
+            } else {
+                serde_json::to_writer(&mut self.writer, &self.map)?;
+            }
+            Ok(self.writer)
         }
     }
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_end_of_stream");
-        self.eof_reached = true;
         Ok(())
     }
 
