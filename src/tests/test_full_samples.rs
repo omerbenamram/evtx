@@ -18,7 +18,17 @@ fn test_full_sample(path: impl AsRef<Path>, count: usize) {
             }
         }
     }
-    assert_eq!(real_count, count);
+    assert_eq!(real_count, count, "Failed to parse all records as XML");
+
+    for r in parser.records_json() {
+        if r.is_ok() {
+            real_count += 1;
+            if log::log_enabled!(Level::Debug) {
+                println!("{}", r.unwrap().data);
+            }
+        }
+    }
+    assert_eq!(real_count, count, "Failed to parse all records as JSON");
 }
 
 #[test]
