@@ -18,7 +18,18 @@ fn test_full_sample(path: impl AsRef<Path>, count: usize) {
             }
         }
     }
-    assert_eq!(real_count, count);
+    assert_eq!(real_count, count, "Failed to parse all records as XML");
+
+    let mut real_count = 0;
+    for r in parser.records_json() {
+        if r.is_ok() {
+            real_count += 1;
+            if log::log_enabled!(Level::Debug) {
+                println!("{}", r.unwrap().data);
+            }
+        }
+    }
+    assert_eq!(real_count, count, "Failed to parse all records as JSON");
 }
 
 #[test]
@@ -89,4 +100,9 @@ fn test_dirty_sample_binxml_with_incomplete_token() {
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_template() {
     test_full_sample(sample_binxml_with_incomplete_template(), 17)
+}
+
+#[test]
+fn test_sample_with_multiple_xml_fragments() {
+    test_full_sample(sample_with_multiple_xml_fragments(), 1146)
 }

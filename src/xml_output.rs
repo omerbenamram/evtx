@@ -51,7 +51,6 @@ pub trait BinXmlOutput<W: Write> {
 
 pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
-    eof_reached: bool,
 }
 
 /// Adapter between binxml XmlModel type and quick-xml events.
@@ -63,34 +62,21 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
             Writer::new(target)
         };
 
-        XmlOutput {
-            writer,
-            eof_reached: false,
-        }
+        XmlOutput { writer }
     }
 
     fn into_writer(self) -> Result<W, Error> {
-        if self.eof_reached {
-            Ok(self.writer.into_inner())
-        } else {
-            Err(format_err!(
-                "Tried to return writer before EOF marked, incomplete output."
-            ))
-        }
+        Ok(self.writer.into_inner())
     }
 
     fn visit_end_of_stream(&mut self) -> Result<(), Error> {
         trace!("visit_end_of_stream");
-        self.eof_reached = true;
         self.writer.write_event(Event::Eof)?;
         Ok(())
     }
 
     fn visit_open_start_element<'a>(&mut self, element: &XmlElement) -> Result<(), Error> {
         trace!("visit_open_start_element: {:?}", element);
-        if self.eof_reached {
-            bail!("Impossible state - `visit_open_start_element` after EOF");
-        }
 
         let mut event_builder =
             BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
