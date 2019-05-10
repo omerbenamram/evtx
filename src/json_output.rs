@@ -94,12 +94,14 @@ impl<W: Write> JsonOutput<W> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
-        let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
-            format_err!(
-                "This is a bug - expected parent container to exist, and to be an object type.\
-                 Check that the referencing parent is not `Value::null`"
-            )
-        })?;
+        let container =
+            self.get_current_parent()
+                .as_object_mut()
+                .context(err::JsonStructureError {
+                message:
+                    "This is a bug - expected parent container to exist, and to be an object type.\
+                     Check that the referencing parent is not `Value::null`",
+            })?;
 
         container.insert(name.to_owned(), Value::Null);
         Ok(())
@@ -130,7 +132,6 @@ impl<W: Write> JsonOutput<W> {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                          Check that the value is not `Value::null`",
-                    stack: self.stack.clone(),
                 })?;
 
             value.insert("#attributes".to_owned(), Value::Object(attributes));
@@ -144,7 +145,6 @@ impl<W: Write> JsonOutput<W> {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                          Check that the value is not `Value::null`",
-                    stack: self.stack.clone(),
                 })?;
 
             value.insert(name.to_string(), Value::Null);
@@ -168,8 +168,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         ensure!(
             self.stack.is_empty(),
             err::JsonStructureError {
-                message: "Invalid stream, EOF reached before closing all attributes",
-                stack: self.stack.clone()
+                message: "Invalid stream, EOF reached before closing all attributes"
             }
         );
 
@@ -230,7 +229,6 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
                     .as_object_mut()
                     .context(err::JsonStructureError {
                         message: "expected current value to be an object type",
-                        stack: self.stack.clone(),
                     })?;
 
             current_object.insert("#text".to_owned(), value.clone().into());

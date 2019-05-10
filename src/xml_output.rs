@@ -78,7 +78,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         self.writer
             .write_event(Event::Eof)
             .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError);
+            .context(err::XmlOutputError)?;
 
         Ok(())
     }
@@ -99,7 +99,10 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
             }
         }
 
-        self.writer.write_event(Event::Start(event_builder))?;
+        self.writer
+            .write_event(Event::Start(event_builder))
+            .map_err(err::QuickXmlError::from)
+            .context(err::XmlOutputError)?;
 
         Ok(())
     }
@@ -111,7 +114,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         self.writer
             .write_event(Event::End(event))
             .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError);
+            .context(err::XmlOutputError)?;
 
         Ok(())
     }
@@ -123,7 +126,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         self.writer
             .write_event(Event::Text(event))
             .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError);
+            .context(err::XmlOutputError)?;
 
         Ok(())
     }
@@ -151,7 +154,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         self.writer
             .write_event(Event::Decl(event))
             .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError);
+            .context(err::XmlOutputError)?;
 
         Ok(())
     }

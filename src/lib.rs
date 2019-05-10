@@ -1,3 +1,4 @@
+#![deny(unused_must_use)]
 // This needs to come first!
 #[macro_use]
 mod macros;

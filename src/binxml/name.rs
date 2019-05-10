@@ -11,7 +11,6 @@ use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
 use crate::evtx_chunk::EvtxChunk;
-use quick_error::ResultExt;
 use quick_xml::events::{BytesEnd, BytesStart};
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
@@ -40,7 +39,7 @@ impl<'a> BinXmlName<'a> {
             if name_offset == cursor.position() as u32 {
                 cursor
                     .seek(SeekFrom::Current(i64::from(*n_bytes_read)))
-                    .context(err::IO);
+                    .context(err::IO)?;
             }
             return Ok(BinXmlName(Cow::Borrowed(name)));
         }
@@ -86,14 +85,14 @@ impl<'a> BinXmlName<'a> {
             let position_before_seek = cursor.position();
             cursor
                 .seek(SeekFrom::Start(u64::from(offset)))
-                .context(err::IO);
+                .context(err::IO)?;
 
             let (name, hash, n_bytes_read) = Self::from_stream(cursor)?;
 
             trace!("Restoring cursor to {}", position_before_seek);
             cursor
                 .seek(SeekFrom::Start(position_before_seek as u64))
-                .context(err::IO);
+                .context(err::IO)?;
 
             Ok((name, hash, n_bytes_read))
         } else {

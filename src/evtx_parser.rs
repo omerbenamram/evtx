@@ -156,7 +156,9 @@ impl EvtxParser<File> {
         let path = path
             .as_ref()
             .canonicalize()
-            .context(err::InvalidInputPath { path })?;
+            .context(err::InvalidInputPath {
+                path: path.as_ref().to_string_lossy().to_string(),
+            })?;
 
         let f = File::open(&path).context(err::FailedToOpenFile { path })?;
 

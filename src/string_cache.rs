@@ -21,7 +21,7 @@ impl StringCache {
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             cursor
                 .seek(SeekFrom::Start(u64::from(*offset)))
-                .context(err::IO);
+                .context(err::IO)?;
             cache.insert(*offset, BinXmlName::from_stream(&mut cursor)?);
         }
 

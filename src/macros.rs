@@ -88,9 +88,10 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, null_terminated_utf_16_str) => {{
-        let s = read_null_terminated_utf16_string($cursor).context(FailedToDecodeUTF16String {
-            offset: $cursor.position(),
-        })?;
+        let s =
+            read_null_terminated_utf16_string($cursor).context(err::FailedToDecodeUTF16String {
+                offset: $cursor.position(),
+            })?;
 
         Cow::Owned(s)
     }};

@@ -254,31 +254,31 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let mut tokens = vec![];
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
-            .eager_context(err::FailedToDeserializeRecord)
+            .context(err::FailedToDeserializeRecord)
         {
             Ok(iter) => iter,
-            Err(e) => return Some(e),
+            Err(err_ctx) => return Some(Err(err_ctx.error)),
         };
 
         for token in iter {
-            match token.eager_context(err::FailedToDeserializeRecord) {
+            match token.context(err::FailedToDeserializeRecord) {
                 Ok(token) => {
                     trace!("successfully read {:?}", token);
                     tokens.push(token)
                 }
-                Err(e) => {
-                    if log::log_enabled!(Level::Debug) {
-                        let mut cursor = Cursor::new(self.chunk.data);
-                        cursor
-                            .seek(SeekFrom::Start(
-                                e.offset().expect("Err to have offset information"),
-                            ))
-                            .unwrap();
-                        dump_cursor(&cursor, 10);
-                    }
+                Err(err_ctx) => {
+                    //                    if log::log_enabled!(Level::Debug) {
+                    //                        let mut cursor = Cursor::new(self.chunk.data);
+                    //                        cursor
+                    //                            .seek(SeekFrom::Start(
+                    //                                e.offset().expect("Err to have offset information"),
+                    //                            ))
+                    //                            .unwrap();
+                    //                        dump_cursor(&cursor, 10);
+                    //                    }
 
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
-                    return Some(e);
+                    return Some(Err(err_ctx.error));
                 }
             }
         }
@@ -312,7 +312,7 @@ impl<'a> Debug for EvtxChunk<'a> {
 impl EvtxChunkHeader {
     pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader> {
         let mut magic = [0_u8; 8];
-        input.take(8).read_exact(&mut magic).context(err::IO);
+        input.take(8).read_exact(&mut magic).context(err::IO)?;
 
         ensure!(
             &magic == b"ElfChnk\x00",
@@ -339,12 +339,12 @@ impl EvtxChunkHeader {
         let mut strings_offsets = [0_u32; 64];
         input
             .read_u32_into::<LittleEndian>(&mut strings_offsets)
-            .context(err::IO);
+            .context(err::IO)?;
 
         let mut template_offsets = [0_u32; 32];
         input
             .read_u32_into::<LittleEndian>(&mut template_offsets)
-            .context(err::IO);
+            .context(err::IO)?;
 
         Ok(EvtxChunkHeader {
             first_event_record_number,

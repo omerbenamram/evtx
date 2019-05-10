@@ -15,10 +15,11 @@ pub enum Error {
         backtrace: Backtrace,
     },
 
-    #[snafu(display("Invalid input path, cannot canonicalize: {}: {}", path.display(), source))]
+    #[snafu(display("Invalid input path, cannot canonicalize: {}: {}", path, source))]
     InvalidInputPath {
         source: std::io::Error,
-        path: PathBuf,
+        // Not a path because it is invalid
+        path: String,
     },
     #[snafu(display("Failed to open file {}: {}", path.display(), source))]
     FailedToOpenFile {
@@ -84,11 +85,24 @@ pub enum Error {
     ))]
     FailedToDecodeUTF16String { source: std::io::Error, offset: u64 },
 
+    #[snafu(display(
+        "Offset {}: Failed to decode UTF-8 string, caused by: {}",
+        offset,
+        source
+    ))]
+    FailedToDecodeUTF8String {
+        source: std::string::FromUtf8Error,
+        offset: u64,
+    },
+
     #[snafu(display("Offset {}: Failed to decode GUID, caused by: {}", offset, source))]
     FailedToReadGUID { source: std::io::Error, offset: u64 },
 
     #[snafu(display("Offset {}: Failed to decode NTSID, caused by: {}", offset, source))]
     FailedToReadNTSID { source: std::io::Error, offset: u64 },
+
+    #[snafu(display("Failed to create record model, reason: {}", message))]
+    FailedToCreateRecordModel { message: String },
 
     /// Errors related to Serialization
     // Since `quick-xml` maintains the stack for us, structural errors with the XML
@@ -96,12 +110,8 @@ pub enum Error {
     #[snafu(display("Writing to XML failed with: {}", source))]
     XmlOutputError { source: QuickXmlError },
 
-    #[snafu(display(
-        "Building a JSON document failed with message: {}, current element stack: {:?}",
-        message,
-        stack
-    ))]
-    JsonStructureError { message: String, stack: Vec<String> },
+    #[snafu(display("Building a JSON document failed with message: {}", message,))]
+    JsonStructureError { message: String },
 
     #[snafu(display("`serde_json` failed with error: {}", source))]
     JsonError { source: serde_json::error::Error },
@@ -131,7 +141,7 @@ macro_rules! unimplemented_fn {
 /// Adapter for `quick-xml` error type, which is implemented internally in `failure`,
 /// and provides no easy way of producing std compatible `Error`
 #[derive(Debug)]
-pub(crate) struct QuickXmlError {
+pub struct QuickXmlError {
     message: String,
 }
 
@@ -153,5 +163,16 @@ impl From<quick_xml::Error> for QuickXmlError {
         QuickXmlError {
             message: format!("{}", e),
         }
+    }
+}
+
+pub fn dump_err(err: impl std::error::Error) {
+    let mut e = &err as &dyn std::error::Error;
+
+    eprintln!("{}", e);
+
+    while let Some(source) = e.source() {
+        eprintln!("\tcaused by another error {}", source);
+        e = source;
     }
 }

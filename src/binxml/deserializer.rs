@@ -73,7 +73,9 @@ impl<'a> BinXmlDeserializer<'a> {
             cursor.position(),
             seek_ahead
         );
-        cursor.seek(SeekFrom::Current(seek_ahead as i64))?;
+        cursor
+            .seek(SeekFrom::Current(seek_ahead as i64))
+            .context(err::IO)?;
 
         Ok(tokens)
     }
@@ -81,7 +83,7 @@ impl<'a> BinXmlDeserializer<'a> {
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
         let mut cursor = Cursor::new(self.data);
-        cursor.seek(SeekFrom::Start(self.offset))?;
+        cursor.seek(SeekFrom::Start(self.offset)).context(err::IO)?;
 
         Ok(IterTokens {
             cursor,
@@ -97,9 +99,7 @@ impl<'a> IterTokens<'a> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
-        let token = cursor
-            .read_u8()
-            .map_err(|e| Error::unexpected_eof(e, cursor.position()))?;
+        let token = try_read!(cursor, u8);
 
         Ok(BinXMLRawToken::from_u8(token).context(err::InvalidToken {
             value: token,

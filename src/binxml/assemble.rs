@@ -1,8 +1,10 @@
+use crate::err::{self, Result};
+use snafu::{ensure, OptionExt, ResultExt};
+
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXmlOutput;
-use failure::{format_err, Error};
 use log::trace;
 use std::borrow::Cow;
 use std::io::Write;
@@ -11,7 +13,7 @@ use std::mem;
 pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
     tokens: Vec<BinXMLDeserializedTokens>,
     visitor: &mut T,
-) -> Result<(), Error> {
+) -> Result<()> {
     let expanded_tokens = expand_templates(tokens);
     let record_model = create_record_model(expanded_tokens);
 
@@ -23,13 +25,15 @@ pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().ok_or_else(|| {
-                    format_err!("Invalid parser state - expected stack to be non-empty")
-                })?)?
+                visitor.visit_open_start_element(stack.last().context(
+                    err::FailedToCreateRecordModel {
+                        message: "Invalid parser state - expected stack to be non-empty",
+                    },
+                )?)?
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or_else(|| {
-                    format_err!("Invalid parser state - expected stack to be non-empty")
+                let close_element = stack.pop().context(err::FailedToCreateRecordModel {
+                    message: "Invalid parser state - expected stack to be non-empty",
                 })?;
                 visitor.visit_close_element(&close_element)?
             }

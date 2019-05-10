@@ -25,7 +25,7 @@ impl<'chunk> TemplateCache<'chunk> {
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             cursor
                 .seek(SeekFrom::Start(u64::from(*offset)))
-                .context(err::IO);
+                .context(err::IO)?;
 
             let definition = read_template_definition(&mut cursor, None)?;
             cache.insert(*offset, definition);

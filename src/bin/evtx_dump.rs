@@ -2,6 +2,7 @@ extern crate evtx;
 
 use clap::{App, Arg, ArgMatches};
 
+use evtx::err::dump_err;
 use evtx::{EvtxParser, ParserSettings};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
@@ -177,7 +178,7 @@ fn main() {
                             println!("{}", r.data)
                         }
                     }
-                    Err(e) => eprintln!("{}", e),
+                    Err(e) => dump_err(e),
                 }
             }
         }
