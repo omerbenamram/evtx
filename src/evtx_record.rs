@@ -1,13 +1,15 @@
+use crate::err::{self, Result};
+use snafu::{ensure, ResultExt};
+
 use crate::binxml::assemble::parse_tokens;
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::utils::datetime_from_filetime;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::ParserSettings;
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use failure::Error;
-use std::io::{self, Cursor, Read};
+use std::io::{Cursor, Read};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {
@@ -32,20 +34,18 @@ pub struct SerializedEvtxRecord {
 }
 
 impl EvtxRecordHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> io::Result<EvtxRecordHeader> {
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxRecordHeader> {
         let mut magic = [0_u8; 4];
-        input.take(4).read_exact(&mut magic)?;
+        input.take(4).read_exact(&mut magic).context(err::IO)?;
 
-        if &magic != b"\x2a\x2a\x00\x00" {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Wrong record header magic",
-            ));
-        }
+        ensure!(
+            &magic == b"\x2a\x2a\x00\x00",
+            err::InvalidEvtxRecordHeaderMagic { magic }
+        );
 
-        let size = input.read_u32::<LittleEndian>()?;
-        let record_id = input.read_u64::<LittleEndian>()?;
-        let timestamp = datetime_from_filetime(input.read_u64::<LittleEndian>()?);
+        let size = try_read!(input, u32);
+        let record_id = try_read!(input, u64);
+        let timestamp = try_read!(input, filetime);
 
         Ok(EvtxRecordHeader {
             data_size: size,
@@ -63,12 +63,13 @@ impl EvtxRecordHeader {
 
 impl<'a> EvtxRecord<'a> {
     /// Consumes the record, returning a `SerializedEvtxRecord` with the serialized data.
-    pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord, Error> {
+    pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord> {
         let mut output_builder = T::with_writer(Vec::new(), &self.settings);
 
         parse_tokens(self.tokens, &mut output_builder)?;
 
-        let data = String::from_utf8(output_builder.into_writer()?)?;
+        let data = String::from_utf8(output_builder.into_writer()?)
+            .context(err::RecordContainsInvalidUTF8)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id: self.event_record_id,
@@ -78,12 +79,12 @@ impl<'a> EvtxRecord<'a> {
     }
 
     /// Consumes the record and parse it, producing a JSON serialized record.
-    pub fn into_json(self) -> Result<SerializedEvtxRecord, Error> {
+    pub fn into_json(self) -> Result<SerializedEvtxRecord> {
         self.into_serialized::<JsonOutput<Vec<u8>>>()
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
-    pub fn into_xml(self) -> Result<SerializedEvtxRecord, Error> {
+    pub fn into_xml(self) -> Result<SerializedEvtxRecord> {
         self.into_serialized::<XmlOutput<Vec<u8>>>()
     }
 }

@@ -1,9 +1,12 @@
+use crate::err::{self, Result};
+use snafu::{ensure, ResultExt};
+
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
 use std::io::Read;
 use time::Duration;
 
-pub fn read_systemtime<R: Read>(r: &mut R) -> Result<DateTime<Utc>, crate::error::Error> {
+pub fn read_systemtime<R: Read>(r: &mut R) -> Result<DateTime<Utc>> {
     let year = try_read!(r, u16);
     let month = try_read!(r, u16);
     let _day_of_week = try_read!(r, u16);

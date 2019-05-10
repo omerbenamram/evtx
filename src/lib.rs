@@ -9,11 +9,9 @@ pub use json_output::JsonOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
 
 pub mod binxml;
+pub mod err;
 pub mod model;
-// TODO: all errors in crate should return this error
-// pub use error::Error as BinXmlError;
 
-mod error;
 mod evtx_chunk;
 mod evtx_file_header;
 mod evtx_parser;

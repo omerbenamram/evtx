@@ -1,12 +1,14 @@
-use crate::model::xml::XmlElement;
-
-use failure::{format_err, Error};
-use log::trace;
+use crate::err::{self, Result};
+use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::binxml::value_variant::BinXmlValue;
+use crate::model::xml::XmlElement;
 use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
+use crate::{format_err, unimplemented_fn};
+
 use core::borrow::BorrowMut;
+use log::trace;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::io::Write;
@@ -68,7 +70,7 @@ impl<W: Write> JsonOutput<W> {
     }
 
     /// Like a regular node, but uses it's "Name" attribute.
-    fn insert_data_node(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn insert_data_node(&mut self, element: &XmlElement) -> Result<()> {
         trace!("inserting data node {:?}", &element);
         match element
             .attributes
@@ -88,7 +90,7 @@ impl<W: Write> JsonOutput<W> {
         }
     }
 
-    fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<(), Error> {
+    fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<()> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
@@ -103,11 +105,7 @@ impl<W: Write> JsonOutput<W> {
         Ok(())
     }
 
-    fn insert_node_with_attributes(
-        &mut self,
-        element: &XmlElement,
-        name: &str,
-    ) -> Result<(), Error> {
+    fn insert_node_with_attributes(&mut self, element: &XmlElement, name: &str) -> Result<()> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
 
@@ -125,26 +123,29 @@ impl<W: Write> JsonOutput<W> {
 
         // If we have attributes, create a map as usual.
         if !attributes.is_empty() {
-            let value = self
-                .get_or_create_current_path()
-                .as_object_mut()
-                .ok_or_else(|| {
-                    format_err!(
-                    "This is a bug - expected current value to exist, and to be an object type.\
-                     Check that the value is not `Value::null`"
-                )
+            let value =
+                self.get_or_create_current_path()
+                    .as_object_mut()
+                    .context(err::JsonStructureError {
+                    message:
+                        "This is a bug - expected current value to exist, and to be an object type.
+                         Check that the value is not `Value::null`",
+                    stack: self.stack.clone(),
                 })?;
 
             value.insert("#attributes".to_owned(), Value::Object(attributes));
         } else {
             // If the object does not have attributes, replace it with a null placeholder,
             // so it will be printed as a key-value pair
-            let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
-                format_err!(
-                    "This is a bug - expected current value to exist, and to be an object type.\
-                     Check that the value is not `Value::null`"
-                )
-            })?;
+            let value =
+                self.get_current_parent()
+                    .as_object_mut()
+                    .context(err::JsonStructureError {
+                    message:
+                        "This is a bug - expected current value to exist, and to be an object type.
+                         Check that the value is not `Value::null`",
+                    stack: self.stack.clone(),
+                })?;
 
             value.insert(name.to_string(), Value::Null);
         }
@@ -163,27 +164,29 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         }
     }
 
-    fn into_writer(mut self) -> Result<W, Error> {
-        if !self.stack.is_empty() {
-            Err(format_err!(
-                "Invalid stream, EOF reached before closing all attributes"
-            ))
-        } else {
-            if self.indent {
-                serde_json::to_writer_pretty(&mut self.writer, &self.map)?;
-            } else {
-                serde_json::to_writer(&mut self.writer, &self.map)?;
+    fn into_writer(mut self) -> Result<W> {
+        ensure!(
+            self.stack.is_empty(),
+            err::JsonStructureError {
+                message: "Invalid stream, EOF reached before closing all attributes",
+                stack: self.stack.clone()
             }
-            Ok(self.writer)
+        );
+
+        if self.indent {
+            serde_json::to_writer_pretty(&mut self.writer, &self.map).context(err::JsonError)?;
+        } else {
+            serde_json::to_writer(&mut self.writer, &self.map).context(err::JsonError)?;
         }
+        Ok(self.writer)
     }
 
-    fn visit_end_of_stream(&mut self) -> Result<(), Error> {
+    fn visit_end_of_stream(&mut self) -> Result<()> {
         trace!("visit_end_of_stream");
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<(), Error> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<()> {
         trace!("visit_open_start_element: {:?}", element.name);
         let element_name = element.name.as_str();
 
@@ -199,13 +202,13 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(&mut self, _element: &XmlElement) -> Result<(), Error> {
+    fn visit_close_element(&mut self, _element: &XmlElement) -> Result<()> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<(), Error> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
         trace!("visit_chars {:?}", &self.stack);
         let current_value = self.get_or_create_current_path();
 
@@ -222,9 +225,13 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
             //    },
             //    "#text": "4902"
             //  },
-            let current_object = current_value.as_object_mut().ok_or_else(|| {
-                format_err!("This is a bug - expected current value to be an object type")
-            })?;
+            let current_object =
+                current_value
+                    .as_object_mut()
+                    .context(err::JsonStructureError {
+                        message: "expected current value to be an object type",
+                        stack: self.stack.clone(),
+                    })?;
 
             current_object.insert("#text".to_owned(), value.clone().into());
         }
@@ -232,23 +239,23 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self) -> Result<(), Error> {
-        unimplemented!()
+    fn visit_cdata_section(&mut self) -> Result<()> {
+        unimplemented_fn!("visit_cdata_section")
     }
 
-    fn visit_entity_reference(&mut self) -> Result<(), Error> {
-        unimplemented!()
+    fn visit_entity_reference(&mut self) -> Result<()> {
+        unimplemented_fn!("visit_entity_reference")
     }
 
-    fn visit_processing_instruction_target(&mut self) -> Result<(), Error> {
-        unimplemented!()
+    fn visit_processing_instruction_target(&mut self) -> Result<()> {
+        unimplemented_fn!("visit_processing_instruction_target")
     }
 
-    fn visit_processing_instruction_data(&mut self) -> Result<(), Error> {
-        unimplemented!()
+    fn visit_processing_instruction_data(&mut self) -> Result<()> {
+        unimplemented_fn!("visit_processing_instruction_data")
     }
 
-    fn visit_start_of_stream(&mut self) -> Result<(), Error> {
+    fn visit_start_of_stream(&mut self) -> Result<()> {
         trace!("visit_start_of_stream");
         Ok(())
     }

@@ -1,7 +1,9 @@
+use crate::err::{self, Result};
+use snafu::{ensure, ResultExt};
+
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::error::Error;
 
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
@@ -186,7 +188,7 @@ impl<'a> BinXmlValue<'a> {
     pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Result<BinXmlValue<'a>, Error> {
+    ) -> Result<BinXmlValue<'a>> {
         let value_type_token = try_read!(cursor, u8);
 
         let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
@@ -202,7 +204,7 @@ impl<'a> BinXmlValue<'a> {
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Result<BinXmlValue<'a>, Error> {
+    ) -> Result<BinXmlValue<'a>> {
         let value = match value_type {
             BinXmlValueType::NullType => BinXmlValue::NullType,
             BinXmlValueType::StringType => BinXmlValue::StringType(try_read!(cursor, utf_16_str)),
@@ -222,9 +224,10 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::Real64Type => BinXmlValue::Real64Type(try_read!(cursor, f64)),
             BinXmlValueType::BoolType => BinXmlValue::BoolType(try_read!(cursor, bool)),
             BinXmlValueType::GuidType => BinXmlValue::GuidType(try_read!(cursor, guid)),
-            BinXmlValueType::SizeTType => {
-                Err(Error::other("Unimplemented: SizeTType", cursor.position()))?
-            }
+            BinXmlValueType::SizeTType => err::UnimplementedToken {
+                name: "SizeT",
+                offset: cursor.position(),
+            }?,
             BinXmlValueType::FileTimeType => BinXmlValue::FileTimeType(try_read!(cursor, filetime)),
             BinXmlValueType::SysTimeType => BinXmlValue::SysTimeType(try_read!(cursor, systime)),
             BinXmlValueType::SidType => BinXmlValue::SidType(try_read!(cursor, sid)),
@@ -249,7 +252,7 @@ impl<'a> BinXmlValue<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         size: u16,
-    ) -> Result<BinXmlValue<'a>, Error> {
+    ) -> Result<BinXmlValue<'a>> {
         trace!(
             "deserialized_sized_value_type: {:?}, {:?}",
             value_type,

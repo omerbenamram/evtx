@@ -1,3 +1,6 @@
+use crate::err::{self, Result};
+use snafu::{ensure, OptionExt, ResultExt};
+
 use byteorder::ReadBytesExt;
 
 use log::trace;
@@ -10,7 +13,6 @@ use crate::{
     binxml::tokens::{
         read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
     },
-    error::Error,
     model::{deserialized::*, raw::*},
 };
 
@@ -47,7 +49,7 @@ impl<'a> BinXmlDeserializer<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         data_size: Option<u32>,
-    ) -> Result<Vec<BinXMLDeserializedTokens<'a>>, Error> {
+    ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
         let offset = cursor.position();
 
         let de = BinXmlDeserializer::init(*cursor.get_ref(), offset, chunk);
@@ -77,7 +79,7 @@ impl<'a> BinXmlDeserializer<'a> {
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
-    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>, Error> {
+    pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
         let mut cursor = Cursor::new(self.data);
         cursor.seek(SeekFrom::Start(self.offset))?;
 
@@ -94,20 +96,22 @@ impl<'a> BinXmlDeserializer<'a> {
 impl<'a> IterTokens<'a> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
-    fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken, Error> {
+    fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
         let token = cursor
             .read_u8()
             .map_err(|e| Error::unexpected_eof(e, cursor.position()))?;
 
-        Ok(BinXMLRawToken::from_u8(token)
-            .ok_or_else(|| Error::not_a_valid_binxml_token(token, cursor.position()))?)
+        Ok(BinXMLRawToken::from_u8(token).context(err::InvalidToken {
+            value: token,
+            offset: cursor.position(),
+        })?)
     }
 
     fn visit_token(
         &self,
         cursor: &mut Cursor<&'a [u8]>,
         raw_token: BinXMLRawToken,
-    ) -> Result<BinXMLDeserializedTokens<'a>, Error> {
+    ) -> Result<BinXMLDeserializedTokens<'a>> {
         match raw_token {
             BinXMLRawToken::EndOfStream => Ok(BinXMLDeserializedTokens::EndOfStream),
             BinXMLRawToken::OpenStartElement(token_information) => {
@@ -125,21 +129,24 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),
-            BinXMLRawToken::CDataSection => Err(Error::other(
-                "Unimplemented: BinXMLToken::CDataSection",
-                cursor.position(),
-            )),
+            BinXMLRawToken::CDataSection => err::UnimplementedToken {
+                name: "CDataSection",
+                offset: cursor.position(),
+            }
+            .fail(),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, self.chunk)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => Err(Error::other(
-                "Unimplemented: BinXMLToken::ProcessingInstructionTarget",
-                cursor.position(),
-            )),
-            BinXMLRawToken::ProcessingInstructionData => Err(Error::other(
-                "Unimplemented: BinXMLToken::ProcessingInstructionData",
-                cursor.position(),
-            )),
+            BinXMLRawToken::ProcessingInstructionTarget => err::UnimplementedToken {
+                name: "ProcessingInstructionTarget",
+                offset: cursor.position(),
+            }
+            .fail(),
+            BinXMLRawToken::ProcessingInstructionData => err::UnimplementedToken {
+                name: "ProcessingInstructionData",
+                offset: cursor.position(),
+            }
+            .fail(),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, self.chunk)?,
             )),
@@ -157,7 +164,7 @@ impl<'a> IterTokens<'a> {
 }
 
 impl<'a> IterTokens<'a> {
-    fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'a>, Error>> {
+    fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'a>>> {
         let mut cursor = self.cursor.clone();
         let offset_from_chunk_start = cursor.position();
 
@@ -217,7 +224,7 @@ impl<'a> IterTokens<'a> {
 }
 
 impl<'a> Iterator for IterTokens<'a> {
-    type Item = Result<BinXMLDeserializedTokens<'a>, Error>;
+    type Item = Result<BinXMLDeserializedTokens<'a>>;
 
     /// yields tokens from the chunk, will return once the chunk is finished.
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
