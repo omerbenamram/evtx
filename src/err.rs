@@ -1,5 +1,5 @@
 use quick_xml;
-use snafu::{Backtrace, Snafu};
+use snafu::{Backtrace, ErrorCompat, Snafu};
 use std::fmt::Formatter;
 use std::path::PathBuf;
 
@@ -74,6 +74,7 @@ pub enum Error {
     ))]
     FailedToDeserializeRecord {
         record_id: u64,
+        #[snafu(backtrace(delegate))]
         #[snafu(source(from(Error, Box::new)))]
         source: Box<Error>,
     },
@@ -182,13 +183,10 @@ impl From<quick_xml::Error> for QuickXmlError {
     }
 }
 
-pub fn dump_err(err: impl std::error::Error) {
-    let mut e = &err as &dyn std::error::Error;
+pub fn dump_err(err: Error) {
+    eprintln!("{}", err);
 
-    eprintln!("{}", e);
-
-    while let Some(source) = e.source() {
-        eprintln!("\tcaused by another error {}", source);
-        e = source;
+    if let Some(bt) = err.backtrace() {
+        eprintln!("{}", bt);
     }
 }
