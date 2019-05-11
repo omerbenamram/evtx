@@ -370,24 +370,6 @@ impl<'a> BinXmlValue<'a> {
                 )?;
 
                 BinXmlValue::BinXmlType(tokens)
-
-                //                let mut binxml_buffer = vec![0; size as usize];
-                //                cursor.read_exact(&mut binxml_buffer).context(err::IO)?;
-                //
-                //                if log::log_enabled!(Level::Trace) {
-                //                    print_hexdump(&binxml_buffer, 0, 'C');
-                //                }
-                //
-                //                let temp = binxml_buffer.clone();
-                //                let tokens = BinXmlDeserializer::read_binxml_fragment(
-                //                    &mut Cursor::new(&temp),
-                //                    None,
-                //                    Some(size as u32),
-                //                )?;
-                //
-                //                dbg!(tokens);
-                //
-                //                BinXmlValue::UInt8ArrayType(binxml_buffer)
             }
             // Fallback to un-sized variant.
             _ => BinXmlValue::deserialize_value_type(&value_type, cursor, chunk)?,
