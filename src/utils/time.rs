@@ -1,10 +1,10 @@
 use crate::err::{self, Result};
-use snafu::{ensure, ResultExt};
+use snafu::{ResultExt};
 
 use crate::evtx_parser::ReadSeek;
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use std::io::Read;
+
 use time::Duration;
 
 pub fn read_systemtime<R: ReadSeek>(r: &mut R) -> Result<DateTime<Utc>> {

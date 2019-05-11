@@ -1,4 +1,4 @@
-use crate::evtx_parser::ReadSeek;
+
 use crate::binxml::name::BinXmlName;
 use crate::err::{self, Result};
 use crate::Offset;

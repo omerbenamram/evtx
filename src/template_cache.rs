@@ -1,4 +1,4 @@
-use crate::evtx_parser::ReadSeek;
+
 use crate::binxml::tokens::read_template_definition;
 use crate::err::{self, Result};
 

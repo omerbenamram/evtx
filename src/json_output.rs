@@ -5,7 +5,7 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::XmlElement;
 use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
-use crate::{format_err, unimplemented_fn};
+use crate::{unimplemented_fn};
 
 use core::borrow::BorrowMut;
 use log::trace;

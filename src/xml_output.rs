@@ -1,4 +1,4 @@
-use crate::evtx_parser::ReadSeek;
+
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{self, Result};
 use crate::model::xml::XmlElement;

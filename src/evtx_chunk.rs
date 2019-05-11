@@ -3,10 +3,10 @@ use crate::evtx_parser::ReadSeek;
 use snafu::{ensure, ResultExt};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
-use crate::utils::*;
+
 use crate::xml_output::BinXmlOutput;
 use crc::crc32;
-use log::{debug, error, info, trace};
+use log::{debug, info, trace};
 use std::{
     fmt::{Debug, Formatter},
     io::Cursor,
@@ -19,7 +19,7 @@ use crate::template_cache::TemplateCache;
 use crate::{evtx_record, ParserSettings};
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use log::Level;
+
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
