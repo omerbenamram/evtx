@@ -106,3 +106,8 @@ fn test_dirty_sample_binxml_with_incomplete_template() {
 fn test_sample_with_multiple_xml_fragments() {
     test_full_sample(sample_with_multiple_xml_fragments(), 1146)
 }
+
+#[test]
+fn test_sample_issue_25() {
+    test_full_sample(sample_with_issue_25(), 1146)
+}
