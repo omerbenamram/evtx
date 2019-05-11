@@ -4,18 +4,17 @@
 
 This is a parser for the Windows EVTX format.
 
-This parser is implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
-
-The parser supports XML and JSON outputs, both being zero-copy and independent of each other.
-
-For JSON this means that no conversion to textual XML is done.
-The JSON object is being directly built from the inner representation of the binary xml token tree.
-
 Supported rust version is latest stable rust (minimum 1.34) or nightly.
 
-[Documentation](https://docs.rs/evtx/0.2.5/)
+[Documentation](https://docs.rs/evtx/0.2.6/)
 
 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (and at PyPi https://pypi.org/project/evtx/)
+
+## Features
+
+ - Implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
+ - Supports XML and JSON outputs, both being zero-copy and independent of each other (JSON documents are being built directly from the inner representation of the binary xml token tree, no xml2json is performed!)
+ - Supports some basic recovery of missing records/chunks!
 
 ## Example usage (associated binary utility):
   - `cargo install evtx`
@@ -102,15 +101,13 @@ Comparison with other libraries:
    
 ## Caveats
 
-- I haven't implemented any sort of recovery/carving of records (available in some other implementations).
-
 - Currently unimplemented:
    - [ ] ANSI encoded nodes (codepage selection).
-   - [ ] cdata nodes.
+   - [ ] PI/cdata nodes.
    - [ ] entity/character refs.
    - [ ] EVTHandle node type.
 
-If the parser errors out on any of these nodes, feel free to open an issue or drop me an email with a sample.
+If the parser errors on any of these nodes, feel free to open an issue or drop me an email with a sample.
 
 ## License
 
