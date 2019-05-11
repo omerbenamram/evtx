@@ -5,32 +5,47 @@ use log::Level;
 use std::path::Path;
 
 /// Tests an .evtx file, asserting the number of parsed records matches `count`.
-fn test_full_sample(path: impl AsRef<Path>, count: usize) {
+fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
     ensure_env_logger_initialized();
     let mut parser = EvtxParser::from_path(path).unwrap();
 
-    let mut real_count = 0;
+    let mut actual_ok_count = 0;
+    let mut actual_err_count = 0;
 
     for r in parser.records() {
         if r.is_ok() {
-            real_count += 1;
+            actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
                 println!("{}", r.unwrap().data);
             }
+        } else {
+            actual_err_count += 1;
         }
     }
-    assert_eq!(real_count, count, "Failed to parse all records as XML");
+    assert_eq!(
+        actual_ok_count, ok_count,
+        "XML: Failed to parse all expected records"
+    );
+    assert_eq!(actual_err_count, err_count, "XML: Expected errors");
 
-    let mut real_count = 0;
+    let mut actual_ok_count = 0;
+    let mut actual_err_count = 0;
+
     for r in parser.records_json() {
         if r.is_ok() {
-            real_count += 1;
+            actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
                 println!("{}", r.unwrap().data);
             }
+        } else {
+            actual_err_count += 1;
         }
     }
-    assert_eq!(real_count, count, "Failed to parse all records as JSON");
+    assert_eq!(
+        actual_ok_count, ok_count,
+        "Failed to parse all records as JSON"
+    );
+    assert_eq!(actual_err_count, err_count, "XML: Expected errors");
 }
 
 #[test]
@@ -70,60 +85,53 @@ fn test_dirty_sample_parallel() {
 
 #[test]
 fn test_parses_sample_with_irregular_boolean_values() {
-    test_full_sample(sample_with_irregular_values(), 3028);
+    test_full_sample(sample_with_irregular_values(), 3028, 0);
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum() {
-    test_full_sample(sample_with_a_bad_checksum(), 1910)
+    test_full_sample(sample_with_a_bad_checksum(), 1910, 4)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2() {
-    test_full_sample(sample_with_a_bad_checksum_2(), 1774)
+    // TODO: investigate 2 failing records
+    test_full_sample(sample_with_a_bad_checksum_2(), 1774, 2)
 }
 
 #[test]
 fn test_dirty_sample_with_a_chunk_past_zeros() {
-    test_full_sample(sample_with_a_chunk_past_zeroes(), 1160)
+    test_full_sample(sample_with_a_chunk_past_zeroes(), 1160, 0)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic() {
-    test_full_sample(sample_with_a_bad_chunk_magic(), 270)
+    test_full_sample(sample_with_a_bad_chunk_magic(), 270, 5)
 }
 
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_token() {
-    test_full_sample(sample_binxml_with_incomplete_sid(), 6)
+    // Contains an unparsable record
+    test_full_sample(sample_binxml_with_incomplete_sid(), 6, 1)
 }
 
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_template() {
-    test_full_sample(sample_binxml_with_incomplete_template(), 17)
+    // Contains an unparsable record
+    test_full_sample(sample_binxml_with_incomplete_template(), 17, 1)
 }
 
 #[test]
 fn test_sample_with_multiple_xml_fragments() {
-    test_full_sample(sample_with_multiple_xml_fragments(), 1146)
+    test_full_sample(sample_with_multiple_xml_fragments(), 1146, 0)
 }
 
 #[test]
-fn test_sample_issue_25() {
-    ensure_env_logger_initialized();
-    let path = sample_with_issue_25();
-    let evtx_file = include_bytes!(
-        "../../samples/E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx"
-    );
-
-    let chunk_data =
-        evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_CHUNK_SIZE + EVTX_FILE_HEADER_SIZE].to_vec();
-
-    let mut chunk = EvtxChunkData::new(chunk_data, false).unwrap();
-    let settings = ParserSettings::default();
-    let mut parsed = chunk.parse(&settings).unwrap();
-
-    let r = parsed.iter().next().unwrap().unwrap();
-
-    println!("{}", r.into_xml().unwrap().data);
+fn test_sample_with_binxml_as_substitution_tokens_and_pi_target() {
+    // PI Target still cannot be parsed
+    test_full_sample(
+        sample_with_binxml_as_substitution_tokens_and_pi_target(),
+        335,
+        5,
+    )
 }

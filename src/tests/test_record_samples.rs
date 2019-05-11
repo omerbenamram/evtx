@@ -155,6 +155,8 @@ fn test_event_xml_sample_with_user_data() {
         .expect("to have records")
         .expect("record to parse correctly");
 
+    println!("{}", first_record.data);
+
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
         include_str!("../../samples/event_with_template_as_substitution.xml")
