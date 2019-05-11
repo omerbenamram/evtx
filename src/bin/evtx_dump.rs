@@ -177,8 +177,11 @@ fn main() {
         .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false)
             .help("1 - info, 2 - debug, 3 - trace.\
              trace output is only available in debug builds, as it is extremely verbose"))
-        .arg(Arg::with_name("backtraces").takes_value(false)
-            .help("If set, a backtrace will be printed with some errors if available"))
+        .arg(
+            Arg::with_name("backtraces")
+                .long("--backtraces")
+                .takes_value(false)
+                .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
     let fp = matches
