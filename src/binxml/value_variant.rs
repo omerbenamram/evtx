@@ -361,6 +361,12 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::HexInt64ArrayType => {
                 BinXmlValue::HexInt64ArrayType(try_read_sized_array!(cursor, hex64, size))
             }
+            BinXmlValueType::BinXmlType => {
+                let tokens =
+                    BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(size as u32))?;
+
+                BinXmlValue::BinXmlType(tokens)
+            }
             // Fallback to un-sized variant.
             _ => BinXmlValue::deserialize_value_type(&value_type, cursor, chunk)?,
         };
