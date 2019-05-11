@@ -12,7 +12,8 @@ use crate::binxml::value_variant::BinXmlValue;
 
 use crate::{
     binxml::tokens::{
-        read_attribute, read_entity_ref, read_fragment_header, read_substitution, read_template,
+        read_attribute, read_entity_ref, read_fragment_header, read_substitution_descriptor,
+        read_template,
     },
     model::{deserialized::*, raw::*},
 };
@@ -152,10 +153,10 @@ impl<'a> IterTokens<'a> {
                 read_template(cursor, self.chunk)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
-                read_substitution(cursor, false)?,
+                read_substitution_descriptor(cursor, false)?,
             )),
             BinXMLRawToken::ConditionalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
-                read_substitution(cursor, true)?,
+                read_substitution_descriptor(cursor, true)?,
             )),
             BinXMLRawToken::StartOfStream => Ok(BinXMLDeserializedTokens::FragmentHeader(
                 read_fragment_header(cursor)?,

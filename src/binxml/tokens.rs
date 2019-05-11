@@ -97,8 +97,12 @@ pub fn read_template<'a>(
     let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
 
     for descriptor in value_descriptors {
-        let position = cursor.position();
-        trace!("Substitution: {:?} at {}", descriptor.value_type, position);
+        let position_before_reading_value = cursor.position();
+        trace!(
+            "Substitution: {:?} at {}",
+            descriptor.value_type,
+            position_before_reading_value
+        );
         let value = BinXmlValue::deserialized_sized_value_type(
             &descriptor.value_type,
             cursor,
@@ -115,18 +119,21 @@ pub fn read_template<'a>(
                 .context(err::IO)?;
         }
 
-        if position + u64::from(descriptor.size) != cursor.position() {
-            let diff = (position + u64::from(descriptor.size)) - cursor.position();
-            cursor
-                .seek(SeekFrom::Current(diff as i64))
-                .context(err::IO)?;
+        let current_position = cursor.position();
+        let expected_position = position_before_reading_value + u64::from(descriptor.size);
 
+        if expected_position != current_position {
+            let diff = expected_position - current_position;
             // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
             // Sometimes however the log will contain a lot of zero fields.
             warn!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                  cursor.position(),
-                  position + u64::from(descriptor.size),
+                  current_position,
+                  expected_position,
                   &descriptor);
+
+            cursor
+                .seek(SeekFrom::Start((current_position + u64::from(diff)) as u64))
+                .context(err::IO)?;
         }
         substitution_array.push(value);
     }
@@ -190,7 +197,7 @@ pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragment
     })
 }
 
-pub fn read_substitution(
+pub fn read_substitution_descriptor(
     cursor: &mut Cursor<&[u8]>,
     optional: bool,
 ) -> Result<TemplateSubstitutionDescriptor> {
