@@ -156,7 +156,7 @@ pub fn read_template_definition<'a>(
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
     let _data = *cursor.get_ref();
-    let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size))?;
+    let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size), false)?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
@@ -223,9 +223,12 @@ pub fn read_open_start_element<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
     has_attributes: bool,
+    is_substitution: bool,
 ) -> Result<BinXMLOpenStartElement<'a>> {
-    // Reserved
-    let _ = try_read!(cursor, u16);
+    if !is_substitution {
+        // Reserved
+        let _ = try_read!(cursor, u16);
+    }
     let data_size = try_read!(cursor, u32);
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 

@@ -1,5 +1,6 @@
+use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
 use crate::tests::fixtures::*;
-use crate::{ensure_env_logger_initialized, EvtxParser, ParserSettings};
+use crate::{ensure_env_logger_initialized, EvtxChunkData, EvtxParser, ParserSettings};
 use log::Level;
 use std::path::Path;
 
@@ -109,5 +110,20 @@ fn test_sample_with_multiple_xml_fragments() {
 
 #[test]
 fn test_sample_issue_25() {
-    test_full_sample(sample_with_issue_25(), 1146)
+    ensure_env_logger_initialized();
+    let path = sample_with_issue_25();
+    let evtx_file = include_bytes!(
+        "../../samples/E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx"
+    );
+
+    let chunk_data =
+        evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_CHUNK_SIZE + EVTX_FILE_HEADER_SIZE].to_vec();
+
+    let mut chunk = EvtxChunkData::new(chunk_data, false).unwrap();
+    let settings = ParserSettings::default();
+    let mut parsed = chunk.parse(&settings).unwrap();
+
+    let r = parsed.iter().next().unwrap().unwrap();
+
+    println!("{}", r.into_xml().unwrap().data);
 }

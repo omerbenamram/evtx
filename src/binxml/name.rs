@@ -31,9 +31,6 @@ impl<'a> BinXmlName<'a> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = try_read!(cursor, u32);
-        if name_offset == 0 {
-            return Ok(BinXmlName(Cow::Borrowed("")));
-        }
 
         // If name is cached, read it and seek ahead if needed.
         if let Some((name, _, n_bytes_read)) =

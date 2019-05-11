@@ -29,20 +29,29 @@ pub struct IterTokens<'a> {
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
+    is_inside_substitution: bool,
 }
 
 pub struct BinXmlDeserializer<'a> {
     data: &'a [u8],
     offset: u64,
     chunk: Option<&'a EvtxChunk<'a>>,
+    // if called from substitution token with value type: Binary XML (0x21)
+    is_inside_substitution: bool,
 }
 
 impl<'a> BinXmlDeserializer<'a> {
-    pub fn init(data: &'a [u8], start_offset: u64, chunk: Option<&'a EvtxChunk<'a>>) -> Self {
+    pub fn init(
+        data: &'a [u8],
+        start_offset: u64,
+        chunk: Option<&'a EvtxChunk<'a>>,
+        is_inside_substitution: bool,
+    ) -> Self {
         BinXmlDeserializer {
             data,
             offset: start_offset,
             chunk,
+            is_inside_substitution,
         }
     }
 
@@ -51,10 +60,11 @@ impl<'a> BinXmlDeserializer<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         data_size: Option<u32>,
+        is_inside_substitution: bool,
     ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
         let offset = cursor.position();
 
-        let de = BinXmlDeserializer::init(*cursor.get_ref(), offset, chunk);
+        let de = BinXmlDeserializer::init(*cursor.get_ref(), offset, chunk, is_inside_substitution);
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size)?;
@@ -93,6 +103,7 @@ impl<'a> BinXmlDeserializer<'a> {
             data_size,
             data_read_so_far: 0,
             eof: false,
+            is_inside_substitution: self.is_inside_substitution,
         })
     }
 }
@@ -119,7 +130,12 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::OpenStartElement(token_information) => {
                 // Debug print inside
                 Ok(BinXMLDeserializedTokens::OpenStartElement(
-                    read_open_start_element(cursor, self.chunk, token_information.has_attributes)?,
+                    read_open_start_element(
+                        cursor,
+                        self.chunk,
+                        token_information.has_attributes,
+                        self.is_inside_substitution,
+                    )?,
                 ))
             }
             BinXMLRawToken::CloseStartElement => Ok(BinXMLDeserializedTokens::CloseStartElement),
