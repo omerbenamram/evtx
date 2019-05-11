@@ -13,6 +13,7 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
 ## Features
 
  - Implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
+ - Multi-threaded.
  - Supports XML and JSON outputs, both being zero-copy and independent of each other (JSON documents are being built directly from the inner representation of the binary xml token tree, no xml2json is performed!)
  - Supports some basic recovery of missing records/chunks!
 
@@ -21,7 +22,7 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
   - run `evtx_dump <evtx_file>` to dump contents of evtx records as xml.
   - run `evtx_dump -o json <evtx_file>` to dump contents of evtx records as JSON.
 
-Note: by default, the library will try to utilize multithreading, this means that the records may be printed out of order.
+**Note:** by default, the library will try to utilize multithreading, this means that the records may be returned out of order.
 
 To force single threaded usage (which will also ensure order), `-t 1` can be passed.
 
