@@ -128,7 +128,7 @@ fn test_sample_with_multiple_xml_fragments() {
 
 #[test]
 fn test_sample_with_binxml_as_substitution_tokens_and_pi_target() {
-    // PI Target still cannot be parsed
+    // TODO: PI Target still cannot be parsed
     test_full_sample(
         sample_with_binxml_as_substitution_tokens_and_pi_target(),
         335,
