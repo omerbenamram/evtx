@@ -1,6 +1,6 @@
 use crate::err::{self, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::{ResultExt};
+use snafu::ResultExt;
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -31,6 +31,9 @@ impl<'a> BinXmlName<'a> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = try_read!(cursor, u32);
+        if name_offset == 0 {
+            return Ok(BinXmlName(Cow::Borrowed("")));
+        }
 
         // If name is cached, read it and seek ahead if needed.
         if let Some((name, _, n_bytes_read)) =
@@ -76,7 +79,7 @@ impl<'a> BinXmlName<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         offset: Offset,
     ) -> Result<StringHashOffset> {
-        if offset > 0 && offset != cursor.position() as u32 {
+        if offset != cursor.position() as u32 {
             trace!(
                 "Current offset {}, seeking to {}",
                 cursor.position(),
