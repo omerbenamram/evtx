@@ -1,3 +1,4 @@
+use crate::evtx_parser::ReadSeek;
 use crate::err::{self, Result};
 use snafu::{ensure, ResultExt};
 

@@ -1,4 +1,5 @@
 use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
 use snafu::{ensure, OptionExt, ResultExt};
 
 pub use byteorder::{LittleEndian, ReadBytesExt};

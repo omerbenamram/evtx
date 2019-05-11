@@ -8,7 +8,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
-    // TODO: add offset to generic I/O errors
+    #[snafu(display(
+        "Offset {}: An I/O error has occurred while trying to read {}: {}",
+        offset,
+        t,
+        source
+    ))]
+    FailedToRead {
+        offset: u64,
+        t: String,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
+
     #[snafu(display("An I/O error has occurred: {}", source))]
     IO {
         source: std::io::Error,
@@ -55,12 +67,16 @@ pub enum Error {
     #[snafu(display("chunk data CRC32 invalid"))]
     InvalidChunkChecksum {},
 
-    #[snafu(display("Failed to deserialize record, cause by: {}", source))]
+    #[snafu(display(
+        "Failed to deserialize record {}, caused by:\n\t {}",
+        record_id,
+        source
+    ))]
     FailedToDeserializeRecord {
+        record_id: u64,
         #[snafu(source(from(Error, Box::new)))]
         source: Box<Error>,
     },
-
     #[snafu(display(
         "Offset {}: Tried to read an invalid byte `{:x}` as binxml token",
         offset,

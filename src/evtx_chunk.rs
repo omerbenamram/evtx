@@ -1,4 +1,5 @@
 use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
 use snafu::{ensure, ResultExt};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
@@ -252,21 +253,24 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         );
 
         let mut tokens = vec![];
-        let iter = match deserializer
-            .iter_tokens(Some(binxml_data_size))
-            .context(err::FailedToDeserializeRecord)
-        {
+        let iter = match deserializer.iter_tokens(Some(binxml_data_size)).context(
+            err::FailedToDeserializeRecord {
+                record_id: record_header.event_record_id,
+            },
+        ) {
             Ok(iter) => iter,
             Err(err_ctx) => return Some(Err(err_ctx.error)),
         };
 
         for token in iter {
-            match token.context(err::FailedToDeserializeRecord) {
+            match token.eager_context(err::FailedToDeserializeRecord {
+                record_id: record_header.event_record_id,
+            }) {
                 Ok(token) => {
                     trace!("successfully read {:?}", token);
                     tokens.push(token)
                 }
-                Err(err_ctx) => {
+                Err(err) => {
                     //                    if log::log_enabled!(Level::Debug) {
                     //                        let mut cursor = Cursor::new(self.chunk.data);
                     //                        cursor
@@ -278,7 +282,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                     //                    }
 
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
-                    return Some(Err(err_ctx.error));
+                    return Some(Err(err));
                 }
             }
         }
