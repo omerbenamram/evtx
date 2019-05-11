@@ -183,7 +183,7 @@ impl From<quick_xml::Error> for QuickXmlError {
     }
 }
 
-pub fn dump_err(err: Error) {
+pub fn dump_err_with_backtrace(err: &Error) {
     eprintln!("{}", err);
 
     if let Some(bt) = err.backtrace() {

@@ -1,7 +1,7 @@
 use clap::{App, Arg, ArgMatches};
 
-use evtx::err::dump_err;
-use evtx::{EvtxParser, ParserSettings};
+use evtx::err::{dump_err_with_backtrace, Error};
+use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
@@ -10,11 +10,13 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
+#[derive(Clone)]
 struct EvtxDumpConfig {
     parser_settings: ParserSettings,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
     verbosity_level: Option<Level>,
+    backtraces: bool,
 }
 
 impl EvtxDumpConfig {
@@ -84,6 +86,8 @@ impl EvtxDumpConfig {
             }
         };
 
+        let backtraces = matches.is_present("backtraces");
+
         EvtxDumpConfig {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
@@ -92,6 +96,26 @@ impl EvtxDumpConfig {
             show_record_number: !no_show_record_number,
             output_format,
             verbosity_level,
+            backtraces,
+        }
+    }
+}
+
+fn dump_record(record: Result<SerializedEvtxRecord, Error>, config: &EvtxDumpConfig) {
+    match record {
+        Ok(r) => {
+            if config.show_record_number {
+                println!("Record {}\n{}", r.event_record_id, r.data)
+            } else {
+                println!("{}", r.data)
+            }
+        }
+        Err(e) => {
+            if config.backtraces {
+                dump_err_with_backtrace(&e)
+            } else {
+                eprintln!("{}", &e);
+            }
         }
     }
 }
@@ -150,7 +174,11 @@ fn main() {
                 .takes_value(false)
                 .help("When set, `Record <id>` will not be printed."),
         )
-        .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false).help("1 - info, 2 - debug, 3 - trace"))
+        .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false)
+            .help("1 - info, 2 - debug, 3 - trace.\
+             trace output is only available in debug builds, as it is extremely verbose"))
+        .arg(Arg::with_name("backtraces").takes_value(false)
+            .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
     let fp = matches
@@ -158,6 +186,7 @@ fn main() {
         .expect("This is a required argument");
 
     let config = EvtxDumpConfig::from_cli_matches(&matches);
+
     if let Some(level) = config.verbosity_level {
         match simple_logger::init_with_level(level) {
             Ok(_) => {}
@@ -167,36 +196,18 @@ fn main() {
 
     let mut parser = EvtxParser::from_path(fp)
         .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
-        .with_configuration(config.parser_settings);
+        .with_configuration(config.parser_settings.clone());
 
     match config.output_format {
         EvtxOutputFormat::XML => {
             for record in parser.records() {
-                match record {
-                    Ok(r) => {
-                        if config.show_record_number {
-                            println!("Record {}\n{}", r.event_record_id, r.data)
-                        } else {
-                            println!("{}", r.data)
-                        }
-                    }
-                    Err(e) => dump_err(e),
-                }
+                dump_record(record, &config)
             }
         }
         EvtxOutputFormat::JSON => {
             for record in parser.records_json() {
-                match record {
-                    Ok(r) => {
-                        if config.show_record_number {
-                            println!("Record {}\n{}", r.event_record_id, r.data)
-                        } else {
-                            println!("{}", r.data)
-                        }
-                    }
-                    Err(e) => dump_err(e),
-                }
+                dump_record(record, &config)
             }
         }
-    };
+    }
 }
