@@ -1,5 +1,5 @@
-use crate::evtx_parser::ReadSeek;
 use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
 use snafu::{ensure, ResultExt};
 
 use byteorder::ReadBytesExt;
@@ -30,7 +30,7 @@ pub enum HeaderFlags {
 impl EvtxFileHeader {
     pub fn from_stream<T: Read + Seek>(stream: &mut T) -> Result<EvtxFileHeader> {
         let mut magic = [0_u8; 8];
-        stream.take(8).read_exact(&mut magic).context(err::IO)?;
+        stream.take(8).read_exact(&mut magic)?;
 
         ensure!(
             &magic == b"ElfFile\x00",
@@ -47,7 +47,7 @@ impl EvtxFileHeader {
         let chunk_count = try_read!(stream, u16);
 
         // unused
-        stream.seek(SeekFrom::Current(76)).context(err::IO)?;
+        stream.seek(SeekFrom::Current(76))?;
 
         let flags = match try_read!(stream, u32) {
             0_u32 => HeaderFlags::Empty,
@@ -58,9 +58,7 @@ impl EvtxFileHeader {
 
         let checksum = try_read!(stream, u32);
         // unused
-        stream
-            .seek(SeekFrom::Current(4096 - 128))
-            .context(err::IO)?;
+        stream.seek(SeekFrom::Current(4096 - 128))?;
 
         Ok(EvtxFileHeader {
             first_chunk_number: oldest_chunk,

@@ -277,7 +277,7 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::AnsiStringType => {
                 // TODO: this should actually use ansi codepage, and not fallback to UTF
                 let mut bytes = vec![0; size as usize];
-                cursor.read_exact(&mut bytes).context(err::IO)?;
+                cursor.read_exact(&mut bytes)?;
 
                 BinXmlValue::AnsiStringType(Cow::Owned(
                     String::from_utf8(bytes)
@@ -301,9 +301,7 @@ impl<'a> BinXmlValue<'a> {
                 let bytes = &data
                     [cursor.position() as usize..(cursor.position() + u64::from(size)) as usize];
 
-                cursor
-                    .seek(SeekFrom::Current(i64::from(size)))
-                    .context(err::IO)?;
+                cursor.seek(SeekFrom::Current(i64::from(size)))?;
 
                 BinXmlValue::BinaryType(bytes)
             }
@@ -312,7 +310,7 @@ impl<'a> BinXmlValue<'a> {
             }
             BinXmlValueType::UInt8ArrayType => {
                 let mut data = vec![0; size as usize];
-                cursor.read_exact(&mut data).context(err::IO)?;
+                cursor.read_exact(&mut data)?;
 
                 BinXmlValue::UInt8ArrayType(data)
             }

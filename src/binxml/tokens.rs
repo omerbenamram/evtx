@@ -43,11 +43,9 @@ pub fn read_template<'a>(
         );
         // 33 is template definition data size, we've read 9 bytes so far.
         if template_definition_data_offset == cursor.position() as u32 {
-            cursor
-                .seek(SeekFrom::Current(
-                    i64::from(definition.data_size) + (33 - 9),
-                ))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Current(
+                i64::from(definition.data_size) + (33 - 9),
+            ))?;
         }
         Cow::Borrowed(definition)
     } else if template_definition_data_offset != cursor.position() as u32 {
@@ -57,15 +55,11 @@ pub fn read_template<'a>(
         );
         let position_before_seek = cursor.position();
 
-        cursor
-            .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
-            .context(err::IO)?;
+        cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
 
         let template_def = read_template_definition(cursor, chunk)?;
 
-        cursor
-            .seek(SeekFrom::Start(position_before_seek))
-            .context(err::IO)?;
+        cursor.seek(SeekFrom::Start(position_before_seek))?;
 
         Cow::Owned(template_def)
     } else {
@@ -114,9 +108,7 @@ pub fn read_template<'a>(
         // NullType can mean deleted substitution (and data need to be skipped)
         if value == BinXmlValue::NullType {
             trace!("\t Skip {}", descriptor.size);
-            cursor
-                .seek(SeekFrom::Current(i64::from(descriptor.size)))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
         }
 
         let current_position = cursor.position();
@@ -131,9 +123,7 @@ pub fn read_template<'a>(
                   expected_position,
                   &descriptor);
 
-            cursor
-                .seek(SeekFrom::Start((current_position + u64::from(diff)) as u64))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Start((current_position + u64::from(diff)) as u64))?;
         }
         substitution_array.push(value);
     }

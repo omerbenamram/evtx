@@ -1,6 +1,7 @@
 use quick_xml;
 use snafu::{Backtrace, ErrorCompat, Snafu};
 use std::fmt::Formatter;
+use std::io;
 use std::path::PathBuf;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -165,6 +166,15 @@ pub struct QuickXmlError {
 impl std::error::Error for QuickXmlError {
     fn description(&self) -> &str {
         &self.message
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
+        Error::IO {
+            source: err,
+            backtrace: Backtrace::new(),
+        }
     }
 }
 

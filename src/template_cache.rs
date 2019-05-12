@@ -1,4 +1,3 @@
-
 use crate::binxml::tokens::read_template_definition;
 use crate::err::{self, Result};
 
@@ -24,9 +23,7 @@ impl<'chunk> TemplateCache<'chunk> {
         let mut cursor = Cursor::new(data);
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor
-                .seek(SeekFrom::Start(u64::from(*offset)))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Start(u64::from(*offset)))?;
 
             let definition = read_template_definition(&mut cursor, None)?;
             cache.insert(*offset, definition);

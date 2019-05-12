@@ -38,9 +38,7 @@ impl<'a> BinXmlName<'a> {
         {
             // Seek if needed
             if name_offset == cursor.position() as u32 {
-                cursor
-                    .seek(SeekFrom::Current(i64::from(*n_bytes_read)))
-                    .context(err::IO)?;
+                cursor.seek(SeekFrom::Current(i64::from(*n_bytes_read)))?;
             }
             return Ok(BinXmlName(Cow::Borrowed(name)));
         }
@@ -84,16 +82,12 @@ impl<'a> BinXmlName<'a> {
             );
 
             let position_before_seek = cursor.position();
-            cursor
-                .seek(SeekFrom::Start(u64::from(offset)))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Start(u64::from(offset)))?;
 
             let (name, hash, n_bytes_read) = Self::from_stream(cursor)?;
 
             trace!("Restoring cursor to {}", position_before_seek);
-            cursor
-                .seek(SeekFrom::Start(position_before_seek as u64))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Start(position_before_seek as u64))?;
 
             Ok((name, hash, n_bytes_read))
         } else {

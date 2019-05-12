@@ -37,7 +37,7 @@ pub struct SerializedEvtxRecord {
 impl EvtxRecordHeader {
     pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxRecordHeader> {
         let mut magic = [0_u8; 4];
-        input.take(4).read_exact(&mut magic).context(err::IO)?;
+        input.take(4).read_exact(&mut magic)?;
 
         ensure!(
             &magic == b"\x2a\x2a\x00\x00",

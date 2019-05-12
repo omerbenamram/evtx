@@ -85,9 +85,7 @@ impl<'a> BinXmlDeserializer<'a> {
             cursor.position(),
             seek_ahead
         );
-        cursor
-            .seek(SeekFrom::Current(seek_ahead as i64))
-            .context(err::IO)?;
+        cursor.seek(SeekFrom::Current(seek_ahead as i64))?;
 
         Ok(tokens)
     }
@@ -95,7 +93,7 @@ impl<'a> BinXmlDeserializer<'a> {
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
         let mut cursor = Cursor::new(self.data);
-        cursor.seek(SeekFrom::Start(self.offset)).context(err::IO)?;
+        cursor.seek(SeekFrom::Start(self.offset))?;
 
         Ok(IterTokens {
             cursor,

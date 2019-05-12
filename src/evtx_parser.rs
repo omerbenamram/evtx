@@ -205,13 +205,11 @@ impl<T: ReadSeek> EvtxParser<T> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
 
-        data.seek(SeekFrom::Start(chunk_offset as u64))
-            .context(err::IO)?;
+        data.seek(SeekFrom::Start(chunk_offset as u64))?;
 
         let amount_read = data
             .take(EVTX_CHUNK_SIZE as u64)
-            .read_to_end(&mut chunk_data)
-            .context(err::IO)?;
+            .read_to_end(&mut chunk_data)?;
 
         ensure!(
             amount_read == EVTX_CHUNK_SIZE,

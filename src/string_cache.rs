@@ -1,9 +1,7 @@
-
 use crate::binxml::name::BinXmlName;
-use crate::err::{self, Result};
+use crate::err::Result;
 use crate::Offset;
 
-use snafu::ResultExt;
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
@@ -20,9 +18,7 @@ impl StringCache {
         let mut cursor = Cursor::new(data);
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor
-                .seek(SeekFrom::Start(u64::from(*offset)))
-                .context(err::IO)?;
+            cursor.seek(SeekFrom::Start(u64::from(*offset)))?;
             cache.insert(*offset, BinXmlName::from_stream(&mut cursor)?);
         }
 

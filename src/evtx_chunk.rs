@@ -316,7 +316,7 @@ impl<'a> Debug for EvtxChunk<'a> {
 impl EvtxChunkHeader {
     pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader> {
         let mut magic = [0_u8; 8];
-        input.take(8).read_exact(&mut magic).context(err::IO)?;
+        input.take(8).read_exact(&mut magic)?;
 
         ensure!(
             &magic == b"ElfChnk\x00",
@@ -334,21 +334,17 @@ impl EvtxChunkHeader {
         let events_checksum = try_read!(input, u32);
 
         // Reserved
-        input.seek(SeekFrom::Current(64)).context(err::IO)?;
+        input.seek(SeekFrom::Current(64))?;
         // Flags
-        input.seek(SeekFrom::Current(4)).context(err::IO)?;
+        input.seek(SeekFrom::Current(4))?;
 
         let header_chunk_checksum = try_read!(input, u32);
 
         let mut strings_offsets = [0_u32; 64];
-        input
-            .read_u32_into::<LittleEndian>(&mut strings_offsets)
-            .context(err::IO)?;
+        input.read_u32_into::<LittleEndian>(&mut strings_offsets)?;
 
         let mut template_offsets = [0_u32; 32];
-        input
-            .read_u32_into::<LittleEndian>(&mut template_offsets)
-            .context(err::IO)?;
+        input.read_u32_into::<LittleEndian>(&mut template_offsets)?;
 
         Ok(EvtxChunkHeader {
             first_event_record_number,
