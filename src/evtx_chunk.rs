@@ -20,7 +20,6 @@ use crate::{evtx_record, ParserSettings};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 pub struct EvtxChunkHeader {
@@ -250,6 +249,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
             Some(self.chunk),
+            false,
         );
 
         let mut tokens = vec![];

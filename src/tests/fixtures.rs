@@ -49,6 +49,6 @@ pub fn sample_with_multiple_xml_fragments() -> PathBuf {
         .join("E_Windows_system32_winevt_logs_Microsoft-Windows-Shell-Core%4Operational.evtx")
 }
 
-pub fn sample_with_issue_25() -> PathBuf {
+pub fn sample_with_binxml_as_substitution_tokens_and_pi_target() -> PathBuf {
     samples_dir().join("E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx")
 }

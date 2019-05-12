@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+    <System>
+        <Provider Name="Microsoft-Windows-CAPI2" Guid="{5bbca4a8-b209-48dc-a8c7-b23d3e5216fb}">
+        </Provider>
+        <EventID>80</EventID>
+        <Version>0</Version>
+        <Level>4</Level>
+        <Task>80</Task>
+        <Opcode>1</Opcode>
+        <Keywords>0x4000000000000040</Keywords>
+        <TimeCreated SystemTime="2017-05-19 02:02:36 UTC">
+        </TimeCreated>
+        <EventRecordID>1</EventRecordID>
+        <Correlation>
+        </Correlation>
+        <Execution ProcessID="1396" ThreadID="2132">
+        </Execution>
+        <Channel>Microsoft-Windows-CAPI2/Operational</Channel>
+        <Computer>WIN-M5327EF98B9</Computer>
+        <Security UserID="S-1-5-21-1223297778-3299746493-1462173606-500">
+        </Security>
+    </System>
+    <UserData>
+        <WinVerifyTrustStart>
+            <EventAuxInfo ProcessName="Setup.exe">
+            </EventAuxInfo>
+            <CorrelationAuxInfo TaskId="{1CB1FE4B-D685-48FC-A3FA-42893E4C1717}" SeqNumber="1">
+            </CorrelationAuxInfo>
+        </WinVerifyTrustStart>
+    </UserData>
+</Event>

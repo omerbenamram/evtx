@@ -10,11 +10,11 @@ use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{
-    datetime_from_filetime, read_len_prefixed_utf16_string, read_null_terminated_utf16_string,
-    read_systemtime, read_utf16_by_size,
+    datetime_from_filetime, print_hexdump, read_len_prefixed_utf16_string,
+    read_null_terminated_utf16_string, read_systemtime, read_utf16_by_size,
 };
 use chrono::{DateTime, Utc};
-use log::trace;
+use log::{trace, Level};
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
@@ -240,7 +240,7 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::HexInt32Type => BinXmlValue::HexInt32Type(try_read!(cursor, hex32)),
             BinXmlValueType::HexInt64Type => BinXmlValue::HexInt64Type(try_read!(cursor, hex64)),
             BinXmlValueType::BinXmlType => {
-                let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None)?;
+                let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None, true)?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
@@ -362,8 +362,12 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::HexInt64ArrayType(try_read_sized_array!(cursor, hex64, size))
             }
             BinXmlValueType::BinXmlType => {
-                let tokens =
-                    BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(size as u32))?;
+                let tokens = BinXmlDeserializer::read_binxml_fragment(
+                    cursor,
+                    chunk,
+                    Some(size as u32),
+                    true,
+                )?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
