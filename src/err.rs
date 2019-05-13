@@ -125,8 +125,8 @@ pub enum Error {
     /// Errors related to Serialization
     // Since `quick-xml` maintains the stack for us, structural errors with the XML
     // Will be included in this generic error alongside IO errors.
-    #[snafu(display("Writing to XML failed with: {}", source))]
-    XmlOutputError { source: QuickXmlError },
+    #[snafu(display("Writing to XML failed with: {}", message))]
+    XmlOutputError { message: String },
 
     #[snafu(display("Building a JSON document failed with message: {}", message,))]
     JsonStructureError { message: String },
@@ -163,9 +163,11 @@ pub struct QuickXmlError {
     message: String,
 }
 
-impl std::error::Error for QuickXmlError {
-    fn description(&self) -> &str {
-        &self.message
+impl From<quick_xml::Error> for Error {
+    fn from(err: quick_xml::Error) -> Self {
+        Error::XmlOutputError {
+            message: format!("{}", err),
+        }
     }
 }
 
@@ -174,21 +176,6 @@ impl From<io::Error> for Error {
         Error::IO {
             source: err,
             backtrace: Backtrace::new(),
-        }
-    }
-}
-
-impl std::fmt::Display for QuickXmlError {
-    fn fmt(&self, f: &mut Formatter) -> std::result::Result<(), std::fmt::Error> {
-        f.write_str(&self.message)?;
-        Ok(())
-    }
-}
-
-impl From<quick_xml::Error> for QuickXmlError {
-    fn from(e: quick_xml::Error) -> Self {
-        QuickXmlError {
-            message: format!("{}", e),
         }
     }
 }

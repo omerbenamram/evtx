@@ -1,4 +1,3 @@
-
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{self, Result};
 use crate::model::xml::XmlElement;
@@ -11,8 +10,6 @@ use std::io::Write;
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
-
-use snafu::ResultExt;
 
 use std::borrow::Cow;
 
@@ -76,10 +73,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
 
     fn visit_end_of_stream(&mut self) -> Result<()> {
         trace!("visit_end_of_stream");
-        self.writer
-            .write_event(Event::Eof)
-            .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError)?;
+        self.writer.write_event(Event::Eof)?;
 
         Ok(())
     }
@@ -100,10 +94,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
             }
         }
 
-        self.writer
-            .write_event(Event::Start(event_builder))
-            .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError)?;
+        self.writer.write_event(Event::Start(event_builder))?;
 
         Ok(())
     }
@@ -112,10 +103,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         trace!("visit_close_element");
         let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
 
-        self.writer
-            .write_event(Event::End(event))
-            .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError)?;
+        self.writer.write_event(Event::End(event))?;
 
         Ok(())
     }
@@ -124,10 +112,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);
-        self.writer
-            .write_event(Event::Text(event))
-            .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError)?;
+        self.writer.write_event(Event::Text(event))?;
 
         Ok(())
     }
@@ -152,10 +137,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         trace!("visit_start_of_stream");
         let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 
-        self.writer
-            .write_event(Event::Decl(event))
-            .map_err(err::QuickXmlError::from)
-            .context(err::XmlOutputError)?;
+        self.writer.write_event(Event::Decl(event))?;
 
         Ok(())
     }
