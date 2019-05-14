@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is a minor release due to the removal of `failure`. 
 
+### Added
+- `--backtraces` to control backtraces in errors
+- `-v, -vv, -vv` to control trace output in `evtx_dump`. 
+
 ### Changed
 - All errors in the crate are all of a uniform `evtx::err::Error` type.
   Errors are implemented with `snafu`, and are std compatible.
