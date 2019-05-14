@@ -51,7 +51,7 @@ steps:
   - task: CopyFiles@2
     displayName: Copy assets
     inputs:
-      sourceFolder: '$(Build.SourcesDirectory)/target/$(TARGET)/release'
+      sourceFolder: '$(Build.SourcesDirectory)/target/release'
       contents: |
         evtx_dump
       targetFolder: '$(Build.BinariesDirectory)/evtx_dump'
