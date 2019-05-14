@@ -17,8 +17,12 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
  - Supports XML and JSON outputs, both being zero-copy and independent of each other (JSON documents are being built directly from the inner representation of the binary xml token tree, no xml2json is performed!)
  - Supports some basic recovery of missing records/chunks!
 
+## Installation (associated binary utility):
+  - Download latest executable release from https://github.com/omerbenamram/evtx/releases
+    - Releases are automatically built for for Windows, macOS, and Linux. (64-bit executables only)
+  - Build from sources using  `cargo install evtx`
+  
 ## Example usage (associated binary utility):
-  - `cargo install evtx`
   - run `evtx_dump <evtx_file>` to dump contents of evtx records as xml.
   - run `evtx_dump -o json <evtx_file>` to dump contents of evtx records as JSON.
 
