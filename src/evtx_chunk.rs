@@ -5,12 +5,8 @@ use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 use crate::utils::*;
 use crate::xml_output::BinXmlOutput;
 use crc::crc32;
-use log::{debug, error, info, trace};
-use std::{
-    fmt::{Debug, Formatter},
-    io::Cursor,
-    io::{Read, Seek, SeekFrom},
-};
+use log::{debug, info, trace};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
@@ -20,6 +16,7 @@ use log::Level;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
+#[derive(Debug)]
 pub struct EvtxChunkHeader {
     pub first_event_record_number: u64,
     pub last_event_record_number: u64,
@@ -30,21 +27,8 @@ pub struct EvtxChunkHeader {
     pub free_space_offset: u32,
     pub events_checksum: u32,
     pub header_chunk_checksum: u32,
-    // Stored as a vector since arrays implement debug only up to a length of 32 elements.
-    // There should be 64 elements in this vector.
-    strings_offsets: [u32; 64],
-    template_offsets: [u32; 32],
-}
-
-impl Debug for EvtxChunkHeader {
-    fn fmt(&self, fmt: &mut Formatter) -> Result<(), ::std::fmt::Error> {
-        fmt.debug_struct("EvtxChunkHeader")
-            .field("first_event_record_number", &self.first_event_record_number)
-            .field("last_event_record_number", &self.last_event_record_number)
-            .field("checksum", &self.header_chunk_checksum)
-            .field("free_space_offset", &self.free_space_offset)
-            .finish()
-    }
+    pub strings_offsets: Vec<u32>,
+    pub template_offsets: Vec<u32>,
 }
 
 /// A struct which owns all the data associated with a chunk.
@@ -127,6 +111,7 @@ impl EvtxChunkData {
 /// All references are created together,
 /// and can be assume to live for the entire duration of the parsing phase.
 /// See more info about lifetimes in `IterChunkRecords`.
+#[derive(Debug)]
 pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
@@ -229,7 +214,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 // We currently do not try to recover after an invalid record.
                 self.exhausted = true;
 
-                return Some(Err(err.into()));
+                return Some(Err(err));
             }
         };
 
@@ -261,19 +246,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                     trace!("successfully read {:?}", token);
                     tokens.push(token)
                 }
-                Err(e) => {
-                    error!("Tried to read an invalid token!, {}", e);
-
-                    if log::log_enabled!(Level::Debug) {
-                        let mut cursor = Cursor::new(self.chunk.data);
-                        cursor
-                            .seek(SeekFrom::Start(
-                                e.offset().expect("Err to have offset information"),
-                            ))
-                            .unwrap();
-                        dump_cursor(&cursor, 10);
-                    }
-
+                Err(err) => {
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(e.into()));
                 }
@@ -292,17 +265,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             tokens,
             settings: &self.settings,
         }))
-    }
-}
-
-impl<'a> Debug for EvtxChunk<'a> {
-    fn fmt(&self, fmt: &mut Formatter) -> Result<(), ::std::fmt::Error> {
-        writeln!(fmt, "\nEvtxChunk")?;
-        writeln!(fmt, "-----------------------")?;
-        writeln!(fmt, "{:#?}", &self.header)?;
-        writeln!(fmt, "{} common strings", self.string_cache.len())?;
-        writeln!(fmt, "{} common templates", self.template_table.len())?;
-        Ok(())
     }
 }
 
@@ -335,10 +297,10 @@ impl EvtxChunkHeader {
 
         let header_chunk_checksum = input.read_u32::<LittleEndian>()?;
 
-        let mut strings_offsets = [0_u32; 64];
+        let mut strings_offsets = vec![0_u32; 64];
         input.read_u32_into::<LittleEndian>(&mut strings_offsets)?;
 
-        let mut template_offsets = [0_u32; 32];
+        let mut template_offsets = vec![0_u32; 32];
         input.read_u32_into::<LittleEndian>(&mut template_offsets)?;
 
         Ok(EvtxChunkHeader {
@@ -387,8 +349,8 @@ mod tests {
             free_space_offset: 65376,
             events_checksum: 4_252_479_141,
             header_chunk_checksum: 978_805_790,
-            strings_offsets: [0_u32; 64],
-            template_offsets: [0_u32; 32],
+            strings_offsets: vec![0_u32; 64],
+            template_offsets: vec![0_u32; 32],
         };
 
         assert_eq!(

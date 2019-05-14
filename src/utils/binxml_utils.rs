@@ -1,12 +1,9 @@
 use crate::evtx_parser::ReadSeek;
-use crate::utils::print_hexdump;
+
 use byteorder::{LittleEndian, ReadBytesExt};
 use log::{error, trace};
 use std::char::decode_utf16;
-use std::{
-    cmp::min,
-    io::{self, Cursor, Error, ErrorKind},
-};
+use std::io::{self, Cursor, Error, ErrorKind};
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,
@@ -94,17 +91,4 @@ fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Res
     decode_utf16(buffer.into_iter())
         .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
         .collect()
-}
-
-pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
-    let offset = cursor.position();
-    let data = cursor.get_ref();
-    println!("-------------------------------");
-    println!("Current Value {:2X}", data[offset as usize]);
-    let m = (offset as i32) - lookbehind;
-    let start = if m < 0 { 0 } else { m };
-    let end_of_buffer_or_default = min(100, data.len() - offset as usize);
-    let end = offset + end_of_buffer_or_default as u64;
-    print_hexdump(&data[start as usize..end as usize], 0, 'C');
-    println!("\n-------------------------------");
 }

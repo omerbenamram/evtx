@@ -1,4 +1,19 @@
+#![allow(dead_code)]
 use std::cmp;
+use std::io::Cursor;
+
+pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
+    let offset = cursor.position();
+    let data = cursor.get_ref();
+    println!("-------------------------------");
+    println!("Current Value {:2X}", data[offset as usize]);
+    let m = (offset as i32) - lookbehind;
+    let start = if m < 0 { 0 } else { m };
+    let end_of_buffer_or_default = cmp::min(100, data.len() - offset as usize);
+    let end = offset + end_of_buffer_or_default as u64;
+    print_hexdump(&data[start as usize..end as usize], 0, 'C');
+    println!("\n-------------------------------");
+}
 
 /// Dumps bytes at data to the screen as hex.
 /// Display may be one of:
