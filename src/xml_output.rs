@@ -1,5 +1,5 @@
 use crate::binxml::value_variant::BinXmlValue;
-use crate::err::{self, Result};
+use crate::err::{Result};
 use crate::model::xml::XmlElement;
 use crate::unimplemented_fn;
 use crate::ParserSettings;

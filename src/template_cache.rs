@@ -1,10 +1,10 @@
 use crate::binxml::tokens::read_template_definition;
-use crate::err::{self, Result};
+use crate::err::{Result};
 
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::Offset;
 pub use byteorder::{LittleEndian, ReadBytesExt};
-use snafu::ResultExt;
+
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 

@@ -8,7 +8,6 @@ use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, info, trace};
 use std::{
-    fmt::{Debug, Formatter},
     io::Cursor,
     io::{Read, Seek, SeekFrom},
 };

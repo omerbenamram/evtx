@@ -1,6 +1,6 @@
 use quick_xml;
 use snafu::{Backtrace, ErrorCompat, Snafu};
-use std::fmt::Formatter;
+
 use std::io;
 use std::path::PathBuf;
 

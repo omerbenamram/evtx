@@ -10,11 +10,11 @@ use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{
-    datetime_from_filetime, print_hexdump, read_len_prefixed_utf16_string,
+    datetime_from_filetime, read_len_prefixed_utf16_string,
     read_null_terminated_utf16_string, read_systemtime, read_utf16_by_size,
 };
 use chrono::{DateTime, Utc};
-use log::{trace, Level};
+use log::{trace};
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};

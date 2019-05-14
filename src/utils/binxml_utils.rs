@@ -3,7 +3,7 @@ use crate::evtx_parser::ReadSeek;
 use byteorder::{LittleEndian, ReadBytesExt};
 use log::{error, trace};
 use std::char::decode_utf16;
-use std::io::{self, Cursor, Error, ErrorKind};
+use std::io::{self, Error, ErrorKind};
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,

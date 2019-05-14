@@ -1,6 +1,6 @@
-use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
+
 use crate::tests::fixtures::*;
-use crate::{ensure_env_logger_initialized, EvtxChunkData, EvtxParser, ParserSettings};
+use crate::{ensure_env_logger_initialized, EvtxParser, ParserSettings};
 use log::Level;
 use std::path::Path;
 

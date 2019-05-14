@@ -1,6 +1,6 @@
 use crate::err::{self, Result};
 
-use snafu::{OptionExt, ResultExt};
+use snafu::OptionExt;
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
