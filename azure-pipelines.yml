@@ -1,8 +1,3 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
   branches:
     include: ['*']
@@ -13,20 +8,17 @@ strategy:
   matrix:
     windows-stable:
       imageName: 'vs2017-win2016'
+      target: 'x86_64-pc-windows-msvc'
       rustup_toolchain: stable
     mac-stable:
       imageName: 'macos-10.13'
+      target: 'x86_64-apple-darwin'
       rustup_toolchain: stable
     linux-stable:
       imageName: 'ubuntu-16.04'
+      target: 'x86_64-unknown-linux-gnu'
       rustup_toolchain: stable
-    linux-beta:
-      imageName: 'ubuntu-16.04'
-      rustup_toolchain: beta
-    linux-nightly:
-      imageName: 'ubuntu-16.04'
-      rustup_toolchain: nightly
-
+    
 pool:
   vmImage: $(imageName)
 
@@ -47,6 +39,10 @@ steps:
   - script: cargo test --all
     displayName: Cargo test
   
+  - script: |
+      echo "##vso[task.setvariable variable=TARGET;]$TARGET:$HOME/.cargo/bin"
+    displayName: Create tag variable
+
   - bash: |
       MY_TAG="$(Build.SourceBranch)"
       MY_TAG=${MY_TAG#refs/tags/}
@@ -56,7 +52,6 @@ steps:
   - bash: |
       DATE="$(date +%Y-%m-%d)"
       echo "##vso[task.setvariable variable=build.date]$DATE"
-      
     displayName: "Create date variable"
   - task: CopyFiles@2
     displayName: Copy assets
