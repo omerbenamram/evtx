@@ -75,7 +75,7 @@ steps:
   - task: GithubRelease@0
     condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags/'))
     inputs:
-      gitHubConnection: 'omerbenamram'
+      gitHubConnection: 'Github'
       repositoryName: 'omerbenamram/evtx'
       action: 'edit'
       target: '$(build.sourceVersion)'
