@@ -33,21 +33,8 @@ pub struct EvtxChunkHeader {
     pub free_space_offset: u32,
     pub events_checksum: u32,
     pub header_chunk_checksum: u32,
-    // Stored as a vector since arrays implement debug only up to a length of 32 elements.
-    // There should be 64 elements in this vector.
-    strings_offsets: [u32; 64],
-    template_offsets: [u32; 32],
-}
-
-impl Debug for EvtxChunkHeader {
-    fn fmt(&self, fmt: &mut Formatter) -> std::result::Result<(), ::std::fmt::Error> {
-        fmt.debug_struct("EvtxChunkHeader")
-            .field("first_event_record_number", &self.first_event_record_number)
-            .field("last_event_record_number", &self.last_event_record_number)
-            .field("checksum", &self.header_chunk_checksum)
-            .field("free_space_offset", &self.free_space_offset)
-            .finish()
-    }
+    strings_offsets: Vec<u32>,
+    template_offsets: Vec<u32>,
 }
 
 /// A struct which owns all the data associated with a chunk.
