@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2019-05-14
+
+This is a minor release due to the removal of `failure`. 
+
+### Changed
+- All errors in the crate are all of a uniform `evtx::err::Error` type.
+  Errors are implemented with `snafu`, and are std compatible.
+  In addition, errors now all contain backtraces.  
+
+### Fixed
+- Parser will now correctly parse files which refer to binxml fragments as sized values. (#33)
+
 ## [0.2.6] - 2019-05-09
 
 ### Fixed
