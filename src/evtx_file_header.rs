@@ -1,14 +1,9 @@
-use byteorder::{LittleEndian, ReadBytesExt};
-use failure::{Error, Fail};
-use std::io::{Read, Seek, SeekFrom};
+use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
+use snafu::{ensure, ResultExt};
 
-#[derive(Fail, Debug)]
-enum HeaderParseError {
-    #[fail(display = "Expected magic \"ElfFile\x00\", got {:#?}", magic)]
-    WrongHeaderMagic { magic: [u8; 8] },
-    #[fail(display = "Unknown flag value: {:#?}", flag)]
-    UnknownFlagValue { flag: u32 },
-}
+use byteorder::ReadBytesExt;
+use std::io::{Read, Seek, SeekFrom};
 
 #[derive(Debug, PartialEq)]
 pub struct EvtxFileHeader {
@@ -33,39 +28,38 @@ pub enum HeaderFlags {
 }
 
 impl EvtxFileHeader {
-    pub fn from_reader<T: Read + Seek>(stream: &mut T) -> Result<EvtxFileHeader, Error> {
+    pub fn from_stream<T: Read + Seek>(stream: &mut T) -> Result<EvtxFileHeader> {
         let mut magic = [0_u8; 8];
         stream.take(8).read_exact(&mut magic)?;
 
-        if &magic != b"ElfFile\x00" {
-            return Err(Error::from(HeaderParseError::WrongHeaderMagic { magic }));
-        }
+        ensure!(
+            &magic == b"ElfFile\x00",
+            err::InvalidEvtxFileHeaderMagic { magic }
+        );
 
-        let oldest_chunk = stream.read_u64::<LittleEndian>()?;
-        let current_chunk_num = stream.read_u64::<LittleEndian>()?;
-        let next_record_num = stream.read_u64::<LittleEndian>()?;
-        let header_size = stream.read_u32::<LittleEndian>()?;
-        let minor_version = stream.read_u16::<LittleEndian>()?;
-        let major_version = stream.read_u16::<LittleEndian>()?;
-        let header_block_size = stream.read_u16::<LittleEndian>()?;
-        let chunk_count = stream.read_u16::<LittleEndian>()?;
+        let oldest_chunk = try_read!(stream, u64);
+        let current_chunk_num = try_read!(stream, u64);
+        let next_record_num = try_read!(stream, u64);
+        let header_size = try_read!(stream, u32);
+        let minor_version = try_read!(stream, u16);
+        let major_version = try_read!(stream, u16);
+        let header_block_size = try_read!(stream, u16);
+        let chunk_count = try_read!(stream, u16);
 
         // unused
         stream.seek(SeekFrom::Current(76))?;
-        let flags = match stream.read_u32::<LittleEndian>()? {
+
+        let flags = match try_read!(stream, u32) {
             0_u32 => HeaderFlags::Empty,
             1_u32 => HeaderFlags::Dirty,
             2_u32 => HeaderFlags::Full,
-            other => {
-                return Err(Error::from(HeaderParseError::UnknownFlagValue {
-                    flag: other,
-                }))
-            }
+            other => return err::UnknownEvtxHeaderFlagValue { value: other }.fail(),
         };
 
-        let checksum = stream.read_u32::<LittleEndian>()?;
+        let checksum = try_read!(stream, u32);
         // unused
         stream.seek(SeekFrom::Current(4096 - 128))?;
+
         Ok(EvtxFileHeader {
             first_chunk_number: oldest_chunk,
             last_chunk_number: current_chunk_num,
@@ -91,7 +85,7 @@ mod tests {
     fn test_parses_evtx_file_handler() {
         let evtx_file = include_bytes!("../samples/security.evtx");
         let mut reader = Cursor::new(&evtx_file[..4096]);
-        let parsing_result = EvtxFileHeader::from_reader(&mut reader).unwrap();
+        let parsing_result = EvtxFileHeader::from_stream(&mut reader).unwrap();
         assert_eq!(
             parsing_result,
             EvtxFileHeader {
