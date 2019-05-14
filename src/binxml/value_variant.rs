@@ -1,17 +1,20 @@
+use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
+use snafu::{OptionExt, ResultExt};
+
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::error::Error;
 
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{
-    datetime_from_filetime, read_len_prefixed_utf16_string, read_null_terminated_utf16_string,
-    read_systemtime, read_utf16_by_size,
+    datetime_from_filetime, print_hexdump, read_len_prefixed_utf16_string,
+    read_null_terminated_utf16_string, read_systemtime, read_utf16_by_size,
 };
 use chrono::{DateTime, Utc};
-use log::trace;
+use log::{trace, Level};
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
@@ -186,12 +189,14 @@ impl<'a> BinXmlValue<'a> {
     pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Result<BinXmlValue<'a>, Error> {
+    ) -> Result<BinXmlValue<'a>> {
         let value_type_token = try_read!(cursor, u8);
 
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
-            Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
-        })?;
+        let value_type =
+            BinXmlValueType::from_u8(value_type_token).context(err::InvalidValueVariant {
+                value: value_type_token,
+                offset: cursor.position(),
+            })?;
 
         let data = Self::deserialize_value_type(&value_type, cursor, chunk)?;
 
@@ -202,14 +207,16 @@ impl<'a> BinXmlValue<'a> {
         value_type: &BinXmlValueType,
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Result<BinXmlValue<'a>, Error> {
+    ) -> Result<BinXmlValue<'a>> {
         let value = match value_type {
             BinXmlValueType::NullType => BinXmlValue::NullType,
             BinXmlValueType::StringType => BinXmlValue::StringType(try_read!(cursor, utf_16_str)),
             // TODO: these strings need global code-page configuration to work.
-            BinXmlValueType::AnsiStringType => {
-                Err(Error::other("Unimplemented: AnsiString", cursor.position()))?
+            BinXmlValueType::AnsiStringType => err::UnimplementedToken {
+                name: "AnsiString",
+                offset: cursor.position(),
             }
+            .fail()?,
             BinXmlValueType::Int8Type => BinXmlValue::Int8Type(try_read!(cursor, i8)),
             BinXmlValueType::UInt8Type => BinXmlValue::UInt8Type(try_read!(cursor, u8)),
             BinXmlValueType::Int16Type => BinXmlValue::Int16Type(try_read!(cursor, i16)),
@@ -222,23 +229,26 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValueType::Real64Type => BinXmlValue::Real64Type(try_read!(cursor, f64)),
             BinXmlValueType::BoolType => BinXmlValue::BoolType(try_read!(cursor, bool)),
             BinXmlValueType::GuidType => BinXmlValue::GuidType(try_read!(cursor, guid)),
-            BinXmlValueType::SizeTType => {
-                Err(Error::other("Unimplemented: SizeTType", cursor.position()))?
+            BinXmlValueType::SizeTType => err::UnimplementedToken {
+                name: "SizeT",
+                offset: cursor.position(),
             }
+            .fail()?,
             BinXmlValueType::FileTimeType => BinXmlValue::FileTimeType(try_read!(cursor, filetime)),
             BinXmlValueType::SysTimeType => BinXmlValue::SysTimeType(try_read!(cursor, systime)),
             BinXmlValueType::SidType => BinXmlValue::SidType(try_read!(cursor, sid)),
             BinXmlValueType::HexInt32Type => BinXmlValue::HexInt32Type(try_read!(cursor, hex32)),
             BinXmlValueType::HexInt64Type => BinXmlValue::HexInt64Type(try_read!(cursor, hex64)),
             BinXmlValueType::BinXmlType => {
-                let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None)?;
+                let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None, true)?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
-            _ => Err(Error::other(
-                format!("Unimplemented: {:?}", value_type),
-                cursor.position(),
-            ))?,
+            _ => err::UnimplementedToken {
+                name: format!("{:?}", value_type),
+                offset: cursor.position(),
+            }
+            .fail()?,
         };
 
         Ok(value)
@@ -249,7 +259,7 @@ impl<'a> BinXmlValue<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         size: u16,
-    ) -> Result<BinXmlValue<'a>, Error> {
+    ) -> Result<BinXmlValue<'a>> {
         trace!(
             "deserialized_sized_value_type: {:?}, {:?}",
             value_type,
@@ -259,10 +269,13 @@ impl<'a> BinXmlValue<'a> {
             // We are not reading len prefixed strings as usual, the string len is passed in the descriptor instead.
             BinXmlValueType::StringType => BinXmlValue::StringType(Cow::Owned(
                 read_utf16_by_size(cursor, u64::from(size))
-                    .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
+                    .context(err::FailedToDecodeUTF16String {
+                        offset: cursor.position(),
+                    })?
                     .unwrap_or_else(|| "".to_owned()),
             )),
             BinXmlValueType::AnsiStringType => {
+                // TODO: this should actually use ansi codepage, and not fallback to UTF
                 let mut bytes = vec![0; size as usize];
                 cursor.read_exact(&mut bytes)?;
 
@@ -274,7 +287,9 @@ impl<'a> BinXmlValue<'a> {
                             }
                             Ok(s)
                         })
-                        .map_err(|e| Error::utf8_decode_error(e, cursor.position()))?,
+                        .context(err::FailedToDecodeUTF8String {
+                            offset: cursor.position(),
+                        })?,
                 ))
             }
             BinXmlValueType::StringArrayType => BinXmlValue::StringArrayType(
@@ -287,6 +302,7 @@ impl<'a> BinXmlValue<'a> {
                     [cursor.position() as usize..(cursor.position() + u64::from(size)) as usize];
 
                 cursor.seek(SeekFrom::Current(i64::from(size)))?;
+
                 BinXmlValue::BinaryType(bytes)
             }
             BinXmlValueType::Int8ArrayType => {
@@ -342,6 +358,16 @@ impl<'a> BinXmlValue<'a> {
             }
             BinXmlValueType::HexInt64ArrayType => {
                 BinXmlValue::HexInt64ArrayType(try_read_sized_array!(cursor, hex64, size))
+            }
+            BinXmlValueType::BinXmlType => {
+                let tokens = BinXmlDeserializer::read_binxml_fragment(
+                    cursor,
+                    chunk,
+                    Some(size as u32),
+                    true,
+                )?;
+
+                BinXmlValue::BinXmlType(tokens)
             }
             // Fallback to un-sized variant.
             _ => BinXmlValue::deserialize_value_type(&value_type, cursor, chunk)?,

@@ -1,43 +1,89 @@
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
 macro_rules! try_read {
     ($cursor: ident, u8) => {
-        $cursor.read_u8()?;
+        $cursor.read_u8().context(err::FailedToRead {
+            offset: $cursor.tell().unwrap(),
+            t: "u8",
+        })?;
     };
 
     ($cursor: ident, i8) => {
-        $cursor.read_i8()?;
+        $cursor.read_i8().context(err::FailedToRead {
+            offset: $cursor.tell().unwrap(),
+            t: "i8",
+        })?;
     };
 
     ($cursor: ident, u16) => {
-        $cursor.read_u16::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_u16::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "u16",
+            })?;
     };
 
     ($cursor: ident, i16) => {
-        $cursor.read_i16::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_i16::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "i16",
+            })?;
     };
 
     ($cursor: ident, i32) => {
-        $cursor.read_i32::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_i32::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "i32",
+            })?;
     };
 
     ($cursor: ident, u32) => {
-        $cursor.read_u32::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_u32::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "u32",
+            })?;
     };
 
     ($cursor: ident, f32) => {
-        $cursor.read_f32::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_f32::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "f32",
+            })?;
     };
 
     ($cursor: ident, i64) => {
-        $cursor.read_i64::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_i64::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "i64",
+            })?;
     };
 
     ($cursor: ident, u64) => {
-        $cursor.read_u64::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_u64::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "u64",
+            })?;
     };
 
     ($cursor: ident, f64) => {
-        $cursor.read_f64::<byteorder::LittleEndian>()?;
+        $cursor
+            .read_f64::<byteorder::LittleEndian>()
+            .context(err::FailedToRead {
+                offset: $cursor.tell().unwrap(),
+                t: "f64",
+            })?;
     };
 
     ($cursor: ident, bool) => {{
@@ -56,28 +102,34 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, guid) => {
-        Guid::from_stream($cursor)
-            .map_err(|_e| Error::other("Failed to read GUID from stream", $cursor.position()))?
+        Guid::from_stream($cursor).context(err::FailedToReadGUID {
+            offset: $cursor.position(),
+        })?
     };
 
     ($cursor: ident, utf_16_str) => {{
         let s = read_len_prefixed_utf16_string($cursor, false)
-            .map_err(|e| Error::utf16_decode_error(e, $cursor.position()))?
+            .context(err::FailedToDecodeUTF16String {
+                offset: $cursor.position(),
+            })?
             .unwrap_or_else(|| "".to_owned());
 
         Cow::Owned(s)
     }};
 
     ($cursor: ident, null_terminated_utf_16_str) => {{
-        let s = read_null_terminated_utf16_string($cursor)
-            .map_err(|e| Error::utf16_decode_error(e, $cursor.position()))?;
+        let s =
+            read_null_terminated_utf16_string($cursor).context(err::FailedToDecodeUTF16String {
+                offset: $cursor.position(),
+            })?;
 
         Cow::Owned(s)
     }};
 
     ($cursor: ident, sid) => {
-        Sid::from_stream($cursor)
-            .map_err(|_e| Error::other("Failed to read NTSID from stream", $cursor.position()))?
+        Sid::from_stream($cursor).context(err::FailedToReadNTSID {
+            offset: $cursor.position(),
+        })?
     };
 
     ($cursor: ident, hex32) => {

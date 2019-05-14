@@ -1,8 +1,8 @@
-extern crate evtx;
-
 use clap::{App, Arg, ArgMatches};
 
-use evtx::{EvtxParser, ParserSettings};
+use evtx::err::{dump_err_with_backtrace, Error};
+use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
+use log::Level;
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub enum EvtxOutputFormat {
@@ -10,10 +10,13 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
+#[derive(Clone)]
 struct EvtxDumpConfig {
     parser_settings: ParserSettings,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
+    verbosity_level: Option<Level>,
+    backtraces: bool,
 }
 
 impl EvtxDumpConfig {
@@ -72,6 +75,18 @@ impl EvtxDumpConfig {
         };
 
         let validate_checksums = matches.is_present("validate-checksums");
+        let verbosity_level = match matches.occurrences_of("verbose") {
+            0 => None,
+            1 => Some(Level::Info),
+            2 => Some(Level::Debug),
+            3 => Some(Level::Trace),
+            _ => {
+                eprintln!("using more than  -vvv does not affect verbosity level");
+                Some(Level::Trace)
+            }
+        };
+
+        let backtraces = matches.is_present("backtraces");
 
         EvtxDumpConfig {
             parser_settings: ParserSettings::new()
@@ -80,6 +95,27 @@ impl EvtxDumpConfig {
                 .indent(!no_indent),
             show_record_number: !no_show_record_number,
             output_format,
+            verbosity_level,
+            backtraces,
+        }
+    }
+}
+
+fn dump_record(record: Result<SerializedEvtxRecord, Error>, config: &EvtxDumpConfig) {
+    match record {
+        Ok(r) => {
+            if config.show_record_number {
+                println!("Record {}\n{}", r.event_record_id, r.data)
+            } else {
+                println!("{}", r.data)
+            }
+        }
+        Err(e) => {
+            if config.backtraces {
+                dump_err_with_backtrace(&e)
+            } else {
+                eprintln!("{}", &e);
+            }
         }
     }
 }
@@ -138,8 +174,14 @@ fn main() {
                 .takes_value(false)
                 .help("When set, `Record <id>` will not be printed."),
         )
-        // TODO: replace `env_logger` with something nicer for the CLI.
-        //        .arg(Arg::with_name("verbose").short("-v").multiple(true).max_values(3).help("1 - info, 2 - debug, 3 - trace"))
+        .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false)
+            .help("-v - info, -vv - debug, -vvv - trace.\
+             trace output is only available in debug builds, as it is extremely verbose"))
+        .arg(
+            Arg::with_name("backtraces")
+                .long("--backtraces")
+                .takes_value(false)
+                .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
     let fp = matches
@@ -148,38 +190,27 @@ fn main() {
 
     let config = EvtxDumpConfig::from_cli_matches(&matches);
 
+    if let Some(level) = config.verbosity_level {
+        match simple_logger::init_with_level(level) {
+            Ok(_) => {}
+            Err(e) => eprintln!("Failed to initialize logging: {}", e),
+        };
+    }
+
     let mut parser = EvtxParser::from_path(fp)
         .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
-        .with_configuration(config.parser_settings);
+        .with_configuration(config.parser_settings.clone());
 
     match config.output_format {
         EvtxOutputFormat::XML => {
             for record in parser.records() {
-                match record {
-                    Ok(r) => {
-                        if config.show_record_number {
-                            println!("Record {}\n{}", r.event_record_id, r.data)
-                        } else {
-                            println!("{}", r.data)
-                        }
-                    }
-                    Err(e) => eprintln!("{}", e),
-                }
+                dump_record(record, &config)
             }
         }
         EvtxOutputFormat::JSON => {
             for record in parser.records_json() {
-                match record {
-                    Ok(r) => {
-                        if config.show_record_number {
-                            println!("Record {}\n{}", r.event_record_id, r.data)
-                        } else {
-                            println!("{}", r.data)
-                        }
-                    }
-                    Err(e) => eprintln!("{}", e),
-                }
+                dump_record(record, &config)
             }
         }
-    };
+    }
 }

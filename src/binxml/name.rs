@@ -1,6 +1,8 @@
-pub use byteorder::{LittleEndian, ReadBytesExt};
+use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
+use snafu::ResultExt;
 
-use crate::error::Error;
+pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::utils::read_len_prefixed_utf16_string;
 use crate::Offset;
@@ -11,6 +13,7 @@ use std::io::{Cursor, Seek, SeekFrom};
 
 use crate::evtx_chunk::EvtxChunk;
 use quick_xml::events::{BytesEnd, BytesStart};
+
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub struct BinXmlName<'a>(pub Cow<'a, str>);
 
@@ -24,7 +27,7 @@ impl<'a> BinXmlName<'a> {
     pub fn from_binxml_stream(
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Result<BinXmlName<'a>, Error> {
+    ) -> Result<BinXmlName<'a>> {
         // Important!!
         // The "offset_from_start" refers to the offset where the name struct begins.
         let name_offset = try_read!(cursor, u32);
@@ -45,13 +48,16 @@ impl<'a> BinXmlName<'a> {
     }
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
-    pub fn from_stream(cursor: &mut Cursor<&'a [u8]>) -> Result<StringHashOffset, Error> {
+    pub fn from_stream(cursor: &mut Cursor<&'a [u8]>) -> Result<StringHashOffset> {
         let position_before_read = cursor.position();
 
         let _ = try_read!(cursor, u32);
         let name_hash = try_read!(cursor, u16);
         let name = read_len_prefixed_utf16_string(cursor, true)
-            .map_err(|e| Error::utf16_decode_error(e, cursor.position()))?
+            .context(err::FailedToDecodeUTF16String {
+                offset: cursor.position(),
+            })?
+            // If string is None, just fill in a new string
             .unwrap_or_else(String::new);
 
         let position_after_read = cursor.position();
@@ -67,13 +73,14 @@ impl<'a> BinXmlName<'a> {
     fn from_stream_at_offset(
         cursor: &mut Cursor<&'a [u8]>,
         offset: Offset,
-    ) -> Result<StringHashOffset, Error> {
+    ) -> Result<StringHashOffset> {
         if offset != cursor.position() as u32 {
             trace!(
                 "Current offset {}, seeking to {}",
                 cursor.position(),
                 offset
             );
+
             let position_before_seek = cursor.position();
             cursor.seek(SeekFrom::Start(u64::from(offset)))?;
 

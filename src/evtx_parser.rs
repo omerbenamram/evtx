@@ -1,3 +1,6 @@
+use crate::err::{self, Result};
+use snafu::{ensure, ResultExt};
+
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
@@ -6,7 +9,6 @@ use rayon;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
-use failure::{format_err, Error};
 use log::{debug, info};
 
 use std::fs::File;
@@ -150,9 +152,15 @@ impl ParserSettings {
 impl EvtxParser<File> {
     /// Attempts to load an evtx file from a given path, will fail if the path does not exist,
     /// or if evtx header is invalid.
-    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref().canonicalize()?;
-        let f = File::open(&path)?;
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path
+            .as_ref()
+            .canonicalize()
+            .context(err::InvalidInputPath {
+                path: path.as_ref().to_string_lossy().to_string(),
+            })?;
+
+        let f = File::open(&path).context(err::FailedToOpenFile { path })?;
 
         let cursor = f;
         Self::from_read_seek(cursor)
@@ -161,15 +169,15 @@ impl EvtxParser<File> {
 
 impl EvtxParser<Cursor<Vec<u8>>> {
     /// Attempts to load an evtx file from a given path, will fail the evtx header is invalid.
-    pub fn from_buffer(buffer: Vec<u8>) -> Result<Self, Error> {
+    pub fn from_buffer(buffer: Vec<u8>) -> Result<Self> {
         let cursor = Cursor::new(buffer);
         Self::from_read_seek(cursor)
     }
 }
 
 impl<T: ReadSeek> EvtxParser<T> {
-    fn from_read_seek(mut read_seek: T) -> Result<Self, Error> {
-        let evtx_header = EvtxFileHeader::from_reader(&mut read_seek)?;
+    fn from_read_seek(mut read_seek: T) -> Result<Self> {
+        let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)?;
 
         debug!("EVTX Header: {:#?}", evtx_header);
         Ok(EvtxParser {
@@ -193,7 +201,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         data: &mut T,
         chunk_number: u16,
         validate_checksum: bool,
-    ) -> Result<Option<EvtxChunkData>, Error> {
+    ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
 
@@ -203,9 +211,10 @@ impl<T: ReadSeek> EvtxParser<T> {
             .take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)?;
 
-        if amount_read != EVTX_CHUNK_SIZE {
-            return Err(format_err!("Reached EOF while trying to read a chunk"));
-        }
+        ensure!(
+            amount_read == EVTX_CHUNK_SIZE,
+            err::IncompleteChunk { chunk_number }
+        );
 
         // There might be empty chunks in the middle of a dirty file.
         if chunk_data.iter().all(|x| *x == 0) {
@@ -221,7 +230,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     pub fn find_next_chunk(
         &mut self,
         mut chunk_number: u16,
-    ) -> Option<(Result<EvtxChunkData, Error>, u16)> {
+    ) -> Option<(Result<EvtxChunkData>, u16)> {
         loop {
             match EvtxParser::allocate_chunk(
                 &mut self.data,
@@ -274,7 +283,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Records will be serialized using the given `BinXmlOutput`.
     pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
         &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = self.config.clone();
 
@@ -301,7 +310,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 let chunk_iter = chunk_of_chunks.into_iter();
 
                 // Serialize the records in each chunk.
-                let iterators: Vec<Vec<Result<SerializedEvtxRecord, Error>>> = chunk_iter
+                let iterators: Vec<Vec<Result<SerializedEvtxRecord>>> = chunk_iter
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
@@ -326,16 +335,14 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be XML-formatted.
-    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
         // '_ is required in the signature because the iterator is bound to &self.
         self.serialized_records::<XmlOutput<Vec<u8>>>()
     }
 
     /// Return an iterator over all the records.
     /// Records will be JSON-formatted.
-    pub fn records_json(
-        &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord, Error>> + '_ {
+    pub fn records_json(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
         self.serialized_records::<JsonOutput<Vec<u8>>>()
     }
 }
@@ -346,7 +353,7 @@ pub struct IterChunks<'c, T: ReadSeek> {
 }
 
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
-    type Item = Result<EvtxChunkData, Error>;
+    type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         match self.parser.find_next_chunk(self.current_chunk_number) {
             None => None,
@@ -365,7 +372,7 @@ pub struct IntoIterChunks<T: ReadSeek> {
 }
 
 impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
-    type Item = Result<EvtxChunkData, Error>;
+    type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         info!("Chunk {}", self.current_chunk_number);
         match self.parser.find_next_chunk(self.current_chunk_number) {

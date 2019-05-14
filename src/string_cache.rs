@@ -1,4 +1,5 @@
 use crate::binxml::name::BinXmlName;
+use crate::err::Result;
 use crate::Offset;
 
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ pub type CachedString = (String, StringHash, Offset);
 pub struct StringCache(HashMap<Offset, CachedString>);
 
 impl StringCache {
-    pub fn populate(data: &[u8], offsets: &[Offset]) -> Result<Self, failure::Error> {
+    pub fn populate(data: &[u8], offsets: &[Offset]) -> Result<Self> {
         let mut cache = HashMap::new();
         let mut cursor = Cursor::new(data);
 

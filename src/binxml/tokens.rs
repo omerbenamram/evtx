@@ -1,6 +1,10 @@
+use crate::err::{self, Result};
+use crate::evtx_parser::ReadSeek;
+use snafu::{OptionExt, ResultExt};
+
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::{error::Error, guid::Guid, model::deserialized::*};
+use crate::{guid::Guid, model::deserialized::*};
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
@@ -18,7 +22,7 @@ use std::borrow::Cow;
 pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXmlTemplate<'a>, Error> {
+) -> Result<BinXmlTemplate<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8);
@@ -70,9 +74,11 @@ pub fn read_template<'a>(
         let size = try_read!(cursor, u16);
         let value_type_token = try_read!(cursor, u8);
 
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
-            Error::not_a_valid_binxml_value_type(value_type_token, cursor.position())
-        })?;
+        let value_type =
+            BinXmlValueType::from_u8(value_type_token).context(err::InvalidValueVariant {
+                value: value_type_token,
+                offset: cursor.position(),
+            })?;
 
         // Empty
         let _ = try_read!(cursor, u8);
@@ -85,8 +91,12 @@ pub fn read_template<'a>(
     let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
 
     for descriptor in value_descriptors {
-        let position = cursor.position();
-        trace!("Substitution: {:?} at {}", descriptor.value_type, position);
+        let position_before_reading_value = cursor.position();
+        trace!(
+            "Substitution: {:?} at {}",
+            descriptor.value_type,
+            position_before_reading_value
+        );
         let value = BinXmlValue::deserialized_sized_value_type(
             &descriptor.value_type,
             cursor,
@@ -101,16 +111,19 @@ pub fn read_template<'a>(
             cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
         }
 
-        if position + u64::from(descriptor.size) != cursor.position() {
-            let diff = (position + u64::from(descriptor.size)) - cursor.position();
-            cursor.seek(SeekFrom::Current(diff as i64))?;
+        let current_position = cursor.position();
+        let expected_position = position_before_reading_value + u64::from(descriptor.size);
 
+        if expected_position != current_position {
+            let diff = expected_position - current_position;
             // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
             // Sometimes however the log will contain a lot of zero fields.
             warn!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                  cursor.position(),
-                  position + u64::from(descriptor.size),
+                  current_position,
+                  expected_position,
                   &descriptor);
+
+            cursor.seek(SeekFrom::Start((current_position + u64::from(diff)) as u64))?;
         }
         substitution_array.push(value);
     }
@@ -124,18 +137,16 @@ pub fn read_template<'a>(
 pub fn read_template_definition<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXMLTemplateDefinition<'a>, Error> {
+) -> Result<BinXMLTemplateDefinition<'a>> {
     let next_template_offset = try_read!(cursor, u32);
 
-    let template_guid = Guid::from_stream(cursor)
-        .map_err(|_e| Error::other("Failed to read GUID from stream", cursor.position()))?;
-
+    let template_guid = try_read!(cursor, guid);
     let data_size = try_read!(cursor, u32);
 
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
     let _data = *cursor.get_ref();
-    let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size))?;
+    let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size), false)?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
@@ -148,7 +159,7 @@ pub fn read_template_definition<'a>(
 pub fn read_entity_ref<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXmlEntityReference<'a>, Error> {
+) -> Result<BinXmlEntityReference<'a>> {
     trace!("EntityReference at {}", cursor.position());
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
     trace!("\t name: {:?}", name);
@@ -159,13 +170,13 @@ pub fn read_entity_ref<'a>(
 pub fn read_attribute<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXMLAttribute<'a>, Error> {
+) -> Result<BinXMLAttribute<'a>> {
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 
     Ok(BinXMLAttribute { name })
 }
 
-pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragmentHeader, Error> {
+pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragmentHeader> {
     let major_version = try_read!(cursor, u8);
     let minor_version = try_read!(cursor, u8);
     let flags = try_read!(cursor, u8);
@@ -176,15 +187,18 @@ pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragment
     })
 }
 
-pub fn read_substitution(
+pub fn read_substitution_descriptor(
     cursor: &mut Cursor<&[u8]>,
     optional: bool,
-) -> Result<TemplateSubstitutionDescriptor, Error> {
+) -> Result<TemplateSubstitutionDescriptor> {
     let substitution_index = try_read!(cursor, u16);
     let value_type_token = try_read!(cursor, u8);
 
-    let value_type = BinXmlValueType::from_u8(value_type_token)
-        .ok_or_else(|| Error::not_a_valid_binxml_value_type(value_type_token, cursor.position()))?;
+    let value_type =
+        BinXmlValueType::from_u8(value_type_token).context(err::InvalidValueVariant {
+            value: value_type_token,
+            offset: cursor.position(),
+        })?;
 
     let ignore = optional && (value_type == BinXmlValueType::NullType);
 
@@ -199,9 +213,12 @@ pub fn read_open_start_element<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
     has_attributes: bool,
-) -> Result<BinXMLOpenStartElement<'a>, Error> {
-    // Reserved
-    let _ = try_read!(cursor, u16);
+    is_substitution: bool,
+) -> Result<BinXMLOpenStartElement<'a>> {
+    if !is_substitution {
+        // Reserved
+        let _ = try_read!(cursor, u16);
+    }
     let data_size = try_read!(cursor, u32);
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 

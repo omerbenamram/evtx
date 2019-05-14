@@ -138,3 +138,30 @@ fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
             .collect::<String>()
     );
 }
+
+#[test]
+fn test_event_xml_sample_with_user_data() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!(
+        "../../samples/E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx"
+    );
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+
+    let first_record = parser
+        .records()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+
+    println!("{}", first_record.data);
+
+    assert_eq!(
+        first_record.data.lines().map(str::trim).collect::<String>(),
+        include_str!("../../samples/event_with_template_as_substitution.xml")
+            .lines()
+            .map(str::trim)
+            .collect::<String>()
+    );
+}
