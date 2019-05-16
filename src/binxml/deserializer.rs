@@ -140,7 +140,7 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(Cow::Owned(
-                BinXmlValue::from_binxml_stream(cursor, self.chunk)?,
+                BinXmlValue::from_binxml_stream(cursor, self.chunk, None, None)?,
             ))),
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),

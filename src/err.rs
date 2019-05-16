@@ -93,6 +93,18 @@ pub enum Error {
     ))]
     InvalidValueVariant { value: u8, offset: u64 },
 
+    #[snafu(display(
+        "Offset {}: Value variant `{}` (size {:?}) is unimplemented",
+        offset,
+        name,
+        size
+    ))]
+    UnimplementedValueVariant {
+        name: String,
+        size: Option<u16>,
+        offset: u64,
+    },
+
     #[snafu(display("Offset {}: Token `{}` is unimplemented", offset, name))]
     UnimplementedToken { name: String, offset: u64 },
 
@@ -110,6 +122,18 @@ pub enum Error {
     ))]
     FailedToDecodeUTF8String {
         source: std::string::FromUtf8Error,
+        offset: u64,
+    },
+
+    #[snafu(display(
+        "Offset {}: Failed to decode ansi string (used encoding scheme {}), caused by: {}",
+        offset,
+        encoding,
+        message
+    ))]
+    FailedToDecodeANSIString {
+        encoding: &'static str,
+        message: String,
         offset: u64,
     },
 

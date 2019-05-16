@@ -97,11 +97,12 @@ pub fn read_template<'a>(
             descriptor.value_type,
             position_before_reading_value
         );
-        let value = BinXmlValue::deserialized_sized_value_type(
+        let value = BinXmlValue::deserialize_value_type(
             &descriptor.value_type,
             cursor,
             chunk,
-            descriptor.size,
+            Some(descriptor.size),
+            None,
         )?;
 
         trace!("\t {:?}", value);
