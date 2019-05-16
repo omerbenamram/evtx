@@ -265,8 +265,10 @@ impl<'a> BinXmlValue<'a> {
             (BinXmlValueType::Real64Type, _) => BinXmlValue::Real64Type(try_read!(cursor, f64)),
             (BinXmlValueType::BoolType, _) => BinXmlValue::BoolType(try_read!(cursor, bool)),
             (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(try_read!(cursor, guid)),
-            (BinXmlValueType::SizeTType, _) => err::UnimplementedToken {
+            // TODO: find a sample with this token.
+            (BinXmlValueType::SizeTType, _) => err::UnimplementedValueVariant {
                 name: "SizeT",
+                size,
                 offset: cursor.position(),
             }
             .fail()?,
