@@ -1,7 +1,7 @@
 use crate::err::{self, Result};
 use crate::evtx_parser::ReadSeek;
-use encoding::all::WINDOWS_1252;
-use encoding::{decode, DecoderTrap, EncodingRef};
+
+use encoding::EncodingRef;
 use snafu::{OptionExt, ResultExt};
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
@@ -12,8 +12,8 @@ use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::ntsid::Sid;
 use crate::utils::{
-    datetime_from_filetime, read_len_prefixed_utf16_string, read_null_terminated_utf16_string,
-    read_systemtime, read_utf16_by_size,
+    datetime_from_filetime, read_ansi_encoded_string, read_len_prefixed_utf16_string,
+    read_null_terminated_utf16_string, read_systemtime, read_utf16_by_size,
 };
 use chrono::{DateTime, Utc};
 use log::trace;
@@ -228,24 +228,10 @@ impl<'a> BinXmlValue<'a> {
             (BinXmlValueType::StringType, None) => {
                 BinXmlValue::StringType(try_read!(cursor, utf_16_str))
             }
-            (BinXmlValueType::AnsiStringType, Some(sz)) => {
-                let mut bytes = vec![0; sz as usize];
-                cursor.read_exact(&mut bytes)?;
-
-                let codec = ansi_codec.unwrap_or(WINDOWS_1252);
-
-                let decoded = decode(&bytes, DecoderTrap::Strict, codec).0;
-                let s = match decoded {
-                    Ok(s) => s,
-                    Err(message) => Err(err::Error::FailedToDecodeANSIString {
-                        encoding: codec.name(),
-                        message: message.to_string(),
-                        offset: cursor.position(),
-                    })?,
-                };
-
-                BinXmlValue::AnsiStringType(Cow::Owned(s))
-            }
+            (BinXmlValueType::AnsiStringType, Some(sz)) => BinXmlValue::AnsiStringType(Cow::Owned(
+                read_ansi_encoded_string(cursor, u64::from(sz), ansi_codec)?
+                    .unwrap_or_else(|| "".to_owned()),
+            )),
             // AnsiString are always sized according to docs
             (BinXmlValueType::AnsiStringType, None) => err::UnimplementedValueVariant {
                 name: "AnsiString",

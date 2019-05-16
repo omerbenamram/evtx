@@ -1,6 +1,10 @@
 use crate::evtx_parser::ReadSeek;
 
+use crate::err::{self, Result};
+
 use byteorder::{LittleEndian, ReadBytesExt};
+use encoding::all::WINDOWS_1252;
+use encoding::{decode, DecoderTrap, EncodingRef};
 use log::{error, trace};
 use std::char::decode_utf16;
 use std::io::{self, Error, ErrorKind};
@@ -54,6 +58,40 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
             }
             Some(s)
         }),
+    }
+}
+
+/// Reads an ansi encoded string from the given stream using `ansi_codec`.
+/// `ansi_codec` defaults to `WINDOWS_1252` if None is passed.
+pub fn read_ansi_encoded_string<T: ReadSeek>(
+    stream: &mut T,
+    size: u64,
+    ansi_codec: Option<EncodingRef>,
+) -> Result<Option<String>> {
+    match size {
+        0 => Ok(None),
+        _ => {
+            let mut bytes = vec![0; size as usize];
+            stream.read_exact(&mut bytes)?;
+
+            let codec = ansi_codec.unwrap_or(WINDOWS_1252);
+
+            let s = match decode(&bytes, DecoderTrap::Strict, codec).0 {
+                Ok(mut s) => {
+                    if let Some('\0') = s.chars().last() {
+                        s.pop();
+                    }
+                    s
+                }
+                Err(message) => Err(err::Error::FailedToDecodeANSIString {
+                    encoding: codec.name(),
+                    message: message.to_string(),
+                    offset: stream.tell()?,
+                })?,
+            };
+
+            Ok(Some(s))
+        }
     }
 }
 
