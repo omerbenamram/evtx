@@ -214,11 +214,8 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: Option<EncodingRef>,
     ) -> Result<BinXmlValue<'a>> {
-        trace!(
-            "deserialized_sized_value_type: {:?}, {:?}",
-            value_type,
-            size
-        );
+        trace!("deserialize_value_type: {:?}, {:?}", value_type, size);
+
         let value = match (value_type, size) {
             (BinXmlValueType::NullType, _) => BinXmlValue::NullType,
             (BinXmlValueType::StringType, Some(sz)) => BinXmlValue::StringType(Cow::Owned(
@@ -292,8 +289,12 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::BinXmlType(tokens)
             }
             (BinXmlValueType::BinXmlType, Some(sz)) => {
-                let tokens =
-                    BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(sz as u32), true)?;
+                let tokens = BinXmlDeserializer::read_binxml_fragment(
+                    cursor,
+                    chunk,
+                    Some(u32::from(sz)),
+                    true,
+                )?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
@@ -307,6 +308,7 @@ impl<'a> BinXmlValue<'a> {
 
                 BinXmlValue::BinaryType(bytes)
             }
+            // The array types are always sized.
             (BinXmlValueType::StringArrayType, Some(sz)) => BinXmlValue::StringArrayType(
                 try_read_sized_array!(cursor, null_terminated_utf_16_str, sz),
             ),

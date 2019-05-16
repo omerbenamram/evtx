@@ -124,7 +124,7 @@ pub fn read_template<'a>(
                   expected_position,
                   &descriptor);
 
-            cursor.seek(SeekFrom::Start((current_position + u64::from(diff)) as u64))?;
+            cursor.seek(SeekFrom::Start((current_position + diff) as u64))?;
         }
         substitution_array.push(value);
     }
@@ -142,11 +142,9 @@ pub fn read_template_definition<'a>(
     let next_template_offset = try_read!(cursor, u32);
 
     let template_guid = try_read!(cursor, guid);
-    let data_size = try_read!(cursor, u32);
-
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
-    let _data = *cursor.get_ref();
+    let data_size = try_read!(cursor, u32);
     let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size), false)?;
 
     Ok(BinXMLTemplateDefinition {
