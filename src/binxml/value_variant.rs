@@ -192,7 +192,7 @@ impl<'a> BinXmlValue<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         size: Option<u16>,
-        ansi_codec: Option<EncodingRef>,
+        ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
         let value_type_token = try_read!(cursor, u8);
 
@@ -212,7 +212,7 @@ impl<'a> BinXmlValue<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         size: Option<u16>,
-        ansi_codec: Option<EncodingRef>,
+        ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
         trace!("deserialize_value_type: {:?}, {:?}", value_type, size);
 
@@ -272,7 +272,9 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::HexInt64Type(try_read!(cursor, hex64))
             }
             (BinXmlValueType::BinXmlType, None) => {
-                let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, None, true)?;
+                let tokens = BinXmlDeserializer::read_binxml_fragment(
+                    cursor, chunk, None, true, ansi_codec,
+                )?;
 
                 BinXmlValue::BinXmlType(tokens)
             }
@@ -282,6 +284,7 @@ impl<'a> BinXmlValue<'a> {
                     chunk,
                     Some(u32::from(sz)),
                     true,
+                    ansi_codec,
                 )?;
 
                 BinXmlValue::BinXmlType(tokens)

@@ -17,11 +17,13 @@ use std::io::Seek;
 use std::io::SeekFrom;
 
 use crate::evtx_chunk::EvtxChunk;
+use encoding::EncodingRef;
 use std::borrow::Cow;
 
 pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
+    ansi_codec: EncodingRef,
 ) -> Result<BinXmlTemplate<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
@@ -57,13 +59,13 @@ pub fn read_template<'a>(
 
         cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
 
-        let template_def = read_template_definition(cursor, chunk)?;
+        let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
 
         cursor.seek(SeekFrom::Start(position_before_seek))?;
 
         Cow::Owned(template_def)
     } else {
-        Cow::Owned(read_template_definition(cursor, chunk)?)
+        Cow::Owned(read_template_definition(cursor, chunk, ansi_codec)?)
     };
 
     let number_of_substitutions = try_read!(cursor, u32);
@@ -102,7 +104,7 @@ pub fn read_template<'a>(
             cursor,
             chunk,
             Some(descriptor.size),
-            None,
+            ansi_codec,
         )?;
 
         trace!("\t {:?}", value);
@@ -138,6 +140,7 @@ pub fn read_template<'a>(
 pub fn read_template_definition<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
+    ansi_codec: EncodingRef,
 ) -> Result<BinXMLTemplateDefinition<'a>> {
     let next_template_offset = try_read!(cursor, u32);
 
@@ -145,7 +148,13 @@ pub fn read_template_definition<'a>(
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
     let data_size = try_read!(cursor, u32);
-    let tokens = BinXmlDeserializer::read_binxml_fragment(cursor, chunk, Some(data_size), false)?;
+    let tokens = BinXmlDeserializer::read_binxml_fragment(
+        cursor,
+        chunk,
+        Some(data_size),
+        false,
+        ansi_codec,
+    )?;
 
     Ok(BinXMLTemplateDefinition {
         next_template_offset,
@@ -242,6 +251,7 @@ mod test {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::ensure_env_logger_initialized;
     use crate::guid::Guid;
+    use encoding::all::WINDOWS_1252;
     use std::borrow::Cow;
     use std::io::{Cursor, Seek, SeekFrom};
 
@@ -486,7 +496,7 @@ mod test {
 
         let mut c = Cursor::new(from_start_of_chunk);
         c.seek(SeekFrom::Start(550)).unwrap();
-        let actual = read_template_definition(&mut c, None).unwrap();
+        let actual = read_template_definition(&mut c, None, WINDOWS_1252).unwrap();
 
         assert_eq!(actual, expected_at_550);
     }

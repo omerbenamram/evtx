@@ -170,6 +170,11 @@ impl ParserSettings {
         self
     }
 
+    /// Gets the current ansi codec
+    pub fn get_ansi_codec(&self) -> EncodingRef {
+        self.ansi_codec
+    }
+
     pub fn should_indent(&self) -> bool {
         self.indent
     }
