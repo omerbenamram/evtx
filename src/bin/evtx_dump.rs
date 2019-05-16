@@ -185,7 +185,6 @@ fn main() {
         .arg(
             Arg::with_name("ansi-codec")
                 .long("--ansi-codec")
-                .takes_value(true)
                 .possible_values(&encodings().iter()
                     .filter(|&e| e.raw_decoder().is_ascii_compatible())
                     .map(|e| e.name())
