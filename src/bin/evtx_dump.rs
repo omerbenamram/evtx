@@ -1,3 +1,4 @@
+use std::fs;
 use clap::{App, Arg, ArgMatches};
 
 use evtx::err::{dump_err_with_backtrace, Error};
@@ -127,6 +128,57 @@ fn is_a_non_negative_number(value: String) -> Result<(), String> {
     }
 }
 
+fn process_directory(directory: &str, matches: &EvtxDumpConfig) {
+    for dir_reader in fs::read_dir(directory) {
+        for entry_result in dir_reader {
+            match entry_result {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let path_string = path.into_os_string().into_string().unwrap();
+                        if path_string.to_lowercase().ends_with(".evtx"){
+                            process_file(&path_string, &matches);
+                        }
+                    } else if path.is_dir(){
+                        let path_string = path.into_os_string().into_string().unwrap();
+                        process_directory(&path_string, &matches);
+                    }
+                },
+                Err(error) => {
+                    eprintln!("Error reading {} [{:?}]", directory, error);
+                }
+            }
+        }
+    }
+}
+
+fn process_file(fp: &str, matches: &EvtxDumpConfig) {
+    let mut parser = EvtxParser::from_path(fp)
+        .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
+        .with_configuration(matches.parser_settings.clone());
+
+    match matches.output_format {
+        EvtxOutputFormat::XML => {
+            for record in parser.records() {
+                dump_record(record, &matches)
+            }
+        }
+        EvtxOutputFormat::JSON => {
+            for record in parser.records_json() {
+                dump_record(record, &matches)
+            }
+        }
+    }
+}
+
+fn is_directory(source: &str)->bool{
+    let metadata = fs::metadata(source).unwrap();
+
+    let file_type = metadata.file_type();
+
+    file_type.is_dir()
+}
+
 fn main() {
     let matches = App::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
@@ -184,7 +236,7 @@ fn main() {
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
-    let fp = matches
+    let input = matches
         .value_of("INPUT")
         .expect("This is a required argument");
 
@@ -197,20 +249,9 @@ fn main() {
         };
     }
 
-    let mut parser = EvtxParser::from_path(fp)
-        .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
-        .with_configuration(config.parser_settings.clone());
-
-    match config.output_format {
-        EvtxOutputFormat::XML => {
-            for record in parser.records() {
-                dump_record(record, &config)
-            }
-        }
-        EvtxOutputFormat::JSON => {
-            for record in parser.records_json() {
-                dump_record(record, &config)
-            }
-        }
+    if is_directory(input){
+        process_directory(&input, &config);
+    } else {
+        process_file(&input, &config);
     }
 }
