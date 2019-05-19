@@ -5,6 +5,7 @@ use encoding::types::Encoding;
 use evtx::err::{dump_err_with_backtrace, Error};
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
+use std::process::exit;
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub enum EvtxOutputFormat {
@@ -190,7 +191,7 @@ fn main() {
                     .map(|e| e.name())
                     .collect::<Vec<&'static str>>())
                 .default_value(encoding::all::WINDOWS_1252.name())
-                .help("When set, controls the codec of ansi encoded strings the file. defaults to `WINDOWS-1252`"),
+                .help("When set, controls the codec of ansi encoded strings the file."),
         )
         .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false)
             .help("-v - info, -vv - debug, -vvv - trace.\
@@ -215,9 +216,13 @@ fn main() {
         };
     }
 
-    let mut parser = EvtxParser::from_path(fp)
-        .unwrap_or_else(|_| panic!("Failed to load evtx file located at {}", fp))
-        .with_configuration(config.parser_settings.clone());
+    let mut parser = match EvtxParser::from_path(fp) {
+        Ok(parser) => parser.with_configuration(config.parser_settings.clone()),
+        Err(e) => {
+            eprintln!("Failed to open file {}.\n\tcaused by: {}", fp, &e);
+            exit(-1)
+        }
+    };
 
     match config.output_format {
         EvtxOutputFormat::XML => {

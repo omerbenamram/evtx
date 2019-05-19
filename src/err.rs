@@ -58,7 +58,7 @@ pub enum Error {
     InvalidEvtxChunkMagic { magic: [u8; 8] },
 
     #[snafu(display(
-        "Invalid EVTX record header magic, expected `ElfFile0`, found `{:2X?}`",
+        "Invalid EVTX file header magic, expected `ElfFile0`, found `{:2X?}`",
         magic
     ))]
     InvalidEvtxFileHeaderMagic { magic: [u8; 8] },
