@@ -4,13 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [UNRELEASED]
+## [0.3.1] - 2019-05-19
 
 Implemented Ansi codecs! 
 
 ### Added
 - `--ansi-codec` to control the codec that will be used to decode ansi encoded strings inside the document.
 
+### Fixed
+- Parser will now print nicer messages when passed non-evtx files.
 
 ## [0.3.0] - 2019-05-14
 
