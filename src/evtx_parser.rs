@@ -17,7 +17,11 @@ use std::iter::{IntoIterator, Iterator};
 
 use crate::json_output::JsonOutput;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
+use encoding::all::WINDOWS_1252;
+use encoding::EncodingRef;
 use std::cmp::max;
+use std::fmt;
+use std::fmt::Debug;
 use std::path::Path;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
@@ -77,7 +81,7 @@ pub struct EvtxParser<T: ReadSeek> {
     config: ParserSettings,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct ParserSettings {
     /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
@@ -85,6 +89,28 @@ pub struct ParserSettings {
     validate_checksums: bool,
     /// If true, output will be indented.
     indent: bool,
+    /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
+    ansi_codec: EncodingRef,
+}
+
+impl Debug for ParserSettings {
+    fn fmt(&self, f: &mut fmt::Formatter) -> ::std::fmt::Result {
+        f.debug_struct("ParserSettings")
+            .field("num_threads", &self.num_threads)
+            .field("validate_checksums", &self.validate_checksums)
+            .field("indent", &self.indent)
+            .field("ansi_codec", &self.ansi_codec.name())
+            .finish()
+    }
+}
+
+impl PartialEq for ParserSettings {
+    fn eq(&self, other: &ParserSettings) -> bool {
+        self.ansi_codec.name() == other.ansi_codec.name()
+            && self.num_threads == other.num_threads
+            && self.validate_checksums == other.validate_checksums
+            && self.indent == other.indent
+    }
 }
 
 impl Default for ParserSettings {
@@ -93,6 +119,7 @@ impl Default for ParserSettings {
             num_threads: 0,
             validate_checksums: false,
             indent: true,
+            ansi_codec: WINDOWS_1252,
         }
     }
 }
@@ -124,6 +151,13 @@ impl ParserSettings {
         self
     }
 
+    /// Sets the ansi codec used by the parser.
+    pub fn ansi_codec(mut self, ansi_codec: EncodingRef) -> Self {
+        self.ansi_codec = ansi_codec;
+
+        self
+    }
+
     pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
         self.validate_checksums = validate_checksums;
 
@@ -134,6 +168,11 @@ impl ParserSettings {
         self.indent = pretty;
 
         self
+    }
+
+    /// Gets the current ansi codec
+    pub fn get_ansi_codec(&self) -> EncodingRef {
+        self.ansi_codec
     }
 
     pub fn should_indent(&self) -> bool {

@@ -142,7 +142,8 @@ impl<'chunk> EvtxChunk<'chunk> {
         let string_cache = StringCache::populate(&data, &header.strings_offsets)?;
 
         info!("Initializing template cache");
-        let template_table = TemplateCache::populate(data, &header.template_offsets)?;
+        let template_table =
+            TemplateCache::populate(data, &header.template_offsets, settings.get_ansi_codec())?;
 
         Ok(EvtxChunk {
             header,
@@ -237,6 +238,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.offset_from_chunk_start + cursor.position(),
             Some(self.chunk),
             false,
+            self.settings.get_ansi_codec(),
         );
 
         let mut tokens = vec![];

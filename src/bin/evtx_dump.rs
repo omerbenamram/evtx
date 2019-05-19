@@ -1,5 +1,7 @@
 use clap::{App, Arg, ArgMatches};
 
+use encoding::all::encodings;
+use encoding::types::Encoding;
 use evtx::err::{dump_err_with_backtrace, Error};
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
@@ -88,11 +90,17 @@ impl EvtxDumpConfig {
 
         let backtraces = matches.is_present("backtraces");
 
+        let ansi_codec = encodings()
+            .iter()
+            .find(|c| c.name() == matches.value_of("ansi-codec").expect("has set default"))
+            .expect("possible values are derived from `encodings()`");
+
         EvtxDumpConfig {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
-                .indent(!no_indent),
+                .indent(!no_indent)
+                .ansi_codec(*ansi_codec),
             show_record_number: !no_show_record_number,
             output_format,
             verbosity_level,
@@ -173,6 +181,16 @@ fn main() {
                 .long("--dont-show-record-number")
                 .takes_value(false)
                 .help("When set, `Record <id>` will not be printed."),
+        )
+        .arg(
+            Arg::with_name("ansi-codec")
+                .long("--ansi-codec")
+                .possible_values(&encodings().iter()
+                    .filter(|&e| e.raw_decoder().is_ascii_compatible())
+                    .map(|e| e.name())
+                    .collect::<Vec<&'static str>>())
+                .default_value(encoding::all::WINDOWS_1252.name())
+                .help("When set, controls the codec of ansi encoded strings the file. defaults to `WINDOWS-1252`"),
         )
         .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false)
             .help("-v - info, -vv - debug, -vvv - trace.\

@@ -19,6 +19,7 @@ use crate::{
 };
 
 use crate::evtx_chunk::EvtxChunk;
+use encoding::EncodingRef;
 use std::borrow::Cow;
 use std::io::Cursor;
 use std::mem;
@@ -30,6 +31,7 @@ pub struct IterTokens<'a> {
     data_read_so_far: u32,
     eof: bool,
     is_inside_substitution: bool,
+    ansi_codec: EncodingRef,
 }
 
 pub struct BinXmlDeserializer<'a> {
@@ -38,6 +40,7 @@ pub struct BinXmlDeserializer<'a> {
     chunk: Option<&'a EvtxChunk<'a>>,
     // if called from substitution token with value type: Binary XML (0x21)
     is_inside_substitution: bool,
+    ansi_codec: EncodingRef,
 }
 
 impl<'a> BinXmlDeserializer<'a> {
@@ -46,12 +49,14 @@ impl<'a> BinXmlDeserializer<'a> {
         start_offset: u64,
         chunk: Option<&'a EvtxChunk<'a>>,
         is_inside_substitution: bool,
+        ansi_codec: EncodingRef,
     ) -> Self {
         BinXmlDeserializer {
             data,
             offset: start_offset,
             chunk,
             is_inside_substitution,
+            ansi_codec,
         }
     }
 
@@ -61,10 +66,17 @@ impl<'a> BinXmlDeserializer<'a> {
         chunk: Option<&'a EvtxChunk<'a>>,
         data_size: Option<u32>,
         is_inside_substitution: bool,
+        ansi_codec: EncodingRef,
     ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
         let offset = cursor.position();
 
-        let de = BinXmlDeserializer::init(*cursor.get_ref(), offset, chunk, is_inside_substitution);
+        let de = BinXmlDeserializer::init(
+            *cursor.get_ref(),
+            offset,
+            chunk,
+            is_inside_substitution,
+            ansi_codec,
+        );
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size)?;
@@ -102,6 +114,7 @@ impl<'a> BinXmlDeserializer<'a> {
             data_read_so_far: 0,
             eof: false,
             is_inside_substitution: self.is_inside_substitution,
+            ansi_codec: self.ansi_codec,
         })
     }
 }
@@ -140,7 +153,7 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(Cow::Owned(
-                BinXmlValue::from_binxml_stream(cursor, self.chunk)?,
+                BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
             ))),
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
@@ -164,7 +177,7 @@ impl<'a> IterTokens<'a> {
             }
             .fail(),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template(cursor, self.chunk)?,
+                read_template(cursor, self.chunk, self.ansi_codec)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution_descriptor(cursor, false)?,

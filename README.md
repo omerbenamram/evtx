@@ -107,10 +107,9 @@ Comparison with other libraries:
 ## Caveats
 
 - Currently unimplemented:
-   - [ ] ANSI encoded nodes (codepage selection).
-   - [ ] PI/cdata nodes.
-   - [ ] entity/character refs.
-   - [ ] EVTHandle node type.
+   - PI/cdata nodes.
+   - entity/character refs.
+   - EVTHandle node type.
 
 If the parser errors on any of these nodes, feel free to open an issue or drop me an email with a sample.
 
