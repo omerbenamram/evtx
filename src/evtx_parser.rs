@@ -215,7 +215,7 @@ impl EvtxParser<Cursor<Vec<u8>>> {
 }
 
 impl<T: ReadSeek> EvtxParser<T> {
-    fn from_read_seek(mut read_seek: T) -> Result<Self> {
+    pub fn from_read_seek(mut read_seek: T) -> Result<Self> {
         let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)?;
 
         debug!("EVTX Header: {:#?}", evtx_header);
