@@ -248,11 +248,11 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             },
         ) {
             Ok(iter) => iter,
-            Err(err_ctx) => return Some(Err(err_ctx.error)),
+            Err(err) => return Some(Err(err)),
         };
 
         for token in iter {
-            match token.eager_context(err::FailedToDeserializeRecord {
+            match token.context(err::FailedToDeserializeRecord {
                 record_id: record_header.event_record_id,
             }) {
                 Ok(token) => {
