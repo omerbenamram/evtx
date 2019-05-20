@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/omerbenamram/evtx.svg?branch=master)](https://travis-ci.org/omerbenamram/evtx)
+[![Build Status](https://dev.azure.com/benamram/evtx/_apis/build/status/omerbenamram.evtx?branchName=master)](https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master)
 ![crates.io](https://img.shields.io/crates/v/evtx.svg)
 # EVTX
 
