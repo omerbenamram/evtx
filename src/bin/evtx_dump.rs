@@ -133,7 +133,7 @@ impl EvtxDump {
                 Ok(f) => Box::new(f),
                 Err(e) => {
                     eprintln!(
-                        "An error occurred while creating output `{}` - `{}`",
+                        "An error occurred while creating output file at `{}` - `{}`",
                         path, e
                     );
                     exit(1)
@@ -212,7 +212,7 @@ impl EvtxDump {
                     .default(false)
                     .interact()
                 {
-                    Ok(true) => Ok(Self::try_create_file(p)?),
+                    Ok(true) => Ok(File::create(p)?),
                     Ok(false) => err!("Cancelled"),
                     Err(e) => err!(
                         "Failed to write confirmation prompt to term caused by\n{}",
@@ -220,7 +220,7 @@ impl EvtxDump {
                     ),
                 }
             } else {
-                Ok(Self::try_create_file(p)?)
+                Ok(File::create(p)?)
             }
         } else {
             // Ok to assume p is not an existing directory
@@ -229,28 +229,14 @@ impl EvtxDump {
                 // Parent exist
                 {
                     if parent.exists() {
-                        Ok(Self::try_create_file(p)?)
+                        Ok(File::create(p)?)
                     } else {
                         fs::create_dir_all(parent)?;
-                        Ok(Self::try_create_file(p)?)
+                        Ok(File::create(p)?)
                     }
                 }
                 None => Err("Output file cannot be root.".to_string().into()),
             }
-        }
-    }
-
-    /// Tries to create a file, will abort program on failure
-    fn try_create_file(p: impl AsRef<Path>) -> Result<File, Box<std::error::Error>> {
-        let p = p.as_ref();
-
-        match File::create(p) {
-            Ok(f) => Ok(f),
-            Err(e) => err!(
-                "Failed to write to output target `{}`, caused by\n{}",
-                p.display(),
-                e
-            ),
         }
     }
 
