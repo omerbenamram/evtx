@@ -1,10 +1,15 @@
-use clap::{App, Arg, ArgMatches};
+use clap::{App, AppSettings, Arg, ArgMatches};
+use dialoguer::Confirmation;
 
 use encoding::all::encodings;
 use encoding::types::Encoding;
 use evtx::err::{dump_err_with_backtrace, Error};
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
+use std::cell::RefCell;
+use std::fs::{self, File};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::exit;
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
@@ -13,17 +18,44 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
-#[derive(Clone)]
-struct EvtxDumpConfig {
+struct EvtxDump {
     parser_settings: ParserSettings,
+    input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
+    // It's ok to rely on interior mutability here,
+    // since there is only one code flow writing to output which is trivial to verify.
+    output: RefCell<Box<Write>>,
     verbosity_level: Option<Level>,
     backtraces: bool,
 }
 
-impl EvtxDumpConfig {
+/// Tries to write a line to a given target, aborts program if fails.
+macro_rules! try_writeln {
+    ($($arg:tt)*) => (
+        match writeln!($($arg)*) {
+            Ok(_) => {},
+            Err(e) => {
+                eprintln!("{}", &e);
+                exit(1)
+            }
+        }
+    );
+}
+
+/// Simple error  macro for use inside of internal errors in `EvtxDump`
+macro_rules! err {
+    ($($tt:tt)*) => { Err(Box::<std::error::Error>::from(format!($($tt)*))) }
+}
+
+impl EvtxDump {
     pub fn from_cli_matches(matches: &ArgMatches) -> Self {
+        let input = PathBuf::from(
+            matches
+                .value_of("INPUT")
+                .expect("This is a required argument"),
+        );
+
         let output_format = match matches.value_of("output-format").unwrap_or_default() {
             "xml" => EvtxOutputFormat::XML,
             "json" | "jsonl" => EvtxOutputFormat::JSON,
@@ -96,35 +128,156 @@ impl EvtxDumpConfig {
             .find(|c| c.name() == matches.value_of("ansi-codec").expect("has set default"))
             .expect("possible values are derived from `encodings()`");
 
-        EvtxDumpConfig {
+        let output: Box<Write> = if let Some(path) = matches.value_of("output-target") {
+            match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
+                Ok(f) => Box::new(f),
+                Err(e) => {
+                    eprintln!(
+                        "An error occurred while creating output `{}` - `{}`",
+                        path, e
+                    );
+                    exit(1)
+                }
+            }
+        } else {
+            Box::new(io::stdout())
+        };
+
+        EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
                 .indent(!no_indent)
                 .ansi_codec(*ansi_codec),
+            input,
             show_record_number: !no_show_record_number,
             output_format,
+            output: RefCell::new(output),
             verbosity_level,
             backtraces,
         }
     }
-}
 
-fn dump_record(record: Result<SerializedEvtxRecord, Error>, config: &EvtxDumpConfig) {
-    match record {
-        Ok(r) => {
-            if config.show_record_number {
-                println!("Record {}\n{}", r.event_record_id, r.data)
-            } else {
-                println!("{}", r.data)
+    /// Main entry point for `EvtxDump`
+    pub fn run(&self) {
+        self.try_to_initialize_logging();
+
+        let mut parser = match EvtxParser::from_path(&self.input) {
+            Ok(parser) => parser.with_configuration(self.parser_settings.clone()),
+            Err(e) => {
+                eprintln!(
+                    "Failed to open file {}.\n\tcaused by: {}",
+                    self.input.display(),
+                    &e
+                );
+                exit(1)
+            }
+        };
+
+        match self.output_format {
+            EvtxOutputFormat::XML => {
+                for record in parser.records() {
+                    self.dump_record(record)
+                }
+            }
+            EvtxOutputFormat::JSON => {
+                for record in parser.records_json() {
+                    self.dump_record(record)
+                }
             }
         }
-        Err(e) => {
-            if config.backtraces {
-                dump_err_with_backtrace(&e)
+    }
+
+    /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
+    fn create_output_file(
+        path: impl AsRef<Path>,
+        prompt: bool,
+    ) -> Result<File, Box<std::error::Error>> {
+        let p = path.as_ref();
+
+        if p.is_dir() {
+            return err!(
+                "There is a directory at {}, refusing to overwrite",
+                p.display()
+            );
+        }
+
+        if p.exists() {
+            if prompt {
+                match Confirmation::new()
+                    .with_text(&format!(
+                        "Are you sure you want to override output file at {}",
+                        p.display()
+                    ))
+                    .default(false)
+                    .interact()
+                {
+                    Ok(true) => Ok(Self::try_create_file(p)?),
+                    Ok(false) => err!("Cancelled"),
+                    Err(e) => err!(
+                        "Failed to write confirmation prompt to term caused by\n{}",
+                        e
+                    ),
+                }
             } else {
-                eprintln!("{}", &e);
+                Ok(Self::try_create_file(p)?)
             }
+        } else {
+            // Ok to assume p is not an existing directory
+            match p.parent() {
+                Some(parent) =>
+                // Parent exist
+                {
+                    if parent.exists() {
+                        Ok(Self::try_create_file(p)?)
+                    } else {
+                        fs::create_dir_all(parent)?;
+                        Ok(Self::try_create_file(p)?)
+                    }
+                }
+                None => Err("Output file cannot be root.".to_string().into()),
+            }
+        }
+    }
+
+    /// Tries to create a file, will abort program on failure
+    fn try_create_file(p: impl AsRef<Path>) -> Result<File, Box<std::error::Error>> {
+        let p = p.as_ref();
+
+        match File::create(p) {
+            Ok(f) => Ok(f),
+            Err(e) => err!(
+                "Failed to write to output target `{}`, caused by\n{}",
+                p.display(),
+                e
+            ),
+        }
+    }
+
+    fn dump_record(&self, record: Result<SerializedEvtxRecord, Error>) {
+        match record {
+            Ok(r) => {
+                if self.show_record_number {
+                    try_writeln!(self.output.borrow_mut(), "Record {}", r.event_record_id);
+                }
+                try_writeln!(self.output.borrow_mut(), "{}", r.data);
+            }
+            Err(e) => {
+                if self.backtraces {
+                    dump_err_with_backtrace(&e)
+                } else {
+                    eprintln!("{}", &e);
+                }
+            }
+        }
+    }
+
+    fn try_to_initialize_logging(&self) {
+        if let Some(level) = self.verbosity_level {
+            match simple_logger::init_with_level(level) {
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to initialize logging: {}", e),
+            };
         }
     }
 }
@@ -139,6 +292,8 @@ fn is_a_non_negative_number(value: String) -> Result<(), String> {
 fn main() {
     let matches = App::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
+        .setting(AppSettings::ColoredHelp)
+        .setting(AppSettings::DeriveDisplayOrder)
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
         .arg(Arg::with_name("INPUT").required(true))
@@ -163,6 +318,21 @@ fn main() {
                         \"json\"  - prints
                         \"jsonl\" - same as json with --no-indent --dont-show-record-number 
                 "),
+        )
+        .arg(
+            Arg::with_name("output-target")
+                .long("--output")
+                .short("-f")
+                .takes_value(true)
+                .help("Writes output to the file specified instead of stdout, errors will still be printed to stderr.\
+                       Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`\
+                       Will create parent directories if needed."),
+        )
+        .arg(
+            Arg::with_name("no-confirm-overwrite")
+                .long("--no-confirm-overwrite")
+                .takes_value(false)
+                .help("When set, will not ask for confirmation before overwriting files, useful for automation"),
         )
         .arg(
             Arg::with_name("validate-checksums")
@@ -203,37 +373,6 @@ fn main() {
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
-    let fp = matches
-        .value_of("INPUT")
-        .expect("This is a required argument");
-
-    let config = EvtxDumpConfig::from_cli_matches(&matches);
-
-    if let Some(level) = config.verbosity_level {
-        match simple_logger::init_with_level(level) {
-            Ok(_) => {}
-            Err(e) => eprintln!("Failed to initialize logging: {}", e),
-        };
-    }
-
-    let mut parser = match EvtxParser::from_path(fp) {
-        Ok(parser) => parser.with_configuration(config.parser_settings.clone()),
-        Err(e) => {
-            eprintln!("Failed to open file {}.\n\tcaused by: {}", fp, &e);
-            exit(-1)
-        }
-    };
-
-    match config.output_format {
-        EvtxOutputFormat::XML => {
-            for record in parser.records() {
-                dump_record(record, &config)
-            }
-        }
-        EvtxOutputFormat::JSON => {
-            for record in parser.records_json() {
-                dump_record(record, &config)
-            }
-        }
-    }
+    let app = EvtxDump::from_cli_matches(&matches);
+    app.run();
 }

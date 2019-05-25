@@ -25,9 +25,12 @@ quick-xml = "0.14.0"
 env_logger = "0.6.1"
 snafu = { version = "0.4.1", features=["backtraces", "rust_1_30"]}
 log = { version = "^0.4", features=["release_max_level_debug"]}
-clap = "2.33.0"
 rayon = {version = "1.0.3", optional = true}
+
+# `evtx_dump` dependencies
 simple_logger = "1.0.1"
+clap = "2.33.0"
+dialoguer = "0.4.0"
 
 serde = { version = "1.0" }
 serde_json = "1.0"
@@ -41,6 +44,8 @@ multithreading = ["rayon"]
 pretty_assertions = "0.6.1"
 criterion = "0.2"
 skeptic = "0.13"
+assert_cmd = "0.10"
+predicates = "1"
 
 [build-dependencies]
 skeptic = "0.13"
