@@ -235,7 +235,7 @@ impl EvtxDump {
                         Ok(File::create(p)?)
                     }
                 }
-                None => Err("Output file cannot be root.".to_string().into()),
+                None => err!("Output file cannot be root."),
             }
         }
     }
