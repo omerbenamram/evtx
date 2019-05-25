@@ -22,15 +22,15 @@ time = "0.1.42"
 encoding = "0.2.33"
 byteorder = "1.3.1"
 quick-xml = "0.14.0"
-env_logger = "0.6.1"
 snafu = { version = "0.4.1", features=["backtraces", "rust_1_30"]}
 log = { version = "^0.4", features=["release_max_level_debug"]}
 rayon = {version = "1.0.3", optional = true}
 
 # `evtx_dump` dependencies
-simple_logger = "1.0.1"
+simplelog = "0.5.3"
 clap = "2.33.0"
 dialoguer = "0.4.0"
+indoc = "0.3"
 
 serde = { version = "1.0" }
 serde_json = "1.0"
@@ -46,6 +46,7 @@ criterion = "0.2"
 skeptic = "0.13"
 assert_cmd = "0.10"
 predicates = "1"
+env_logger = "0.6.1"
 
 [build-dependencies]
 skeptic = "0.13"

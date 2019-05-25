@@ -1,5 +1,6 @@
 use clap::{App, AppSettings, Arg, ArgMatches};
 use dialoguer::Confirmation;
+use indoc::indoc;
 
 use encoding::all::encodings;
 use encoding::types::Encoding;
@@ -260,7 +261,11 @@ impl EvtxDump {
 
     fn try_to_initialize_logging(&self) {
         if let Some(level) = self.verbosity_level {
-            match simple_logger::init_with_level(level) {
+            match simplelog::WriteLogger::init(
+                level.to_level_filter(),
+                simplelog::Config::default(),
+                io::stderr(),
+            ) {
                 Ok(_) => {}
                 Err(e) => eprintln!("Failed to initialize logging: {}", e),
             };
@@ -298,34 +303,34 @@ fn main() {
                 .possible_values(&["json", "xml", "jsonl"])
                 .default_value("xml")
                 .help("Sets the output format")
-                .long_help("\
-                    Sets the output format:
-                        \"xml\"   - prints XML output.
-                        \"json\"  - prints
-                        \"jsonl\" - same as json with --no-indent --dont-show-record-number 
-                "),
+                .long_help(indoc!(
+                r#"Sets the output format:
+                     "xml"   - prints XML output.
+                     "json"  - prints JSON output.
+                     "jsonl" - (jsonlines) same as json with --no-indent --dont-show-record-number 
+                "#)),
         )
         .arg(
             Arg::with_name("output-target")
                 .long("--output")
                 .short("-f")
                 .takes_value(true)
-                .help("Writes output to the file specified instead of stdout, errors will still be printed to stderr.\
-                       Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`\
-                       Will create parent directories if needed."),
+                .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
+                       Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
+                       Will create parent directories if needed.")),
         )
         .arg(
             Arg::with_name("no-confirm-overwrite")
                 .long("--no-confirm-overwrite")
                 .takes_value(false)
-                .help("When set, will not ask for confirmation before overwriting files, useful for automation"),
+                .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
         .arg(
             Arg::with_name("validate-checksums")
                 .long("--validate-checksums")
                 .takes_value(false)
-                .help("When set, chunks with invalid checksums will not be parsed. \
-                Usually dirty files have bad checksums, so using this flag will result in fewer records."),
+                .help(indoc!("When set, chunks with invalid checksums will not be parsed. \
+                Usually dirty files have bad checksums, so using this flag will result in fewer records.")),
         )
         .arg(
             Arg::with_name("no-indent")
@@ -349,9 +354,17 @@ fn main() {
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
         )
-        .arg(Arg::with_name("verbose").short("-v").multiple(true).takes_value(false)
-            .help("-v - info, -vv - debug, -vvv - trace.\
-             trace output is only available in debug builds, as it is extremely verbose"))
+        .arg(Arg::with_name("verbose")
+            .short("-v")
+            .multiple(true)
+            .takes_value(false)
+            .help(indoc!(r#"
+            Sets debug prints level for the application:
+                -v   - info
+                -vv  - debug
+                -vvv - trace
+            NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
+        )
         .arg(
             Arg::with_name("backtraces")
                 .long("--backtraces")
