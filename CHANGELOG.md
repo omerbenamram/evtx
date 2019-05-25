@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--output` to allow writing to files, `--no-confirm-overwrite` to allow binary to overwrite existing files.
 ### Changed
 - Logs are now printed to stderr instead of stdout
+- Failure exit code is now `1` instead of `-1`
 
 ## [0.3.3] - 2019-05-23
 
