@@ -7,7 +7,6 @@ use encoding::types::Encoding;
 use evtx::err::{dump_err_with_backtrace, Error};
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
-use std::cell::RefCell;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -24,24 +23,9 @@ struct EvtxDump {
     input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
-    // It's ok to rely on interior mutability here,
-    // since there is only one code flow writing to output which is trivial to verify.
-    output: RefCell<Box<Write>>,
+    output: Box<Write>,
     verbosity_level: Option<Level>,
     backtraces: bool,
-}
-
-/// Tries to write a line to a given target, aborts program if fails.
-macro_rules! try_writeln {
-    ($($arg:tt)*) => (
-        match writeln!($($arg)*) {
-            Ok(_) => {},
-            Err(e) => {
-                eprintln!("{}", &e);
-                exit(1)
-            }
-        }
-    );
 }
 
 /// Simple error  macro for use inside of internal errors in `EvtxDump`
@@ -153,14 +137,14 @@ impl EvtxDump {
             input,
             show_record_number: !no_show_record_number,
             output_format,
-            output: RefCell::new(output),
+            output: output,
             verbosity_level,
             backtraces,
         }
     }
 
     /// Main entry point for `EvtxDump`
-    pub fn run(&self) {
+    pub fn run(&mut self) -> Result<(), Error> {
         self.try_to_initialize_logging();
 
         let mut parser = match EvtxParser::from_path(&self.input) {
@@ -178,15 +162,17 @@ impl EvtxDump {
         match self.output_format {
             EvtxOutputFormat::XML => {
                 for record in parser.records() {
-                    self.dump_record(record)
+                    self.dump_record(record)?
                 }
             }
             EvtxOutputFormat::JSON => {
                 for record in parser.records_json() {
-                    self.dump_record(record)
+                    self.dump_record(record)?
                 }
             }
-        }
+        };
+
+        Ok(())
     }
 
     /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
@@ -241,22 +227,24 @@ impl EvtxDump {
         }
     }
 
-    fn dump_record(&self, record: Result<SerializedEvtxRecord, Error>) {
+    fn dump_record(&mut self, record: Result<SerializedEvtxRecord, Error>) -> Result<(), Error> {
         match record {
             Ok(r) => {
                 if self.show_record_number {
-                    try_writeln!(self.output.borrow_mut(), "Record {}", r.event_record_id);
+                    writeln!(self.output, "Record {}", r.event_record_id)?;
                 }
-                try_writeln!(self.output.borrow_mut(), "{}", r.data);
+                writeln!(self.output, "{}", r.data)?;
             }
             Err(e) => {
                 if self.backtraces {
                     dump_err_with_backtrace(&e)
                 } else {
-                    eprintln!("{}", &e);
+                    eprintln!("{:?}", &e);
                 }
             }
-        }
+        };
+
+        Ok(())
     }
 
     fn try_to_initialize_logging(&self) {
@@ -267,7 +255,7 @@ impl EvtxDump {
                 io::stderr(),
             ) {
                 Ok(_) => {}
-                Err(e) => eprintln!("Failed to initialize logging: {}", e),
+                Err(e) => eprintln!("Failed to initialize logging: {:?}", e),
             };
         }
     }
@@ -372,6 +360,13 @@ fn main() {
                 .help("If set, a backtrace will be printed with some errors if available"))
         .get_matches();
 
-    let app = EvtxDump::from_cli_matches(&matches);
-    app.run();
+    let mut app = EvtxDump::from_cli_matches(&matches);
+
+    match app.run() {
+        Ok(()) => {},
+        Err(e) => {
+            eprintln!("{}", &e);
+            exit(1);
+        }
+    };
 }
