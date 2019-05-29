@@ -44,7 +44,7 @@ multithreading = ["rayon"]
 pretty_assertions = "0.6.1"
 criterion = "0.2"
 skeptic = "0.13"
-assert_cmd = "0.10"
+assert_cmd = "0.11"
 predicates = "1"
 env_logger = "0.6.1"
 
