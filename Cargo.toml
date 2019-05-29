@@ -47,6 +47,11 @@ skeptic = "0.13"
 assert_cmd = "0.11"
 predicates = "1"
 env_logger = "0.6.1"
+tempfile = "3"
+
+# rexpect relies on unix process semantics, but it's only used for process interaction tests.
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
+rexpect = "0.3"
 
 [build-dependencies]
 skeptic = "0.13"
