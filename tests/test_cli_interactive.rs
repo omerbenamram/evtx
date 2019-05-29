@@ -34,7 +34,7 @@ fn test_it_confirms_before_overwriting_a_file() {
     );
 
     let mut p = spawn(&cmd_string, Some(3000)).unwrap();
-    p.exp_regex(r#".*Are you sure you want to override.*"#)
+    p.exp_regex(r#"Are you sure you want to override.*"#)
         .unwrap();
     p.send_line("y").unwrap();
     p.exp_eof().unwrap();
@@ -67,7 +67,7 @@ fn test_it_confirms_before_overwriting_a_file_and_quits() {
     );
 
     let mut p = spawn(&cmd_string, Some(10000)).unwrap();
-    p.exp_regex(r#".*Are you sure you want to override.*"#)
+    p.exp_regex(r#"Are you sure you want to override.*"#)
         .unwrap();
     p.send_line("n").unwrap();
     p.exp_eof().unwrap();
