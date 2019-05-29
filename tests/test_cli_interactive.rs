@@ -33,8 +33,6 @@ fn test_it_confirms_before_overwriting_a_file() {
         sample = sample.to_str().unwrap()
     );
 
-    dbg!(&cmd_string);
-
     let mut p = spawn(&cmd_string, Some(3000)).unwrap();
     p.exp_regex(r#"Are you sure you want to override.*"#)
         .unwrap();
@@ -56,7 +54,6 @@ fn test_it_confirms_before_overwriting_a_file_and_quits() {
     let d = tempdir().unwrap();
     let f = d.as_ref().join("test.out");
 
-    dbg!(&f);
     let mut file = File::create(&f).unwrap();
     file.write_all(b"I'm a file!").unwrap();
 
@@ -69,7 +66,6 @@ fn test_it_confirms_before_overwriting_a_file_and_quits() {
         sample = sample.to_str().unwrap()
     );
 
-    dbg!(&cmd_string);
     let mut p = spawn(&cmd_string, Some(10000)).unwrap();
     p.exp_regex(r#"Are you sure you want to override.*"#)
         .unwrap();
