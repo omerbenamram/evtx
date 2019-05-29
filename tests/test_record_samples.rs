@@ -1,10 +1,13 @@
-use crate::{ensure_env_logger_initialized, EvtxParser, ParserSettings};
+mod fixtures;
+use fixtures::*;
+
+use evtx::{EvtxParser, ParserSettings};
 use pretty_assertions::assert_eq;
 
 #[test]
 fn test_event_xml_sample() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/security.evtx");
+    let evtx_file = include_bytes!("../samples/security.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(ParserSettings::new().num_threads(1));
@@ -17,7 +20,7 @@ fn test_event_xml_sample() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/security_event_1.xml")
+        include_str!("../samples/security_event_1.xml")
             .lines()
             .map(str::trim)
             .collect::<String>()
@@ -27,7 +30,7 @@ fn test_event_xml_sample() {
 #[test]
 fn test_event_json_sample() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/security.evtx");
+    let evtx_file = include_bytes!("../samples/security.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(ParserSettings::new().num_threads(1));
@@ -40,7 +43,7 @@ fn test_event_json_sample() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/security_event_1.json")
+        include_str!("../samples/security_event_1.json")
             .lines()
             .map(str::trim)
             .collect::<String>()
@@ -50,7 +53,7 @@ fn test_event_json_sample() {
 #[test]
 fn test_event_json_sample_with_event_data() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/2-system-Security-dirty.evtx");
+    let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(ParserSettings::new().num_threads(1));
@@ -63,7 +66,7 @@ fn test_event_json_sample_with_event_data() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/event_with_eventdata.json")
+        include_str!("../samples/event_with_eventdata.json")
             .lines()
             .map(str::trim)
             .collect::<String>()
@@ -73,7 +76,7 @@ fn test_event_json_sample_with_event_data() {
 #[test]
 fn test_event_xml_sample_with_event_data() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/2-system-Security-dirty.evtx");
+    let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(ParserSettings::new().num_threads(1));
@@ -86,7 +89,7 @@ fn test_event_xml_sample_with_event_data() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/event_with_eventdata.xml")
+        include_str!("../samples/event_with_eventdata.xml")
             .lines()
             .map(str::trim)
             .collect::<String>()
@@ -96,7 +99,7 @@ fn test_event_xml_sample_with_event_data() {
 #[test]
 fn test_event_json_sample_with_event_data_with_attributes_and_text() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/system.evtx");
+    let evtx_file = include_bytes!("../samples/system.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(ParserSettings::new().num_threads(1));
@@ -109,7 +112,7 @@ fn test_event_json_sample_with_event_data_with_attributes_and_text() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/event_with_text_and_attributes.json")
+        include_str!("../samples/event_with_text_and_attributes.json")
             .lines()
             .map(str::trim)
             .collect::<String>()
@@ -119,7 +122,7 @@ fn test_event_json_sample_with_event_data_with_attributes_and_text() {
 #[test]
 fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/system.evtx");
+    let evtx_file = include_bytes!("../samples/system.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(ParserSettings::new().num_threads(1));
@@ -132,7 +135,7 @@ fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/event_with_text_and_attributes.xml")
+        include_str!("../samples/event_with_text_and_attributes.xml")
             .lines()
             .map(str::trim)
             .collect::<String>()
@@ -143,7 +146,7 @@ fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
 fn test_event_xml_sample_with_user_data() {
     ensure_env_logger_initialized();
     let evtx_file = include_bytes!(
-        "../../samples/E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx"
+        "../samples/E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx"
     );
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
@@ -159,7 +162,7 @@ fn test_event_xml_sample_with_user_data() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../../samples/event_with_template_as_substitution.xml")
+        include_str!("../samples/event_with_template_as_substitution.xml")
             .lines()
             .map(str::trim)
             .collect::<String>()

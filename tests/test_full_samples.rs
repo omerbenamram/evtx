@@ -1,6 +1,7 @@
+mod fixtures;
 
-use crate::tests::fixtures::*;
-use crate::{ensure_env_logger_initialized, EvtxParser, ParserSettings};
+use evtx::{EvtxParser, ParserSettings};
+use fixtures::*;
 use log::Level;
 use std::path::Path;
 
@@ -52,7 +53,7 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
 // https://github.com/omerbenamram/evtx/issues/10
 fn test_dirty_sample_single_threaded() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/2-system-Security-dirty.evtx");
+    let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
 
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
@@ -67,7 +68,7 @@ fn test_dirty_sample_single_threaded() {
 #[test]
 fn test_dirty_sample_parallel() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../../samples/2-system-Security-dirty.evtx");
+    let evtx_file = include_bytes!("../samples/2-system-Security-dirty.evtx");
 
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
