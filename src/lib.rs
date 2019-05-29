@@ -1,4 +1,5 @@
 #![deny(unused_must_use)]
+#![deny(unsafe_code)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
 // This needs to come first!
@@ -23,8 +24,6 @@ mod guid;
 mod ntsid;
 mod string_cache;
 mod template_cache;
-#[cfg(test)]
-mod tests;
 mod utils;
 
 mod json_output;
