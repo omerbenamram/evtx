@@ -1,9 +1,9 @@
 use crate::binxml::name::BinXmlName;
-use crate::guid::Guid;
-
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use std::borrow::Cow;
+
+use winstructs::guid::Guid;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLDeserializedTokens<'a> {

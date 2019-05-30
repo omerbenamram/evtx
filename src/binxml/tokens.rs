@@ -3,8 +3,9 @@ use crate::evtx_parser::ReadSeek;
 use snafu::{OptionExt, ResultExt};
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
+use winstructs::guid::Guid;
 
-use crate::{guid::Guid, model::deserialized::*};
+use crate::model::deserialized::*;
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
@@ -250,10 +251,10 @@ mod test {
     use crate::binxml::tokens::read_template_definition;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::ensure_env_logger_initialized;
-    use crate::guid::Guid;
     use encoding::all::WINDOWS_1252;
     use std::borrow::Cow;
     use std::io::{Cursor, Seek, SeekFrom};
+    use winstructs::guid::Guid;
 
     macro_rules! n {
         ($s: expr) => {

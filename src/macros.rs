@@ -141,7 +141,11 @@ macro_rules! try_read {
     };
 
     ($cursor: ident, filetime) => {
-        datetime_from_filetime(try_read!($cursor, u64))
+        winstructs::timestamp::WinTimestamp::from_reader($cursor)
+            .context(err::FailedToReadWindowsTime {
+                offset: $cursor.position(),
+            })?
+            .to_datetime()
     };
 
     ($cursor: ident, systime) => {

@@ -20,7 +20,6 @@ mod evtx_chunk;
 mod evtx_file_header;
 mod evtx_parser;
 mod evtx_record;
-mod guid;
 mod string_cache;
 mod template_cache;
 mod utils;

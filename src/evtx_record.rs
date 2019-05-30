@@ -1,16 +1,16 @@
+use crate::binxml::assemble::parse_tokens;
 use crate::err::{self, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::{ensure, ResultExt};
-
-use crate::binxml::assemble::parse_tokens;
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
-use crate::utils::datetime_from_filetime;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::ParserSettings;
+
+use std::io::{Cursor, Read};
+
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use std::io::{Cursor, Read};
+use snafu::{ensure, ResultExt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {

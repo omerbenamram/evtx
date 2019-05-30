@@ -18,7 +18,6 @@ exclude = [
 [dependencies]
 crc = "1.8.1"
 chrono = {version = "0.4.6", features=["serde"]}
-time = "0.1.42"
 encoding = "0.2.33"
 byteorder = "1.3.1"
 quick-xml = "0.14.0"
