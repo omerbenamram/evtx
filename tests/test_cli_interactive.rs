@@ -33,7 +33,7 @@ fn test_it_confirms_before_overwriting_a_file() {
         sample = sample.to_str().unwrap()
     );
 
-    let mut p = spawn(&cmd_string, Some(3000)).unwrap();
+    let mut p = spawn(&cmd_string, Some(10000)).unwrap();
     p.exp_regex(r#"Are you sure you want to override.*"#)
         .unwrap();
     p.send_line("y").unwrap();
