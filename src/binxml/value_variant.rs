@@ -10,7 +10,6 @@ use crate::binxml::deserializer::BinXmlDeserializer;
 
 use crate::guid::Guid;
 use crate::model::deserialized::BinXMLDeserializedTokens;
-use crate::ntsid::Sid;
 use crate::utils::{
     datetime_from_filetime, read_ansi_encoded_string, read_len_prefixed_utf16_string,
     read_null_terminated_utf16_string, read_systemtime, read_utf16_by_size,
@@ -21,6 +20,7 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::string::ToString;
+use winstructs::security::Sid;
 
 use crate::evtx_chunk::EvtxChunk;
 use std::fmt::Write;

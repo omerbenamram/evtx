@@ -21,7 +21,6 @@ mod evtx_file_header;
 mod evtx_parser;
 mod evtx_record;
 mod guid;
-mod ntsid;
 mod string_cache;
 mod template_cache;
 mod utils;

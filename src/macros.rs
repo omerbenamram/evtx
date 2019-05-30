@@ -127,7 +127,7 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, sid) => {
-        Sid::from_stream($cursor).context(err::FailedToReadNTSID {
+        Sid::from_reader($cursor).context(err::FailedToReadNTSID {
             offset: $cursor.position(),
         })?
     };
