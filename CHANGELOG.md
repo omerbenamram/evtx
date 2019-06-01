@@ -4,13 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0 - UNRELEASED]
+## [0.4.0 - 2019-06-01]
+
+File output is now supported by `evtx_dump`
 
 ### Added
 - `--output` to allow writing to files, `--no-confirm-overwrite` to allow binary to overwrite existing files.
 ### Changed
 - Logs are now printed to stderr instead of stdout
 - Failure exit code is now `1` instead of `-1`
+- Some of the structs used in parsing evtx have been moved to [`winstructs`](https://github.com/omerbenamram/winstructs)
 
 ## [0.3.3] - 2019-05-23
 
