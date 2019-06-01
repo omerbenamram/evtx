@@ -102,7 +102,7 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, guid) => {
-        Guid::from_stream($cursor).context(err::FailedToReadGUID {
+        Guid::from_reader($cursor).context(err::FailedToReadGUID {
             offset: $cursor.position(),
         })?
     };
