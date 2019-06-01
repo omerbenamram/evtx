@@ -1,5 +1,5 @@
 use crate::binxml::value_variant::BinXmlValue;
-use crate::err::{Result};
+use crate::err::Result;
 use crate::model::xml::XmlElement;
 use crate::unimplemented_fn;
 use crate::ParserSettings;
@@ -78,7 +78,7 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_open_start_element<'a>(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<()> {
         trace!("visit_open_start_element: {:?}", element);
 
         let mut event_builder =

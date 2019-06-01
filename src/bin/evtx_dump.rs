@@ -137,7 +137,7 @@ impl EvtxDump {
             input,
             show_record_number: !no_show_record_number,
             output_format,
-            output: output,
+            output,
             verbosity_level,
             backtraces,
         }
@@ -363,7 +363,7 @@ fn main() {
     let mut app = EvtxDump::from_cli_matches(&matches);
 
     match app.run() {
-        Ok(()) => {},
+        Ok(()) => {}
         Err(e) => {
             eprintln!("{}", &e);
             exit(1);
