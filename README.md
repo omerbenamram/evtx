@@ -22,11 +22,20 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
     - Releases are automatically built for for Windows, macOS, and Linux. (64-bit executables only)
   - Build from sources using  `cargo install evtx`
   
-## Example usage (associated binary utility):
-  - run `evtx_dump <evtx_file>` to dump contents of evtx records as xml.
-  - run `evtx_dump -o json <evtx_file>` to dump contents of evtx records as JSON.
+# `evtx_dump` (Binary utility):
+The main binary utility provided with this crate is `evtx_dump`, and it provides a quick way to convert `.evtx` files to 
+different output formats.
 
-**Note:** by default, the library will try to utilize multithreading, this means that the records may be returned out of order.
+Some examples
+  - `evtx_dump <evtx_file>` will dump contents of evtx records as xml.
+  - `evtx_dump -o json <evtx_file>` will dump contents of evtx records as JSON. 
+  - `evtx_dump -f <output_file> -o json <input_file>` will dump contents of evtx records as JSON to a given file.
+
+`evtx_dump` can be combined with `fd` for convinient batch processing of files:
+  - `fd -e evtx -x evtx_dump -o jsonl` will scan a folder and dump all evtx files to a single jsonlines file.
+  - `fd -e evtx -x evtx_dump -f "{.}.xml` will create an xml file next to each evtx file, for all files in folder recursively!
+  
+**Note:** by default, `evtx_dump` will try to utilize multithreading, this means that the records may be returned out of order.
 
 To force single threaded usage (which will also ensure order), `-t 1` can be passed.
 
