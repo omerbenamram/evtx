@@ -18,13 +18,13 @@ exclude = [
 [dependencies]
 crc = "1.8.1"
 chrono = {version = "0.4.6", features=["serde"]}
-time = "0.1.42"
 encoding = "0.2.33"
 byteorder = "1.3.1"
 quick-xml = "0.14.0"
 snafu = { version = "0.4.1", features=["backtraces", "rust_1_30"]}
 log = { version = "^0.4", features=["release_max_level_debug"]}
 rayon = {version = "1.0.3", optional = true}
+winstructs = "0.2.2"
 
 # `evtx_dump` dependencies
 simplelog = "0.5.3"

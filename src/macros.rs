@@ -102,7 +102,7 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, guid) => {
-        Guid::from_stream($cursor).context(err::FailedToReadGUID {
+        Guid::from_reader($cursor).context(err::FailedToReadGUID {
             offset: $cursor.position(),
         })?
     };
@@ -127,7 +127,7 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, sid) => {
-        Sid::from_stream($cursor).context(err::FailedToReadNTSID {
+        Sid::from_reader($cursor).context(err::FailedToReadNTSID {
             offset: $cursor.position(),
         })?
     };
@@ -141,7 +141,11 @@ macro_rules! try_read {
     };
 
     ($cursor: ident, filetime) => {
-        datetime_from_filetime(try_read!($cursor, u64))
+        winstructs::timestamp::WinTimestamp::from_reader($cursor)
+            .context(err::FailedToReadWindowsTime {
+                offset: $cursor.position(),
+            })?
+            .to_datetime()
     };
 
     ($cursor: ident, systime) => {

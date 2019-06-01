@@ -23,14 +23,14 @@ struct EvtxDump {
     input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
-    output: Box<Write>,
+    output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     backtraces: bool,
 }
 
 /// Simple error  macro for use inside of internal errors in `EvtxDump`
 macro_rules! err {
-    ($($tt:tt)*) => { Err(Box::<std::error::Error>::from(format!($($tt)*))) }
+    ($($tt:tt)*) => { Err(Box::<dyn std::error::Error>::from(format!($($tt)*))) }
 }
 
 impl EvtxDump {
@@ -113,7 +113,7 @@ impl EvtxDump {
             .find(|c| c.name() == matches.value_of("ansi-codec").expect("has set default"))
             .expect("possible values are derived from `encodings()`");
 
-        let output: Box<Write> = if let Some(path) = matches.value_of("output-target") {
+        let output: Box<dyn Write> = if let Some(path) = matches.value_of("output-target") {
             match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
                 Ok(f) => Box::new(f),
                 Err(e) => {
@@ -137,7 +137,7 @@ impl EvtxDump {
             input,
             show_record_number: !no_show_record_number,
             output_format,
-            output: output,
+            output,
             verbosity_level,
             backtraces,
         }
@@ -179,7 +179,7 @@ impl EvtxDump {
     fn create_output_file(
         path: impl AsRef<Path>,
         prompt: bool,
-    ) -> Result<File, Box<std::error::Error>> {
+    ) -> Result<File, Box<dyn std::error::Error>> {
         let p = path.as_ref();
 
         if p.is_dir() {
@@ -363,7 +363,7 @@ fn main() {
     let mut app = EvtxDump::from_cli_matches(&matches);
 
     match app.run() {
-        Ok(()) => {},
+        Ok(()) => {}
         Err(e) => {
             eprintln!("{}", &e);
             exit(1);

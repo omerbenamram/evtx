@@ -137,11 +137,27 @@ pub enum Error {
         offset: u64,
     },
 
+    #[snafu(display(
+        "Offset {}: Failed to read windows time, caused by: {}",
+        offset,
+        source
+    ))]
+    FailedToReadWindowsTime {
+        source: winstructs::err::Error,
+        offset: u64,
+    },
+
     #[snafu(display("Offset {}: Failed to decode GUID, caused by: {}", offset, source))]
-    FailedToReadGUID { source: std::io::Error, offset: u64 },
+    FailedToReadGUID {
+        source: winstructs::err::Error,
+        offset: u64,
+    },
 
     #[snafu(display("Offset {}: Failed to decode NTSID, caused by: {}", offset, source))]
-    FailedToReadNTSID { source: std::io::Error, offset: u64 },
+    FailedToReadNTSID {
+        source: winstructs::err::Error,
+        offset: u64,
+    },
 
     #[snafu(display("Failed to create record model, reason: {}", message))]
     FailedToCreateRecordModel { message: String },
