@@ -27,7 +27,7 @@ rayon = {version = "1.0.3", optional = true}
 winstructs = "0.2.2"
 
 # `evtx_dump` dependencies
-simplelog = "0.5.3"
+simplelog = "0.6.0"
 clap = "2.33.0"
 dialoguer = "0.4.0"
 indoc = "0.3"
