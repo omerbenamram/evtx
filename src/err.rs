@@ -75,7 +75,7 @@ pub enum Error {
     ))]
     FailedToDeserializeRecord {
         record_id: u64,
-        #[snafu(backtrace(delegate))]
+        #[snafu(backtrace)]
         #[snafu(source(from(Error, Box::new)))]
         source: Box<Error>,
     },
