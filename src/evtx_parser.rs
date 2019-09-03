@@ -87,8 +87,24 @@ pub struct ParserSettings {
     num_threads: usize,
     /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
-    /// If true, XML attributes will be separated in JSON
-    //
+    /// If enabled, XML attributes will be separated in JSON
+    /// into a separate field. Example:
+    /// {
+    ///   "EventID": {
+    ///     "#attributes": {
+    ///       "Qualifiers": 16384
+    ///     },
+    ///     "#text": 4111
+    ///   }
+    /// }
+    /// 
+    /// Becomes: 
+    /// {
+    ///   "EventID": 4111,
+    ///   "EventID_attributes": {
+    ///     "Qualifiers": 16384
+    ///   }
+    /// }
     separate_json_attributes: bool,
     /// If true, output will be indented.
     indent: bool,
@@ -101,6 +117,7 @@ impl Debug for ParserSettings {
         f.debug_struct("ParserSettings")
             .field("num_threads", &self.num_threads)
             .field("validate_checksums", &self.validate_checksums)
+            .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
             .field("ansi_codec", &self.ansi_codec.name())
             .finish()
