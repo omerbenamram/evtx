@@ -64,7 +64,7 @@ impl EvtxDump {
             (v, None) => v,
         };
 
-        let separate_attrib_flag = matches.is_present("separate-attributes");
+        let separate_json_attrib_flag = matches.is_present("separate-json-attributes");
 
         let no_show_record_number = match (
             matches.is_present("no-show-record-number"),
@@ -134,7 +134,7 @@ impl EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
-                .separate_attributes(separate_attrib_flag)
+                .separate_attributes(separate_json_attrib_flag)
                 .indent(!no_indent)
                 .ansi_codec(*ansi_codec),
             input,
@@ -330,8 +330,8 @@ fn main() {
                 .help("When set, output will not be indented."),
         )
         .arg(
-            Arg::with_name("separate-attributes")
-                .long("--separate-attributes")
+            Arg::with_name("separate-json-attributes")
+                .long("--separate-json-attributes")
                 .takes_value(false)
                 .help("In JSON output, make a XML Element's attributes a separate object than the Elements name ('ELEMENTNAME_attributes: {}'"),
         )
