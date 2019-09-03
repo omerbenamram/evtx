@@ -134,7 +134,7 @@ impl EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
-                .separate_attributes(separate_json_attrib_flag)
+                .separate_json_attributes(separate_json_attrib_flag)
                 .indent(!no_indent)
                 .ansi_codec(*ansi_codec),
             input,

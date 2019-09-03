@@ -18,7 +18,7 @@ pub struct JsonOutput<W: Write> {
     writer: W,
     map: Value,
     stack: Vec<String>,
-    separate_attributes: bool,
+    separate_json_attributes: bool,
     indent: bool,
 }
 
@@ -126,7 +126,7 @@ impl<W: Write> JsonOutput<W> {
 
         // If we have attributes, create a map as usual.
         if !attributes.is_empty() {
-            if self.separate_attributes {
+            if self.separate_json_attributes {
                 // If we are separating the attributes we want
                 // to insert the object for the attributes 
                 // into the parent. 
@@ -177,7 +177,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
             writer: target,
             map: Value::Object(Map::new()),
             stack: vec![],
-            separate_attributes: settings.should_separate_attributes(),
+            separate_json_attributes: settings.should_separate_json_attributes(),
             indent: settings.should_indent(),
         }
     }
@@ -229,7 +229,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
         trace!("visit_chars {:?}", &self.stack);
         // We use the key name if we are separating Element attributes
         let key_name = self.stack[self.stack.len() - 1].clone();
-        let separate_flag = self.separate_attributes;
+        let separate_flag = self.separate_json_attributes;
 
         let current_value = match separate_flag {
             true => self.get_current_parent(),

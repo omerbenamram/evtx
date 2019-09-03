@@ -88,7 +88,8 @@ pub struct ParserSettings {
     /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
     /// If true, XML attributes will be separated in JSON
-    separate_attributes: bool,
+    //
+    separate_json_attributes: bool,
     /// If true, output will be indented.
     indent: bool,
     /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
@@ -111,7 +112,7 @@ impl PartialEq for ParserSettings {
         self.ansi_codec.name() == other.ansi_codec.name()
             && self.num_threads == other.num_threads
             && self.validate_checksums == other.validate_checksums
-            && self.separate_attributes == other.separate_attributes
+            && self.separate_json_attributes == other.separate_json_attributes
             && self.indent == other.indent
     }
 }
@@ -121,7 +122,7 @@ impl Default for ParserSettings {
         ParserSettings {
             num_threads: 0,
             validate_checksums: false,
-            separate_attributes: false,
+            separate_json_attributes: false,
             indent: true,
             ansi_codec: WINDOWS_1252,
         }
@@ -168,8 +169,8 @@ impl ParserSettings {
         self
     }
 
-    pub fn separate_attributes(mut self, separate: bool) -> Self {
-        self.separate_attributes = separate;
+    pub fn separate_json_attributes(mut self, separate: bool) -> Self {
+        self.separate_json_attributes = separate;
 
         self
     }
@@ -185,8 +186,8 @@ impl ParserSettings {
         self.ansi_codec
     }
 
-    pub fn should_separate_attributes(&self) -> bool {
-        self.separate_attributes
+    pub fn should_separate_json_attributes(&self) -> bool {
+        self.separate_json_attributes
     }
 
     pub fn should_indent(&self) -> bool {
