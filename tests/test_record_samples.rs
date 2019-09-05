@@ -168,3 +168,30 @@ fn test_event_xml_sample_with_user_data() {
             .collect::<String>()
     );
 }
+
+#[test]
+fn test_event_json_sample_with_separate_json_attributes() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!("../samples/Application.evtx");
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true)
+        );
+
+    let first_record = parser
+        .records_json()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+
+    assert_eq!(
+        first_record.data.lines().map(str::trim).collect::<String>(),
+        include_str!("../samples/application_event_1_separate_attributes.json")
+            .lines()
+            .map(str::trim)
+            .collect::<String>()
+    );
+}

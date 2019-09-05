@@ -18,6 +18,7 @@ pub struct JsonOutput<W: Write> {
     writer: W,
     map: Value,
     stack: Vec<String>,
+    separate_json_attributes: bool,
     indent: bool,
 }
 
@@ -125,16 +126,32 @@ impl<W: Write> JsonOutput<W> {
 
         // If we have attributes, create a map as usual.
         if !attributes.is_empty() {
-            let value =
-                self.get_or_create_current_path()
+            if self.separate_json_attributes {
+                // If we are separating the attributes we want
+                // to insert the object for the attributes 
+                // into the parent. 
+                let value = self.get_current_parent()
                     .as_object_mut()
                     .context(err::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                         Check that the value is not `Value::null`",
+                        Check that the value is not `Value::null`",
                 })?;
 
-            value.insert("#attributes".to_owned(), Value::Object(attributes));
+                value.insert(format!("{}_attributes", name), Value::Object(attributes));
+            }
+            else {
+                let value =
+                    self.get_or_create_current_path()
+                        .as_object_mut()
+                        .context(err::JsonStructureError {
+                        message:
+                            "This is a bug - expected current value to exist, and to be an object type.
+                            Check that the value is not `Value::null`",
+                    })?;
+
+                value.insert("#attributes".to_owned(), Value::Object(attributes));
+            }
         } else {
             // If the object does not have attributes, replace it with a null placeholder,
             // so it will be printed as a key-value pair
@@ -160,6 +177,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
             writer: target,
             map: Value::Object(Map::new()),
             stack: vec![],
+            separate_json_attributes: settings.should_separate_json_attributes(),
             indent: settings.should_indent(),
         }
     }
@@ -209,13 +227,17 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
 
     fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
         trace!("visit_chars {:?}", &self.stack);
+        // We need to clone this bool since the next statement will borrow self as mutable.
+        let separate_json_attributes = self.separate_json_attributes;
         let current_value = self.get_or_create_current_path();
 
         // If our parent is an element without any attributes,
         // we simply swap the null with the string value.
-        if current_value.is_null() {
+        // This is also true for the case when the attributes were inserted as our siblings.
+        if current_value.is_null() || separate_json_attributes {
             mem::replace(current_value, value.clone().into());
         } else {
+            // Otherwise,
             // Should look like:
             // ----------------
             //  "EventID": {

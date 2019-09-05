@@ -87,6 +87,25 @@ pub struct ParserSettings {
     num_threads: usize,
     /// If enabled, chunk with bad checksums will be skipped.
     validate_checksums: bool,
+    /// If enabled, XML attributes will be separated in JSON
+    /// into a separate field. Example:
+    /// {
+    ///   "EventID": {
+    ///     "#attributes": {
+    ///       "Qualifiers": 16384
+    ///     },
+    ///     "#text": 4111
+    ///   }
+    /// }
+    /// 
+    /// Becomes: 
+    /// {
+    ///   "EventID": 4111,
+    ///   "EventID_attributes": {
+    ///     "Qualifiers": 16384
+    ///   }
+    /// }
+    separate_json_attributes: bool,
     /// If true, output will be indented.
     indent: bool,
     /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
@@ -98,6 +117,7 @@ impl Debug for ParserSettings {
         f.debug_struct("ParserSettings")
             .field("num_threads", &self.num_threads)
             .field("validate_checksums", &self.validate_checksums)
+            .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
             .field("ansi_codec", &self.ansi_codec.name())
             .finish()
@@ -109,6 +129,7 @@ impl PartialEq for ParserSettings {
         self.ansi_codec.name() == other.ansi_codec.name()
             && self.num_threads == other.num_threads
             && self.validate_checksums == other.validate_checksums
+            && self.separate_json_attributes == other.separate_json_attributes
             && self.indent == other.indent
     }
 }
@@ -118,6 +139,7 @@ impl Default for ParserSettings {
         ParserSettings {
             num_threads: 0,
             validate_checksums: false,
+            separate_json_attributes: false,
             indent: true,
             ansi_codec: WINDOWS_1252,
         }
@@ -164,6 +186,12 @@ impl ParserSettings {
         self
     }
 
+    pub fn separate_json_attributes(mut self, separate: bool) -> Self {
+        self.separate_json_attributes = separate;
+
+        self
+    }
+
     pub fn indent(mut self, pretty: bool) -> Self {
         self.indent = pretty;
 
@@ -173,6 +201,10 @@ impl ParserSettings {
     /// Gets the current ansi codec
     pub fn get_ansi_codec(&self) -> EncodingRef {
         self.ansi_codec
+    }
+
+    pub fn should_separate_json_attributes(&self) -> bool {
+        self.separate_json_attributes
     }
 
     pub fn should_indent(&self) -> bool {
