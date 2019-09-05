@@ -333,7 +333,7 @@ fn main() {
             Arg::with_name("separate-json-attributes")
                 .long("--separate-json-attributes")
                 .takes_value(false)
-                .help("In JSON output, make a XML Element's attributes a separate object than the Elements name ('ELEMENTNAME_attributes: {}'"),
+                .help("If outputting JSON, XML Element's attributes will be stored in a separate object named '<ELEMENTNAME>_attributes', with <ELEMENTNAME> containing the value of the node."),
         )
         .arg(
             Arg::with_name("no-show-record-number")
