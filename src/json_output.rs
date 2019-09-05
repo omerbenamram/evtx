@@ -227,20 +227,17 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
 
     fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
         trace!("visit_chars {:?}", &self.stack);
-        // We use the key name if we are separating Element attributes
-        let key_name = self.stack[self.stack.len() - 1].clone();
-        let separate_flag = self.separate_json_attributes;
-
-        let current_value = match separate_flag {
-            true => self.get_current_parent(),
-            false => self.get_or_create_current_path()
-        };
+        // We need to clone this bool since the next statement will borrow self as mutable.
+        let separate_json_attributes = self.separate_json_attributes;
+        let current_value = self.get_or_create_current_path();
 
         // If our parent is an element without any attributes,
         // we simply swap the null with the string value.
-        if current_value.is_null() {
+        // This is also true for the case when the attributes were inserted as our siblings.
+        if current_value.is_null() || separate_json_attributes {
             mem::replace(current_value, value.clone().into());
         } else {
+            // Otherwise,
             // Should look like:
             // ----------------
             //  "EventID": {
@@ -256,24 +253,7 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
                         message: "expected current value to be an object type",
                     })?;
 
-            match separate_flag {
-                true => {
-                    // Because we are placing the attributes in a separate object
-                    // we can insert the #text value as the current_object's value.
-                    current_object.insert(
-                        key_name, 
-                        value.clone().into()
-                    );
-                },
-                false => {
-                    // Insert the Element's value as a #text field because this Element
-                    // has attributes. This means the current_object is a Map.
-                    current_object.insert(
-                        "#text".to_owned(), 
-                        value.clone().into()
-                    );
-                }
-            }
+            current_object.insert("#text".to_owned(), value.clone().into());
         }
 
         Ok(())
