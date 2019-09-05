@@ -172,7 +172,7 @@ fn test_event_xml_sample_with_user_data() {
 #[test]
 fn test_event_json_sample_with_separate_json_attributes() {
     ensure_env_logger_initialized();
-    let evtx_file = include_bytes!("../samples/security.evtx");
+    let evtx_file = include_bytes!("../samples/Application.evtx");
     let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
         .unwrap()
         .with_configuration(
@@ -189,7 +189,7 @@ fn test_event_json_sample_with_separate_json_attributes() {
 
     assert_eq!(
         first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/security_event_1_separate_attributes.json")
+        include_str!("../samples/application_event_1_separate_attributes.json")
             .lines()
             .map(str::trim)
             .collect::<String>()
