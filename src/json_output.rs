@@ -169,6 +169,17 @@ impl<W: Write> JsonOutput<W> {
 
         Ok(())
     }
+
+    pub fn into_value(self) -> Result<Value> {
+        ensure!(
+            self.stack.is_empty(),
+            err::JsonStructureError {
+                message: "Invalid stream, EOF reached before closing all attributes"
+            }
+        );
+
+        Ok(self.map)
+    }
 }
 
 impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {

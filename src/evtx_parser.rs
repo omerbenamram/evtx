@@ -615,4 +615,25 @@ mod tests {
         assert_eq!(records.len(), 1);
     }
 
+    #[test]
+    fn test_into_json_value_records() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/new-user-security.evtx");
+        let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let chunks: Vec<_> = parser.into_chunks().collect();
+
+        for chunk in chunks {
+            let mut chunk = chunk.unwrap();
+
+            for record in chunk.parse(&ParserSettings::default()).unwrap().iter() {
+                let record = record.unwrap();
+
+                let record_with_json_value = record.into_json_value().unwrap();
+
+                assert!(record_with_json_value.data.is_object());
+                assert!(record_with_json_value.data.as_object().unwrap().contains_key("Event"));
+            }
+        }
+    }
 }

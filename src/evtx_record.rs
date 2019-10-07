@@ -11,6 +11,7 @@ use std::io::{Cursor, Read};
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
 use snafu::{ensure, ResultExt};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {
@@ -32,6 +33,13 @@ pub struct SerializedEvtxRecord {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
     pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvtxRecordWithJsonValue {
+    pub event_record_id: u64,
+    pub timestamp: DateTime<Utc>,
+    pub data: Value,
 }
 
 impl EvtxRecordHeader {
@@ -73,6 +81,21 @@ impl<'a> EvtxRecord<'a> {
             .context(err::RecordContainsInvalidUTF8)?;
 
         Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data,
+        })
+    }
+
+    /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
+    pub fn into_json_value(self) -> Result<EvtxRecordWithJsonValue> {
+        let mut output_builder = JsonOutput::with_writer(Vec::new(), &self.settings);
+
+        parse_tokens(self.tokens, &mut output_builder)?;
+
+        let data = output_builder.into_value()?;
+
+        Ok(EvtxRecordWithJsonValue {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
             data,
