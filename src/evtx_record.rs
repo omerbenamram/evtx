@@ -10,8 +10,8 @@ use std::io::{Cursor, Read};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use snafu::{ensure, ResultExt};
 use serde_json::Value;
+use snafu::{ensure, ResultExt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {

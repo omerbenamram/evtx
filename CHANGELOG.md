@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.3 - 2019-10-07]
 
 ### Added
-- `EvtxRecord::into_json_value()` to allow working with records with a `serde_json::Value`. See `test_into_json_value_records` for an example.
+- `EvtxParser::records_json_value()` to allow working with records with a `serde_json::Value`. See `test_into_json_value_records` for an example.
 
 ## [0.4.2 - 2019-09-05]
 
