@@ -18,7 +18,6 @@ pub struct JsonOutput {
     map: Value,
     stack: Vec<String>,
     separate_json_attributes: bool,
-    indent: bool,
 }
 
 impl JsonOutput {
@@ -27,25 +26,7 @@ impl JsonOutput {
             map: Value::Object(Map::new()),
             stack: vec![],
             separate_json_attributes: settings.should_separate_json_attributes(),
-            indent: settings.should_indent(),
         }
-    }
-
-    pub fn to_writer<W: Write>(&self, writer: &mut W) -> Result<()> {
-        ensure!(
-            self.stack.is_empty(),
-            err::JsonStructureError {
-                message: "Invalid stream, EOF reached before closing all attributes"
-            }
-        );
-
-        if self.indent {
-            serde_json::to_writer_pretty(writer, &self.map).context(err::JsonError)?;
-        } else {
-            serde_json::to_writer(writer, &self.map).context(err::JsonError)?;
-        }
-
-        Ok(())
     }
 
     /// Looks up the current path, will fill with empty objects if needed.

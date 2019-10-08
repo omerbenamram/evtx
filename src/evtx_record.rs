@@ -78,18 +78,18 @@ impl<'a> EvtxRecord<'a> {
 
     /// Consumes the record and parse it, producing a JSON serialized record.
     pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
-        let mut output_builder = JsonOutput::new(self.settings);
+        let indent = self.settings.should_indent();
+        let record_with_json_value = self.into_json_value()?;
 
-        parse_tokens(self.tokens, &mut output_builder)?;
-
-        let mut buffer = Vec::new();
-        output_builder.to_writer(&mut buffer)?;
-
-        let data = String::from_utf8(buffer).context(err::RecordContainsInvalidUTF8)?;
+        let data = if indent {
+            serde_json::to_string_pretty(&record_with_json_value.data).context(err::JsonError)?
+        } else {
+            serde_json::to_string(&record_with_json_value.data).context(err::JsonError)?
+        };
 
         Ok(SerializedEvtxRecord {
-            event_record_id: self.event_record_id,
-            timestamp: self.timestamp,
+            event_record_id: record_with_json_value.event_record_id,
+            timestamp: record_with_json_value.timestamp,
             data,
         })
     }
