@@ -159,7 +159,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     ///
     /// NOTE: The lifetime bound should be the reverse,
     /// but because `Cow` is invariant w.r.t. it's lifetime we have to 'force' the ref to self
-    /// to be bigger than the 'chunk life time.
+    /// to be bigger than the 'chunk lifetime.
     pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
         IterChunkRecords {
             settings: self.settings,
