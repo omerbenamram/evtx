@@ -10,7 +10,6 @@ use std::io::{Cursor, Read};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use serde_json::Value;
 use snafu::{ensure, ResultExt};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,17 +28,10 @@ pub struct EvtxRecordHeader {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SerializedEvtxRecord {
+pub struct SerializedEvtxRecord<T> {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
-    pub data: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct EvtxRecordWithJsonValue {
-    pub event_record_id: u64,
-    pub timestamp: DateTime<Utc>,
-    pub data: Value,
+    pub data: T,
 }
 
 impl EvtxRecordHeader {
@@ -71,9 +63,40 @@ impl EvtxRecordHeader {
 }
 
 impl<'a> EvtxRecord<'a> {
-    /// Consumes the record, returning a `SerializedEvtxRecord` with the serialized data.
-    pub fn into_serialized<T: BinXmlOutput<Vec<u8>>>(self) -> Result<SerializedEvtxRecord> {
-        let mut output_builder = T::with_writer(Vec::new(), &self.settings);
+    /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
+    pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
+        let mut output_builder = JsonOutput::new(self.settings);
+
+        parse_tokens(self.tokens, &mut output_builder)?;
+
+        Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data: output_builder.into_value()?,
+        })
+    }
+
+    /// Consumes the record and parse it, producing a JSON serialized record.
+    pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
+        let mut output_builder = JsonOutput::new(self.settings);
+
+        parse_tokens(self.tokens, &mut output_builder)?;
+
+        let mut buffer = Vec::new();
+        output_builder.to_writer(&mut buffer)?;
+
+        let data = String::from_utf8(buffer).context(err::RecordContainsInvalidUTF8)?;
+
+        Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data,
+        })
+    }
+
+    /// Consumes the record and parse it, producing an XML serialized record.
+    pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
+        let mut output_builder = XmlOutput::with_writer(Vec::new(), &self.settings);
 
         parse_tokens(self.tokens, &mut output_builder)?;
 
@@ -85,30 +108,5 @@ impl<'a> EvtxRecord<'a> {
             timestamp: self.timestamp,
             data,
         })
-    }
-
-    /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
-    pub fn into_json_value(self) -> Result<EvtxRecordWithJsonValue> {
-        let mut output_builder = JsonOutput::with_writer(Vec::new(), &self.settings);
-
-        parse_tokens(self.tokens, &mut output_builder)?;
-
-        let data = output_builder.into_value()?;
-
-        Ok(EvtxRecordWithJsonValue {
-            event_record_id: self.event_record_id,
-            timestamp: self.timestamp,
-            data,
-        })
-    }
-
-    /// Consumes the record and parse it, producing a JSON serialized record.
-    pub fn into_json(self) -> Result<SerializedEvtxRecord> {
-        self.into_serialized::<JsonOutput<Vec<u8>>>()
-    }
-
-    /// Consumes the record and parse it, producing an XML serialized record.
-    pub fn into_xml(self) -> Result<SerializedEvtxRecord> {
-        self.into_serialized::<XmlOutput<Vec<u8>>>()
     }
 }

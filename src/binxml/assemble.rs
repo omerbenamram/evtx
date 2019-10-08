@@ -11,7 +11,7 @@ use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
 
-pub fn parse_tokens<W: Write, T: BinXmlOutput<W>>(
+pub fn parse_tokens<T: BinXmlOutput>(
     tokens: Vec<BinXMLDeserializedTokens>,
     visitor: &mut T,
 ) -> Result<()> {

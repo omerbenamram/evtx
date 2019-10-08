@@ -156,6 +156,10 @@ impl<'chunk> EvtxChunk<'chunk> {
 
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for more lifetime info.
+    ///
+    /// NOTE: The lifetime bound should be the reverse,
+    /// but because `Cow` is invariant w.r.t. it's lifetime we have to 'force' the ref to self
+    /// to be bigger than the 'chunk life time.
     pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
         IterChunkRecords {
             settings: self.settings,
@@ -163,14 +167,6 @@ impl<'chunk> EvtxChunk<'chunk> {
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
         }
-    }
-
-    /// Return an iterator of serialized records (containing textual data, not tokens) from the chunk.
-    pub fn iter_serialized_records<'a: 'chunk, O: BinXmlOutput<Vec<u8>>>(
-        &'a mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + 'a {
-        self.iter()
-            .map(|record_res| record_res.and_then(evtx_record::EvtxRecord::into_serialized::<O>))
     }
 }
 

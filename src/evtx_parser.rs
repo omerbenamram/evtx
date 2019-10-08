@@ -3,7 +3,7 @@ use snafu::{ensure, ResultExt};
 
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
-use crate::evtx_record::{EvtxRecordWithJsonValue, SerializedEvtxRecord};
+use crate::evtx_record::SerializedEvtxRecord;
 #[cfg(feature = "multithreading")]
 use rayon;
 #[cfg(feature = "multithreading")]
@@ -352,7 +352,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
     /// Return an iterator over all the records.
     /// Records will be mapped `f`, which must produce owned data from the records.
-    pub fn owned_records<'a, U: Send>(
+    pub fn serialized_records<'a, U: Send>(
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Copy + 'a,
     ) -> impl Iterator<Item = Result<U>> + '_ {
@@ -404,32 +404,26 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     /// Return an iterator over all the records.
-    /// Records will be serialized using the given `BinXmlOutput`.
-    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
-        &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
-        self.owned_records(|record| record.and_then(|record| record.into_serialized::<O>()))
-    }
-
-    /// Return an iterator over all the records.
     /// Records will be XML-formatted.
-    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
+    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
         // '_ is required in the signature because the iterator is bound to &self.
-        self.serialized_records::<XmlOutput<Vec<u8>>>()
+        self.serialized_records(|record| record.and_then(|record| record.into_xml()))
     }
 
     /// Return an iterator over all the records.
     /// Records will be JSON-formatted.
-    pub fn records_json(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
-        self.serialized_records::<JsonOutput<Vec<u8>>>()
+    pub fn records_json(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json()))
     }
 
     /// Return an iterator over all the records.
     /// Records will have a `serde_json::Value` data attribute.
     pub fn records_json_value(
         &mut self,
-    ) -> impl Iterator<Item = Result<EvtxRecordWithJsonValue>> + '_ {
-        self.owned_records(|record| record.and_then(|record| record.into_json_value()))
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<serde_json::Value>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json_value()))
     }
 }
 
