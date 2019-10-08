@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `EvtxParser::records_json_value()` to allow working with records with a `serde_json::Value`. See `test_into_json_value_records` for an example.
+- `EvtxRecord::into_output`, allowing serializing a record using a user-defined `BinXmlOutput` type.
 
 ### Changed
 
