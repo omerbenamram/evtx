@@ -354,7 +354,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Records will be mapped `f`, which must produce owned data from the records.
     pub fn serialized_records<'a, U: Send>(
         &'a mut self,
-        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Copy + 'a,
+        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
     ) -> impl Iterator<Item = Result<U>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = self.config.clone();
@@ -390,7 +390,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => chunk_records.iter().map(f).collect(),
+                                Ok(mut chunk_records) => chunk_records.iter().map(f.clone()).collect(),
                             }
                         }
                     })
