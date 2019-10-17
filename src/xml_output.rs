@@ -13,14 +13,7 @@ use quick_xml::Writer;
 
 use std::borrow::Cow;
 
-pub trait BinXmlOutput<W: Write> {
-    /// Implementors are expected to provide a `std::Write` target.
-    /// The record will be written to the target.
-    fn with_writer(target: W, settings: &ParserSettings) -> Self;
-
-    /// Consumes the output, returning control of the inner writer to the caller.
-    fn into_writer(self) -> Result<W>;
-
+pub trait BinXmlOutput {
     /// Called once when EOF is reached.
     fn visit_end_of_stream(&mut self) -> Result<()>;
 
@@ -55,9 +48,8 @@ pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
 }
 
-/// Adapter between binxml XmlModel type and quick-xml events.
-impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
-    fn with_writer(target: W, settings: &ParserSettings) -> Self {
+impl<W: Write> XmlOutput<W> {
+    pub fn with_writer(target: W, settings: &ParserSettings) -> Self {
         let writer = if settings.should_indent() {
             Writer::new_with_indent(target, b' ', 2)
         } else {
@@ -67,10 +59,13 @@ impl<W: Write> BinXmlOutput<W> for XmlOutput<W> {
         XmlOutput { writer }
     }
 
-    fn into_writer(self) -> Result<W> {
+    pub fn into_writer(self) -> Result<W> {
         Ok(self.writer.into_inner())
     }
+}
 
+/// Adapter between binxml XmlModel type and quick-xml events.
+impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_end_of_stream(&mut self) -> Result<()> {
         trace!("visit_end_of_stream");
         self.writer.write_event(Event::Eof)?;

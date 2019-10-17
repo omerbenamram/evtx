@@ -3,9 +3,9 @@ use snafu::{ensure, OptionExt, ResultExt};
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::XmlElement;
+use crate::unimplemented_fn;
 use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
-use crate::{unimplemented_fn};
 
 use core::borrow::BorrowMut;
 use log::trace;
@@ -14,15 +14,21 @@ use std::borrow::Cow;
 use std::io::Write;
 use std::mem;
 
-pub struct JsonOutput<W: Write> {
-    writer: W,
+pub struct JsonOutput {
     map: Value,
     stack: Vec<String>,
     separate_json_attributes: bool,
-    indent: bool,
 }
 
-impl<W: Write> JsonOutput<W> {
+impl JsonOutput {
+    pub fn new(settings: &ParserSettings) -> Self {
+        JsonOutput {
+            map: Value::Object(Map::new()),
+            stack: vec![],
+            separate_json_attributes: settings.should_separate_json_attributes(),
+        }
+    }
+
     /// Looks up the current path, will fill with empty objects if needed.
     fn get_or_create_current_path(&mut self) -> &mut Value {
         let mut v_temp = self.map.borrow_mut();
@@ -128,9 +134,10 @@ impl<W: Write> JsonOutput<W> {
         if !attributes.is_empty() {
             if self.separate_json_attributes {
                 // If we are separating the attributes we want
-                // to insert the object for the attributes 
-                // into the parent. 
-                let value = self.get_current_parent()
+                // to insert the object for the attributes
+                // into the parent.
+                let value = self
+                    .get_current_parent()
                     .as_object_mut()
                     .context(err::JsonStructureError {
                     message:
@@ -139,16 +146,15 @@ impl<W: Write> JsonOutput<W> {
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
-            }
-            else {
-                let value =
-                    self.get_or_create_current_path()
-                        .as_object_mut()
-                        .context(err::JsonStructureError {
-                        message:
-                            "This is a bug - expected current value to exist, and to be an object type.
+            } else {
+                let value = self
+                    .get_or_create_current_path()
+                    .as_object_mut()
+                    .context(err::JsonStructureError {
+                    message:
+                        "This is a bug - expected current value to exist, and to be an object type.
                             Check that the value is not `Value::null`",
-                    })?;
+                })?;
 
                 value.insert("#attributes".to_owned(), Value::Object(attributes));
             }
@@ -169,20 +175,8 @@ impl<W: Write> JsonOutput<W> {
 
         Ok(())
     }
-}
 
-impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
-    fn with_writer(target: W, settings: &ParserSettings) -> Self {
-        JsonOutput {
-            writer: target,
-            map: Value::Object(Map::new()),
-            stack: vec![],
-            separate_json_attributes: settings.should_separate_json_attributes(),
-            indent: settings.should_indent(),
-        }
-    }
-
-    fn into_writer(mut self) -> Result<W> {
+    pub fn into_value(self) -> Result<Value> {
         ensure!(
             self.stack.is_empty(),
             err::JsonStructureError {
@@ -190,14 +184,11 @@ impl<W: Write> BinXmlOutput<W> for JsonOutput<W> {
             }
         );
 
-        if self.indent {
-            serde_json::to_writer_pretty(&mut self.writer, &self.map).context(err::JsonError)?;
-        } else {
-            serde_json::to_writer(&mut self.writer, &self.map).context(err::JsonError)?;
-        }
-        Ok(self.writer)
+        Ok(self.map)
     }
+}
 
+impl BinXmlOutput for JsonOutput {
     fn visit_end_of_stream(&mut self) -> Result<()> {
         trace!("visit_end_of_stream");
         Ok(())

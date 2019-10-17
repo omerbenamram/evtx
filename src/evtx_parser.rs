@@ -17,6 +17,7 @@ use std::iter::{IntoIterator, Iterator};
 
 use crate::json_output::JsonOutput;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
+use crate::EvtxRecord;
 use encoding::all::WINDOWS_1252;
 use encoding::EncodingRef;
 use std::cmp::max;
@@ -97,8 +98,8 @@ pub struct ParserSettings {
     ///     "#text": 4111
     ///   }
     /// }
-    /// 
-    /// Becomes: 
+    ///
+    /// Becomes:
     /// {
     ///   "EventID": 4111,
     ///   "EventID_attributes": {
@@ -349,12 +350,12 @@ impl<T: ReadSeek> EvtxParser<T> {
             current_chunk_number: 0,
         }
     }
-
     /// Return an iterator over all the records.
-    /// Records will be serialized using the given `BinXmlOutput`.
-    pub fn serialized_records<O: BinXmlOutput<Vec<u8>>>(
-        &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
+    /// Records will be mapped `f`, which must produce owned data from the records.
+    pub fn serialized_records<'a, U: Send>(
+        &'a mut self,
+        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
+    ) -> impl Iterator<Item = Result<U>> + '_ {
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = self.config.clone();
 
@@ -381,7 +382,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 let chunk_iter = chunk_of_chunks.into_iter();
 
                 // Serialize the records in each chunk.
-                let iterators: Vec<Vec<Result<SerializedEvtxRecord>>> = chunk_iter
+                let iterators: Vec<Vec<Result<U>>> = chunk_iter
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
@@ -389,9 +390,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => {
-                                    chunk_records.iter_serialized_records::<O>().collect()
-                                }
+                                Ok(mut chunk_records) => chunk_records.iter().map(f.clone()).collect(),
                             }
                         }
                     })
@@ -406,15 +405,25 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be XML-formatted.
-    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
+    pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
         // '_ is required in the signature because the iterator is bound to &self.
-        self.serialized_records::<XmlOutput<Vec<u8>>>()
+        self.serialized_records(|record| record.and_then(|record| record.into_xml()))
     }
 
     /// Return an iterator over all the records.
     /// Records will be JSON-formatted.
-    pub fn records_json(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord>> + '_ {
-        self.serialized_records::<JsonOutput<Vec<u8>>>()
+    pub fn records_json(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json()))
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will have a `serde_json::Value` data attribute.
+    pub fn records_json_value(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<serde_json::Value>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json_value()))
     }
 }
 
@@ -615,4 +624,19 @@ mod tests {
         assert_eq!(records.len(), 1);
     }
 
+    #[test]
+    fn test_into_json_value_records() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/new-user-security.evtx");
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let records: Vec<_> = parser.records_json_value().collect();
+
+        for record in records {
+            let record = record.unwrap();
+
+            assert!(record.data.is_object());
+            assert!(record.data.as_object().unwrap().contains_key("Event"));
+        }
+    }
 }

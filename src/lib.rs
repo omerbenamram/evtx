@@ -31,10 +31,10 @@ pub type Offset = u32;
 
 // For tests, we only initialize logging once.
 #[cfg(test)]
-use std::sync::{Once, ONCE_INIT};
+use std::sync::Once;
 
 #[cfg(test)]
-static LOGGER_INIT: Once = ONCE_INIT;
+static LOGGER_INIT: Once = Once::new();
 
 // Rust runs the tests concurrently, so unless we synchronize logging access
 // it will crash when attempting to run `cargo test` with some logging facilities.

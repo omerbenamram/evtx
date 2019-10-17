@@ -178,7 +178,7 @@ fn test_event_json_sample_with_separate_json_attributes() {
         .with_configuration(
             ParserSettings::new()
                 .num_threads(1)
-                .separate_json_attributes(true)
+                .separate_json_attributes(true),
         );
 
     let first_record = parser

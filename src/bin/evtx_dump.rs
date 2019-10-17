@@ -230,7 +230,10 @@ impl EvtxDump {
         }
     }
 
-    fn dump_record(&mut self, record: Result<SerializedEvtxRecord, Error>) -> Result<(), Error> {
+    fn dump_record(
+        &mut self,
+        record: Result<SerializedEvtxRecord<String>, Error>,
+    ) -> Result<(), Error> {
         match record {
             Ok(r) => {
                 if self.show_record_number {
