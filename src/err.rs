@@ -165,8 +165,8 @@ pub enum Error {
     /// Errors related to Serialization
     // Since `quick-xml` maintains the stack for us, structural errors with the XML
     // Will be included in this generic error alongside IO errors.
-    #[snafu(display("Writing to XML failed with: {}", message))]
-    XmlOutputError { message: String },
+    #[snafu(display("Writing to XML failed with: {}", source))]
+    XmlOutputError { source: quick_xml::Error },
 
     #[snafu(display("Building a JSON document failed with message: {}", message,))]
     JsonStructureError { message: String },
@@ -196,17 +196,10 @@ macro_rules! unimplemented_fn {
    ($($arg:tt)*) => { $crate::err::Unimplemented { name: format!($($arg)*) }.fail() }
 }
 
-/// Adapter for `quick-xml` error type, which is implemented internally in `failure`,
-/// and provides no easy way of producing std compatible `Error`
-#[derive(Debug)]
-pub struct QuickXmlError {
-    message: String,
-}
-
 impl From<quick_xml::Error> for Error {
     fn from(err: quick_xml::Error) -> Self {
         Error::XmlOutputError {
-            message: format!("{}", err),
+            source: err,
         }
     }
 }
