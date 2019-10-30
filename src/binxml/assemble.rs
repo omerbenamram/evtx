@@ -7,7 +7,7 @@ use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel};
 use crate::xml_output::BinXmlOutput;
 use log::trace;
-use std::borrow::Cow;
+use std::borrow::{Cow, BorrowMut, Borrow};
 use std::io::Write;
 use std::mem;
 
@@ -236,8 +236,7 @@ fn expand_owned_template<'a>(
                 // We swap out the node in the substitution array with a dummy value (to avoid copying it),
                 // moving control of the original node to the new token tree.
                 let value = mem::replace(
-                    &mut template.substitution_array
-                        [substitution_descriptor.substitution_index as usize],
+                    template.substitution_array.get_mut(substitution_descriptor.substitution_index as usize).unwrap_or(BinXmlValue::NullType.borrow_mut()),
                     BinXmlValue::NullType,
                 );
 
@@ -263,8 +262,7 @@ fn expand_borrowed_template<'a>(
             if substitution_descriptor.ignore {
                 continue;
             } else {
-                let value = &template.substitution_array
-                    [substitution_descriptor.substitution_index as usize];
+                let value = &template.substitution_array.get(substitution_descriptor.substitution_index as usize).unwrap_or(BinXmlValue::NullType.borrow());
 
                 _expand_templates(
                     Cow::Owned(BinXMLDeserializedTokens::Value(Cow::Borrowed(value))),
