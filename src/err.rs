@@ -198,9 +198,7 @@ macro_rules! unimplemented_fn {
 
 impl From<quick_xml::Error> for Error {
     fn from(err: quick_xml::Error) -> Self {
-        Error::XmlOutputError {
-            source: err,
-        }
+        Error::XmlOutputError { source: err }
     }
 }
 

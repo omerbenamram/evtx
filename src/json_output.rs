@@ -1,5 +1,5 @@
 use crate::err::{self, Result};
-use snafu::{ensure, OptionExt, ResultExt};
+use snafu::{ensure, OptionExt};
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::XmlElement;
@@ -11,7 +11,7 @@ use core::borrow::BorrowMut;
 use log::trace;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
-use std::io::Write;
+
 use std::mem;
 
 pub struct JsonOutput {

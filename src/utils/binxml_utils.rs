@@ -80,11 +80,13 @@ pub fn read_ansi_encoded_string<T: ReadSeek>(
                     }
                     s
                 }
-                Err(message) => Err(err::Error::FailedToDecodeANSIString {
-                    encoding: ansi_codec.name(),
-                    message: message.to_string(),
-                    offset: stream.tell()?,
-                })?,
+                Err(message) => {
+                    return Err(err::Error::FailedToDecodeANSIString {
+                        encoding: ansi_codec.name(),
+                        message: message.to_string(),
+                        offset: stream.tell()?,
+                    })
+                }
             };
 
             Ok(Some(s))

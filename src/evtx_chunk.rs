@@ -2,9 +2,8 @@ use crate::err::{self, Result};
 use crate::evtx_parser::ReadSeek;
 use snafu::{ensure, ResultExt};
 
-use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
+use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
-use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, info, trace};
 use std::{
@@ -15,7 +14,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::{evtx_record, ParserSettings};
+use crate::ParserSettings;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 

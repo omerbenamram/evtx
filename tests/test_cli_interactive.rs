@@ -4,13 +4,6 @@
 
 mod fixtures;
 
-use fixtures::*;
-
-use std::fs::File;
-use std::io::{Read, Write};
-use tempfile::tempdir;
-
-use assert_cmd::cargo::cargo_bin;
 #[cfg(not(target_os = "windows"))]
 use rexpect::spawn;
 

@@ -15,8 +15,6 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 
-use crate::json_output::JsonOutput;
-use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::EvtxRecord;
 use encoding::all::WINDOWS_1252;
 use encoding::EncodingRef;
@@ -390,7 +388,9 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => chunk_records.iter().map(f.clone()).collect(),
+                                Ok(mut chunk_records) => {
+                                    chunk_records.iter().map(f.clone()).collect()
+                                }
                             }
                         }
                     })
