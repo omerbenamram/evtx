@@ -29,7 +29,7 @@ winstructs = "0.2.2"
 # `evtx_dump` dependencies
 simplelog = "0.7.0"
 clap = "2.33.0"
-dialoguer = "0.4.0"
+dialoguer = "0.5.0"
 indoc = "0.3"
 
 serde = { version = "1.0" }
