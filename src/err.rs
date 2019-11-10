@@ -1,5 +1,5 @@
 use quick_xml;
-use snafu::{Backtrace, ErrorCompat, Snafu};
+use snafu::{Backtrace, ErrorCompat, GenerateBacktrace, Snafu};
 
 use std::io;
 use std::path::PathBuf;
@@ -198,9 +198,7 @@ macro_rules! unimplemented_fn {
 
 impl From<quick_xml::Error> for Error {
     fn from(err: quick_xml::Error) -> Self {
-        Error::XmlOutputError {
-            source: err,
-        }
+        Error::XmlOutputError { source: err }
     }
 }
 
@@ -208,7 +206,7 @@ impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Error::IO {
             source: err,
-            backtrace: Backtrace::new(),
+            backtrace: snafu::Backtrace::generate(),
         }
     }
 }
