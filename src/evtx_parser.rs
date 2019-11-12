@@ -24,6 +24,7 @@ use std::cmp::max;
 use std::fmt;
 use std::fmt::Debug;
 use std::path::Path;
+use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -79,7 +80,7 @@ impl<T: Read + Seek> ReadSeek for T {}
 pub struct EvtxParser<T: ReadSeek> {
     data: T,
     header: EvtxFileHeader,
-    config: ParserSettings,
+    config: Arc<ParserSettings>,
 }
 
 #[derive(Clone)]
@@ -255,12 +256,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         Ok(EvtxParser {
             data: read_seek,
             header: evtx_header,
-            config: ParserSettings::default(),
+            config: Arc::new(ParserSettings::default()),
         })
     }
 
     pub fn with_configuration(mut self, configuration: ParserSettings) -> Self {
-        self.config = configuration;
+        self.config = Arc::new(configuration);
         self
     }
 
@@ -356,9 +357,11 @@ impl<T: ReadSeek> EvtxParser<T> {
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
     ) -> impl Iterator<Item = Result<U>> + '_ {
+        // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
-        let chunk_settings = self.config.clone();
+        let chunk_settings = Arc::clone(&self.config);
 
+        // `self` is mutably borrowed from here on.
         let mut chunks = self.chunks();
 
         let records_per_chunk = std::iter::from_fn(move || {
@@ -386,11 +389,13 @@ impl<T: ReadSeek> EvtxParser<T> {
                     .map(|chunk_res| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.parse(&chunk_settings);
+                            let chunk_records_res = chunk.parse(chunk_settings.clone());
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => chunk_records.iter().map(f.clone()).collect(),
+                                Ok(mut chunk_records) => {
+                                    chunk_records.iter().map(f.clone()).collect()
+                                }
                             }
                         }
                     })
@@ -609,7 +614,11 @@ mod tests {
 
         assert!(chunk.validate_checksum());
 
-        for record in chunk.parse(&ParserSettings::default()).unwrap().iter() {
+        for record in chunk
+            .parse(Arc::new(ParserSettings::default()))
+            .unwrap()
+            .iter()
+        {
             record.unwrap();
         }
     }
