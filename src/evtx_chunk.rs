@@ -151,13 +151,19 @@ impl<'chunk> EvtxChunk<'chunk> {
         })
     }
 
+    // NOTE: The lifetime of `self` here is stricter (bound by `'chunk`) than possible.
+    // This is because of some outstanding issues regarding covariance issues,
+    // which is uses extensively by the `Cow` type within the template cache.
+    //
+    // https://github.com/rust-lang/rust/issues/59875
+    // https://github.com/rust-lang/rust/issues/21726#issuecomment-71949910
     /// Return an iterator of records from the chunk.
-    /// See `IterChunkRecords` for more lifetime info.
+    /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
+    /// resulting records.
     ///
-    /// NOTE: The lifetime bound should be the reverse,
-    /// but because `Cow` is invariant w.r.t. it's lifetime we have to 'force' the ref to self
-    /// to be bigger than the 'chunk lifetime.
-    pub fn iter(&'chunk mut self) -> IterChunkRecords {
+    /// Note: You cannot pass a mutable reference to `EvtxChunk` and call `iter` on it.
+    ///       Instead you must pass a mutable reference to `EvtxChunkData`.
+    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords<'a> {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
@@ -194,8 +200,8 @@ pub struct IterChunkRecords<'chunk> {
     settings: Arc<ParserSettings>,
 }
 
-impl<'chunk> Iterator for IterChunkRecords<'chunk> {
-    type Item = Result<EvtxRecord<'chunk>>;
+impl<'a> Iterator for IterChunkRecords<'a> {
+    type Item = Result<EvtxRecord<'a>>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
