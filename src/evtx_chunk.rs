@@ -2,9 +2,8 @@ use crate::err::{self, Result};
 use crate::evtx_parser::ReadSeek;
 use snafu::{ensure, ResultExt};
 
-use crate::evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
+use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
-use crate::xml_output::BinXmlOutput;
 use crc::crc32;
 use log::{debug, info, trace};
 use std::{
@@ -15,9 +14,10 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::{evtx_record, ParserSettings};
+use crate::ParserSettings;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use std::sync::Arc;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -59,11 +59,8 @@ impl EvtxChunkData {
     }
 
     /// Require that the settings live at least as long as &self.
-    pub fn parse<'chunk, 'b: 'chunk>(
-        &'chunk mut self,
-        settings: &'b ParserSettings,
-    ) -> Result<EvtxChunk<'chunk>> {
-        EvtxChunk::new(&self.data, &self.header, settings)
+    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> Result<EvtxChunk> {
+        EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -126,7 +123,7 @@ pub struct EvtxChunk<'chunk> {
 
     pub template_table: TemplateCache<'chunk>,
 
-    settings: &'chunk ParserSettings,
+    settings: Arc<ParserSettings>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -134,7 +131,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
-        settings: &'chunk ParserSettings,
+        settings: Arc<ParserSettings>,
     ) -> Result<EvtxChunk<'chunk>> {
         let _cursor = Cursor::new(data);
 
@@ -160,9 +157,9 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// NOTE: The lifetime bound should be the reverse,
     /// but because `Cow` is invariant w.r.t. it's lifetime we have to 'force' the ref to self
     /// to be bigger than the 'chunk lifetime.
-    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
+    pub fn iter(&'chunk mut self) -> IterChunkRecords {
         IterChunkRecords {
-            settings: self.settings,
+            settings: Arc::clone(&self.settings),
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
@@ -190,15 +187,15 @@ impl<'chunk> EvtxChunk<'chunk> {
 ///
 /// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
 /// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
-pub struct IterChunkRecords<'a> {
-    chunk: &'a EvtxChunk<'a>,
+pub struct IterChunkRecords<'chunk> {
+    chunk: &'chunk EvtxChunk<'chunk>,
     offset_from_chunk_start: u64,
     exhausted: bool,
-    settings: &'a ParserSettings,
+    settings: Arc<ParserSettings>,
 }
 
-impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = Result<EvtxRecord<'a>>;
+impl<'chunk> Iterator for IterChunkRecords<'chunk> {
+    type Item = Result<EvtxRecord<'chunk>>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
@@ -272,7 +269,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens,
-            settings: &self.settings,
+            settings: Arc::clone(&self.settings),
         }))
     }
 }
