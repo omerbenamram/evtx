@@ -357,9 +357,11 @@ impl<T: ReadSeek> EvtxParser<T> {
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
     ) -> impl Iterator<Item = Result<U>> + '_ {
+        // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = Arc::clone(&self.config);
 
+        // `self` is mutably borrowed from here on.
         let mut chunks = self.chunks();
 
         let records_per_chunk = std::iter::from_fn(move || {
