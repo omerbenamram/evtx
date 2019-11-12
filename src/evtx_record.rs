@@ -11,13 +11,14 @@ use std::io::{Cursor, Read};
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
 use snafu::{ensure, ResultExt};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {
     pub event_record_id: u64,
     pub timestamp: DateTime<Utc>,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
-    pub settings: &'a ParserSettings,
+    pub settings: Arc<ParserSettings>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +73,7 @@ impl<'a> EvtxRecord<'a> {
 
     /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
-        let mut output_builder = JsonOutput::new(self.settings);
+        let mut output_builder = JsonOutput::new(&self.settings);
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;

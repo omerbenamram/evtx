@@ -1,5 +1,5 @@
 use quick_xml;
-use snafu::{Backtrace, ErrorCompat, Snafu};
+use snafu::{Backtrace, ErrorCompat, GenerateBacktrace, Snafu};
 
 use std::io;
 use std::path::PathBuf;
@@ -206,7 +206,7 @@ impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Error::IO {
             source: err,
-            backtrace: Backtrace::new(),
+            backtrace: snafu::Backtrace::generate(),
         }
     }
 }

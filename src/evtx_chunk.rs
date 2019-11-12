@@ -17,6 +17,7 @@ use crate::template_cache::TemplateCache;
 use crate::ParserSettings;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use std::sync::Arc;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -58,11 +59,8 @@ impl EvtxChunkData {
     }
 
     /// Require that the settings live at least as long as &self.
-    pub fn parse<'chunk, 'b: 'chunk>(
-        &'chunk mut self,
-        settings: &'b ParserSettings,
-    ) -> Result<EvtxChunk<'chunk>> {
-        EvtxChunk::new(&self.data, &self.header, settings)
+    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> Result<EvtxChunk> {
+        EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -125,7 +123,7 @@ pub struct EvtxChunk<'chunk> {
 
     pub template_table: TemplateCache<'chunk>,
 
-    settings: &'chunk ParserSettings,
+    settings: Arc<ParserSettings>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -133,7 +131,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
-        settings: &'chunk ParserSettings,
+        settings: Arc<ParserSettings>,
     ) -> Result<EvtxChunk<'chunk>> {
         let _cursor = Cursor::new(data);
 
@@ -154,14 +152,22 @@ impl<'chunk> EvtxChunk<'chunk> {
     }
 
     /// Return an iterator of records from the chunk.
-    /// See `IterChunkRecords` for more lifetime info.
+    /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
+    /// resulting records.
     ///
-    /// NOTE: The lifetime bound should be the reverse,
-    /// but because `Cow` is invariant w.r.t. it's lifetime we have to 'force' the ref to self
-    /// to be bigger than the 'chunk lifetime.
-    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords {
+    /// Note: You cannot pass a mutable reference to `EvtxChunk` and call `iter` on it somewhere else.
+    /// Instead you should pass a mutable reference to `EvtxChunkData`.
+    ///
+    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`) 
+    /// than it theoretically needs to be.
+    /// However, this is required in practice because of issues regarding covariance,
+    /// which are caused by extensive use of the `Cow` type within the template cache.
+    ///
+    /// https://github.com/rust-lang/rust/issues/59875
+    /// https://github.com/rust-lang/rust/issues/21726#issuecomment-71949910
+    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords<'a> {
         IterChunkRecords {
-            settings: self.settings,
+            settings: Arc::clone(&self.settings),
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
@@ -189,11 +195,11 @@ impl<'chunk> EvtxChunk<'chunk> {
 ///
 /// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
 /// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
-pub struct IterChunkRecords<'a> {
-    chunk: &'a EvtxChunk<'a>,
+pub struct IterChunkRecords<'chunk> {
+    chunk: &'chunk EvtxChunk<'chunk>,
     offset_from_chunk_start: u64,
     exhausted: bool,
-    settings: &'a ParserSettings,
+    settings: Arc<ParserSettings>,
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
@@ -271,7 +277,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens,
-            settings: &self.settings,
+            settings: Arc::clone(&self.settings),
         }))
     }
 }

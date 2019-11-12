@@ -1,5 +1,5 @@
 #![deny(unused_must_use)]
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
 // This needs to come first!

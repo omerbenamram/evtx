@@ -265,6 +265,7 @@ impl<'a> Iterator for IterTokens<'a> {
 mod tests {
     use crate::evtx_chunk::EvtxChunkData;
     use crate::{ensure_env_logger_initialized, ParserSettings};
+    use std::sync::Arc;
 
     #[test]
     fn test_reads_a_single_record() {
@@ -274,11 +275,11 @@ mod tests {
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let settings = ParserSettings::default();
-        let mut evtx_chunk = chunk.parse(&settings).unwrap();
+        let mut evtx_chunk = chunk.parse(Arc::new(settings)).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.take(1) {
-            assert!(record.is_ok(), record.unwrap().into_xml())
+            assert!(record.is_ok(), "Record failed to parse")
         }
     }
 
@@ -290,7 +291,7 @@ mod tests {
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let settings = ParserSettings::default();
-        let mut evtx_chunk = chunk.parse(&settings).unwrap();
+        let mut evtx_chunk = chunk.parse(Arc::new(settings)).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.take(100) {
@@ -313,7 +314,7 @@ mod tests {
 
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let settings = ParserSettings::default();
-        let mut evtx_chunk = chunk.parse(&settings).unwrap();
+        let mut evtx_chunk = chunk.parse(Arc::new(settings)).unwrap();
         let records = evtx_chunk.iter();
 
         for record in records.into_iter() {
