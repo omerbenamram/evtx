@@ -15,8 +15,6 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::iter::{IntoIterator, Iterator};
 
-use crate::json_output::JsonOutput;
-use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::EvtxRecord;
 use encoding::all::WINDOWS_1252;
 use encoding::EncodingRef;
