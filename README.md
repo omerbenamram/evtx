@@ -1,5 +1,6 @@
 [![Build Status](https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.evtx?branchName=master)](https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master)
 ![crates.io](https://img.shields.io/crates/v/evtx.svg)
+[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 # EVTX
 
 This is a parser for the Windows EVTX format.
