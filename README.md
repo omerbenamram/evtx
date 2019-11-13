@@ -2,9 +2,11 @@
 <div align="center">
  <p>
   <strong>
-    A cross-platform parser for the Windows XML EventLog (EVTX) format
-  </strong>
+   A cross-platform parser for the Windows XML EventLog (EVTX
   <img style="padding:0;vertical-align:initial;" height="16" width="16" src="/eventvwr.ico"/>
+   ) format
+  </strong>
+  
  </p>
 </div>
 
