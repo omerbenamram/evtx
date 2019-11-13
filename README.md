@@ -1,5 +1,3 @@
-[![Build Status](https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.evtx?branchName=master)](https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master)
-[![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 <h1 align="center">EVTX</h1>
 <div align="center">
  <strong>
