@@ -1,4 +1,4 @@
-<h1 align="center">EVTX <img style="padding:0;vertical-align:initial;" height="32" width="32" src="/eventvwr.ico"/></h1>
+<h1 align="center"><img style="padding:0;vertical-align:initial;" height="32" width="32" src="/eventvwr.ico"/> EVTX</h1>
 <div align="center">
  <p>
   <strong>
