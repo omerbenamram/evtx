@@ -1,4 +1,4 @@
-<h1 align="center"><img style="padding:0;vertical-align:initial;" height="32" width="32" src="/eventvwr.ico"/> EVTX</h1>
+<h1 align="center"><img style="padding:0;vertical-align:bottom;" height="32" width="32" src="/eventvwr.ico"/> EVTX</h1>
 <div align="center">
  <p>
   <strong>
@@ -42,10 +42,10 @@ Python bindings are available as well at https://github.com/omerbenamram/pyevtx-
 
 ## Features
 
- - Implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
- - Multi-threaded.
- - Supports XML and JSON outputs, both being zero-copy and independent of each other (JSON documents are being built directly from the inner representation of the binary xml token tree, no xml2json is performed!)
- - Supports some basic recovery of missing records/chunks!
+ - 🔒 Implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
+ - 🚀 Multi-threaded.
+ - ✨ Supports XML and JSON outputs, both being directly constructed from the token tree and independent of each other (no xml2json conversion is performed!)
+ - ⛏️ Supports some basic recovery of missing records/chunks!
 
 ## Installation (associated binary utility):
   - Download latest executable release from https://github.com/omerbenamram/evtx/releases
