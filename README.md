@@ -38,14 +38,13 @@
 
 </br>
 
-Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (and at PyPi https://pypi.org/project/evtx/)
-
 ## Features
 
  - 🔒 Implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
  - 🚀 Multi-threaded.
  - ✨ Supports XML and JSON outputs, both being directly constructed from the token tree and independent of each other (no xml2json conversion is performed!)
  - ⛏️ Supports some basic recovery of missing records/chunks!
+ - 🐍 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (and at PyPi https://pypi.org/project/evtx/)
 
 ## Installation (associated binary utility):
   - Download latest executable release from https://github.com/omerbenamram/evtx/releases
