@@ -1,13 +1,41 @@
 [![Build Status](https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.evtx?branchName=master)](https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master)
-![crates.io](https://img.shields.io/crates/v/evtx.svg)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
-# EVTX
+<h1 align="center">EVTX</h1>
+<div align="center">
+ <strong>
+   A parser for the Windows EVTX format
+ </strong>
+</div>
 
-This is a parser for the Windows EVTX format.
+<br />
 
-Supported rust version is latest stable rust (minimum 1.34) or nightly.
+<div align="center">
+  <!-- Crates version -->
+  <a href="https://crates.io/crates/evtx">
+    <img src="https://img.shields.io/crates/v/evtx.svg?style=flat-square"
+    alt="Crates.io version" />
+  </a>
+  <!-- Downloads -->
+  <a href="https://crates.io/crates/evtx">
+    <img src="https://img.shields.io/crates/d/evtx.svg?style=flat-square"
+      alt="Download" />
+  </a>
+  <!-- docs.rs docs -->
+  <a href="https://docs.rs/evtx">
+    <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
+      alt="docs.rs docs" />
+  </a>
+   <a href="https://github.com/rust-secure-code/safety-dance/">
+    <img src="https://img.shields.io/badge/unsafe-forbidden-success.svg"
+      alt="safety-dance" />
+  </a>
+  <a href="https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master">
+    <img src="https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.evtx?branchName=master"
+      alt="Build status" />
+  </a>
+</div>
 
-[Documentation](https://docs.rs/evtx)
+</br>
 
 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (and at PyPi https://pypi.org/project/evtx/)
 
