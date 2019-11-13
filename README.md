@@ -1,8 +1,11 @@
 <h1 align="center">EVTX</h1>
 <div align="center">
- <strong>
-   A cross-platform parser for the Windows XML EventLog (EVTX) format
- </strong>
+ <p>
+  <strong>
+    A cross-platform parser for the Windows XML EventLog (EVTX) format
+  </strong>
+  <img style="padding:0;vertical-align:initial;" height="16" width="16" src="/eventvwr.ico"/>
+ </p>
 </div>
 
 <br />
