@@ -30,6 +30,7 @@
     <img src="https://img.shields.io/badge/unsafe-forbidden-success.svg"
       alt="safety-dance" />
   </a>
+<a href="https://app.fossa.io/projects/git%2Bgithub.com%2Fomerbenamram%2Fevtx?ref=badge_shield" alt="FOSSA Status"><img src="https://app.fossa.io/api/projects/git%2Bgithub.com%2Fomerbenamram%2Fevtx.svg?type=shield"/></a>
   <a href="https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master">
     <img src="https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.evtx?branchName=master"
       alt="Build status" />
@@ -160,6 +161,9 @@ Licensed under either of
  * MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
+
+
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fomerbenamram%2Fevtx.svg?type=large)](https://app.fossa.io/projects/git%2Bgithub.com%2Fomerbenamram%2Fevtx?ref=badge_large)
 
 ### Contribution
 
