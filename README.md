@@ -1,7 +1,7 @@
 <h1 align="center">EVTX</h1>
 <div align="center">
  <strong>
-   A parser for the Windows EVTX format
+   A cross-platform parser for the Windows XML EventLog (EVTX) format
  </strong>
 </div>
 
