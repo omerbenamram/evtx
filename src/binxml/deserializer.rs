@@ -1,6 +1,5 @@
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::{OptionExt, ResultExt};
 
 use byteorder::ReadBytesExt;
 
@@ -125,10 +124,12 @@ impl<'a> IterTokens<'a> {
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
         let token = try_read!(cursor, u8);
 
-        Ok(BinXMLRawToken::from_u8(token).context(err::InvalidToken {
-            value: token,
-            offset: cursor.position(),
-        })?)
+        Ok(
+            BinXMLRawToken::from_u8(token).ok_or(EvtxError::InvalidToken {
+                value: token,
+                offset: cursor.position(),
+            })?,
+        )
     }
 
     fn visit_token(
@@ -158,24 +159,21 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),
-            BinXMLRawToken::CDataSection => err::UnimplementedToken {
+            BinXMLRawToken::CDataSection => Err(EvtxError::UnimplementedToken {
                 name: "CDataSection",
                 offset: cursor.position(),
-            }
-            .fail(),
+            }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, self.chunk)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => err::UnimplementedToken {
+            BinXMLRawToken::ProcessingInstructionTarget => Err(EvtxError::UnimplementedToken {
                 name: "ProcessingInstructionTarget",
                 offset: cursor.position(),
-            }
-            .fail(),
-            BinXMLRawToken::ProcessingInstructionData => err::UnimplementedToken {
+            }),
+            BinXMLRawToken::ProcessingInstructionData => Err(EvtxError::UnimplementedToken {
                 name: "ProcessingInstructionData",
                 offset: cursor.position(),
-            }
-            .fail(),
+            }),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, self.chunk, self.ansi_codec)?,
             )),

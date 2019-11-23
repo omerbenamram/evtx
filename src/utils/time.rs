@@ -1,5 +1,4 @@
-use crate::err::{self, Result};
-use snafu::ResultExt;
+use crate::err::{EvtxError, Result};
 
 use crate::evtx_parser::ReadSeek;
 use byteorder::ReadBytesExt;

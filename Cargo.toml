@@ -17,47 +17,51 @@ exclude = [
 
 [dependencies]
 crc = "1.8.1"
-chrono = {version = "0.4.6", features=["serde"]}
+chrono = { version = "^0.4", features = ["serde"] }
 encoding = "0.2.33"
-byteorder = "1.3.1"
+byteorder = "1.3.2"
 quick-xml = "0.17.0"
-snafu = "0.6.0"
-log = { version = "^0.4", features=["release_max_level_debug"]}
-rayon = {version = "1.0.3", optional = true}
-winstructs = "0.2.2"
+thiserror = "1"
+log = { version = "^0.4", features = ["release_max_level_debug"] }
+rayon = { version = "1.2.0", optional = true }
+winstructs = "0.2.3"
 
 # `evtx_dump` dependencies
-simplelog = "0.7.0"
-clap = "2.33.0"
-dialoguer = "0.5.0"
-indoc = "0.3"
+anyhow = { version = "1", optional = true}
+simplelog = { version = "0.7.4", optional = true }
+clap = { version = "2.33.0", optional = true }
+dialoguer = { version = "0.5.0", optional = true }
+indoc = { version = "0.3.4", optional = true }
 
-serde = { version = "1.0" }
-serde_json = "1.0"
+serde = "^1.0"
+serde_json = "^1.0"
 
 [features]
-default = ["multithreading"]
-
+default = ["multithreading", "evtx_dump"]
+# Available only on nightly
+backtraces = []
+evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 
 [dev-dependencies]
 pretty_assertions = "0.6.1"
-criterion = "0.3"
-skeptic = "0.13"
-assert_cmd = "0.11"
-predicates = "1"
-env_logger = "0.7.0"
-tempfile = "3"
+criterion = "0.3.0"
+skeptic = "0.13.4"
+assert_cmd = "0.11.1"
+predicates = "^1"
+env_logger = "0.7.1"
+tempfile = "3.1.0"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.3"
+rexpect = "0.3.0"
 
 [build-dependencies]
-skeptic = "0.13"
+skeptic = "0.13.4"
 
 [[bin]]
 name = "evtx_dump"
+required-features = ["evtx_dump"]
 
 [[bench]]
 name = "benchmark"

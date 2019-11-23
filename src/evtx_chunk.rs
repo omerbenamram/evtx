@@ -1,7 +1,5 @@
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::{ensure, ResultExt};
-
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
 use crc::crc32;
@@ -52,7 +50,9 @@ impl EvtxChunkData {
 
         let chunk = EvtxChunkData { header, data };
         if validate_checksum {
-            ensure!(chunk.validate_checksum(), err::InvalidChunkChecksum)
+            if !chunk.validate_checksum() {
+                return Err(EvtxError::InvalidChunkChecksum {});
+            }
         }
 
         Ok(chunk)
@@ -158,7 +158,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Note: You cannot pass a mutable reference to `EvtxChunk` and call `iter` on it somewhere else.
     /// Instead you should pass a mutable reference to `EvtxChunkData`.
     ///
-    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`) 
+    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`)
     /// than it theoretically needs to be.
     /// However, this is required in practice because of issues regarding covariance,
     /// which are caused by extensive use of the `Cow` type within the template cache.
@@ -243,17 +243,19 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         );
 
         let mut tokens = vec![];
-        let iter = match deserializer.iter_tokens(Some(binxml_data_size)).context(
-            err::FailedToDeserializeRecord {
+        let iter = match deserializer
+            .iter_tokens(Some(binxml_data_size))
+            .map_err(|e| EvtxError::FailedToDeserializeRecord {
+                source: Box::new(e),
                 record_id: record_header.event_record_id,
-            },
-        ) {
+            }) {
             Ok(iter) => iter,
             Err(err) => return Some(Err(err)),
         };
 
         for token in iter {
-            match token.context(err::FailedToDeserializeRecord {
+            match token.map_err(|e| EvtxError::FailedToDeserializeRecord {
+                source: Box::new(e),
                 record_id: record_header.event_record_id,
             }) {
                 Ok(token) => {
@@ -287,10 +289,9 @@ impl EvtxChunkHeader {
         let mut magic = [0_u8; 8];
         input.take(8).read_exact(&mut magic)?;
 
-        ensure!(
-            &magic == b"ElfChnk\x00",
-            err::InvalidEvtxChunkMagic { magic }
-        );
+        if &magic != b"ElfChnk\x00" {
+            return Err(EvtxError::InvalidEvtxChunkMagic { magic });
+        }
 
         let first_event_record_number = try_read!(input, u64);
         let last_event_record_number = try_read!(input, u64);

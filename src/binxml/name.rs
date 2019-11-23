@@ -1,6 +1,5 @@
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::ResultExt;
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -54,7 +53,8 @@ impl<'a> BinXmlName<'a> {
         let _ = try_read!(cursor, u32);
         let name_hash = try_read!(cursor, u16);
         let name = read_len_prefixed_utf16_string(cursor, true)
-            .context(err::FailedToDecodeUTF16String {
+            .map_err(|e| EvtxError::FailedToDecodeUTF16String {
+                source: e,
                 offset: cursor.position(),
             })?
             // If string is None, just fill in a new string

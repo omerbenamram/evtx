@@ -1,6 +1,5 @@
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::{ensure, ResultExt};
 
 use byteorder::ReadBytesExt;
 use std::io::{Read, Seek, SeekFrom};
@@ -32,10 +31,9 @@ impl EvtxFileHeader {
         let mut magic = [0_u8; 8];
         stream.take(8).read_exact(&mut magic)?;
 
-        ensure!(
-            &magic == b"ElfFile\x00",
-            err::InvalidEvtxFileHeaderMagic { magic }
-        );
+        if &magic != b"ElfFile\x00" {
+            return Err(EvtxError::InvalidEvtxFileHeaderMagic { magic });
+        }
 
         let oldest_chunk = try_read!(stream, u64);
         let current_chunk_num = try_read!(stream, u64);
@@ -53,7 +51,7 @@ impl EvtxFileHeader {
             0_u32 => HeaderFlags::Empty,
             1_u32 => HeaderFlags::Dirty,
             2_u32 => HeaderFlags::Full,
-            other => return err::UnknownEvtxHeaderFlagValue { value: other }.fail(),
+            other => return Err(EvtxError::UnknownEvtxHeaderFlagValue { value: other }),
         };
 
         let checksum = try_read!(stream, u32);

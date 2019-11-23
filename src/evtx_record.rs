@@ -1,5 +1,5 @@
 use crate::binxml::assemble::parse_tokens;
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
@@ -10,7 +10,6 @@ use std::io::{Cursor, Read};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use snafu::{ensure, ResultExt};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,10 +39,9 @@ impl EvtxRecordHeader {
         let mut magic = [0_u8; 4];
         input.take(4).read_exact(&mut magic)?;
 
-        ensure!(
-            &magic == b"\x2a\x2a\x00\x00",
-            err::InvalidEvtxRecordHeaderMagic { magic }
-        );
+        if &magic != b"\x2a\x2a\x00\x00" {
+            return Err(EvtxError::InvalidEvtxRecordHeaderMagic { magic });
+        }
 
         let size = try_read!(input, u32);
         let record_id = try_read!(input, u64);
@@ -92,9 +90,9 @@ impl<'a> EvtxRecord<'a> {
         let record_with_json_value = self.into_json_value()?;
 
         let data = if indent {
-            serde_json::to_string_pretty(&record_with_json_value.data).context(err::JsonError)?
+            serde_json::to_string_pretty(&record_with_json_value.data)?
         } else {
-            serde_json::to_string(&record_with_json_value.data).context(err::JsonError)?
+            serde_json::to_string(&record_with_json_value.data)?
         };
 
         Ok(SerializedEvtxRecord {
@@ -112,8 +110,7 @@ impl<'a> EvtxRecord<'a> {
         let timestamp = self.timestamp;
         self.into_output(&mut output_builder)?;
 
-        let data = String::from_utf8(output_builder.into_writer()?)
-            .context(err::RecordContainsInvalidUTF8)?;
+        let data = String::from_utf8(output_builder.into_writer()?)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id,

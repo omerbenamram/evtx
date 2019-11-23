@@ -1,14 +1,21 @@
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
 macro_rules! try_read {
     ($cursor: ident, u8) => {
-        $cursor.read_u8().context(err::FailedToRead {
+        $cursor.read_u8().map_err(|e| EvtxError::FailedToRead {
+            source: e,
+            #[cfg(backtraces)]
+            backtrace: ::std::backtrace::Backtrace::capture(),
             offset: $cursor.tell().unwrap(),
             t: "u8",
         })?;
     };
 
     ($cursor: ident, i8) => {
-        $cursor.read_i8().context(err::FailedToRead {
+        $cursor.read_i8().map_err(|e| EvtxError::FailedToRead {
+            source: e,
+            #[cfg(backtraces)]
+            backtrace: ::std::backtrace::Backtrace::capture(),
+
             offset: $cursor.tell().unwrap(),
             t: "i8",
         })?;
@@ -17,7 +24,11 @@ macro_rules! try_read {
     ($cursor: ident, u16) => {
         $cursor
             .read_u16::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "u16",
             })?;
@@ -26,7 +37,11 @@ macro_rules! try_read {
     ($cursor: ident, i16) => {
         $cursor
             .read_i16::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "i16",
             })?;
@@ -35,7 +50,11 @@ macro_rules! try_read {
     ($cursor: ident, i32) => {
         $cursor
             .read_i32::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "i32",
             })?;
@@ -44,7 +63,11 @@ macro_rules! try_read {
     ($cursor: ident, u32) => {
         $cursor
             .read_u32::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "u32",
             })?;
@@ -53,7 +76,11 @@ macro_rules! try_read {
     ($cursor: ident, f32) => {
         $cursor
             .read_f32::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "f32",
             })?;
@@ -62,7 +89,11 @@ macro_rules! try_read {
     ($cursor: ident, i64) => {
         $cursor
             .read_i64::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "i64",
             })?;
@@ -71,7 +102,11 @@ macro_rules! try_read {
     ($cursor: ident, u64) => {
         $cursor
             .read_u64::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "u64",
             })?;
@@ -80,7 +115,11 @@ macro_rules! try_read {
     ($cursor: ident, f64) => {
         $cursor
             .read_f64::<byteorder::LittleEndian>()
-            .context(err::FailedToRead {
+            .map_err(|e| EvtxError::FailedToRead {
+                source: e,
+                #[cfg(backtraces)]
+                backtrace: ::std::backtrace::Backtrace::capture(),
+
                 offset: $cursor.tell().unwrap(),
                 t: "f64",
             })?;
@@ -102,14 +141,16 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, guid) => {
-        Guid::from_reader($cursor).context(err::FailedToReadGUID {
+        Guid::from_reader($cursor).map_err(|e| EvtxError::FailedToReadGUID {
+            source: e,
             offset: $cursor.position(),
         })?
     };
 
     ($cursor: ident, utf_16_str) => {{
         let s = read_len_prefixed_utf16_string($cursor, false)
-            .context(err::FailedToDecodeUTF16String {
+            .map_err(|e| EvtxError::FailedToDecodeUTF16String {
+                source: e,
                 offset: $cursor.position(),
             })?
             .unwrap_or_else(|| "".to_owned());
@@ -118,16 +159,19 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, null_terminated_utf_16_str) => {{
-        let s =
-            read_null_terminated_utf16_string($cursor).context(err::FailedToDecodeUTF16String {
+        let s = read_null_terminated_utf16_string($cursor).map_err(|e| {
+            EvtxError::FailedToDecodeUTF16String {
+                source: e,
                 offset: $cursor.position(),
-            })?;
+            }
+        })?;
 
         Cow::Owned(s)
     }};
 
     ($cursor: ident, sid) => {
-        Sid::from_reader($cursor).context(err::FailedToReadNTSID {
+        Sid::from_reader($cursor).map_err(|e| EvtxError::FailedToReadNTSID {
+            source: e,
             offset: $cursor.position(),
         })?
     };
@@ -142,7 +186,8 @@ macro_rules! try_read {
 
     ($cursor: ident, filetime) => {
         winstructs::timestamp::WinTimestamp::from_reader($cursor)
-            .context(err::FailedToReadWindowsTime {
+            .map_err(|e| EvtxError::FailedToReadWindowsTime {
+                source: e,
                 offset: $cursor.position(),
             })?
             .to_datetime()

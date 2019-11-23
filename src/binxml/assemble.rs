@@ -1,6 +1,4 @@
-use crate::err::{self, Result};
-
-use snafu::OptionExt;
+use crate::err::{EvtxError, Result};
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
@@ -26,14 +24,14 @@ pub fn parse_tokens<T: BinXmlOutput>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().context(
-                    err::FailedToCreateRecordModel {
+                visitor.visit_open_start_element(stack.last().ok_or(
+                    EvtxError::FailedToCreateRecordModel {
                         message: "Invalid parser state - expected stack to be non-empty",
                     },
                 )?)?
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().context(err::FailedToCreateRecordModel {
+                let close_element = stack.pop().ok_or(EvtxError::FailedToCreateRecordModel {
                     message: "Invalid parser state - expected stack to be non-empty",
                 })?;
                 visitor.visit_close_element(&close_element)?

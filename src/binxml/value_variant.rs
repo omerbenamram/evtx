@@ -1,8 +1,6 @@
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
-
 use encoding::EncodingRef;
-use snafu::{OptionExt, ResultExt};
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -198,7 +196,7 @@ impl<'a> BinXmlValue<'a> {
         let value_type_token = try_read!(cursor, u8);
 
         let value_type =
-            BinXmlValueType::from_u8(value_type_token).context(err::InvalidValueVariant {
+            BinXmlValueType::from_u8(value_type_token).ok_or(EvtxError::InvalidValueVariant {
                 value: value_type_token,
                 offset: cursor.position(),
             })?;
@@ -221,7 +219,8 @@ impl<'a> BinXmlValue<'a> {
             (BinXmlValueType::NullType, _) => BinXmlValue::NullType,
             (BinXmlValueType::StringType, Some(sz)) => BinXmlValue::StringType(Cow::Owned(
                 read_utf16_by_size(cursor, u64::from(sz))
-                    .context(err::FailedToDecodeUTF16String {
+                    .map_err(|e| EvtxError::FailedToDecodeUTF16String {
+                        source: e,
                         offset: cursor.position(),
                     })?
                     .unwrap_or_else(|| "".to_owned()),
@@ -234,12 +233,13 @@ impl<'a> BinXmlValue<'a> {
                     .unwrap_or_else(|| "".to_owned()),
             )),
             // AnsiString are always sized according to docs
-            (BinXmlValueType::AnsiStringType, None) => err::UnimplementedValueVariant {
-                name: "AnsiString",
-                size: None,
-                offset: cursor.position(),
+            (BinXmlValueType::AnsiStringType, None) => {
+                return Err(EvtxError::UnimplementedValueVariant {
+                    name: "AnsiString".to_owned(),
+                    size: None,
+                    offset: cursor.position(),
+                })
             }
-            .fail()?,
             (BinXmlValueType::Int8Type, _) => BinXmlValue::Int8Type(try_read!(cursor, i8)),
             (BinXmlValueType::UInt8Type, _) => BinXmlValue::UInt8Type(try_read!(cursor, u8)),
             (BinXmlValueType::Int16Type, _) => BinXmlValue::Int16Type(try_read!(cursor, i16)),
@@ -253,12 +253,13 @@ impl<'a> BinXmlValue<'a> {
             (BinXmlValueType::BoolType, _) => BinXmlValue::BoolType(try_read!(cursor, bool)),
             (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(try_read!(cursor, guid)),
             // TODO: find a sample with this token.
-            (BinXmlValueType::SizeTType, _) => err::UnimplementedValueVariant {
-                name: "SizeT",
-                size,
-                offset: cursor.position(),
+            (BinXmlValueType::SizeTType, _) => {
+                return Err(EvtxError::UnimplementedValueVariant {
+                    name: "SizeT".to_owned(),
+                    size,
+                    offset: cursor.position(),
+                })
             }
-            .fail()?,
             (BinXmlValueType::FileTimeType, _) => {
                 BinXmlValue::FileTimeType(try_read!(cursor, filetime))
             }
@@ -359,12 +360,13 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::HexInt64ArrayType(try_read_sized_array!(cursor, hex64, sz))
             }
 
-            _ => err::UnimplementedValueVariant {
-                name: format!("{:?}", value_type),
-                size,
-                offset: cursor.position(),
+            _ => {
+                return Err(EvtxError::UnimplementedValueVariant {
+                    name: format!("{:?}", value_type),
+                    size,
+                    offset: cursor.position(),
+                })
             }
-            .fail()?,
         };
 
         Ok(value)

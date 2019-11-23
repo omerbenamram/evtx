@@ -1,6 +1,6 @@
 use crate::evtx_parser::ReadSeek;
 
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -81,7 +81,7 @@ pub fn read_ansi_encoded_string<T: ReadSeek>(
                     s
                 }
                 Err(message) => {
-                    return Err(err::Error::FailedToDecodeANSIString {
+                    return Err(EvtxError::FailedToDecodeANSIString {
                         encoding: ansi_codec.name(),
                         message: message.to_string(),
                         offset: stream.tell()?,

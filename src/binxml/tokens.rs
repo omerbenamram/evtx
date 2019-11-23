@@ -1,6 +1,5 @@
-use crate::err::{self, Result};
+use crate::err::{EvtxError, Result};
 use crate::evtx_parser::ReadSeek;
-use snafu::{OptionExt, ResultExt};
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
 use winstructs::guid::Guid;
@@ -78,7 +77,7 @@ pub fn read_template<'a>(
         let value_type_token = try_read!(cursor, u8);
 
         let value_type =
-            BinXmlValueType::from_u8(value_type_token).context(err::InvalidValueVariant {
+            BinXmlValueType::from_u8(value_type_token).ok_or(EvtxError::InvalidValueVariant {
                 value: value_type_token,
                 offset: cursor.position(),
             })?;
@@ -204,7 +203,7 @@ pub fn read_substitution_descriptor(
     let value_type_token = try_read!(cursor, u8);
 
     let value_type =
-        BinXmlValueType::from_u8(value_type_token).context(err::InvalidValueVariant {
+        BinXmlValueType::from_u8(value_type_token).ok_or(EvtxError::InvalidValueVariant {
             value: value_type_token,
             offset: cursor.position(),
         })?;

@@ -1,5 +1,4 @@
-use crate::err::{self, Result};
-use snafu::{ensure, ResultExt};
+use crate::err::{EvtxError, Result};
 
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
@@ -9,6 +8,8 @@ use rayon;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
+#[cfg(not(feature = "multithreading"))]
+use log::warn;
 use log::{debug, info};
 
 use std::fs::File;
@@ -227,11 +228,15 @@ impl EvtxParser<File> {
         let path = path
             .as_ref()
             .canonicalize()
-            .context(err::InvalidInputPath {
+            .map_err(|e| EvtxError::InvalidInputPath {
+                source: e,
                 path: path.as_ref().to_string_lossy().to_string(),
             })?;
 
-        let f = File::open(&path).context(err::FailedToOpenFile { path })?;
+        let f = File::open(&path).map_err(|e| EvtxError::FailedToOpenFile {
+            source: e,
+            path: path,
+        })?;
 
         let cursor = f;
         Self::from_read_seek(cursor)
@@ -282,10 +287,9 @@ impl<T: ReadSeek> EvtxParser<T> {
             .take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)?;
 
-        ensure!(
-            amount_read == EVTX_CHUNK_SIZE,
-            err::IncompleteChunk { chunk_number }
-        );
+        if amount_read != EVTX_CHUNK_SIZE {
+            return Err(EvtxError::IncompleteChunk { chunk_number });
+        }
 
         // There might be empty chunks in the middle of a dirty file.
         if chunk_data.iter().all(|x| *x == 0) {

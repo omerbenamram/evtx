@@ -1,220 +1,159 @@
 use quick_xml;
-use snafu::{Backtrace, ErrorCompat, GenerateBacktrace, Snafu};
+#[cfg(backtraces)]
+use std::backtrace::Backtrace;
+use thiserror::Error;
 
-use std::io;
-use std::path::PathBuf;
+pub type Result<T> = std::result::Result<T, EvtxError>;
 
-pub type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Debug, Snafu)]
-#[snafu(visibility(pub(crate)))]
-pub enum Error {
-    #[snafu(display(
-        "Offset {}: An I/O error has occurred while trying to read {}: {}",
-        offset,
-        t,
-        source
-    ))]
+#[derive(Debug, Error)]
+pub enum EvtxError {
+    #[error("Offset {offset}: An I/O error has occurred while trying to read {t}")]
     FailedToRead {
         offset: u64,
-        t: String,
+        t: &'static str,
         source: std::io::Error,
+        #[cfg(backtraces)]
         backtrace: Backtrace,
     },
 
-    #[snafu(display("An I/O error has occurred: {}", source))]
+    #[error("An I/O error has occurred")]
     IO {
+        #[from]
         source: std::io::Error,
+        #[cfg(backtraces)]
         backtrace: Backtrace,
     },
 
-    #[snafu(display("Invalid input path, cannot canonicalize: {}: {}", path, source))]
+    #[error("Failed to access path: {}", path)]
     InvalidInputPath {
         source: std::io::Error,
         // Not a path because it is invalid
         path: String,
     },
-    #[snafu(display("Failed to open file {}: {}", path.display(), source))]
+
+    #[error("Failed to open file {}", path.display())]
     FailedToOpenFile {
         source: std::io::Error,
-        path: PathBuf,
+        path: std::path::PathBuf,
     },
 
     /// Errors related to Deserialization
-
-    #[snafu(display("Reached EOF while trying to allocate chunk {}", chunk_number))]
+    #[error("Reached EOF while trying to allocate chunk {chunk_number}")]
     IncompleteChunk { chunk_number: u16 },
 
-    #[snafu(display(
-        "Invalid EVTX record header magic, expected `2a2a0000`, found `{:2X?}`",
-        magic
-    ))]
+    #[error("Invalid EVTX record header magic, expected `2a2a0000`, found `{magic:2X?}`")]
     InvalidEvtxRecordHeaderMagic { magic: [u8; 4] },
 
-    #[snafu(display(
-        "Invalid EVTX chunk header magic, expected `ElfChnk0`, found `{:2X?}`",
-        magic
-    ))]
+    #[error("Invalid EVTX chunk header magic, expected `ElfChnk0`, found `{magic:2X?}`")]
     InvalidEvtxChunkMagic { magic: [u8; 8] },
 
-    #[snafu(display(
-        "Invalid EVTX file header magic, expected `ElfFile0`, found `{:2X?}`",
-        magic
-    ))]
+    #[error("Invalid EVTX file header magic, expected `ElfFile0`, found `{magic:2X?}`")]
     InvalidEvtxFileHeaderMagic { magic: [u8; 8] },
-    #[snafu(display("Unknown EVTX record header flags value: {}", value))]
+
+    #[error("Unknown EVTX record header flags value: {value}")]
     UnknownEvtxHeaderFlagValue { value: u32 },
 
-    #[snafu(display("chunk data CRC32 invalid"))]
+    #[error("chunk data CRC32 invalid")]
     InvalidChunkChecksum {},
 
-    #[snafu(display(
-        "Failed to deserialize record {}, caused by:\n\t {}",
-        record_id,
-        source
-    ))]
+    #[error("Failed to deserialize record {record_id}")]
     FailedToDeserializeRecord {
         record_id: u64,
-        #[snafu(backtrace)]
-        #[snafu(source(from(Error, Box::new)))]
-        source: Box<Error>,
+        source: Box<EvtxError>,
     },
-    #[snafu(display(
-        "Offset {}: Tried to read an invalid byte `{:x}` as binxml token",
-        offset,
-        value
-    ))]
+
+    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml token")]
     InvalidToken { value: u8, offset: u64 },
 
-    #[snafu(display(
-        "Offset {}: Tried to read an invalid byte `{:x}` as binxml value variant",
-        offset,
-        value
-    ))]
+    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml value variant")]
     InvalidValueVariant { value: u8, offset: u64 },
 
-    #[snafu(display(
-        "Offset {}: Value variant `{}` (size {:?}) is unimplemented",
-        offset,
-        name,
-        size
-    ))]
+    #[error("Offset {offset}: Value variant `{name}` (size {size:?}) is unimplemented")]
     UnimplementedValueVariant {
         name: String,
         size: Option<u16>,
         offset: u64,
     },
 
-    #[snafu(display("Offset {}: Token `{}` is unimplemented", offset, name))]
-    UnimplementedToken { name: String, offset: u64 },
+    #[error("Offset {offset}: Token `{name}` is unimplemented")]
+    UnimplementedToken { name: &'static str, offset: u64 },
 
-    #[snafu(display(
-        "Offset {}: Failed to decode UTF-16 string, caused by: {}",
-        offset,
-        source
-    ))]
+    #[error("Offset {offset}: Failed to decode UTF-16 string")]
     FailedToDecodeUTF16String { source: std::io::Error, offset: u64 },
 
-    #[snafu(display(
-        "Offset {}: Failed to decode UTF-8 string, caused by: {}",
-        offset,
-        source
-    ))]
+    #[error("Offset {offset}: Failed to decode UTF-8 string")]
     FailedToDecodeUTF8String {
         source: std::string::FromUtf8Error,
         offset: u64,
     },
 
-    #[snafu(display(
-        "Offset {}: Failed to decode ansi string (used encoding scheme {}), caused by: {}",
-        offset,
-        encoding,
-        message
-    ))]
+    #[error("Offset {offset}: Failed to decode ansi string (used encoding scheme {encoding}), failed with: {message}")]
     FailedToDecodeANSIString {
         encoding: &'static str,
         message: String,
         offset: u64,
     },
 
-    #[snafu(display(
-        "Offset {}: Failed to read windows time, caused by: {}",
-        offset,
-        source
-    ))]
+    #[error("Offset {offset}: Failed to read windows time")]
     FailedToReadWindowsTime {
         source: winstructs::err::Error,
         offset: u64,
     },
 
-    #[snafu(display("Offset {}: Failed to decode GUID, caused by: {}", offset, source))]
+    #[error("Offset {offset}: Failed to decode GUID")]
     FailedToReadGUID {
         source: winstructs::err::Error,
         offset: u64,
     },
 
-    #[snafu(display("Offset {}: Failed to decode NTSID, caused by: {}", offset, source))]
+    #[error("Offset {offset}: Failed to decode NTSID")]
     FailedToReadNTSID {
         source: winstructs::err::Error,
         offset: u64,
     },
 
-    #[snafu(display("Failed to create record model, reason: {}", message))]
-    FailedToCreateRecordModel { message: String },
+    #[error("Failed to create record model, reason: {message}")]
+    FailedToCreateRecordModel { message: &'static str },
 
     /// Errors related to Serialization
     // Since `quick-xml` maintains the stack for us, structural errors with the XML
     // Will be included in this generic error alongside IO errors.
-    #[snafu(display("Writing to XML failed with: {}", source))]
-    XmlOutputError { source: quick_xml::Error },
+    #[error("Writing to XML failed")]
+    XmlOutputError {
+        #[from]
+        source: quick_xml::Error,
+    },
 
-    #[snafu(display("Building a JSON document failed with message: {}", message,))]
-    JsonStructureError { message: String },
+    #[error("Building a JSON document failed with message: {message}")]
+    JsonStructureError { message: &'static str },
 
-    #[snafu(display("`serde_json` failed with error: {}", source))]
-    JsonError { source: serde_json::error::Error },
+    #[error("`serde_json` failed")]
+    JsonError {
+        #[from]
+        source: serde_json::error::Error,
+    },
 
-    #[snafu(display("Record data contains invalid UTF-8: {}", source))]
-    RecordContainsInvalidUTF8 { source: std::string::FromUtf8Error },
+    #[error("Record data contains invalid UTF-8")]
+    RecordContainsInvalidUTF8 {
+        #[from]
+        source: std::string::FromUtf8Error,
+    },
 
     /// Misc Errors
-    #[snafu(display("Unimplemented: {}", name))]
+    #[error("Unimplemented: {name}")]
     Unimplemented { name: String },
-    #[snafu(display("An unexpected error has occurred: {}", detail))]
+    #[error("An unexpected error has occurred: {detail}")]
     Any { detail: String },
 }
 
 /// Generic error handler for quick prototyping, inspired by failure's `format_err!` macro.
 #[macro_export]
 macro_rules! format_err {
-   ($($arg:tt)*) => { $crate::err::Any { detail: format!($($arg)*) }.fail() }
+   ($($arg:tt)*) => { $crate::err::EvtxError::Any { detail: format!($($arg)*) } }
 }
 
 /// Errors on unimplemented functions instead on panicking.
 #[macro_export]
 macro_rules! unimplemented_fn {
-   ($($arg:tt)*) => { $crate::err::Unimplemented { name: format!($($arg)*) }.fail() }
-}
-
-impl From<quick_xml::Error> for Error {
-    fn from(err: quick_xml::Error) -> Self {
-        Error::XmlOutputError { source: err }
-    }
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Self {
-        Error::IO {
-            source: err,
-            backtrace: snafu::Backtrace::generate(),
-        }
-    }
-}
-
-pub fn dump_err_with_backtrace(err: &Error) {
-    eprintln!("{}", err);
-
-    if let Some(bt) = err.backtrace() {
-        eprintln!("{}", bt);
-    }
+   ($($arg:tt)*) => { Err($crate::err::EvtxError::Unimplemented { name: format!($($arg)*) }) }
 }

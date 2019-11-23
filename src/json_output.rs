@@ -1,5 +1,4 @@
-use crate::err::{self, Result};
-use snafu::{ensure, OptionExt};
+use crate::err::{EvtxError, Result};
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::XmlElement;
@@ -104,7 +103,7 @@ impl JsonOutput {
         let container =
             self.get_current_parent()
                 .as_object_mut()
-                .context(err::JsonStructureError {
+                .ok_or(EvtxError::JsonStructureError {
                 message:
                     "This is a bug - expected parent container to exist, and to be an object type.\
                      Check that the referencing parent is not `Value::null`",
@@ -139,7 +138,7 @@ impl JsonOutput {
                 let value = self
                     .get_current_parent()
                     .as_object_mut()
-                    .context(err::JsonStructureError {
+                    .ok_or(EvtxError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                         Check that the value is not `Value::null`",
@@ -150,7 +149,7 @@ impl JsonOutput {
                 let value = self
                     .get_or_create_current_path()
                     .as_object_mut()
-                    .context(err::JsonStructureError {
+                    .ok_or(EvtxError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                             Check that the value is not `Value::null`",
@@ -164,7 +163,7 @@ impl JsonOutput {
             let value =
                 self.get_current_parent()
                     .as_object_mut()
-                    .context(err::JsonStructureError {
+                    .ok_or(EvtxError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                          Check that the value is not `Value::null`",
@@ -177,12 +176,11 @@ impl JsonOutput {
     }
 
     pub fn into_value(self) -> Result<Value> {
-        ensure!(
-            self.stack.is_empty(),
-            err::JsonStructureError {
-                message: "Invalid stream, EOF reached before closing all attributes"
-            }
-        );
+        if !self.stack.is_empty() {
+            return Err(EvtxError::JsonStructureError {
+                message: "Invalid stream, EOF reached before closing all attributes",
+            });
+        }
 
         Ok(self.map)
     }
@@ -240,7 +238,7 @@ impl BinXmlOutput for JsonOutput {
             let current_object =
                 current_value
                     .as_object_mut()
-                    .context(err::JsonStructureError {
+                    .ok_or(EvtxError::JsonStructureError {
                         message: "expected current value to be an object type",
                     })?;
 
