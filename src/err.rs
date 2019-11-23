@@ -146,12 +146,6 @@ pub enum EvtxError {
     Any { detail: String },
 }
 
-/// Generic error handler for quick prototyping, inspired by failure's `format_err!` macro.
-#[macro_export]
-macro_rules! format_err {
-   ($($arg:tt)*) => { $crate::err::EvtxError::Any { detail: format!($($arg)*) } }
-}
-
 /// Errors on unimplemented functions instead on panicking.
 #[macro_export]
 macro_rules! unimplemented_fn {
