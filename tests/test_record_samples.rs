@@ -180,7 +180,7 @@ fn test_event_xml_sample_with_entity_ref() {
         .with_configuration(ParserSettings::new().num_threads(1));
 
     let record = parser
-        .records_json()
+        .records()
         .filter_map(|record| record.ok())
         .find(|record| record.event_record_id == 28)
         .expect("record to parse correctly");
