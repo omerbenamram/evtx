@@ -5,7 +5,9 @@ use byteorder::ReadBytesExt;
 use log::trace;
 use std::io::{Seek, SeekFrom};
 
-use crate::binxml::tokens::read_open_start_element;
+use crate::binxml::tokens::{
+    read_open_start_element, read_processing_instruction_data, read_processing_instruction_target,
+};
 use crate::binxml::value_variant::BinXmlValue;
 
 use crate::{
@@ -165,18 +167,12 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, self.chunk)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => {
-                Err(DeserializationError::UnimplementedToken {
-                    name: "ProcessingInstructionTarget",
-                    offset: cursor.position(),
-                })
-            }
-            BinXMLRawToken::ProcessingInstructionData => {
-                Err(DeserializationError::UnimplementedToken {
-                    name: "ProcessingInstructionData",
-                    offset: cursor.position(),
-                })
-            }
+            BinXMLRawToken::ProcessingInstructionTarget => Ok(BinXMLDeserializedTokens::PITarget(
+                read_processing_instruction_target(cursor, self.chunk)?,
+            )),
+            BinXMLRawToken::ProcessingInstructionData => Ok(BinXMLDeserializedTokens::PIData(
+                read_processing_instruction_data(cursor)?,
+            )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, self.chunk, self.ansi_codec)?,
             )),

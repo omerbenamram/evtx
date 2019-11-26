@@ -1,7 +1,7 @@
 use crate::err::{SerializationError, SerializationResult};
 
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::xml::XmlElement;
+use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
 
@@ -267,13 +267,7 @@ impl BinXmlOutput for JsonOutput {
         })
     }
 
-    fn visit_processing_instruction_target(&mut self) -> SerializationResult<()> {
-        Err(SerializationError::Unimplemented {
-            message: format!("`{}`: visit_processing_instruction_target", file!()),
-        })
-    }
-
-    fn visit_processing_instruction_data(&mut self) -> SerializationResult<()> {
+    fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> Result<(), SerializationError> {
         Err(SerializationError::Unimplemented {
             message: format!("`{}`: visit_processing_instruction_data", file!()),
         })

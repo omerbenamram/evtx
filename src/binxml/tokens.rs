@@ -9,6 +9,7 @@ use std::io::Cursor;
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::utils::read_len_prefixed_utf16_string;
 
 use log::{trace, warn};
 
@@ -200,6 +201,31 @@ pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragment
         minor_version,
         flags,
     })
+}
+
+pub fn read_processing_instruction_target<'a>(
+    cursor: &mut Cursor<&'a [u8]>,
+    chunk: Option<&'a EvtxChunk<'a>>,
+) -> Result<BinXMLProcessingInstructionTarget<'a>> {
+    trace!(
+        "Offset `0x{:08x}` - ProcessingInstructionTarget",
+        cursor.position(),
+    );
+
+    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
+    trace!("\tPITarget Name - {:?}", name);
+    Ok(BinXMLProcessingInstructionTarget { name })
+}
+
+pub fn read_processing_instruction_data<'a>(cursor: &mut Cursor<&[u8]>) -> Result<Cow<'a, str>> {
+    trace!(
+        "Offset `0x{:08x}` - ProcessingInstructionTarget",
+        cursor.position(),
+    );
+
+    let data = try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or(Cow::Borrowed(""));
+    trace!("PIData - {}", data,);
+    Ok(data)
 }
 
 pub fn read_substitution_descriptor(

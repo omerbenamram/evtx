@@ -2,7 +2,7 @@ use crate::err::{EvtxError, Result};
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
-use crate::model::xml::{XmlElementBuilder, XmlModel};
+use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
 use log::trace;
 use std::borrow::{Borrow, BorrowMut, Cow};
@@ -39,6 +39,7 @@ pub fn parse_tokens<T: BinXmlOutput>(
             XmlModel::Value(s) => visitor.visit_characters(&s)?,
             XmlModel::EndOfStream => {}
             XmlModel::StartOfStream => {}
+            XmlModel::PI(pi) => visitor.visit_processing_instruction(&pi)?,
         };
     }
 
@@ -51,6 +52,7 @@ pub fn create_record_model<'a>(
     tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) -> Vec<XmlModel<'a>> {
     let mut current_element: Option<XmlElementBuilder> = None;
+    let mut current_pi: Option<XmlPIBuilder> = None;
     let mut model: Vec<XmlModel> = Vec::with_capacity(tokens.len());
 
     for token in tokens {
@@ -86,10 +88,26 @@ pub fn create_record_model<'a>(
             | Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(_)) => {
                 unimplemented!("EntityRef not implemented")
             }
-            Cow::Owned(BinXMLDeserializedTokens::PITarget)
-            | Cow::Borrowed(BinXMLDeserializedTokens::PITarget) => {}
-            Cow::Owned(BinXMLDeserializedTokens::PIData)
-            | Cow::Borrowed(BinXMLDeserializedTokens::PIData) => {}
+            Cow::Owned(BinXMLDeserializedTokens::PITarget(name)) => {
+                let builder = XmlPIBuilder::new();
+                current_pi = Some(builder.name(Cow::Owned(name.name)));
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::PITarget(name)) => {
+                let builder = XmlPIBuilder::new();
+                current_pi = Some(builder.name(Cow::Borrowed(&name.name)));
+            }
+            Cow::Owned(BinXMLDeserializedTokens::PIData(data)) => match current_pi.take() {
+                None => panic!("PI Data without PI target - Bad parser state"),
+                Some(builder) => {
+                    model.push(builder.data(data).finish());
+                }
+            },
+            Cow::Borrowed(BinXMLDeserializedTokens::PIData(data)) => match current_pi.take() {
+                None => panic!("PI Data without PI target - Bad parser state"),
+                Some(builder) => {
+                    model.push(builder.data(Cow::Borrowed(data)).finish());
+                }
+            },
             Cow::Owned(BinXMLDeserializedTokens::Substitution(_))
             | Cow::Borrowed(BinXMLDeserializedTokens::Substitution(_)) => {
                 panic!("Call `expand_templates` before calling this function")
