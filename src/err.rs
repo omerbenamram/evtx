@@ -9,6 +9,7 @@ use crate::utils::dump_stream;
 use crate::FileOffset;
 use log::error;
 
+use crate::evtx_record::RecordId;
 use std::error::Error as StdError;
 use std::io;
 use std::path::Path;
@@ -112,13 +113,6 @@ pub enum DeserializationError {
         source: Box<DeserializationError>,
     },
 
-    /// An extra layer of error stack to keep record id.
-    #[error("Failed to deserialize record {record_id}")]
-    FailedToDeserializeRecord {
-        record_id: u64,
-        source: Box<DeserializationError>,
-    },
-
     /// While decoding ANSI strings, we might get an incorrect decoder, which will yield a special message.
     #[error("Failed to decode ANSI string (encoding used: {encoding_used}) - `{inner_message}`")]
     AnsiDecodeError {
@@ -126,10 +120,14 @@ pub enum DeserializationError {
         inner_message: String,
     },
 
-    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml token")]
+    #[error(
+        "Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:02x}` as binxml token"
+    )]
     InvalidToken { value: u8, offset: u64 },
 
-    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml value variant")]
+    #[error(
+        "Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:2x}` as binxml value variant"
+    )]
     InvalidValueVariant { value: u8, offset: u64 },
 
     /// Assertion errors.
@@ -250,9 +248,15 @@ pub enum EvtxError {
     #[error("Failed to parse chunk number {chunk_id}")]
     FailedToParseChunk { chunk_id: u16, source: ChunkError },
 
+    #[error("Failed to parse record number {record_id}")]
+    FailedToParseRecord {
+        record_id: RecordId,
+        source: Box<EvtxError>,
+    },
+
     // TODO: move this error.
-    #[error("Failed to create record model, reason: {message}")]
-    FailedToCreateRecordModel { message: &'static str },
+    #[error("Failed to create record model, reason: {}", .0)]
+    FailedToCreateRecordModel(&'static str),
 
     // TODO: should we keep an `Unimplemented` variant at public API?
     #[error("Unimplemented: {name}")]

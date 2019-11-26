@@ -10,6 +10,7 @@ use log::trace;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 
+use crate::binxml::name::BinXmlName;
 use std::mem;
 
 pub struct JsonOutput {
@@ -261,9 +262,18 @@ impl BinXmlOutput for JsonOutput {
         })
     }
 
-    fn visit_entity_reference(&mut self) -> SerializationResult<()> {
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
         Err(SerializationError::Unimplemented {
             message: format!("`{}`: visit_entity_reference", file!()),
+        })
+    }
+
+    fn visit_character_reference(
+        &mut self,
+        char_ref: Cow<'_, str>,
+    ) -> Result<(), SerializationError> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_character_reference", file!()),
         })
     }
 

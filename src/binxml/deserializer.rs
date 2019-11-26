@@ -164,6 +164,10 @@ impl<'a> IterTokens<'a> {
                 name: "CDataSection",
                 offset: cursor.position(),
             }),
+            BinXMLRawToken::CharReference => Err(DeserializationError::UnimplementedToken {
+                name: "CharReference",
+                offset: cursor.position(),
+            }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, self.chunk)?,
             )),

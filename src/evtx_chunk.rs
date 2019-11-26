@@ -1,4 +1,6 @@
-use crate::err::{ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult};
+use crate::err::{
+    ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError,
+};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
@@ -206,7 +208,7 @@ pub struct IterChunkRecords<'chunk> {
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = DeserializationResult<EvtxRecord<'a>>;
+    type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
@@ -223,7 +225,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 // We currently do not try to recover after an invalid record.
                 self.exhausted = true;
 
-                return Some(Err(err));
+                return Some(Err(EvtxError::DeserializationError(err)));
             }
         };
 
@@ -248,17 +250,17 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let mut tokens = vec![];
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
-            .map_err(|e| DeserializationError::FailedToDeserializeRecord {
-                source: Box::new(e),
+            .map_err(|e| EvtxError::FailedToParseRecord {
                 record_id: record_header.event_record_id,
+                source: Box::new(EvtxError::DeserializationError(e)),
             }) {
             Ok(iter) => iter,
             Err(err) => return Some(Err(err)),
         };
 
         for token in iter {
-            match token.map_err(|e| DeserializationError::FailedToDeserializeRecord {
-                source: Box::new(e),
+            match token.map_err(|e| EvtxError::FailedToParseRecord {
+                source: Box::new(EvtxError::DeserializationError(e)),
                 record_id: record_header.event_record_id,
             }) {
                 Ok(token) => tokens.push(token),

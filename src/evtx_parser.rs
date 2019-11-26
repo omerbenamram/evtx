@@ -425,16 +425,9 @@ impl<T: ReadSeek> EvtxParser<T> {
                                     chunk_id: i as u16,
                                     source: err,
                                 })],
-                                Ok(mut chunk_records) => chunk_records
-                                    .iter()
-                                    .map(|record_result| {
-                                        let mut closure = f.clone();
-                                        closure(
-                                            record_result
-                                                .map_err(|e| EvtxError::DeserializationError(e)),
-                                        )
-                                    })
-                                    .collect(),
+                                Ok(mut chunk_records) => {
+                                    chunk_records.iter().map(f.clone()).collect()
+                                }
                             }
                         }
                     })

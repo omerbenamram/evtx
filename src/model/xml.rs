@@ -1,6 +1,7 @@
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 
+use crate::err::EvtxError;
 use log::error;
 use std::borrow::Cow;
 
@@ -11,6 +12,7 @@ pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
     PI(BinXmlPI<'a>),
+    EntityRef(Cow<'a, Name<'a>>),
     Value(Cow<'a, BinXmlValue<'a>>),
     EndOfStream,
     StartOfStream,
@@ -48,14 +50,20 @@ impl<'a> XmlElementBuilder<'a> {
         self
     }
 
-    pub fn attribute_value(mut self, value: Cow<'a, BinXmlValue<'a>>) -> Self {
-        debug_assert!(
-            self.current_attribute_name.is_some(),
-            "There should be a name"
-        );
+    pub fn attribute_value(mut self, value: Cow<'a, BinXmlValue<'a>>) -> Result<Self, EvtxError> {
+        if !self.current_attribute_name.is_some() {
+            return Err(EvtxError::FailedToCreateRecordModel(
+                "Name is empty, but tried to insert attribute value",
+            ));
+        }
+
         match self.current_attribute_value {
             None => self.current_attribute_value = Some(value),
-            Some(_) => panic!("invalid state, there should not be a value"),
+            Some(_) => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "invalid state, there should not be a value",
+                ))
+            }
         }
 
         self.attributes.push(XmlAttribute {
@@ -63,14 +71,16 @@ impl<'a> XmlElementBuilder<'a> {
             value: self.current_attribute_value.take().unwrap(),
         });
 
-        self
+        Ok(self)
     }
 
-    pub fn finish(self) -> XmlElement<'a> {
-        XmlElement {
-            name: self.name.expect("Element name should be set"),
+    pub fn finish(self) -> Result<XmlElement<'a>, EvtxError> {
+        Ok(XmlElement {
+            name: self.name.ok_or(EvtxError::FailedToCreateRecordModel(
+                "Element name should be set",
+            ))?,
             attributes: self.attributes,
-        }
+        })
     }
 }
 

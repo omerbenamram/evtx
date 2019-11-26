@@ -1,6 +1,6 @@
 use crate::binxml::assemble::parse_tokens;
 use crate::err::{
-    DeserializationError, DeserializationResult, Result, SerializationError,
+    DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
@@ -66,7 +66,11 @@ impl EvtxRecordHeader {
 impl<'a> EvtxRecord<'a> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
-        parse_tokens(self.tokens, output_builder)?;
+        let event_record_id = self.event_record_id;
+        parse_tokens(self.tokens, output_builder).map_err(|e| EvtxError::FailedToParseRecord {
+            record_id: event_record_id,
+            source: Box::new(e),
+        })?;
 
         Ok(())
     }
