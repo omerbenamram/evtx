@@ -129,10 +129,10 @@ fn test_sample_with_multiple_xml_fragments() {
 
 #[test]
 fn test_sample_with_binxml_as_substitution_tokens_and_pi_target() {
-    // TODO: PI Target still cannot be parsed
+    // TODO: this should support JSON (append to text)
     test_full_sample(
         sample_with_binxml_as_substitution_tokens_and_pi_target(),
-        335,
-        5,
+        337,
+        3,
     )
 }
