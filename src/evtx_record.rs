@@ -1,21 +1,22 @@
 use crate::binxml::assemble::parse_tokens;
-use crate::err::{self, Result};
-use crate::evtx_parser::ReadSeek;
+use crate::err::{
+    DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
+};
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::ParserSettings;
 
-use std::io::{Cursor, Read};
-
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use snafu::{ensure, ResultExt};
+use std::io::{Cursor, Read};
 use std::sync::Arc;
+
+pub type RecordId = u64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecord<'a> {
-    pub event_record_id: u64,
+    pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
     pub settings: Arc<ParserSettings>,
@@ -24,30 +25,29 @@ pub struct EvtxRecord<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvtxRecordHeader {
     pub data_size: u32,
-    pub event_record_id: u64,
+    pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SerializedEvtxRecord<T> {
-    pub event_record_id: u64,
+    pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
     pub data: T,
 }
 
 impl EvtxRecordHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxRecordHeader> {
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxRecordHeader> {
         let mut magic = [0_u8; 4];
         input.take(4).read_exact(&mut magic)?;
 
-        ensure!(
-            &magic == b"\x2a\x2a\x00\x00",
-            err::InvalidEvtxRecordHeaderMagic { magic }
-        );
+        if &magic != b"\x2a\x2a\x00\x00" {
+            return Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic });
+        }
 
-        let size = try_read!(input, u32);
-        let record_id = try_read!(input, u64);
-        let timestamp = try_read!(input, filetime);
+        let size = try_read!(input, u32)?;
+        let record_id = try_read!(input, u64)?;
+        let timestamp = try_read!(input, filetime)?;
 
         Ok(EvtxRecordHeader {
             data_size: size,
@@ -66,7 +66,11 @@ impl EvtxRecordHeader {
 impl<'a> EvtxRecord<'a> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
-        parse_tokens(self.tokens, output_builder)?;
+        let event_record_id = self.event_record_id;
+        parse_tokens(self.tokens, output_builder).map_err(|e| EvtxError::FailedToParseRecord {
+            record_id: event_record_id,
+            source: Box::new(e),
+        })?;
 
         Ok(())
     }
@@ -92,9 +96,10 @@ impl<'a> EvtxRecord<'a> {
         let record_with_json_value = self.into_json_value()?;
 
         let data = if indent {
-            serde_json::to_string_pretty(&record_with_json_value.data).context(err::JsonError)?
+            serde_json::to_string_pretty(&record_with_json_value.data)
+                .map_err(SerializationError::from)?
         } else {
-            serde_json::to_string(&record_with_json_value.data).context(err::JsonError)?
+            serde_json::to_string(&record_with_json_value.data).map_err(SerializationError::from)?
         };
 
         Ok(SerializedEvtxRecord {
@@ -112,8 +117,8 @@ impl<'a> EvtxRecord<'a> {
         let timestamp = self.timestamp;
         self.into_output(&mut output_builder)?;
 
-        let data = String::from_utf8(output_builder.into_writer()?)
-            .context(err::RecordContainsInvalidUTF8)?;
+        let data = String::from_utf8(output_builder.into_writer())
+            .map_err(|e| SerializationError::from(e))?;
 
         Ok(SerializedEvtxRecord {
             event_record_id,

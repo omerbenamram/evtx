@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0 - UNRELEASED]
+
+### Added
+- Support for `EntityRef` nodes.
+
+### Changed
+- Error reporting should be better with this version.
+
+### Fixed
+- A bug where parser was accepting NUL bytes as strings.
+- Fixed a bug where UTF-16 strings would yield more bytes after UTF-8 conversion and would be rejected.
+- Support an edge case when some data might be missing from `OpenStartElement` node.
+- A bug where XML records having multiple nodes with the same name will be incorrectly converted to JSON, ex.
+```
+<HTTPResponseHeadersInfo>
+    <Header>HTTP/1.1 200 OK</Header>
+    <Header>Connection: keep-alive</Header>
+    <Header>Date: Thu, 18 May 2017 11:37:58 GMT</Header>
+    <Header>Content-Length: 813</Header>
+    <Header>Content-Type: application/pkix-crl</Header>
+    <Header>Last-Modified: Tue, 02 May 2017 22:24:24 GMT</Header>
+    <Header>ETag: 0x8D491A9FD112A27</Header>
+    <Header>Server: Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0</Header>
+    <Header>x-ms-request-id: 477c132d-0001-0045-443b-c49ae1000000</Header>
+    <Header>x-ms-version: 2009-09-19</Header>
+    <Header>x-ms-lease-status: unlocked</Header>
+    <Header>x-ms-blob-type: BlockBlob</Header>
+</HTTPResponseHeadersInfo>
+```
+
+Will now be converted to:
+```json
+ {
+      "HTTPResponseHeadersInfo": {
+        "Header": "x-ms-blob-type: BlockBlob",
+        "Header_1": "HTTP/1.1 200 OK",
+        "Header_10": "x-ms-version: 2009-09-19",
+        "Header_11": "x-ms-lease-status: unlocked",
+        "Header_2": "Connection: keep-alive",
+        "Header_3": "Date: Thu, 18 May 2017 11:37:58 GMT",
+        "Header_4": "Content-Length: 813",
+        "Header_5": "Content-Type: application/pkix-crl",
+        "Header_6": "Last-Modified: Tue, 02 May 2017 22:24:24 GMT",
+        "Header_7": "ETag: 0x8D491A9FD112A27",
+        "Header_8": "Server: Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0",
+        "Header_9": "x-ms-request-id: 477c132d-0001-0045-443b-c49ae1000000"
+    }
+}
+```
+
 ## [0.5.1 - 2019-10-30]
 
 ### Fixed

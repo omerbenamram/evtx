@@ -1,4 +1,5 @@
 #![deny(unused_must_use)]
+#![cfg_attr(backtraces, feature(backtrace))]
 #![forbid(unsafe_code)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
@@ -27,7 +28,8 @@ mod utils;
 mod json_output;
 mod xml_output;
 
-pub type Offset = u32;
+pub type ChunkOffset = u32;
+pub type FileOffset = u64;
 
 // For tests, we only initialize logging once.
 #[cfg(test)]

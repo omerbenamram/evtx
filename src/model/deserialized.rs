@@ -19,11 +19,16 @@ pub enum BinXMLDeserializedTokens<'a> {
     CDATASection,
     CharRef,
     EntityRef(BinXmlEntityReference<'a>),
-    PITarget,
-    PIData,
+    PITarget(BinXMLProcessingInstructionTarget<'a>),
+    PIData(Cow<'a, str>),
     Substitution(TemplateSubstitutionDescriptor),
     EndOfStream,
     StartOfStream,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLProcessingInstructionTarget<'a> {
+    pub name: BinXmlName<'a>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

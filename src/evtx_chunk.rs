@@ -1,6 +1,6 @@
-use crate::err::{self, Result};
-use crate::evtx_parser::ReadSeek;
-use snafu::{ensure, ResultExt};
+use crate::err::{
+    ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError,
+};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
@@ -46,20 +46,24 @@ pub struct EvtxChunkData {
 impl EvtxChunkData {
     /// Construct a new chunk from the given data.
     /// Note that even when validate_checksum is set to false, the header magic is still checked.
-    pub fn new(data: Vec<u8>, validate_checksum: bool) -> Result<Self> {
+    pub fn new(data: Vec<u8>, validate_checksum: bool) -> EvtxChunkResult<Self> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
         let chunk = EvtxChunkData { header, data };
-        if validate_checksum {
-            ensure!(chunk.validate_checksum(), err::InvalidChunkChecksum)
+        if validate_checksum && !chunk.validate_checksum() {
+            // TODO: return checksum here.
+            return Err(ChunkError::InvalidChunkChecksum {
+                expected: 0,
+                found: 0,
+            });
         }
 
         Ok(chunk)
     }
 
     /// Require that the settings live at least as long as &self.
-    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> Result<EvtxChunk> {
+    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk> {
         EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
@@ -132,11 +136,12 @@ impl<'chunk> EvtxChunk<'chunk> {
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
-    ) -> Result<EvtxChunk<'chunk>> {
+    ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
         let _cursor = Cursor::new(data);
 
         info!("Initializing string cache");
-        let string_cache = StringCache::populate(&data, &header.strings_offsets)?;
+        let string_cache = StringCache::populate(&data, &header.strings_offsets)
+            .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
 
         info!("Initializing template cache");
         let template_table =
@@ -158,7 +163,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Note: You cannot pass a mutable reference to `EvtxChunk` and call `iter` on it somewhere else.
     /// Instead you should pass a mutable reference to `EvtxChunkData`.
     ///
-    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`) 
+    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`)
     /// than it theoretically needs to be.
     /// However, this is required in practice because of issues regarding covariance,
     /// which are caused by extensive use of the `Cow` type within the template cache.
@@ -203,7 +208,7 @@ pub struct IterChunkRecords<'chunk> {
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = Result<EvtxRecord<'a>>;
+    type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
@@ -220,7 +225,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 // We currently do not try to recover after an invalid record.
                 self.exhausted = true;
 
-                return Some(Err(err));
+                return Some(Err(EvtxError::DeserializationError(err)));
             }
         };
 
@@ -243,23 +248,22 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         );
 
         let mut tokens = vec![];
-        let iter = match deserializer.iter_tokens(Some(binxml_data_size)).context(
-            err::FailedToDeserializeRecord {
+        let iter = match deserializer
+            .iter_tokens(Some(binxml_data_size))
+            .map_err(|e| EvtxError::FailedToParseRecord {
                 record_id: record_header.event_record_id,
-            },
-        ) {
+                source: Box::new(EvtxError::DeserializationError(e)),
+            }) {
             Ok(iter) => iter,
             Err(err) => return Some(Err(err)),
         };
 
         for token in iter {
-            match token.context(err::FailedToDeserializeRecord {
+            match token.map_err(|e| EvtxError::FailedToParseRecord {
+                source: Box::new(EvtxError::DeserializationError(e)),
                 record_id: record_header.event_record_id,
             }) {
-                Ok(token) => {
-                    trace!("successfully read {:?}", token);
-                    tokens.push(token)
-                }
+                Ok(token) => tokens.push(token),
                 Err(err) => {
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(err));
@@ -283,31 +287,30 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 }
 
 impl EvtxChunkHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader> {
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxChunkHeader> {
         let mut magic = [0_u8; 8];
         input.take(8).read_exact(&mut magic)?;
 
-        ensure!(
-            &magic == b"ElfChnk\x00",
-            err::InvalidEvtxChunkMagic { magic }
-        );
+        if &magic != b"ElfChnk\x00" {
+            return Err(DeserializationError::InvalidEvtxChunkMagic { magic });
+        }
 
-        let first_event_record_number = try_read!(input, u64);
-        let last_event_record_number = try_read!(input, u64);
-        let first_event_record_id = try_read!(input, u64);
-        let last_event_record_id = try_read!(input, u64);
+        let first_event_record_number = try_read!(input, u64)?;
+        let last_event_record_number = try_read!(input, u64)?;
+        let first_event_record_id = try_read!(input, u64)?;
+        let last_event_record_id = try_read!(input, u64)?;
 
-        let header_size = try_read!(input, u32);
-        let last_event_record_data_offset = try_read!(input, u32);
-        let free_space_offset = try_read!(input, u32);
-        let events_checksum = try_read!(input, u32);
+        let header_size = try_read!(input, u32)?;
+        let last_event_record_data_offset = try_read!(input, u32)?;
+        let free_space_offset = try_read!(input, u32)?;
+        let events_checksum = try_read!(input, u32)?;
 
         // Reserved
         input.seek(SeekFrom::Current(64))?;
         // Flags
         input.seek(SeekFrom::Current(4))?;
 
-        let header_chunk_checksum = try_read!(input, u32);
+        let header_chunk_checksum = try_read!(input, u32)?;
 
         let mut strings_offsets = vec![0_u32; 64];
         input.read_u32_into::<LittleEndian>(&mut strings_offsets)?;

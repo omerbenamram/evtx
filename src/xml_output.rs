@@ -1,7 +1,6 @@
 use crate::binxml::value_variant::BinXmlValue;
-use crate::err::Result;
-use crate::model::xml::XmlElement;
-use crate::unimplemented_fn;
+use crate::err::{SerializationError, SerializationResult};
+use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::ParserSettings;
 
 use log::trace;
@@ -11,37 +10,41 @@ use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
+use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;
 
 pub trait BinXmlOutput {
     /// Called once when EOF is reached.
-    fn visit_end_of_stream(&mut self) -> Result<()>;
+    fn visit_end_of_stream(&mut self) -> SerializationResult<()>;
 
     /// Called on <Tag attr="value" another_attr="value">.
-    fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<()>;
+    fn visit_open_start_element(
+        &mut self,
+        open_start_element: &XmlElement,
+    ) -> SerializationResult<()>;
 
     /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<()>;
+    fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()>;
 
     ///
     /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
     ///                                                     ~~~~~~~~~~~~~~~
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()>;
+    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()>;
 
     /// Unimplemented
-    fn visit_cdata_section(&mut self) -> Result<()>;
+    fn visit_cdata_section(&mut self) -> SerializationResult<()>;
+
+    /// Emit the character "&" and the text.
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> SerializationResult<()>;
+
+    /// Emit the characters "&" and "#" and the decimal string representation of the value.
+    fn visit_character_reference(&mut self, char_ref: Cow<'_, str>) -> SerializationResult<()>;
 
     /// Unimplemented
-    fn visit_entity_reference(&mut self) -> Result<()>;
-
-    /// Unimplemented
-    fn visit_processing_instruction_target(&mut self) -> Result<()>;
-
-    /// Unimplemented
-    fn visit_processing_instruction_data(&mut self) -> Result<()>;
+    fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()>;
 
     /// Called once on beginning of parsing.
-    fn visit_start_of_stream(&mut self) -> Result<()>;
+    fn visit_start_of_stream(&mut self) -> SerializationResult<()>;
 }
 
 pub struct XmlOutput<W: Write> {
@@ -59,21 +62,21 @@ impl<W: Write> XmlOutput<W> {
         XmlOutput { writer }
     }
 
-    pub fn into_writer(self) -> Result<W> {
-        Ok(self.writer.into_inner())
+    pub fn into_writer(self) -> W {
+        self.writer.into_inner()
     }
 }
 
 /// Adapter between binxml XmlModel type and quick-xml events.
 impl<W: Write> BinXmlOutput for XmlOutput<W> {
-    fn visit_end_of_stream(&mut self) -> Result<()> {
+    fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_end_of_stream");
         self.writer.write_event(Event::Eof)?;
 
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element);
 
         let mut event_builder =
@@ -94,7 +97,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_close_element");
         let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
 
@@ -103,7 +106,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);
@@ -112,23 +115,41 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_cdata_section")
+    fn visit_cdata_section(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_cdata_section", file!()),
+        })
     }
 
-    fn visit_entity_reference(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_entity_reference")
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
+        let xml_ref = "&".to_string() + entity.as_str();
+        // This will yield stuff like `&quot`, which should be escaped.
+        let event = Event::Text(BytesText::from_plain_str(&xml_ref));
+        self.writer.write_event(event)?;
+
+        Ok(())
     }
 
-    fn visit_processing_instruction_target(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_target")
+    fn visit_character_reference(
+        &mut self,
+        _char_ref: Cow<'_, str>,
+    ) -> Result<(), SerializationError> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_character_reference", file!()),
+        })
     }
 
-    fn visit_processing_instruction_data(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_data")
+    fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()> {
+        // PITARGET - Emit the text "<?", the text (as specified by the Name rule in 2.2.12), and then the space character " ".
+        // Emit the text (as specified by the NullTerminatedUnicodeString rule in 2.2.12), and then the text "?>".
+        let concat = pi.name.as_str().to_owned() + pi.data.as_ref(); // only `String` supports concatenation.
+        let event = Event::PI(BytesText::from_plain_str(concat.as_str()));
+        self.writer.write_event(event)?;
+
+        Ok(())
     }
 
-    fn visit_start_of_stream(&mut self) -> Result<()> {
+    fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
         let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 

@@ -1,6 +1,4 @@
-use crate::err::{self, Result};
-use crate::evtx_parser::ReadSeek;
-use snafu::{ensure, ResultExt};
+use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
 
 use byteorder::ReadBytesExt;
 use std::io::{Read, Seek, SeekFrom};
@@ -28,37 +26,42 @@ pub enum HeaderFlags {
 }
 
 impl EvtxFileHeader {
-    pub fn from_stream<T: Read + Seek>(stream: &mut T) -> Result<EvtxFileHeader> {
+    pub fn from_stream<T: Read + Seek>(stream: &mut T) -> DeserializationResult<EvtxFileHeader> {
         let mut magic = [0_u8; 8];
-        stream.take(8).read_exact(&mut magic)?;
+        stream.take(8).read_exact(&mut magic).map_err(|e| {
+            WrappedIoError::io_error_with_message(e, "failed to read file_header magic", stream)
+        })?;
 
-        ensure!(
-            &magic == b"ElfFile\x00",
-            err::InvalidEvtxFileHeaderMagic { magic }
-        );
+        if &magic != b"ElfFile\x00" {
+            return Err(DeserializationError::InvalidEvtxFileHeaderMagic { magic });
+        }
 
-        let oldest_chunk = try_read!(stream, u64);
-        let current_chunk_num = try_read!(stream, u64);
-        let next_record_num = try_read!(stream, u64);
-        let header_size = try_read!(stream, u32);
-        let minor_version = try_read!(stream, u16);
-        let major_version = try_read!(stream, u16);
-        let header_block_size = try_read!(stream, u16);
-        let chunk_count = try_read!(stream, u16);
+        let oldest_chunk = try_read!(stream, u64, "file_header_oldest_chunk")?;
+        let current_chunk_num = try_read!(stream, u64, "file_header_current_chunk_num")?;
+        let next_record_num = try_read!(stream, u64, "file_header_next_record_num")?;
+        let header_size = try_read!(stream, u32, "file_header_header_size")?;
+        let minor_version = try_read!(stream, u16, "file_header_minor_version")?;
+        let major_version = try_read!(stream, u16, "file_header_major_version")?;
+        let header_block_size = try_read!(stream, u16, "file_header_header_block_size")?;
+        let chunk_count = try_read!(stream, u16, "file_header_chunk_count")?;
 
         // unused
-        stream.seek(SeekFrom::Current(76))?;
+        stream.seek(SeekFrom::Current(76)).map_err(|e| {
+            WrappedIoError::io_error_with_message(e, "failed to seek in file_header", stream)
+        })?;
 
-        let flags = match try_read!(stream, u32) {
+        let flags = match try_read!(stream, u32, "file_header_flags")? {
             0_u32 => HeaderFlags::Empty,
             1_u32 => HeaderFlags::Dirty,
             2_u32 => HeaderFlags::Full,
-            other => return err::UnknownEvtxHeaderFlagValue { value: other }.fail(),
+            other => return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: other }),
         };
 
-        let checksum = try_read!(stream, u32);
+        let checksum = try_read!(stream, u32, "file_header_checksum")?;
         // unused
-        stream.seek(SeekFrom::Current(4096 - 128))?;
+        stream.seek(SeekFrom::Current(4096 - 128)).map_err(|e| {
+            WrappedIoError::io_error_with_message(e, "failed to seek in file_header", stream)
+        })?;
 
         Ok(EvtxFileHeader {
             first_chunk_number: oldest_chunk,

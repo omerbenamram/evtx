@@ -1,18 +1,26 @@
 use crate::evtx_parser::ReadSeek;
+use thiserror::Error;
 
-use crate::err::{self, Result};
+use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use encoding::{decode, DecoderTrap, EncodingRef};
-use log::{error, trace};
+use log::trace;
 use std::char::decode_utf16;
+use std::error::Error as StdErr;
 use std::io::{self, Error, ErrorKind};
+
+#[derive(Debug, Error)]
+pub enum FailedToReadString {
+    #[error("An I/O error has occurred")]
+    IoError(#[from] io::Error),
+}
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     stream: &mut T,
     is_null_terminated: bool,
-) -> io::Result<Option<String>> {
+) -> Result<Option<String>, FailedToReadString> {
     let expected_number_of_characters = stream.read_u16::<LittleEndian>()?;
     let needed_bytes = u64::from(expected_number_of_characters * 2);
 
@@ -32,18 +40,11 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
         stream.read_u16::<LittleEndian>()?;
     };
 
-    let s_len = s.as_ref().map(String::len).unwrap_or(0);
-
-    if s_len == expected_number_of_characters as usize {
-        Ok(s)
-    } else {
-        error!(
-            "Expected string of length {}, found string of length {} - {:?}",
-            expected_number_of_characters, s_len, s
-        );
-
-        Err(Error::from(ErrorKind::InvalidData))
-    }
+    // It is useless to check for size equality, since u16 characters may be decoded into multiple u8 chars,
+    // so we might end up with more characters than originally asked for.
+    //
+    // Moreover, the code will also not read **less** characters than asked.
+    Ok(s)
 }
 
 /// Reads a utf16 string from the given stream.
@@ -66,26 +67,26 @@ pub fn read_ansi_encoded_string<T: ReadSeek>(
     stream: &mut T,
     size: u64,
     ansi_codec: EncodingRef,
-) -> Result<Option<String>> {
+) -> DeserializationResult<Option<String>> {
     match size {
         0 => Ok(None),
         _ => {
             let mut bytes = vec![0; size as usize];
             stream.read_exact(&mut bytes)?;
 
+            // There may be multiple NULs in the string, prune them.
+            bytes.retain(|&b| b != 0);
+
             let s = match decode(&bytes, DecoderTrap::Strict, ansi_codec).0 {
-                Ok(mut s) => {
-                    if let Some('\0') = s.chars().last() {
-                        s.pop();
-                    }
-                    s
-                }
+                Ok(s) => s,
                 Err(message) => {
-                    return Err(err::Error::FailedToDecodeANSIString {
-                        encoding: ansi_codec.name(),
-                        message: message.to_string(),
-                        offset: stream.tell()?,
-                    })
+                    let as_boxed_err = Box::<dyn StdErr + Send + Sync>::from(message.to_string());
+                    let wrapped_io_err = WrappedIoError::capture_hexdump(as_boxed_err, stream);
+                    return Err(DeserializationError::FailedToReadToken {
+                        t: format!("ansi_string {}", ansi_codec.name()),
+                        token_name: "",
+                        source: wrapped_io_err,
+                    });
                 }
             };
 
@@ -125,7 +126,8 @@ fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Res
         },
     }
 
-    decode_utf16(buffer.into_iter())
+    // We need to stop if we see a NUL byte, even if asked for more bytes.
+    decode_utf16(buffer.into_iter().take_while(|&byte| byte != 0x00))
         .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
         .collect()
 }

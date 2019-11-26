@@ -1,16 +1,16 @@
+use anyhow::{bail, format_err, Context, Result};
 use clap::{App, AppSettings, Arg, ArgMatches};
 use dialoguer::Confirmation;
 use indoc::indoc;
 
 use encoding::all::encodings;
 use encoding::types::Encoding;
-use evtx::err::{dump_err_with_backtrace, Error};
+use evtx::err::Result as EvtxResult;
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::exit;
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub enum EvtxOutputFormat {
@@ -25,16 +25,11 @@ struct EvtxDump {
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
-    backtraces: bool,
-}
-
-/// Simple error  macro for use inside of internal errors in `EvtxDump`
-macro_rules! err {
-    ($($tt:tt)*) => { Err(Box::<dyn std::error::Error>::from(format!($($tt)*))) }
+    stop_after_error: bool,
 }
 
 impl EvtxDump {
-    pub fn from_cli_matches(matches: &ArgMatches) -> Self {
+    pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self> {
         let input = PathBuf::from(
             matches
                 .value_of("INPUT")
@@ -97,6 +92,8 @@ impl EvtxDump {
         };
 
         let validate_checksums = matches.is_present("validate-checksums");
+        let stop_after_error = matches.is_present("stop-after-one-error");
+
         let verbosity_level = match matches.occurrences_of("verbose") {
             0 => None,
             1 => Some(Level::Info),
@@ -108,29 +105,23 @@ impl EvtxDump {
             }
         };
 
-        let backtraces = matches.is_present("backtraces");
-
         let ansi_codec = encodings()
             .iter()
             .find(|c| c.name() == matches.value_of("ansi-codec").expect("has set default"))
             .expect("possible values are derived from `encodings()`");
 
         let output: Box<dyn Write> = if let Some(path) = matches.value_of("output-target") {
-            match Self::create_output_file(path, !matches.is_present("no-confirm-overwrite")) {
-                Ok(f) => Box::new(f),
-                Err(e) => {
-                    eprintln!(
-                        "An error occurred while creating output file at `{}` - `{}`",
-                        path, e
-                    );
-                    exit(1)
-                }
-            }
+            Box::new(
+                Self::create_output_file(path, !matches.is_present("no-confirm-overwrite"))
+                    .with_context(|| {
+                        format!("An error occurred while creating output file at `{}`", path)
+                    })?,
+            )
         } else {
             Box::new(io::stdout())
         };
 
-        EvtxDump {
+        Ok(EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
@@ -142,25 +133,19 @@ impl EvtxDump {
             output_format,
             output,
             verbosity_level,
-            backtraces,
-        }
+            stop_after_error,
+        })
     }
 
     /// Main entry point for `EvtxDump`
-    pub fn run(&mut self) -> Result<(), Error> {
-        self.try_to_initialize_logging();
+    pub fn run(&mut self) -> Result<()> {
+        if let Err(err) = self.try_to_initialize_logging() {
+            eprintln!("{:?}", err);
+        }
 
-        let mut parser = match EvtxParser::from_path(&self.input) {
-            Ok(parser) => parser.with_configuration(self.parser_settings.clone()),
-            Err(e) => {
-                eprintln!(
-                    "Failed to open file {}.\n\tcaused by: {}",
-                    self.input.display(),
-                    &e
-                );
-                exit(1)
-            }
-        };
+        let mut parser = EvtxParser::from_path(&self.input)
+            .with_context(|| format!("Failed to open evtx file at: {}", &self.input.display()))
+            .map(|parser| parser.with_configuration(self.parser_settings.clone()))?;
 
         match self.output_format {
             EvtxOutputFormat::XML => {
@@ -179,14 +164,11 @@ impl EvtxDump {
     }
 
     /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
-    fn create_output_file(
-        path: impl AsRef<Path>,
-        prompt: bool,
-    ) -> Result<File, Box<dyn std::error::Error>> {
+    fn create_output_file(path: impl AsRef<Path>, prompt: bool) -> Result<File> {
         let p = path.as_ref();
 
         if p.is_dir() {
-            return err!(
+            bail!(
                 "There is a directory at {}, refusing to overwrite",
                 p.display()
             );
@@ -203,11 +185,8 @@ impl EvtxDump {
                     .interact()
                 {
                     Ok(true) => Ok(File::create(p)?),
-                    Ok(false) => err!("Cancelled"),
-                    Err(e) => err!(
-                        "Failed to write confirmation prompt to term caused by\n{}",
-                        e
-                    ),
+                    Ok(false) => bail!("Cancelled"),
+                    Err(_e) => bail!("Failed to display confirmation prompt"),
                 }
             } else {
                 Ok(File::create(p)?)
@@ -225,27 +204,25 @@ impl EvtxDump {
                         Ok(File::create(p)?)
                     }
                 }
-                None => err!("Output file cannot be root."),
+                None => bail!("Output file cannot be root."),
             }
         }
     }
 
-    fn dump_record(
-        &mut self,
-        record: Result<SerializedEvtxRecord<String>, Error>,
-    ) -> Result<(), Error> {
-        match record {
+    fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<String>>) -> Result<()> {
+        match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
                 if self.show_record_number {
                     writeln!(self.output, "Record {}", r.event_record_id)?;
                 }
                 writeln!(self.output, "{}", r.data)?;
             }
+            // This error is non fatal.
             Err(e) => {
-                if self.backtraces {
-                    dump_err_with_backtrace(&e)
-                } else {
-                    eprintln!("{:?}", &e);
+                eprintln!("{:?}", format_err!(e));
+
+                if self.stop_after_error {
+                    std::process::exit(1);
                 }
             }
         };
@@ -253,17 +230,17 @@ impl EvtxDump {
         Ok(())
     }
 
-    fn try_to_initialize_logging(&self) {
+    fn try_to_initialize_logging(&self) -> Result<()> {
         if let Some(level) = self.verbosity_level {
-            match simplelog::WriteLogger::init(
+            simplelog::WriteLogger::init(
                 level.to_level_filter(),
                 simplelog::Config::default(),
                 io::stderr(),
-            ) {
-                Ok(_) => {}
-                Err(e) => eprintln!("Failed to initialize logging: {:?}", e),
-            };
+            )
+            .with_context(|| "Failed to initialize logging")?;
         }
+
+        Ok(())
     }
 }
 
@@ -274,7 +251,7 @@ fn is_a_non_negative_number(value: String) -> Result<(), String> {
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
     let matches = App::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .setting(AppSettings::ColoredHelp)
@@ -301,7 +278,7 @@ fn main() {
                 r#"Sets the output format:
                      "xml"   - prints XML output.
                      "json"  - prints JSON output.
-                     "jsonl" - (jsonlines) same as json with --no-indent --dont-show-record-number 
+                     "jsonl" - (jsonlines) same as json with --no-indent --dont-show-record-number
                 "#)),
         )
         .arg(
@@ -354,6 +331,12 @@ fn main() {
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
         )
+        .arg(
+            Arg::with_name("stop-after-one-error")
+                .long("--stop-after-one-error")
+                .takes_value(false)
+                .help("When set, will exit after any failure of reading a record. Useful for debugging."),
+        )
         .arg(Arg::with_name("verbose")
             .short("-v")
             .multiple(true)
@@ -364,21 +347,9 @@ fn main() {
                 -vv  - debug
                 -vvv - trace
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
-        )
-        .arg(
-            Arg::with_name("backtraces")
-                .long("--backtraces")
-                .takes_value(false)
-                .help("If set, a backtrace will be printed with some errors if available"))
-        .get_matches();
+        ).get_matches();
 
-    let mut app = EvtxDump::from_cli_matches(&matches);
+    EvtxDump::from_cli_matches(&matches)?.run()?;
 
-    match app.run() {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("{}", &e);
-            exit(1);
-        }
-    };
+    Ok(())
 }

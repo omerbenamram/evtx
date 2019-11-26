@@ -1,18 +1,32 @@
 #![allow(dead_code)]
-use std::cmp;
-use std::io::Cursor;
+use crate::evtx_parser::ReadSeek;
 
-pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
-    let offset = cursor.position();
-    let data = cursor.get_ref();
-    println!("-------------------------------");
-    println!("Current Value {:2X}", data[offset as usize]);
-    let m = (offset as i32) - lookbehind;
-    let start = if m < 0 { 0 } else { m };
-    let end_of_buffer_or_default = cmp::min(100, data.len() - offset as usize);
-    let end = offset + end_of_buffer_or_default as u64;
-    print_hexdump(&data[start as usize..end as usize], 0, 'C');
-    println!("\n-------------------------------");
+use std::cmp;
+use std::error::Error;
+use std::fmt::Write;
+use std::io::SeekFrom;
+
+pub fn dump_stream<T: ReadSeek>(cursor: &mut T, lookbehind: i32) -> Result<String, Box<dyn Error>> {
+    let mut s = String::new();
+
+    cursor.seek(SeekFrom::Current(lookbehind.into()))?;
+
+    let mut data = vec![0; 100 as usize];
+    let _ = cursor.read(&mut data)?;
+
+    writeln!(
+        s,
+        "\n\n---------------------------------------------------------------------------"
+    )?;
+    writeln!(s, "Current Value {:02x}", data[0])?;
+    writeln!(s, "              --")?;
+    write!(s, "{}", hexdump(&data, 0, 'C')?)?;
+    writeln!(
+        s,
+        "\n----------------------------------------------------------------------------"
+    )?;
+
+    Ok(s)
 }
 
 /// Dumps bytes at data to the screen as hex.
@@ -30,7 +44,12 @@ pub fn dump_cursor(cursor: &Cursor<&[u8]>, lookbehind: i32) {
 /// o  Two-byte octal display.
 /// x  Two-byte hexadecimal display.
 ///    Display the input offset in hexadecimal, followed by eight, space separated, four column, zero-filled, two-byte quantities of input data, in hexadecimal, per line.
-pub fn print_hexdump(data: &[u8], offset: usize, display: char) {
+pub fn hexdump(
+    data: &[u8],
+    offset: usize,
+    display: char,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut s = String::new();
     let mut address = 0;
 
     let number_of_bytes = match display {
@@ -46,19 +65,31 @@ pub fn print_hexdump(data: &[u8], offset: usize, display: char) {
         // Read next 16 bytes of until end of data
         let end = cmp::min(address + 16, data.len());
 
-        print_line(
-            &data[address..end],
-            address + offset,
-            display,
-            number_of_bytes,
-        );
+        write!(
+            s,
+            "{}",
+            print_line(
+                &data[address..end],
+                address + offset,
+                display,
+                number_of_bytes,
+            )?
+        )?;
         address += 16;
     }
+
+    Ok(s)
 }
 
-fn print_line(line: &[u8], address: usize, display: char, bytes: usize) {
+fn print_line(
+    line: &[u8],
+    address: usize,
+    display: char,
+    bytes: usize,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut s = String::new();
     // print address (ex - 000000d0)
-    print!("\n{:08x}:", address);
+    write!(s, "\n{:08x}:", address)?;
 
     let words = if (line.len() % bytes) == 0 {
         line.len() / bytes
@@ -78,19 +109,19 @@ fn print_line(line: &[u8], address: usize, display: char, bytes: usize) {
             }
         };
         match display {
-            'b' => print!(" {:03o}", word),
+            'b' => write!(s, " {:03o}", word)?,
             'c' => {
                 if ((word as u8) as char).is_control() {
-                    print!(" ")
+                    write!(s, " ")?
                 } else {
-                    print!(" {:03}", (word as u8) as char)
+                    write!(s, " {:03}", (word as u8) as char)?
                 }
             }
-            'C' => print!(" {:02x}", word),
-            'x' => print!(" {:04x}", word),
-            'o' => print!(" {:06o} ", word),
-            'd' => print!("  {:05} ", word),
-            _ => print!(" {:04x}", word),
+            'C' => write!(s, " {:02x}", word)?,
+            'x' => write!(s, " {:04x}", word)?,
+            'o' => write!(s, " {:06o} ", word)?,
+            'd' => write!(s, "  {:05} ", word)?,
+            _ => write!(s, " {:04x}", word)?,
         }
     }
 
@@ -109,18 +140,20 @@ fn print_line(line: &[u8], address: usize, display: char, bytes: usize) {
                 _ => 5,
             };
             for _ in 0..word_size * words_left {
-                print!(" ");
+                write!(s, " ")?;
             }
         }
 
-        print!("  ");
+        write!(s, "  ")?;
         for c in line {
             // replace all control chars with dots
             if (*c as char).is_control() {
-                print!(".")
+                write!(s, ".")?
             } else {
-                print!("{}", (*c as char))
+                write!(s, "{}", (*c as char))?
             }
         }
     }
+
+    Ok(s)
 }

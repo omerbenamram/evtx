@@ -1,13 +1,13 @@
-use crate::err::{self, Result};
-use crate::evtx_parser::ReadSeek;
-use snafu::{OptionExt, ResultExt};
+use crate::err::{DeserializationError, DeserializationResult as Result};
 
 use byteorder::ReadBytesExt;
 
 use log::trace;
 use std::io::{Seek, SeekFrom};
 
-use crate::binxml::tokens::read_open_start_element;
+use crate::binxml::tokens::{
+    read_open_start_element, read_processing_instruction_data, read_processing_instruction_target,
+};
 use crate::binxml::value_variant::BinXmlValue;
 
 use crate::{
@@ -123,12 +123,14 @@ impl<'a> IterTokens<'a> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
-        let token = try_read!(cursor, u8);
+        let token = try_read!(cursor, u8)?;
 
-        Ok(BinXMLRawToken::from_u8(token).context(err::InvalidToken {
-            value: token,
-            offset: cursor.position(),
-        })?)
+        Ok(
+            BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
+                value: token,
+                offset: cursor.position(),
+            })?,
+        )
     }
 
     fn visit_token(
@@ -158,24 +160,23 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),
-            BinXMLRawToken::CDataSection => err::UnimplementedToken {
+            BinXMLRawToken::CDataSection => Err(DeserializationError::UnimplementedToken {
                 name: "CDataSection",
                 offset: cursor.position(),
-            }
-            .fail(),
+            }),
+            BinXMLRawToken::CharReference => Err(DeserializationError::UnimplementedToken {
+                name: "CharReference",
+                offset: cursor.position(),
+            }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, self.chunk)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => err::UnimplementedToken {
-                name: "ProcessingInstructionTarget",
-                offset: cursor.position(),
-            }
-            .fail(),
-            BinXMLRawToken::ProcessingInstructionData => err::UnimplementedToken {
-                name: "ProcessingInstructionData",
-                offset: cursor.position(),
-            }
-            .fail(),
+            BinXMLRawToken::ProcessingInstructionTarget => Ok(BinXMLDeserializedTokens::PITarget(
+                read_processing_instruction_target(cursor, self.chunk)?,
+            )),
+            BinXMLRawToken::ProcessingInstructionData => Ok(BinXMLDeserializedTokens::PIData(
+                read_processing_instruction_data(cursor)?,
+            )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, self.chunk, self.ansi_codec)?,
             )),
@@ -197,7 +198,10 @@ impl<'a> IterTokens<'a> {
         let mut cursor = self.cursor.clone();
         let offset_from_chunk_start = cursor.position();
 
-        trace!("offset_from_chunk_start: {}", offset_from_chunk_start);
+        trace!(
+            "Offset `0x{:08x}`: Reading next token",
+            offset_from_chunk_start
+        );
         trace!(
             "need to read: {:?}, read so far: {}",
             self.data_size,
@@ -224,14 +228,7 @@ impl<'a> IterTokens<'a> {
                 if let BinXMLRawToken::EndOfStream = t {
                     self.eof = true;
                 }
-                trace!("{:?} at {}", t, offset_from_chunk_start);
                 let deserialized_token_result = self.visit_token(&mut cursor, t);
-
-                trace!(
-                    "{:?} position at stream {}",
-                    deserialized_token_result,
-                    cursor.position()
-                );
 
                 debug_assert!(
                     cursor.position() >= offset_from_chunk_start,

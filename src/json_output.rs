@@ -1,9 +1,8 @@
-use crate::err::{self, Result};
-use snafu::{ensure, OptionExt};
+use crate::err::{SerializationError, SerializationResult};
+use quick_xml;
 
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::xml::XmlElement;
-use crate::unimplemented_fn;
+use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
 
@@ -12,6 +11,9 @@ use log::trace;
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 
+use crate::binxml::name::BinXmlName;
+use crate::err::SerializationError::JsonStructureError;
+use quick_xml::events::BytesText;
 use std::mem;
 
 pub struct JsonOutput {
@@ -77,7 +79,7 @@ impl JsonOutput {
     }
 
     /// Like a regular node, but uses it's "Name" attribute.
-    fn insert_data_node(&mut self, element: &XmlElement) -> Result<()> {
+    fn insert_data_node(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("inserting data node {:?}", &element);
         match element
             .attributes
@@ -97,24 +99,72 @@ impl JsonOutput {
         }
     }
 
-    fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<()> {
+    fn insert_node_without_attributes(
+        &mut self,
+        _e: &XmlElement,
+        name: &str,
+    ) -> SerializationResult<()> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
-        let container =
-            self.get_current_parent()
-                .as_object_mut()
-                .context(err::JsonStructureError {
+        let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
+            SerializationError::JsonStructureError {
                 message:
                     "This is a bug - expected parent container to exist, and to be an object type.\
-                     Check that the referencing parent is not `Value::null`",
-            })?;
+                     Check that the referencing parent is not `Value::null`"
+                        .to_string(),
+            }
+        })?;
 
-        container.insert(name.to_owned(), Value::Null);
+        // We do a linear probe in case XML contains duplicate keys like so:
+        //    <HTTPResponseHeadersInfo>
+        //        <Header>HTTP/1.1 200 OK</Header>
+        //        <Header>x-ms-version: 2009-09-19</Header>
+        //        <Header>x-ms-lease-status: unlocked</Header>
+        //        <Header>x-ms-blob-type: BlockBlob</Header>
+        //    </HTTPResponseHeadersInfo>
+        //
+        // Insertions should look like:
+        //
+        //    {"Header": Object({})}
+        //    {"Header": String("HTTP/1.1 200 OK")}
+        //    {"Header": String("x-ms-version: 2009-09-19"), "Header_1": String("HTTP/1.1 200 OK")}
+        //   ....
+        //
+        if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+            // Value should move to next slot, key should remain free to allow for next value.
+
+            // If old value is a placeholder, we don't yet move it, to avoid creating empty placeholers.
+            // A placeholder can be either a `Null` or an empty Map.
+            if old_value.is_null() {
+                return Ok(());
+            }
+
+            if let Some(map) = old_value.as_object() {
+                if map.is_empty() {
+                    return Ok(());
+                }
+            }
+
+            let mut free_slot = 1;
+
+            // If it is a concrete value, we look for another slot.
+            while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                // Value is an empty object - we can override it's value.
+                free_slot += 1
+            }
+
+            container.insert(format!("{}_{}", name, free_slot), old_value);
+        };
+
         Ok(())
     }
 
-    fn insert_node_with_attributes(&mut self, element: &XmlElement, name: &str) -> Result<()> {
+    fn insert_node_with_attributes(
+        &mut self,
+        element: &XmlElement,
+        name: &str,
+    ) -> SerializationResult<()> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
 
@@ -136,13 +186,13 @@ impl JsonOutput {
                 // If we are separating the attributes we want
                 // to insert the object for the attributes
                 // into the parent.
-                let value = self
-                    .get_current_parent()
-                    .as_object_mut()
-                    .context(err::JsonStructureError {
+                let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
+                    SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                        Check that the value is not `Value::null`",
+                        Check that the value is not `Value::null`"
+                            .to_string(),
+                }
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
@@ -150,11 +200,14 @@ impl JsonOutput {
                 let value = self
                     .get_or_create_current_path()
                     .as_object_mut()
-                    .context(err::JsonStructureError {
+                    .ok_or_else(|| {
+                        SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                            Check that the value is not `Value::null`",
-                })?;
+                            Check that the value is not `Value::null`"
+                            .to_string(),
+                }
+                    })?;
 
                 value.insert("#attributes".to_owned(), Value::Object(attributes));
             }
@@ -164,10 +217,11 @@ impl JsonOutput {
             let value =
                 self.get_current_parent()
                     .as_object_mut()
-                    .context(err::JsonStructureError {
+                    .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                         Check that the value is not `Value::null`",
+                         Check that the value is not `Value::null`"
+                            .to_string(),
                 })?;
 
             value.insert(name.to_string(), Value::Null);
@@ -176,25 +230,24 @@ impl JsonOutput {
         Ok(())
     }
 
-    pub fn into_value(self) -> Result<Value> {
-        ensure!(
-            self.stack.is_empty(),
-            err::JsonStructureError {
-                message: "Invalid stream, EOF reached before closing all attributes"
-            }
-        );
+    pub fn into_value(self) -> SerializationResult<Value> {
+        if !self.stack.is_empty() {
+            return Err(SerializationError::JsonStructureError {
+                message: "Invalid stream, EOF reached before closing all attributes".to_string(),
+            });
+        }
 
         Ok(self.map)
     }
 }
 
 impl BinXmlOutput for JsonOutput {
-    fn visit_end_of_stream(&mut self) -> Result<()> {
+    fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_end_of_stream");
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element.name);
         let element_name = element.name.as_str();
 
@@ -210,13 +263,13 @@ impl BinXmlOutput for JsonOutput {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(&mut self, _element: &XmlElement) -> Result<()> {
+    fn visit_close_element(&mut self, _element: &XmlElement) -> SerializationResult<()> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
         trace!("visit_chars {:?}", &self.stack);
         // We need to clone this bool since the next statement will borrow self as mutable.
         let separate_json_attributes = self.separate_json_attributes;
@@ -237,36 +290,74 @@ impl BinXmlOutput for JsonOutput {
             //    },
             //    "#text": "4902"
             //  },
-            let current_object =
-                current_value
-                    .as_object_mut()
-                    .context(err::JsonStructureError {
-                        message: "expected current value to be an object type",
-                    })?;
+            if let Some(object) = current_value.as_object_mut() {
+                object.insert("#text".to_owned(), value.clone().into());
+                return Ok(());
+            };
 
-            current_object.insert("#text".to_owned(), value.clone().into());
+            // If we already have a string (because we got two consecutive `Character` events,
+            // Concat them.
+            if let Some(s) = current_value.as_str() {
+                let new_string = s.to_string();
+                mem::replace(
+                    current_value,
+                    Value::String(new_string + &value.as_cow_str()),
+                )
+            } else {
+                return Err(SerializationError::JsonStructureError {
+                    message: format!(
+                        "expected current value to be an object type or a String, found {:?}, value is {:?}",
+                        current_value, value
+                    ),
+                });
+            };
         }
 
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_cdata_section")
+    fn visit_cdata_section(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_cdata_section", file!()),
+        })
     }
 
-    fn visit_entity_reference(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_entity_reference")
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
+        // We need to create a BytesText event to access quick-xml's unescape functionality (which is private).
+        // We also terminate the entity.
+        let entity_ref = "&".to_string() + entity.as_str() + ";";
+
+        let xml_event = BytesText::from_escaped_str(&entity_ref);
+        match xml_event.unescaped() {
+            Ok(escaped) => {
+                let as_string = String::from_utf8(escaped.to_vec())
+                    .expect("This cannot fail, since it was a valid string beforehand");
+
+                self.visit_characters(&BinXmlValue::StringType(Cow::Borrowed(&as_string)))?;
+                Ok(())
+            }
+            Err(_) => Err(JsonStructureError {
+                message: format!("Unterminated XML Entity {}", entity_ref),
+            }),
+        }
     }
 
-    fn visit_processing_instruction_target(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_target")
+    fn visit_character_reference(
+        &mut self,
+        _char_ref: Cow<'_, str>,
+    ) -> Result<(), SerializationError> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_character_reference", file!()),
+        })
     }
 
-    fn visit_processing_instruction_data(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_data")
+    fn visit_processing_instruction(&mut self, _pi: &BinXmlPI) -> Result<(), SerializationError> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_processing_instruction_data", file!()),
+        })
     }
 
-    fn visit_start_of_stream(&mut self) -> Result<()> {
+    fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
         Ok(())
     }

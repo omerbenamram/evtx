@@ -129,10 +129,14 @@ fn test_sample_with_multiple_xml_fragments() {
 
 #[test]
 fn test_sample_with_binxml_as_substitution_tokens_and_pi_target() {
-    // TODO: PI Target still cannot be parsed
     test_full_sample(
         sample_with_binxml_as_substitution_tokens_and_pi_target(),
-        335,
-        5,
+        340,
+        0,
     )
+}
+
+#[test]
+fn test_sample_with_dependency_identifier_edge_case() {
+    test_full_sample(sample_with_dependency_id_edge_case(), 653, 0)
 }
