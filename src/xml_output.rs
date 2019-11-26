@@ -123,6 +123,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
         let xml_ref = "&".to_string() + entity.as_str();
+        // This will yield stuff like `&quot`, which should be escaped.
         let event = Event::Text(BytesText::from_plain_str(&xml_ref));
         self.writer.write_event(event)?;
 

@@ -51,10 +51,10 @@ impl<'a> XmlElementBuilder<'a> {
     }
 
     pub fn attribute_value(mut self, value: Cow<'a, BinXmlValue<'a>>) -> Result<Self, EvtxError> {
-        if !self.current_attribute_name.is_some() {
-            return Err(EvtxError::FailedToCreateRecordModel(
-                "Name is empty, but tried to insert attribute value",
-            ));
+        // If we are in an attribute value without a name, simply ignore the request.
+        // This is consistent with what windows is doing.
+        if self.current_attribute_name.is_none() {
+            return Ok(self);
         }
 
         match self.current_attribute_value {
