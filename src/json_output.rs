@@ -101,7 +101,7 @@ impl JsonOutput {
 
     fn insert_node_without_attributes(
         &mut self,
-        e: &XmlElement,
+        _e: &XmlElement,
         name: &str,
     ) -> SerializationResult<()> {
         trace!("insert_node_without_attributes");
@@ -344,7 +344,7 @@ impl BinXmlOutput for JsonOutput {
 
     fn visit_character_reference(
         &mut self,
-        char_ref: Cow<'_, str>,
+        _char_ref: Cow<'_, str>,
     ) -> Result<(), SerializationError> {
         Err(SerializationError::Unimplemented {
             message: format!("`{}`: visit_character_reference", file!()),

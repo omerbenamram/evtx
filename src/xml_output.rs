@@ -1,6 +1,6 @@
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{SerializationError, SerializationResult};
-use crate::model::xml::{BinXmlPI, XmlElement, XmlModel};
+use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::ParserSettings;
 
 use log::trace;
@@ -132,7 +132,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_character_reference(
         &mut self,
-        char_ref: Cow<'_, str>,
+        _char_ref: Cow<'_, str>,
     ) -> Result<(), SerializationError> {
         Err(SerializationError::Unimplemented {
             message: format!("`{}`: visit_character_reference", file!()),

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use crate::evtx_parser::ReadSeek;
-use log::error;
+
 use std::cmp;
 use std::error::Error;
 use std::fmt::Write;
