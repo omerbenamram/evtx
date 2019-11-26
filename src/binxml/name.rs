@@ -1,4 +1,4 @@
-use crate::err::{DeserializationResult as Result, WrappedIoError};
+use crate::err::{DeserializationError, DeserializationResult as Result, WrappedIoError};
 
 use crate::ChunkOffset;
 pub use byteorder::{LittleEndian, ReadBytesExt};
@@ -36,7 +36,15 @@ impl<'a> BinXmlName<'a> {
         {
             // Seek if needed
             if name_offset == cursor.position() as u32 {
-                cursor.seek(SeekFrom::Current(i64::from(*n_bytes_read)))?;
+                cursor
+                    .seek(SeekFrom::Current(i64::from(*n_bytes_read)))
+                    .map_err(|e| {
+                        WrappedIoError::io_error_with_message(
+                            e,
+                            "failed to seek back while reading name",
+                            cursor,
+                        )
+                    })?;
             }
             return Ok(BinXmlName(Cow::Borrowed(name)));
         }

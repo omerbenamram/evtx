@@ -1,4 +1,4 @@
-use crate::err::{DeserializationError, DeserializationResult as Result};
+use crate::err::{DeserializationError, DeserializationResult as Result, WrappedIoError};
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
 use winstructs::guid::Guid;
@@ -45,9 +45,17 @@ pub fn read_template<'a>(
         );
         // 33 is template definition data size, we've read 9 bytes so far.
         if template_definition_data_offset == cursor.position() as u32 {
-            cursor.seek(SeekFrom::Current(
-                i64::from(definition.data_size) + (33 - 9),
-            ))?;
+            cursor
+                .seek(SeekFrom::Current(
+                    i64::from(definition.data_size) + (33 - 9),
+                ))
+                .map_err(|e| {
+                    WrappedIoError::io_error_with_message(
+                        e,
+                        "Failed to seek to template definition data offset (cached)",
+                        cursor,
+                    )
+                })?;
         }
         Cow::Borrowed(definition)
     } else if template_definition_data_offset != cursor.position() as u32 {
@@ -57,11 +65,27 @@ pub fn read_template<'a>(
         );
         let position_before_seek = cursor.position();
 
-        cursor.seek(SeekFrom::Start(u64::from(template_definition_data_offset)))?;
+        cursor
+            .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
+            .map_err(|e| {
+                WrappedIoError::io_error_with_message(
+                    e,
+                    "Failed to seek to template definition data offset (not cached)",
+                    cursor,
+                )
+            })?;
 
         let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
 
-        cursor.seek(SeekFrom::Start(position_before_seek))?;
+        cursor
+            .seek(SeekFrom::Start(position_before_seek))
+            .map_err(|e| {
+                WrappedIoError::io_error_with_message(
+                    e,
+                    "Failed to seek back to stream after reading template definition",
+                    cursor,
+                )
+            })?;
 
         Cow::Owned(template_def)
     } else {
@@ -112,7 +136,15 @@ pub fn read_template<'a>(
         // NullType can mean deleted substitution (and data need to be skipped)
         if value == BinXmlValue::NullType {
             trace!("\t Skip {}", descriptor.size);
-            cursor.seek(SeekFrom::Current(i64::from(descriptor.size)))?;
+            cursor
+                .seek(SeekFrom::Current(i64::from(descriptor.size)))
+                .map_err(|e| {
+                    WrappedIoError::io_error_with_message(
+                        e,
+                        "Failed to seek while skipping NullType",
+                        cursor,
+                    )
+                })?;
         }
 
         let current_position = cursor.position();
@@ -127,7 +159,15 @@ pub fn read_template<'a>(
                   expected_position,
                   &descriptor);
 
-            cursor.seek(SeekFrom::Start((current_position + diff) as u64))?;
+            cursor
+                .seek(SeekFrom::Start((current_position + diff) as u64))
+                .map_err(|e| {
+                    WrappedIoError::io_error_with_message(
+                        e,
+                        "Failed to seek while trying to skip broken record",
+                        cursor,
+                    )
+                })?;
         }
         substitution_array.push(value);
     }
@@ -293,7 +333,13 @@ pub fn read_open_start_element<'a>(
                 "Detected a case where `dependency_identifier` should not have been read. \
                  Trying to read again without it."
             );
-            cursor.seek(SeekFrom::Current(-6))?;
+            cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
+                WrappedIoError::io_error_with_message(
+                    e,
+                    "failed to skip when recovering from `dependency_identifier` hueristic",
+                    cursor,
+                )
+            })?;
             return read_open_start_element(cursor, chunk, has_attributes, true);
         }
     }

@@ -1,4 +1,4 @@
-use crate::err::{DeserializationError, DeserializationResult as Result};
+use crate::err::{DeserializationError, DeserializationResult as Result, WrappedIoError};
 use encoding::EncodingRef;
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
@@ -218,7 +218,15 @@ impl<'a> BinXmlValue<'a> {
         let value = match (value_type, size) {
             (BinXmlValueType::NullType, _) => BinXmlValue::NullType,
             (BinXmlValueType::StringType, Some(sz)) => BinXmlValue::StringType(Cow::Owned(
-                read_utf16_by_size(cursor, u64::from(sz))?.unwrap_or_else(|| "".to_owned()),
+                read_utf16_by_size(cursor, u64::from(sz))
+                    .map_err(|e| {
+                        WrappedIoError::io_error_with_message(
+                            e,
+                            format!("failed to read sized utf-16 string (size `{}`)", sz),
+                            cursor,
+                        )
+                    })?
+                    .unwrap_or_else(|| "".to_owned()),
             )),
             (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
                 try_read!(cursor, len_prefixed_utf_16_str, "<string_value>")?
@@ -293,7 +301,13 @@ impl<'a> BinXmlValue<'a> {
                 let bytes =
                     &data[cursor.position() as usize..(cursor.position() + u64::from(sz)) as usize];
 
-                cursor.seek(SeekFrom::Current(i64::from(sz)))?;
+                cursor.seek(SeekFrom::Current(i64::from(sz))).map_err(|e| {
+                    WrappedIoError::io_error_with_message(
+                        e,
+                        "failed to read binary value_variant",
+                        cursor,
+                    )
+                })?;
 
                 BinXmlValue::BinaryType(bytes)
             }
@@ -306,7 +320,13 @@ impl<'a> BinXmlValue<'a> {
             }
             (BinXmlValueType::UInt8ArrayType, Some(sz)) => {
                 let mut data = vec![0; sz as usize];
-                cursor.read_exact(&mut data)?;
+                cursor.read_exact(&mut data).map_err(|e| {
+                    WrappedIoError::io_error_with_message(
+                        e,
+                        "Failed to read `UInt8ArrayType`",
+                        cursor,
+                    )
+                })?;
 
                 BinXmlValue::UInt8ArrayType(data)
             }
