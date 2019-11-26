@@ -127,6 +127,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()> {
         // PITARGET - Emit the text "<?", the text (as specified by the Name rule in 2.2.12), and then the space character " ".
         // Emit the text (as specified by the NullTerminatedUnicodeString rule in 2.2.12), and then the text "?>".
+        // TODO: sometimes PI Appears as only PITarget without PIData, for now this is ignored.
         let concat = pi.name.as_str().to_owned() + pi.data.as_ref(); // only `String` supports concatnation.
         let event = Event::PI(BytesText::from_plain_str(concat.as_str()));
         self.writer.write_event(event)?;

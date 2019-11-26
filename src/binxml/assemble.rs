@@ -4,7 +4,7 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
-use log::trace;
+use log::{trace, warn};
 use std::borrow::{Borrow, BorrowMut, Cow};
 
 use std::mem;
@@ -90,6 +90,9 @@ pub fn create_record_model<'a>(
             }
             Cow::Owned(BinXMLDeserializedTokens::PITarget(name)) => {
                 let builder = XmlPIBuilder::new();
+                if let Some(pi) = current_pi {
+                    warn!("PITarget without following PIData, previous target will be ignored.")
+                }
                 current_pi = Some(builder.name(Cow::Owned(name.name)));
             }
             Cow::Borrowed(BinXMLDeserializedTokens::PITarget(name)) => {
