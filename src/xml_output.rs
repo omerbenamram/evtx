@@ -134,7 +134,9 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         &mut self,
         char_ref: Cow<'_, str>,
     ) -> Result<(), SerializationError> {
-        unimplemented!()
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_character_reference", file!()),
+        })
     }
 
     fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()> {

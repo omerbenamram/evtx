@@ -1,4 +1,5 @@
 use crate::err::{SerializationError, SerializationResult};
+use quick_xml;
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
@@ -11,6 +12,8 @@ use serde_json::{Map, Value};
 use std::borrow::Cow;
 
 use crate::binxml::name::BinXmlName;
+use crate::err::SerializationError::JsonStructureError;
+use quick_xml::events::BytesText;
 use std::mem;
 
 pub struct JsonOutput {
@@ -98,23 +101,62 @@ impl JsonOutput {
 
     fn insert_node_without_attributes(
         &mut self,
-        _: &XmlElement,
+        e: &XmlElement,
         name: &str,
     ) -> SerializationResult<()> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
-        let container =
-            self.get_current_parent()
-                .as_object_mut()
-                .ok_or(SerializationError::JsonStructureError {
+        let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
+            SerializationError::JsonStructureError {
                 message:
                     "This is a bug - expected parent container to exist, and to be an object type.\
                      Check that the referencing parent is not `Value::null`"
                         .to_string(),
-            })?;
+            }
+        })?;
 
-        container.insert(name.to_owned(), Value::Null);
+        // We do a linear probe in case XML contains duplicate keys like so:
+        //    <HTTPResponseHeadersInfo>
+        //        <Header>HTTP/1.1 200 OK</Header>
+        //        <Header>x-ms-version: 2009-09-19</Header>
+        //        <Header>x-ms-lease-status: unlocked</Header>
+        //        <Header>x-ms-blob-type: BlockBlob</Header>
+        //    </HTTPResponseHeadersInfo>
+        //
+        // Insertions should look like:
+        //
+        //    {"Header": Object({})}
+        //    {"Header": String("HTTP/1.1 200 OK")}
+        //    {"Header": String("x-ms-version: 2009-09-19"), "Header_1": String("HTTP/1.1 200 OK")}
+        //   ....
+        //
+        if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+            // Value should move to next slot, key should remain free to allow for next value.
+
+            // If old value is a placeholder, we don't yet move it, to avoid creating empty placeholers.
+            // A placeholder can be either a `Null` or an empty Map.
+            if old_value.is_null() {
+                return Ok(());
+            }
+
+            if let Some(map) = old_value.as_object() {
+                if map.is_empty() {
+                    return Ok(());
+                }
+            }
+
+            let mut free_slot = 1;
+
+            // If it is a concrete value, we look for another slot.
+            while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                // Value is an empty object - we can override it's value.
+                free_slot += 1
+            }
+
+            container.insert(format!("{}_{}", name, free_slot), old_value);
+        };
+
         Ok(())
     }
 
@@ -144,14 +186,13 @@ impl JsonOutput {
                 // If we are separating the attributes we want
                 // to insert the object for the attributes
                 // into the parent.
-                let value = self
-                    .get_current_parent()
-                    .as_object_mut()
-                    .ok_or(SerializationError::JsonStructureError {
+                let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
+                    SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                         Check that the value is not `Value::null`"
                             .to_string(),
+                }
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
@@ -159,12 +200,14 @@ impl JsonOutput {
                 let value = self
                     .get_or_create_current_path()
                     .as_object_mut()
-                    .ok_or(SerializationError::JsonStructureError {
+                    .ok_or_else(|| {
+                        SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                             Check that the value is not `Value::null`"
                             .to_string(),
-                })?;
+                }
+                    })?;
 
                 value.insert("#attributes".to_owned(), Value::Object(attributes));
             }
@@ -280,8 +323,23 @@ impl BinXmlOutput for JsonOutput {
     }
 
     fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
-        // JSON doesn't care about entity references.
-        Ok(())
+        // We need to create a BytesText event to access quick-xml's unescape functionality (which is private).
+        // We also terminate the entity.
+        let entity_ref = "&".to_string() + entity.as_str() + ";";
+
+        let xml_event = BytesText::from_escaped_str(&entity_ref);
+        match xml_event.unescaped() {
+            Ok(escaped) => {
+                let as_string = String::from_utf8(escaped.to_vec())
+                    .expect("This cannot fail, since it was a valid string beforehand");
+
+                self.visit_characters(&BinXmlValue::StringType(Cow::Borrowed(&as_string)))?;
+                Ok(())
+            }
+            Err(_) => Err(JsonStructureError {
+                message: format!("Unterminated XML Entity {}", entity_ref),
+            }),
+        }
     }
 
     fn visit_character_reference(

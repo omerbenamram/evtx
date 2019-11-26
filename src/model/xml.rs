@@ -18,6 +18,7 @@ pub enum XmlModel<'a> {
     StartOfStream,
 }
 
+#[derive(Debug)]
 pub(crate) struct XmlElementBuilder<'a> {
     name: Option<Cow<'a, Name<'a>>>,
     attributes: Vec<XmlAttribute<'a>>,
