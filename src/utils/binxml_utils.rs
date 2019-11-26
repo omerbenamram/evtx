@@ -74,13 +74,11 @@ pub fn read_ansi_encoded_string<T: ReadSeek>(
             let mut bytes = vec![0; size as usize];
             stream.read_exact(&mut bytes)?;
 
+            // There may be multiple NULs in the string, prune them.
+            bytes.retain(|&b| b != 0);
+
             let s = match decode(&bytes, DecoderTrap::Strict, ansi_codec).0 {
-                Ok(mut s) => {
-                    if let Some('\0') = s.chars().last() {
-                        s.pop();
-                    }
-                    s
-                }
+                Ok(s) => s,
                 Err(message) => {
                     let as_boxed_err = Box::<dyn StdErr + Send + Sync>::from(message.to_string());
                     let wrapped_io_err = WrappedIoError::capture_hexdump(as_boxed_err, stream);
