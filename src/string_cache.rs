@@ -1,5 +1,5 @@
 use crate::binxml::name::BinXmlName;
-use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
+use crate::err::{DeserializationResult, WrappedIoError};
 use crate::ChunkOffset;
 
 use std::collections::HashMap;

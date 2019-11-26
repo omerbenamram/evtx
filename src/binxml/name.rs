@@ -1,4 +1,4 @@
-use crate::err::{DeserializationError, DeserializationResult as Result, WrappedIoError};
+use crate::err::{DeserializationResult as Result, WrappedIoError};
 
 use crate::ChunkOffset;
 pub use byteorder::{LittleEndian, ReadBytesExt};

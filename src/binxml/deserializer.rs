@@ -1,5 +1,5 @@
-use crate::err::{DeserializationError, DeserializationResult as Result, DeserializationResult};
-use crate::evtx_parser::ReadSeek;
+use crate::err::{DeserializationError, DeserializationResult as Result};
+
 
 use byteorder::ReadBytesExt;
 

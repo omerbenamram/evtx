@@ -9,7 +9,7 @@ use crate::utils::dump_stream;
 use crate::FileOffset;
 use log::error;
 
-use crate::binxml::value_variant::BinXmlValue::EvtXml;
+
 use std::error::Error as StdError;
 use std::io;
 use std::path::Path;

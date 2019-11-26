@@ -1,4 +1,4 @@
-use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result, WrappedIoError};
+use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
 
 use byteorder::ReadBytesExt;
 use std::io::{Read, Seek, SeekFrom};

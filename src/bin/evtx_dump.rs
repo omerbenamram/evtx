@@ -186,7 +186,7 @@ impl EvtxDump {
                 {
                     Ok(true) => Ok(File::create(p)?),
                     Ok(false) => bail!("Cancelled"),
-                    Err(e) => bail!("Failed to display confirmation prompt"),
+                    Err(_e) => bail!("Failed to display confirmation prompt"),
                 }
             } else {
                 Ok(File::create(p)?)

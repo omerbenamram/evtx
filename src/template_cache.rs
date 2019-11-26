@@ -1,5 +1,5 @@
 use crate::binxml::tokens::read_template_definition;
-use crate::err::{DeserializationResult, Result, WrappedIoError};
+use crate::err::{DeserializationResult, WrappedIoError};
 
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::ChunkOffset;

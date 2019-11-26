@@ -1,7 +1,7 @@
 use crate::err::{
-    ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError, Result,
+    ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult,
 };
-use crate::evtx_parser::ReadSeek;
+
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
 use crc::crc32;

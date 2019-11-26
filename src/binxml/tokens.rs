@@ -1,5 +1,5 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
-use crate::evtx_parser::ReadSeek;
+
 
 pub use byteorder::{LittleEndian, ReadBytesExt};
 use winstructs::guid::Guid;

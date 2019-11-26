@@ -1,7 +1,6 @@
 use crate::binxml::assemble::parse_tokens;
 use crate::err::{
     DeserializationError, DeserializationResult, Result, SerializationError,
-    SerializationResult,
 };
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
