@@ -22,12 +22,12 @@ pub(crate) type DeserializationResult<T> = std::result::Result<T, crate::err::De
 pub(crate) type EvtxChunkResult<T> = std::result::Result<T, crate::err::ChunkError>;
 
 /// How many bytes of context we capture on error by default.
-const DEFAULT_LOOKBEHIND_LEN: usize = 100;
+const DEFAULT_LOOKBEHIND_LEN: i32 = 100;
 
 /// An IO error which captures additional information about it's context (hexdump).
 #[derive(Error, Debug)]
 #[error(
-    "Offset `{offset}` - An error has occurred while trying to deserialize binary stream \n\
+    "Offset `0x{offset:08x} ({offset})` - An error has occurred while trying to deserialize binary stream \n\
     {message}
     
     Hexdump:
@@ -54,7 +54,7 @@ impl WrappedIoError {
             0
         });
 
-        let context = dump_stream(stream, 100);
+        let context = dump_stream(stream, DEFAULT_LOOKBEHIND_LEN);
 
         WrappedIoError {
             offset,

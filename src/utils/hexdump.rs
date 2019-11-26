@@ -18,17 +18,26 @@ pub fn dump_stream<T: ReadSeek>(cursor: &mut T, lookbehind: i32) -> String {
     cursor.seek(SeekFrom::Current(lookbehind.into())).unwrap();
 
     let mut data = vec![0; end_of_buffer_or_default as usize];
-    cursor.read(&mut data).unwrap();
+    let _ = cursor.read(&mut data).unwrap();
 
-    writeln!(s, "-------------------------------").unwrap();
-    writeln!(s, "Current Value {:2X}", data[0]).unwrap();
+    writeln!(
+        s,
+        "\n\n---------------------------------------------------------------------------"
+    )
+    .unwrap();
+    writeln!(s, "Current Value {:2x}", data[0]).unwrap();
+    writeln!(s, "              --").unwrap();
     write!(
         s,
         "{}",
         hexdump(&data, 0, 'C').expect("Writing to a string should not fail")
     )
     .unwrap();
-    writeln!(s, "\n-------------------------------").unwrap();
+    writeln!(
+        s,
+        "\n----------------------------------------------------------------------------"
+    )
+    .unwrap();
 
     s
 }
@@ -69,7 +78,7 @@ pub fn hexdump(
         // Read next 16 bytes of until end of data
         let end = cmp::min(address + 16, data.len());
 
-        writeln!(
+        write!(
             s,
             "{}",
             print_line(
