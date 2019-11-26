@@ -1,8 +1,8 @@
 use crate::binxml::tokens::read_template_definition;
-use crate::err::Result;
+use crate::err::{DeserializationResult, Result, WrappedIoError};
 
 use crate::model::deserialized::BinXMLTemplateDefinition;
-use crate::Offset;
+use crate::ChunkOffset;
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use encoding::EncodingRef;
@@ -12,7 +12,7 @@ use std::io::{Cursor, Seek, SeekFrom};
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
 #[derive(Debug, Default)]
-pub struct TemplateCache<'chunk>(HashMap<Offset, CachedTemplate<'chunk>>);
+pub struct TemplateCache<'chunk>(HashMap<ChunkOffset, CachedTemplate<'chunk>>);
 
 impl<'chunk> TemplateCache<'chunk> {
     pub fn new() -> Self {
@@ -21,14 +21,22 @@ impl<'chunk> TemplateCache<'chunk> {
 
     pub fn populate(
         data: &'chunk [u8],
-        offsets: &[Offset],
+        offsets: &[ChunkOffset],
         ansi_codec: EncodingRef,
-    ) -> Result<Self> {
+    ) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
         let mut cursor = Cursor::new(data);
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor.seek(SeekFrom::Start(u64::from(*offset)))?;
+            cursor
+                .seek(SeekFrom::Start(u64::from(*offset)))
+                .map_err(|e| {
+                    WrappedIoError::io_error_with_message(
+                        e,
+                        format!("seeking to template at chunk offset {} failed.", offset),
+                        &mut cursor,
+                    )
+                })?;
 
             let definition = read_template_definition(&mut cursor, None, ansi_codec)?;
             cache.insert(*offset, definition);
@@ -37,7 +45,7 @@ impl<'chunk> TemplateCache<'chunk> {
         Ok(TemplateCache(cache))
     }
 
-    pub fn get_template(&self, offset: Offset) -> Option<&CachedTemplate<'chunk>> {
+    pub fn get_template(&self, offset: ChunkOffset) -> Option<&CachedTemplate<'chunk>> {
         self.0.get(&offset)
     }
 

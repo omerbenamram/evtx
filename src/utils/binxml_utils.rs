@@ -1,12 +1,13 @@
 use crate::evtx_parser::ReadSeek;
 
-use crate::err::{EvtxError, Result};
+use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use encoding::{decode, DecoderTrap, EncodingRef};
 use log::{error, trace};
 use std::char::decode_utf16;
+use std::error::Error as StdErr;
 use std::io::{self, Error, ErrorKind};
 
 pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
@@ -66,7 +67,7 @@ pub fn read_ansi_encoded_string<T: ReadSeek>(
     stream: &mut T,
     size: u64,
     ansi_codec: EncodingRef,
-) -> Result<Option<String>> {
+) -> DeserializationResult<Option<String>> {
     match size {
         0 => Ok(None),
         _ => {
@@ -81,11 +82,13 @@ pub fn read_ansi_encoded_string<T: ReadSeek>(
                     s
                 }
                 Err(message) => {
-                    return Err(EvtxError::FailedToDecodeANSIString {
-                        encoding: ansi_codec.name(),
-                        message: message.to_string(),
-                        offset: stream.tell()?,
-                    })
+                    let as_boxed_err = Box::<dyn StdErr + Send + Sync>::from(message.to_string());
+                    let wrapped_io_err = WrappedIoError::capture_hexdump(as_boxed_err, stream);
+                    return Err(DeserializationError::FailedToReadToken {
+                        t: format!("ansi_string {}", ansi_codec.name()),
+                        token_name: "",
+                        source: wrapped_io_err,
+                    });
                 }
             };
 

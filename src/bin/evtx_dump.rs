@@ -25,6 +25,7 @@ struct EvtxDump {
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
+    stop_after_error: bool,
 }
 
 impl EvtxDump {
@@ -91,6 +92,8 @@ impl EvtxDump {
         };
 
         let validate_checksums = matches.is_present("validate-checksums");
+        let stop_after_error = matches.is_present("stop-after-one-error");
+
         let verbosity_level = match matches.occurrences_of("verbose") {
             0 => None,
             1 => Some(Level::Info),
@@ -130,6 +133,7 @@ impl EvtxDump {
             output_format,
             output,
             verbosity_level,
+            stop_after_error,
         })
     }
 
@@ -182,10 +186,7 @@ impl EvtxDump {
                 {
                     Ok(true) => Ok(File::create(p)?),
                     Ok(false) => bail!("Cancelled"),
-                    Err(e) => bail!(
-                        "Failed to write confirmation prompt to term caused by\n{}",
-                        e
-                    ),
+                    Err(e) => bail!("Failed to display confirmation prompt"),
                 }
             } else {
                 Ok(File::create(p)?)
@@ -219,6 +220,10 @@ impl EvtxDump {
             // This error is non fatal.
             Err(e) => {
                 eprintln!("{:?}", format_err!(e));
+
+                if self.stop_after_error {
+                    std::process::exit(1);
+                }
             }
         };
 
@@ -323,6 +328,12 @@ fn main() -> Result<()> {
                     .collect::<Vec<&'static str>>())
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
+        )
+        .arg(
+            Arg::with_name("stop-after-one-error")
+                .long("--stop-after-one-error")
+                .takes_value(false)
+                .help("When set, will exit after any failure of reading a record. Useful for debugging."),
         )
         .arg(Arg::with_name("verbose")
             .short("-v")

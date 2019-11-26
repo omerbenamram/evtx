@@ -28,7 +28,8 @@ mod utils;
 mod json_output;
 mod xml_output;
 
-pub type Offset = u32;
+pub type ChunkOffset = u32;
+pub type FileOffset = u64;
 
 // For tests, we only initialize logging once.
 #[cfg(test)]

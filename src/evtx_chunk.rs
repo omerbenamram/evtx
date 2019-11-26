@@ -1,4 +1,6 @@
-use crate::err::{EvtxError, Result};
+use crate::err::{
+    ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError, Result,
+};
 use crate::evtx_parser::ReadSeek;
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
@@ -44,22 +46,24 @@ pub struct EvtxChunkData {
 impl EvtxChunkData {
     /// Construct a new chunk from the given data.
     /// Note that even when validate_checksum is set to false, the header magic is still checked.
-    pub fn new(data: Vec<u8>, validate_checksum: bool) -> Result<Self> {
+    pub fn new(data: Vec<u8>, validate_checksum: bool) -> EvtxChunkResult<Self> {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
         let chunk = EvtxChunkData { header, data };
-        if validate_checksum {
-            if !chunk.validate_checksum() {
-                return Err(EvtxError::InvalidChunkChecksum {});
-            }
+        if validate_checksum && !chunk.validate_checksum() {
+            // TODO: return checksum here.
+            return Err(ChunkError::InvalidChunkChecksum {
+                expected: 0,
+                found: 0,
+            });
         }
 
         Ok(chunk)
     }
 
     /// Require that the settings live at least as long as &self.
-    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> Result<EvtxChunk> {
+    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk> {
         EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
@@ -132,11 +136,12 @@ impl<'chunk> EvtxChunk<'chunk> {
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
-    ) -> Result<EvtxChunk<'chunk>> {
+    ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
         let _cursor = Cursor::new(data);
 
         info!("Initializing string cache");
-        let string_cache = StringCache::populate(&data, &header.strings_offsets)?;
+        let string_cache = StringCache::populate(&data, &header.strings_offsets)
+            .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
 
         info!("Initializing template cache");
         let template_table =
@@ -203,7 +208,7 @@ pub struct IterChunkRecords<'chunk> {
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = Result<EvtxRecord<'a>>;
+    type Item = DeserializationResult<EvtxRecord<'a>>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         if self.exhausted
@@ -245,7 +250,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let mut tokens = vec![];
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
-            .map_err(|e| EvtxError::FailedToDeserializeRecord {
+            .map_err(|e| DeserializationError::FailedToDeserializeRecord {
                 source: Box::new(e),
                 record_id: record_header.event_record_id,
             }) {
@@ -254,7 +259,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         };
 
         for token in iter {
-            match token.map_err(|e| EvtxError::FailedToDeserializeRecord {
+            match token.map_err(|e| DeserializationError::FailedToDeserializeRecord {
                 source: Box::new(e),
                 record_id: record_header.event_record_id,
             }) {
@@ -285,30 +290,30 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 }
 
 impl EvtxChunkHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> Result<EvtxChunkHeader> {
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxChunkHeader> {
         let mut magic = [0_u8; 8];
         input.take(8).read_exact(&mut magic)?;
 
         if &magic != b"ElfChnk\x00" {
-            return Err(EvtxError::InvalidEvtxChunkMagic { magic });
+            return Err(DeserializationError::InvalidEvtxChunkMagic { magic });
         }
 
-        let first_event_record_number = try_read!(input, u64);
-        let last_event_record_number = try_read!(input, u64);
-        let first_event_record_id = try_read!(input, u64);
-        let last_event_record_id = try_read!(input, u64);
+        let first_event_record_number = try_read!(input, u64)?;
+        let last_event_record_number = try_read!(input, u64)?;
+        let first_event_record_id = try_read!(input, u64)?;
+        let last_event_record_id = try_read!(input, u64)?;
 
-        let header_size = try_read!(input, u32);
-        let last_event_record_data_offset = try_read!(input, u32);
-        let free_space_offset = try_read!(input, u32);
-        let events_checksum = try_read!(input, u32);
+        let header_size = try_read!(input, u32)?;
+        let last_event_record_data_offset = try_read!(input, u32)?;
+        let free_space_offset = try_read!(input, u32)?;
+        let events_checksum = try_read!(input, u32)?;
 
         // Reserved
         input.seek(SeekFrom::Current(64))?;
         // Flags
         input.seek(SeekFrom::Current(4))?;
 
-        let header_chunk_checksum = try_read!(input, u32);
+        let header_chunk_checksum = try_read!(input, u32)?;
 
         let mut strings_offsets = vec![0_u32; 64];
         input.read_u32_into::<LittleEndian>(&mut strings_offsets)?;

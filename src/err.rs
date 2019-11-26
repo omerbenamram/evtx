@@ -3,44 +3,134 @@ use quick_xml;
 use std::backtrace::Backtrace;
 use thiserror::Error;
 
+use crate::evtx_parser::ReadSeek;
+
+use crate::utils::dump_stream;
+use crate::FileOffset;
+use log::error;
+
+use crate::binxml::value_variant::BinXmlValue::EvtXml;
+use std::error::Error as StdError;
+use std::io;
+use std::path::Path;
+use winstructs::guid::Guid;
+
+/// This is the only `Result` type that should be exposed on public interfaces.
 pub type Result<T> = std::result::Result<T, EvtxError>;
+pub type SerializationResult<T> = std::result::Result<T, crate::err::SerializationError>;
+pub(crate) type DeserializationResult<T> = std::result::Result<T, crate::err::DeserializationError>;
+pub(crate) type EvtxChunkResult<T> = std::result::Result<T, crate::err::ChunkError>;
+
+/// How many bytes of context we capture on error by default.
+const DEFAULT_LOOKBEHIND_LEN: usize = 100;
+
+/// An IO error which captures additional information about it's context (hexdump).
+#[derive(Error, Debug)]
+#[error(
+    "Offset `{offset}` - An error has occurred while trying to deserialize binary stream \n\
+    {message}
+    
+    Hexdump:
+        {hexdump}"
+)]
+pub struct WrappedIoError {
+    offset: FileOffset,
+    // A hexdump containing information additional information surrounding the token.
+    hexdump: String,
+    // A message containing extra context.
+    message: String,
+    // Could be either an I/O error or some other error such as `FromUtf8Error`
+    #[source]
+    source: Box<dyn StdError + 'static + Send + Sync>,
+}
+
+impl WrappedIoError {
+    pub fn capture_hexdump<S: ReadSeek>(
+        error: Box<(dyn std::error::Error + 'static + Send + Sync)>,
+        stream: &mut S,
+    ) -> WrappedIoError {
+        let offset = stream.tell().unwrap_or_else(|_| {
+            error!("while trying to recover error information -> `tell` failed.");
+            0
+        });
+
+        let context = dump_stream(stream, 100);
+
+        WrappedIoError {
+            offset,
+            hexdump: context,
+            message: "".to_string(),
+            source: error,
+        }
+    }
+
+    pub fn io_error_with_message<S: ReadSeek, T: AsRef<str>>(
+        error: io::Error,
+        context: T,
+        stream: &mut S,
+    ) -> WrappedIoError {
+        let offset = stream.tell().unwrap_or_else(|_| {
+            error!("while trying to recover error information -> `tell` failed.");
+            0
+        });
+
+        let hexdump = dump_stream(stream, 100);
+
+        WrappedIoError {
+            offset,
+            hexdump,
+            message: context.as_ref().to_string(),
+            source: Box::new(error),
+        }
+    }
+}
 
 #[derive(Debug, Error)]
-pub enum EvtxError {
-    #[error("Offset {offset}: An I/O error has occurred while trying to read {t}")]
-    FailedToRead {
-        offset: u64,
-        t: &'static str,
-        source: std::io::Error,
-        #[cfg(backtraces)]
-        backtrace: Backtrace,
+pub enum DeserializationError {
+    /// Represents a general deserialization error.
+    /// Includes information about what token was being deserialized, as well an offset and an underlying error.
+    #[error("Failed to deserialize `{token_name}` of type `{t}`")]
+    FailedToReadToken {
+        // Could be anything from a `u32` to an array of strings.
+        t: String,
+        token_name: &'static str,
+        source: WrappedIoError,
     },
 
-    #[error("An I/O error has occurred")]
-    IO {
-        #[from]
-        source: std::io::Error,
-        #[cfg(backtraces)]
-        backtrace: Backtrace,
+    #[error("An expected I/O error has occurred")]
+    UnexpectedIoError(#[from] WrappedIoError),
+
+    #[error("An expected I/O error has occurred")]
+    RemoveMe(#[from] io::Error),
+
+    /// An extra layer of error indirection to keep template GUID.
+    #[error("Failed to deserialize template `{template_id}`")]
+    FailedToDeserializeTemplate {
+        template_id: Guid,
+        source: Box<DeserializationError>,
     },
 
-    #[error("Failed to access path: {}", path)]
-    InvalidInputPath {
-        source: std::io::Error,
-        // Not a path because it is invalid
-        path: String,
+    /// An extra layer of error stack to keep record id.
+    #[error("Failed to deserialize record {record_id}")]
+    FailedToDeserializeRecord {
+        record_id: u64,
+        source: Box<DeserializationError>,
     },
 
-    #[error("Failed to open file {}", path.display())]
-    FailedToOpenFile {
-        source: std::io::Error,
-        path: std::path::PathBuf,
+    /// While decoding ANSI strings, we might get an incorrect decoder, which will yield a special message.
+    #[error("Failed to decode ANSI string (encoding used: {encoding_used}) - `{inner_message}`")]
+    AnsiDecodeError {
+        encoding_used: &'static str,
+        inner_message: String,
     },
 
-    /// Errors related to Deserialization
-    #[error("Reached EOF while trying to allocate chunk {chunk_number}")]
-    IncompleteChunk { chunk_number: u16 },
+    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml token")]
+    InvalidToken { value: u8, offset: u64 },
 
+    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml value variant")]
+    InvalidValueVariant { value: u8, offset: u64 },
+
+    /// Assertion errors.
     #[error("Invalid EVTX record header magic, expected `2a2a0000`, found `{magic:2X?}`")]
     InvalidEvtxRecordHeaderMagic { magic: [u8; 4] },
 
@@ -53,20 +143,9 @@ pub enum EvtxError {
     #[error("Unknown EVTX record header flags value: {value}")]
     UnknownEvtxHeaderFlagValue { value: u32 },
 
-    #[error("chunk data CRC32 invalid")]
-    InvalidChunkChecksum {},
-
-    #[error("Failed to deserialize record {record_id}")]
-    FailedToDeserializeRecord {
-        record_id: u64,
-        source: Box<EvtxError>,
-    },
-
-    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml token")]
-    InvalidToken { value: u8, offset: u64 },
-
-    #[error("Offset {offset}: Tried to read an invalid byte `{value:x}` as binxml value variant")]
-    InvalidValueVariant { value: u8, offset: u64 },
+    /// Unimplemented Tokens/Variants.
+    #[error("Offset {offset}: Token `{name}` is unimplemented")]
+    UnimplementedToken { name: &'static str, offset: u64 },
 
     #[error("Offset {offset}: Value variant `{name}` (size {size:?}) is unimplemented")]
     UnimplementedValueVariant {
@@ -74,48 +153,12 @@ pub enum EvtxError {
         size: Option<u16>,
         offset: u64,
     },
+}
 
-    #[error("Offset {offset}: Token `{name}` is unimplemented")]
-    UnimplementedToken { name: &'static str, offset: u64 },
-
-    #[error("Offset {offset}: Failed to decode UTF-16 string")]
-    FailedToDecodeUTF16String { source: std::io::Error, offset: u64 },
-
-    #[error("Offset {offset}: Failed to decode UTF-8 string")]
-    FailedToDecodeUTF8String {
-        source: std::string::FromUtf8Error,
-        offset: u64,
-    },
-
-    #[error("Offset {offset}: Failed to decode ansi string (used encoding scheme {encoding}), failed with: {message}")]
-    FailedToDecodeANSIString {
-        encoding: &'static str,
-        message: String,
-        offset: u64,
-    },
-
-    #[error("Offset {offset}: Failed to read windows time")]
-    FailedToReadWindowsTime {
-        source: winstructs::err::Error,
-        offset: u64,
-    },
-
-    #[error("Offset {offset}: Failed to decode GUID")]
-    FailedToReadGUID {
-        source: winstructs::err::Error,
-        offset: u64,
-    },
-
-    #[error("Offset {offset}: Failed to decode NTSID")]
-    FailedToReadNTSID {
-        source: winstructs::err::Error,
-        offset: u64,
-    },
-
-    #[error("Failed to create record model, reason: {message}")]
-    FailedToCreateRecordModel { message: &'static str },
-
-    /// Errors related to Serialization
+// TODO: this should be pub(crate), but we need to make `BinXmlOutput` private to do that.
+/// Errors related to Serialization of Binxml token trees to XML/JSON.
+#[derive(Debug, Error)]
+pub enum SerializationError {
     // Since `quick-xml` maintains the stack for us, structural errors with the XML
     // Will be included in this generic error alongside IO errors.
     #[error("Writing to XML failed")]
@@ -139,11 +182,88 @@ pub enum EvtxError {
         source: std::string::FromUtf8Error,
     },
 
-    /// Misc Errors
+    #[error("Unimplemented: {message}")]
+    Unimplemented { message: String },
+}
+
+#[derive(Debug, Error)]
+pub enum InputError {
+    #[error("Failed to open file {}", path.display())]
+    FailedToOpenFile {
+        source: std::io::Error,
+        path: std::path::PathBuf,
+    },
+}
+
+impl InputError {
+    /// Context Convenience for `InputError`
+    pub fn failed_to_open_file<P: AsRef<Path>>(source: io::Error, path: P) -> Self {
+        InputError::FailedToOpenFile {
+            source,
+            path: path.as_ref().to_path_buf(),
+        }
+    }
+}
+
+/// Raised on Invalid/Incomplete data
+/// May also be raised if common chunk resources are not read succesfully.
+#[derive(Debug, Error)]
+pub enum ChunkError {
+    #[error("Reached EOF while trying to allocate chunk")]
+    IncompleteChunk,
+
+    #[error("Failed to seek to start of chunk.")]
+    FailedToSeekToChunk(io::Error),
+
+    #[error("Failed to parse chunk header")]
+    FailedToParseChunkHeader(#[from] DeserializationError),
+
+    #[error("chunk data CRC32 invalid")]
+    InvalidChunkChecksum { expected: u32, found: u32 },
+
+    #[error("Failed to build string cache")]
+    FailedToBuildStringCache { source: DeserializationError },
+
+    #[error("Failed to build template cache")]
+    FailedToBuildTemplateCache {
+        message: String,
+        source: DeserializationError,
+    },
+}
+
+/// Public result API.
+/// Inner errors are considered implementation details and are opaque.
+#[derive(Debug, Error)]
+pub enum EvtxError {
+    #[error("An error occurred while trying to read input.")]
+    InputError(#[from] InputError),
+
+    #[error("An error occurred while trying to serialize binary xml to output.")]
+    SerializationError(#[from] SerializationError),
+
+    // TODO: Should this be split to `ChunkError` vs `RecordError`?
+    #[error("An error occurred while trying to deserialize evtx stream.")]
+    DeserializationError(#[from] DeserializationError),
+
+    #[error("Failed to parse chunk number {chunk_id}")]
+    FailedToParseChunk { chunk_id: u16, source: ChunkError },
+
+    // TODO: move this error.
+    #[error("Failed to create record model, reason: {message}")]
+    FailedToCreateRecordModel { message: &'static str },
+
+    // TODO: should we keep an `Unimplemented` variant at public API?
     #[error("Unimplemented: {name}")]
     Unimplemented { name: String },
-    #[error("An unexpected error has occurred: {detail}")]
-    Any { detail: String },
+}
+
+impl EvtxError {
+    pub fn incomplete_chunk(chunk_id: u16) -> EvtxError {
+        EvtxError::FailedToParseChunk {
+            chunk_id,
+            source: ChunkError::IncompleteChunk,
+        }
+    }
 }
 
 /// Errors on unimplemented functions instead on panicking.

@@ -1,7 +1,6 @@
 use crate::binxml::value_variant::BinXmlValue;
-use crate::err::Result;
+use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::XmlElement;
-use crate::unimplemented_fn;
 use crate::ParserSettings;
 
 use log::trace;
@@ -15,33 +14,36 @@ use std::borrow::Cow;
 
 pub trait BinXmlOutput {
     /// Called once when EOF is reached.
-    fn visit_end_of_stream(&mut self) -> Result<()>;
+    fn visit_end_of_stream(&mut self) -> SerializationResult<()>;
 
     /// Called on <Tag attr="value" another_attr="value">.
-    fn visit_open_start_element(&mut self, open_start_element: &XmlElement) -> Result<()>;
+    fn visit_open_start_element(
+        &mut self,
+        open_start_element: &XmlElement,
+    ) -> SerializationResult<()>;
 
     /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<()>;
+    fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()>;
 
     ///
     /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
     ///                                                     ~~~~~~~~~~~~~~~
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()>;
+    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()>;
 
     /// Unimplemented
-    fn visit_cdata_section(&mut self) -> Result<()>;
+    fn visit_cdata_section(&mut self) -> SerializationResult<()>;
 
     /// Unimplemented
-    fn visit_entity_reference(&mut self) -> Result<()>;
+    fn visit_entity_reference(&mut self) -> SerializationResult<()>;
 
     /// Unimplemented
-    fn visit_processing_instruction_target(&mut self) -> Result<()>;
+    fn visit_processing_instruction_target(&mut self) -> SerializationResult<()>;
 
     /// Unimplemented
-    fn visit_processing_instruction_data(&mut self) -> Result<()>;
+    fn visit_processing_instruction_data(&mut self) -> SerializationResult<()>;
 
     /// Called once on beginning of parsing.
-    fn visit_start_of_stream(&mut self) -> Result<()>;
+    fn visit_start_of_stream(&mut self) -> SerializationResult<()>;
 }
 
 pub struct XmlOutput<W: Write> {
@@ -59,21 +61,21 @@ impl<W: Write> XmlOutput<W> {
         XmlOutput { writer }
     }
 
-    pub fn into_writer(self) -> Result<W> {
-        Ok(self.writer.into_inner())
+    pub fn into_writer(self) -> W {
+        self.writer.into_inner()
     }
 }
 
 /// Adapter between binxml XmlModel type and quick-xml events.
 impl<W: Write> BinXmlOutput for XmlOutput<W> {
-    fn visit_end_of_stream(&mut self) -> Result<()> {
+    fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_end_of_stream");
         self.writer.write_event(Event::Eof)?;
 
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element);
 
         let mut event_builder =
@@ -94,7 +96,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_close_element(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_close_element");
         let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
 
@@ -103,7 +105,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);
@@ -112,23 +114,31 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_cdata_section")
+    fn visit_cdata_section(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_cdata_section", file!()),
+        })
     }
 
-    fn visit_entity_reference(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_entity_reference")
+    fn visit_entity_reference(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_entity_reference", file!()),
+        })
     }
 
-    fn visit_processing_instruction_target(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_target")
+    fn visit_processing_instruction_target(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_processing_instruction_target", file!()),
+        })
     }
 
-    fn visit_processing_instruction_data(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_data")
+    fn visit_processing_instruction_data(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_processing_instruction_data", file!()),
+        })
     }
 
-    fn visit_start_of_stream(&mut self) -> Result<()> {
+    fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
         let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
 

@@ -1,4 +1,4 @@
-use crate::err::{EvtxError, Result};
+use crate::err::{ChunkError, EvtxError, InputError, Result};
 
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
@@ -10,11 +10,10 @@ use rayon::prelude::*;
 
 #[cfg(not(feature = "multithreading"))]
 use log::warn;
-use log::{debug, info};
 
+use log::{debug, info};
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::iter::{IntoIterator, Iterator};
 
 use crate::EvtxRecord;
 use encoding::all::WINDOWS_1252;
@@ -22,15 +21,30 @@ use encoding::EncodingRef;
 use std::cmp::max;
 use std::fmt;
 use std::fmt::Debug;
+use std::iter::{IntoIterator, Iterator};
 use std::path::Path;
 use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
+// Stable shim until https://github.com/rust-lang/rust/issues/59359 is merged.
+// Taken from proposed std code.
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
         self.seek(SeekFrom::Current(0))
+    }
+    fn stream_len(&mut self) -> io::Result<u64> {
+        let old_pos = self.tell()?;
+        let len = self.seek(SeekFrom::End(0))?;
+
+        // Avoid seeking a third time when we were already at the end of the
+        // stream. The branch is usually way cheaper than a seek operation.
+        if old_pos != len {
+            self.seek(SeekFrom::Start(old_pos))?;
+        }
+
+        Ok(len)
     }
 }
 
@@ -228,15 +242,9 @@ impl EvtxParser<File> {
         let path = path
             .as_ref()
             .canonicalize()
-            .map_err(|e| EvtxError::InvalidInputPath {
-                source: e,
-                path: path.as_ref().to_string_lossy().to_string(),
-            })?;
+            .map_err(|e| InputError::failed_to_open_file(e, &path))?;
 
-        let f = File::open(&path).map_err(|e| EvtxError::FailedToOpenFile {
-            source: e,
-            path: path,
-        })?;
+        let f = File::open(&path).map_err(|e| InputError::failed_to_open_file(e, &path))?;
 
         let cursor = f;
         Self::from_read_seek(cursor)
@@ -281,14 +289,19 @@ impl<T: ReadSeek> EvtxParser<T> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
 
-        data.seek(SeekFrom::Start(chunk_offset as u64))?;
+        data.seek(SeekFrom::Start(chunk_offset as u64))
+            .map_err(|e| EvtxError::FailedToParseChunk {
+                chunk_id: chunk_number,
+                source: ChunkError::FailedToSeekToChunk(e),
+            })?;
 
         let amount_read = data
             .take(EVTX_CHUNK_SIZE as u64)
-            .read_to_end(&mut chunk_data)?;
+            .read_to_end(&mut chunk_data)
+            .map_err(|_| EvtxError::incomplete_chunk(chunk_number))?;
 
         if amount_read != EVTX_CHUNK_SIZE {
-            return Err(EvtxError::IncompleteChunk { chunk_number });
+            return Err(EvtxError::incomplete_chunk(chunk_number));
         }
 
         // There might be empty chunks in the middle of a dirty file.
@@ -296,7 +309,12 @@ impl<T: ReadSeek> EvtxParser<T> {
             return Ok(None);
         }
 
-        EvtxChunkData::new(chunk_data, validate_checksum).map(Some)
+        EvtxChunkData::new(chunk_data, validate_checksum)
+            .map(Some)
+            .map_err(|e| EvtxError::FailedToParseChunk {
+                chunk_id: chunk_number,
+                source: e,
+            })
     }
 
     /// Find the next chunk, staring at `chunk_number` (inclusive).
@@ -388,16 +406,27 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                 // Serialize the records in each chunk.
                 let iterators: Vec<Vec<Result<U>>> = chunk_iter
-                    .map(|chunk_res| match chunk_res {
+                    .enumerate()
+                    .map(|(i, chunk_res)| match chunk_res {
                         Err(err) => vec![Err(err)],
                         Ok(mut chunk) => {
                             let chunk_records_res = chunk.parse(chunk_settings.clone());
 
                             match chunk_records_res {
-                                Err(err) => vec![Err(err)],
-                                Ok(mut chunk_records) => {
-                                    chunk_records.iter().map(f.clone()).collect()
-                                }
+                                Err(err) => vec![Err(EvtxError::FailedToParseChunk {
+                                    chunk_id: i as u16,
+                                    source: err,
+                                })],
+                                Ok(mut chunk_records) => chunk_records
+                                    .iter()
+                                    .map(|record_result| {
+                                        let mut closure = f.clone();
+                                        closure(
+                                            record_result
+                                                .map_err(|e| EvtxError::DeserializationError(e)),
+                                        )
+                                    })
+                                    .collect(),
                             }
                         }
                     })

@@ -1,200 +1,206 @@
+macro_rules! capture_context {
+    ($cursor: ident, $e: ident, $token: expr, $name: expr) => {{
+        let inner = $crate::err::WrappedIoError::capture_hexdump(Box::new($e), $cursor);
+        $crate::err::DeserializationError::FailedToReadToken {
+            t: $token.to_owned(),
+            token_name: $name,
+            source: inner,
+        }
+    }};
+}
+
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
 macro_rules! try_read {
+    ($cursor: ident, u8, $name: expr) => {
+        $cursor
+            .read_u8()
+            .map_err(|e| capture_context!($cursor, e, "u8", $name));
+    };
+
     ($cursor: ident, u8) => {
-        $cursor.read_u8().map_err(|e| EvtxError::FailedToRead {
-            source: e,
-            #[cfg(backtraces)]
-            backtrace: ::std::backtrace::Backtrace::capture(),
-            offset: $cursor.tell().unwrap(),
-            t: "u8",
-        })?;
+        try_read!($cursor, u8, "<Unknown>")
+    };
+
+    ($cursor: ident, i8, $name: expr) => {
+        $cursor
+            .read_i8()
+            .map_err(|e| capture_context!($cursor, e, "i8", $name));
     };
 
     ($cursor: ident, i8) => {
-        $cursor.read_i8().map_err(|e| EvtxError::FailedToRead {
-            source: e,
-            #[cfg(backtraces)]
-            backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, i8, "<Unknown>")
+    };
 
-            offset: $cursor.tell().unwrap(),
-            t: "i8",
-        })?;
+    ($cursor: ident, u16, $name: expr) => {
+        $cursor
+            .read_u16::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "u16", $name));
     };
 
     ($cursor: ident, u16) => {
-        $cursor
-            .read_u16::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, u16, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "u16",
-            })?;
+    ($cursor: ident, i16, $name: expr) => {
+        $cursor
+            .read_i16::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "i16", $name));
     };
 
     ($cursor: ident, i16) => {
-        $cursor
-            .read_i16::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, i16, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "i16",
-            })?;
+    ($cursor: ident, i32, $name: expr) => {
+        $cursor
+            .read_i32::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "i32", $name));
     };
 
     ($cursor: ident, i32) => {
-        $cursor
-            .read_i32::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, i32, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "i32",
-            })?;
+    ($cursor: ident, u32, $name: expr) => {
+        $cursor
+            .read_u32::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "u32", $name));
     };
 
     ($cursor: ident, u32) => {
-        $cursor
-            .read_u32::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, u32, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "u32",
-            })?;
+    ($cursor: ident, f32, $name: expr) => {
+        $cursor
+            .read_f32::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "f32", $name));
     };
 
     ($cursor: ident, f32) => {
-        $cursor
-            .read_f32::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, f32, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "f32",
-            })?;
+    ($cursor: ident, i64, $name: expr) => {
+        $cursor
+            .read_i64::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "i64", $name));
     };
 
     ($cursor: ident, i64) => {
-        $cursor
-            .read_i64::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, i64, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "i64",
-            })?;
+    ($cursor: ident, u64, $name: expr) => {
+        $cursor
+            .read_u64::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "u64", $name));
     };
 
     ($cursor: ident, u64) => {
-        $cursor
-            .read_u64::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
+        try_read!($cursor, u64, "<Unknown>")
+    };
 
-                offset: $cursor.tell().unwrap(),
-                t: "u64",
-            })?;
+    ($cursor: ident, f64, $name: expr) => {
+        $cursor
+            .read_f64::<byteorder::LittleEndian>()
+            .map_err(|e| capture_context!($cursor, e, "f64", $name));
     };
 
     ($cursor: ident, f64) => {
-        $cursor
-            .read_f64::<byteorder::LittleEndian>()
-            .map_err(|e| EvtxError::FailedToRead {
-                source: e,
-                #[cfg(backtraces)]
-                backtrace: ::std::backtrace::Backtrace::capture(),
-
-                offset: $cursor.tell().unwrap(),
-                t: "f64",
-            })?;
+        try_read!($cursor, f64, "<Unknown>")
     };
 
     ($cursor: ident, bool) => {{
         let bool_value = try_read!($cursor, i32);
         match bool_value {
-            0 => false,
-            1 => true,
-            _ => {
+            Ok(0) => Ok(false),
+            Ok(1) => Ok(true),
+            Ok(number) => {
                 log::warn!(
-                    "{:?} is an unknown value for bool, coercing to `true`",
-                    bool_value
+                    "{:} is an unknown value for bool, coercing to `true`",
+                    number
                 );
-                true
+                Ok(true)
             }
+            Err(e) => Err(e),
         }
     }};
 
     ($cursor: ident, guid) => {
-        Guid::from_reader($cursor).map_err(|e| EvtxError::FailedToReadGUID {
-            source: e,
-            offset: $cursor.position(),
-        })?
+        try_read!($cursor, guid, "<Unknown>")
     };
 
-    ($cursor: ident, utf_16_str) => {{
-        let s = read_len_prefixed_utf16_string($cursor, false)
-            .map_err(|e| EvtxError::FailedToDecodeUTF16String {
-                source: e,
-                offset: $cursor.position(),
-            })?
-            .unwrap_or_else(|| "".to_owned());
+    ($cursor: ident, guid, $name: expr) => {
+        Guid::from_reader($cursor).map_err(|e| capture_context!($cursor, e, "guid", $name))
+    };
 
-        Cow::Owned(s)
+    ($cursor: ident, len_prefixed_utf_16_str) => {{
+        try_read!($cursor, len_prefixed_utf_16_str, "<Unknown>")
     }};
+
+    ($cursor: ident, len_prefixed_utf_16_str, $name: expr) => {
+        read_len_prefixed_utf16_string($cursor, false)
+            .map_err(|e| capture_context!($cursor, e, "len_prefixed_utf_16_str", $name))
+            .map(|s| match s {
+                Some(s) => Some(Cow::Owned(s)),
+                None => None,
+            })
+    };
+
+    ($cursor: ident, len_prefixed_utf_16_str_nul_terminated) => {{
+        try_read!($cursor, len_prefixed_utf_16_str_nul_terminated, "<Unknown>")
+    }};
+
+    ($cursor: ident, len_prefixed_utf_16_str_nul_terminated, $name: expr) => {
+        read_len_prefixed_utf16_string($cursor, true)
+            .map_err(|e| {
+                capture_context!($cursor, e, "len_prefixed_utf_16_str_nul_terminated", $name)
+            })
+            .map(|s| match s {
+                Some(s) => Some(Cow::Owned(s)),
+                None => None,
+            })
+    };
 
     ($cursor: ident, null_terminated_utf_16_str) => {{
-        let s = read_null_terminated_utf16_string($cursor).map_err(|e| {
-            EvtxError::FailedToDecodeUTF16String {
-                source: e,
-                offset: $cursor.position(),
-            }
-        })?;
-
-        Cow::Owned(s)
+        try_read!($cursor, null_terminated_utf_16_str, "<Unknown>")
     }};
 
-    ($cursor: ident, sid) => {
-        Sid::from_reader($cursor).map_err(|e| EvtxError::FailedToReadNTSID {
-            source: e,
-            offset: $cursor.position(),
-        })?
+    ($cursor: ident, null_terminated_utf_16_str, $name: expr) => {
+        read_null_terminated_utf16_string($cursor)
+            .map_err(|e| capture_context!($cursor, e, "null_terminated_utf_16_str", $name))
+            .map(|s| Cow::Owned(s))
     };
 
-    ($cursor: ident, hex32) => {
-        Cow::Owned(format!("0x{:x}", try_read!($cursor, i32)))
+    ($cursor: ident, sid, $name: expr) => {
+        Sid::from_reader($cursor).map_err(|e| capture_context!($cursor, e, "ntsid", $name));
     };
+
+    ($cursor: ident, sid) => {
+        try_read!($cursor, sid, "<Unknown>")
+    };
+
+    ($cursor: ident, hex32) => {{
+        try_read!($cursor, i32).map(|value| Cow::Owned(format!("0x{:x}", value)))
+    }};
 
     ($cursor: ident, hex64) => {
-        Cow::Owned(format!("0x{:x}", try_read!($cursor, i64)))
+        try_read!($cursor, i64).map(|value| Cow::Owned(format!("0x{:x}", value)))
     };
 
     ($cursor: ident, filetime) => {
+        try_read!($cursor, filetime, "<Unknown>")
+    };
+
+    ($cursor: ident, filetime, $name: expr) => {
         winstructs::timestamp::WinTimestamp::from_reader($cursor)
-            .map_err(|e| EvtxError::FailedToReadWindowsTime {
-                source: e,
-                offset: $cursor.position(),
-            })?
-            .to_datetime()
+            .map_err(|e| capture_context!($cursor, e, "filetime", $name))
+            .map(|t| t.to_datetime())
     };
 
     ($cursor: ident, systime) => {
-        read_systemtime($cursor)?
+        read_systemtime($cursor)
     };
 }
 
@@ -208,7 +214,7 @@ macro_rules! try_read_sized_array {
                 break;
             }
 
-            let val = try_read!($cursor, $unit);
+            let val = try_read!($cursor, $unit)?;
             array.push(val);
         }
 

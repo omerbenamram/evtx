@@ -1,4 +1,4 @@
-use crate::err::{EvtxError, Result};
+use crate::err::{DeserializationError, DeserializationResult as Result, DeserializationResult};
 use crate::evtx_parser::ReadSeek;
 
 use byteorder::ReadBytesExt;
@@ -122,10 +122,10 @@ impl<'a> IterTokens<'a> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
-        let token = try_read!(cursor, u8);
+        let token = try_read!(cursor, u8)?;
 
         Ok(
-            BinXMLRawToken::from_u8(token).ok_or(EvtxError::InvalidToken {
+            BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
                 value: token,
                 offset: cursor.position(),
             })?,
@@ -159,21 +159,25 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),
-            BinXMLRawToken::CDataSection => Err(EvtxError::UnimplementedToken {
+            BinXMLRawToken::CDataSection => Err(DeserializationError::UnimplementedToken {
                 name: "CDataSection",
                 offset: cursor.position(),
             }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
                 read_entity_ref(cursor, self.chunk)?,
             )),
-            BinXMLRawToken::ProcessingInstructionTarget => Err(EvtxError::UnimplementedToken {
-                name: "ProcessingInstructionTarget",
-                offset: cursor.position(),
-            }),
-            BinXMLRawToken::ProcessingInstructionData => Err(EvtxError::UnimplementedToken {
-                name: "ProcessingInstructionData",
-                offset: cursor.position(),
-            }),
+            BinXMLRawToken::ProcessingInstructionTarget => {
+                Err(DeserializationError::UnimplementedToken {
+                    name: "ProcessingInstructionTarget",
+                    offset: cursor.position(),
+                })
+            }
+            BinXMLRawToken::ProcessingInstructionData => {
+                Err(DeserializationError::UnimplementedToken {
+                    name: "ProcessingInstructionData",
+                    offset: cursor.position(),
+                })
+            }
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
                 read_template(cursor, self.chunk, self.ansi_codec)?,
             )),

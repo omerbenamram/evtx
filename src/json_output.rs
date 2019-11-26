@@ -1,8 +1,7 @@
-use crate::err::{EvtxError, Result};
+use crate::err::{SerializationError, SerializationResult};
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::XmlElement;
-use crate::unimplemented_fn;
 use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
 
@@ -76,7 +75,7 @@ impl JsonOutput {
     }
 
     /// Like a regular node, but uses it's "Name" attribute.
-    fn insert_data_node(&mut self, element: &XmlElement) -> Result<()> {
+    fn insert_data_node(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("inserting data node {:?}", &element);
         match element
             .attributes
@@ -96,14 +95,18 @@ impl JsonOutput {
         }
     }
 
-    fn insert_node_without_attributes(&mut self, _: &XmlElement, name: &str) -> Result<()> {
+    fn insert_node_without_attributes(
+        &mut self,
+        _: &XmlElement,
+        name: &str,
+    ) -> SerializationResult<()> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
 
         let container =
             self.get_current_parent()
                 .as_object_mut()
-                .ok_or(EvtxError::JsonStructureError {
+                .ok_or(SerializationError::JsonStructureError {
                 message:
                     "This is a bug - expected parent container to exist, and to be an object type.\
                      Check that the referencing parent is not `Value::null`",
@@ -113,7 +116,11 @@ impl JsonOutput {
         Ok(())
     }
 
-    fn insert_node_with_attributes(&mut self, element: &XmlElement, name: &str) -> Result<()> {
+    fn insert_node_with_attributes(
+        &mut self,
+        element: &XmlElement,
+        name: &str,
+    ) -> SerializationResult<()> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
 
@@ -138,7 +145,7 @@ impl JsonOutput {
                 let value = self
                     .get_current_parent()
                     .as_object_mut()
-                    .ok_or(EvtxError::JsonStructureError {
+                    .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                         Check that the value is not `Value::null`",
@@ -149,7 +156,7 @@ impl JsonOutput {
                 let value = self
                     .get_or_create_current_path()
                     .as_object_mut()
-                    .ok_or(EvtxError::JsonStructureError {
+                    .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                             Check that the value is not `Value::null`",
@@ -163,7 +170,7 @@ impl JsonOutput {
             let value =
                 self.get_current_parent()
                     .as_object_mut()
-                    .ok_or(EvtxError::JsonStructureError {
+                    .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                          Check that the value is not `Value::null`",
@@ -175,9 +182,9 @@ impl JsonOutput {
         Ok(())
     }
 
-    pub fn into_value(self) -> Result<Value> {
+    pub fn into_value(self) -> SerializationResult<Value> {
         if !self.stack.is_empty() {
-            return Err(EvtxError::JsonStructureError {
+            return Err(SerializationError::JsonStructureError {
                 message: "Invalid stream, EOF reached before closing all attributes",
             });
         }
@@ -187,12 +194,12 @@ impl JsonOutput {
 }
 
 impl BinXmlOutput for JsonOutput {
-    fn visit_end_of_stream(&mut self) -> Result<()> {
+    fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_end_of_stream");
         Ok(())
     }
 
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> Result<()> {
+    fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element.name);
         let element_name = element.name.as_str();
 
@@ -208,13 +215,13 @@ impl BinXmlOutput for JsonOutput {
         self.insert_node_with_attributes(element, element_name)
     }
 
-    fn visit_close_element(&mut self, _element: &XmlElement) -> Result<()> {
+    fn visit_close_element(&mut self, _element: &XmlElement) -> SerializationResult<()> {
         let p = self.stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> Result<()> {
+    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
         trace!("visit_chars {:?}", &self.stack);
         // We need to clone this bool since the next statement will borrow self as mutable.
         let separate_json_attributes = self.separate_json_attributes;
@@ -238,7 +245,7 @@ impl BinXmlOutput for JsonOutput {
             let current_object =
                 current_value
                     .as_object_mut()
-                    .ok_or(EvtxError::JsonStructureError {
+                    .ok_or(SerializationError::JsonStructureError {
                         message: "expected current value to be an object type",
                     })?;
 
@@ -248,23 +255,31 @@ impl BinXmlOutput for JsonOutput {
         Ok(())
     }
 
-    fn visit_cdata_section(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_cdata_section")
+    fn visit_cdata_section(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_cdata_section", file!()),
+        })
     }
 
-    fn visit_entity_reference(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_entity_reference")
+    fn visit_entity_reference(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_entity_reference", file!()),
+        })
     }
 
-    fn visit_processing_instruction_target(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_target")
+    fn visit_processing_instruction_target(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_processing_instruction_target", file!()),
+        })
     }
 
-    fn visit_processing_instruction_data(&mut self) -> Result<()> {
-        unimplemented_fn!("visit_processing_instruction_data")
+    fn visit_processing_instruction_data(&mut self) -> SerializationResult<()> {
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_processing_instruction_data", file!()),
+        })
     }
 
-    fn visit_start_of_stream(&mut self) -> Result<()> {
+    fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
         Ok(())
     }
