@@ -267,7 +267,7 @@ impl BinXmlOutput for JsonOutput {
         })
     }
 
-    fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> Result<(), SerializationError> {
+    fn visit_processing_instruction(&mut self, _pi: &BinXmlPI) -> Result<(), SerializationError> {
         Err(SerializationError::Unimplemented {
             message: format!("`{}`: visit_processing_instruction_data", file!()),
         })

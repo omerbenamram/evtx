@@ -90,7 +90,7 @@ pub fn create_record_model<'a>(
             }
             Cow::Owned(BinXMLDeserializedTokens::PITarget(name)) => {
                 let builder = XmlPIBuilder::new();
-                if let Some(pi) = current_pi {
+                if let Some(_pi) = current_pi {
                     warn!("PITarget without following PIData, previous target will be ignored.")
                 }
                 current_pi = Some(builder.name(Cow::Owned(name.name)));

@@ -10,7 +10,7 @@ use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
-use crate::model::deserialized::BinXMLProcessingInstructionTarget;
+
 use std::borrow::Cow;
 
 pub trait BinXmlOutput {
