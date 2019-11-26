@@ -263,7 +263,7 @@ impl BinXmlOutput for JsonOutput {
             } else {
                 return Err(SerializationError::JsonStructureError {
                     message: format!(
-                        "expected current value to be an object type, found {:?}, value is {:?}",
+                        "expected current value to be an object type or a String, found {:?}, value is {:?}",
                         current_value, value
                     ),
                 });
