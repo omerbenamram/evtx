@@ -146,8 +146,7 @@ Comparison with other libraries:
 ## Caveats
 
 - Currently unimplemented:
-   - PI/cdata nodes.
-   - entity/character refs.
+   - CDATA nodes.
    - EVTHandle node type.
 
 If the parser errors on any of these nodes, feel free to open an issue or drop me an email with a sample.
