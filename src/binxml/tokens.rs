@@ -1,6 +1,5 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
 
-
 pub use byteorder::{LittleEndian, ReadBytesExt};
 use winstructs::guid::Guid;
 
@@ -174,7 +173,7 @@ pub fn read_entity_ref<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXmlEntityReference<'a>> {
-    trace!("EntityReference at {}", cursor.position());
+    trace!("Offset `0x{:08x}` - EntityReference", cursor.position());
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
     trace!("\t name: {:?}", name);
 
@@ -185,12 +184,14 @@ pub fn read_attribute<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
 ) -> Result<BinXMLAttribute<'a>> {
+    trace!("Offset `0x{:08x}` - Attribute", cursor.position());
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 
     Ok(BinXMLAttribute { name })
 }
 
 pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragmentHeader> {
+    trace!("Offset `0x{:08x}` - FragmentHeader", cursor.position());
     let major_version = try_read!(cursor, u8, "fragment_header_major_version")?;
     let minor_version = try_read!(cursor, u8, "fragment_header_minor_version")?;
     let flags = try_read!(cursor, u8, "fragment_header_flags")?;
@@ -205,6 +206,11 @@ pub fn read_substitution_descriptor(
     cursor: &mut Cursor<&[u8]>,
     optional: bool,
 ) -> Result<TemplateSubstitutionDescriptor> {
+    trace!(
+        "Offset `0x{:08x}` - SubstitutionDescriptor<optional={}>",
+        cursor.position(),
+        optional
+    );
     let substitution_index = try_read!(cursor, u16)?;
     let value_type_token = try_read!(cursor, u8)?;
 
@@ -230,15 +236,47 @@ pub fn read_open_start_element<'a>(
     has_attributes: bool,
     is_substitution: bool,
 ) -> Result<BinXMLOpenStartElement<'a>> {
+    trace!(
+        "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, is_substitution={}>",
+        cursor.position(),
+        has_attributes,
+        is_substitution
+    );
+
+    // According to https://github.com/libyal/libevtx/blob/master/documentation/Windows%20XML%20Event%20Log%20(EVTX).asciidoc
+    // The dependency identifier is not present when the element start is used in a substitution token.
     if !is_substitution {
-        // Reserved
-        let _ = try_read!(cursor, u16)?;
+        let _dependency_identifier =
+            try_read!(cursor, u16, "open_start_element_dependency_identifier")?;
+
+        trace!(
+            "\t Dependency Identifier - `0x{:04x} ({})`",
+            _dependency_identifier,
+            _dependency_identifier
+        );
     }
-    let data_size = try_read!(cursor, u32)?;
+
+    let data_size = try_read!(cursor, u32, "open_start_element_data_size")?;
+
+    // This is a heuristic, sometimes `dependency_identifier` is not present even though it should have been.
+    // This will result in interpreting garbage bytes as the data size.
+    // We try to recover from this situation by rolling back the cursor and trying again, without reading the `dependency_identifier`.
+    if let Some(c) = chunk {
+        if data_size >= c.data.len() as u32 {
+            warn!(
+                "Detected a case where `dependency_identifier` should not have been read. \
+                 Trying to read again without it."
+            );
+            cursor.seek(SeekFrom::Current(-6))?;
+            return read_open_start_element(cursor, chunk, has_attributes, true);
+        }
+    }
+
+    trace!("\t Data Size - {}", data_size);
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
 
     let _attribute_list_data_size = if has_attributes {
-        try_read!(cursor, u32)?
+        try_read!(cursor, u32, "open_start_element_attribute_list_data_size")?
     } else {
         0
     };

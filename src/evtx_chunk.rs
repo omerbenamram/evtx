@@ -1,6 +1,4 @@
-use crate::err::{
-    ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult,
-};
+use crate::err::{ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult};
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
@@ -263,10 +261,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 source: Box::new(e),
                 record_id: record_header.event_record_id,
             }) {
-                Ok(token) => {
-                    trace!("successfully read {:?}", token);
-                    tokens.push(token)
-                }
+                Ok(token) => tokens.push(token),
                 Err(err) => {
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(err));

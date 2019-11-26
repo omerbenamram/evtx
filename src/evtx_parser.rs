@@ -8,6 +8,7 @@ use rayon;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
+use log::trace;
 #[cfg(not(feature = "multithreading"))]
 use log::warn;
 
@@ -288,6 +289,13 @@ impl<T: ReadSeek> EvtxParser<T> {
     ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
+
+        trace!(
+            "Offset `0x{:08x} ({})` - Reading chunk number `{}`",
+            chunk_offset,
+            chunk_offset,
+            chunk_number
+        );
 
         data.seek(SeekFrom::Start(chunk_offset as u64))
             .map_err(|e| EvtxError::FailedToParseChunk {

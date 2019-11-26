@@ -68,12 +68,14 @@ impl<'a> BinXmlName<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         offset: ChunkOffset,
     ) -> Result<StringHashOffset> {
+        trace!(
+            "Offset {} - Reading name at offset {}.",
+            cursor.position(),
+            offset
+        );
+
         if offset != cursor.position() as u32 {
-            trace!(
-                "Current offset {}, seeking to {}",
-                cursor.position(),
-                offset
-            );
+            trace!("Seeking to {}", offset);
 
             let position_before_seek = cursor.position();
             // TODO: Seeking would usually fail here, so we need to dump the context at the original offset.

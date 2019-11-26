@@ -9,7 +9,6 @@ use crate::utils::dump_stream;
 use crate::FileOffset;
 use log::error;
 
-
 use std::error::Error as StdError;
 use std::io;
 use std::path::Path;
@@ -30,8 +29,11 @@ const DEFAULT_LOOKBEHIND_LEN: i32 = 100;
     "Offset `0x{offset:08x} ({offset})` - An error has occurred while trying to deserialize binary stream \n\
     {message}
     
-    Hexdump:
-        {hexdump}"
+    Original message:
+    `{source}`
+    
+Hexdump:
+    {hexdump}"
 )]
 pub struct WrappedIoError {
     offset: FileOffset,

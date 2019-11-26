@@ -25,7 +25,7 @@ pub fn dump_stream<T: ReadSeek>(cursor: &mut T, lookbehind: i32) -> String {
         "\n\n---------------------------------------------------------------------------"
     )
     .unwrap();
-    writeln!(s, "Current Value {:2x}", data[0]).unwrap();
+    writeln!(s, "Current Value {:02x}", data[0]).unwrap();
     writeln!(s, "              --").unwrap();
     write!(
         s,

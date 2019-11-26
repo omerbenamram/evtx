@@ -221,7 +221,8 @@ impl<'a> BinXmlValue<'a> {
                 read_utf16_by_size(cursor, u64::from(sz))?.unwrap_or_else(|| "".to_owned()),
             )),
             (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
-                try_read!(cursor, len_prefixed_utf_16_str)?.unwrap_or(Cow::Borrowed("")),
+                try_read!(cursor, len_prefixed_utf_16_str, "string_value")?
+                    .unwrap_or(Cow::Borrowed("")),
             ),
             (BinXmlValueType::AnsiStringType, Some(sz)) => BinXmlValue::AnsiStringType(Cow::Owned(
                 read_ansi_encoded_string(cursor, u64::from(sz), ansi_codec)?

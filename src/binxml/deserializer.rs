@@ -1,6 +1,5 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
 
-
 use byteorder::ReadBytesExt;
 
 use log::trace;
@@ -199,7 +198,10 @@ impl<'a> IterTokens<'a> {
         let mut cursor = self.cursor.clone();
         let offset_from_chunk_start = cursor.position();
 
-        trace!("offset_from_chunk_start: {}", offset_from_chunk_start);
+        trace!(
+            "Offset `0x{:08x}`: Reading next token",
+            offset_from_chunk_start
+        );
         trace!(
             "need to read: {:?}, read so far: {}",
             self.data_size,
@@ -226,14 +228,7 @@ impl<'a> IterTokens<'a> {
                 if let BinXMLRawToken::EndOfStream = t {
                     self.eof = true;
                 }
-                trace!("{:?} at {}", t, offset_from_chunk_start);
                 let deserialized_token_result = self.visit_token(&mut cursor, t);
-
-                trace!(
-                    "{:?} position at stream {}",
-                    deserialized_token_result,
-                    cursor.position()
-                );
 
                 debug_assert!(
                     cursor.position() >= offset_from_chunk_start,
