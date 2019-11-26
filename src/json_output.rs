@@ -110,7 +110,8 @@ impl JsonOutput {
                 .ok_or(SerializationError::JsonStructureError {
                 message:
                     "This is a bug - expected parent container to exist, and to be an object type.\
-                     Check that the referencing parent is not `Value::null`",
+                     Check that the referencing parent is not `Value::null`"
+                        .to_string(),
             })?;
 
         container.insert(name.to_owned(), Value::Null);
@@ -149,7 +150,8 @@ impl JsonOutput {
                     .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                        Check that the value is not `Value::null`",
+                        Check that the value is not `Value::null`"
+                            .to_string(),
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
@@ -160,7 +162,8 @@ impl JsonOutput {
                     .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                            Check that the value is not `Value::null`",
+                            Check that the value is not `Value::null`"
+                            .to_string(),
                 })?;
 
                 value.insert("#attributes".to_owned(), Value::Object(attributes));
@@ -174,7 +177,8 @@ impl JsonOutput {
                     .ok_or(SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
-                         Check that the value is not `Value::null`",
+                         Check that the value is not `Value::null`"
+                            .to_string(),
                 })?;
 
             value.insert(name.to_string(), Value::Null);
@@ -186,7 +190,7 @@ impl JsonOutput {
     pub fn into_value(self) -> SerializationResult<Value> {
         if !self.stack.is_empty() {
             return Err(SerializationError::JsonStructureError {
-                message: "Invalid stream, EOF reached before closing all attributes",
+                message: "Invalid stream, EOF reached before closing all attributes".to_string(),
             });
         }
 
@@ -243,14 +247,27 @@ impl BinXmlOutput for JsonOutput {
             //    },
             //    "#text": "4902"
             //  },
-            let current_object =
-                current_value
-                    .as_object_mut()
-                    .ok_or(SerializationError::JsonStructureError {
-                        message: "expected current value to be an object type",
-                    })?;
+            if let Some(object) = current_value.as_object_mut() {
+                object.insert("#text".to_owned(), value.clone().into());
+                return Ok(());
+            };
 
-            current_object.insert("#text".to_owned(), value.clone().into());
+            // If we already have a string (because we got two consecutive `Character` events,
+            // Concat them.
+            if let Some(s) = current_value.as_str() {
+                let new_string = s.to_string();
+                mem::replace(
+                    current_value,
+                    Value::String(new_string + &value.as_cow_str()),
+                )
+            } else {
+                return Err(SerializationError::JsonStructureError {
+                    message: format!(
+                        "expected current value to be an object type, found {:?}, value is {:?}",
+                        current_value, value
+                    ),
+                });
+            };
         }
 
         Ok(())
@@ -263,9 +280,8 @@ impl BinXmlOutput for JsonOutput {
     }
 
     fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
-        Err(SerializationError::Unimplemented {
-            message: format!("`{}`: visit_entity_reference", file!()),
-        })
+        // JSON doesn't care about entity references.
+        Ok(())
     }
 
     fn visit_character_reference(

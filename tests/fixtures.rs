@@ -65,3 +65,7 @@ pub fn sample_with_multiple_xml_fragments() -> PathBuf {
 pub fn sample_with_binxml_as_substitution_tokens_and_pi_target() -> PathBuf {
     samples_dir().join("E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx")
 }
+
+pub fn sample_with_dependency_id_edge_case() -> PathBuf {
+    samples_dir().join("Archive-ForwardedEvents-test.evtx")
+}

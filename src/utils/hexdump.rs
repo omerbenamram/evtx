@@ -2,44 +2,31 @@
 use crate::evtx_parser::ReadSeek;
 use log::error;
 use std::cmp;
+use std::error::Error;
 use std::fmt::Write;
 use std::io::SeekFrom;
 
-pub fn dump_stream<T: ReadSeek>(cursor: &mut T, lookbehind: i32) -> String {
+pub fn dump_stream<T: ReadSeek>(cursor: &mut T, lookbehind: i32) -> Result<String, Box<dyn Error>> {
     let mut s = String::new();
 
-    let offset = cursor.tell().unwrap_or_else(|_| {
-        error!("while trying to recover error information -> `tell` failed.");
-        0
-    });
+    cursor.seek(SeekFrom::Current(lookbehind.into()))?;
 
-    let end_of_buffer_or_default =
-        cmp::min(100, ReadSeek::stream_len(cursor).unwrap_or(100) - offset);
-    cursor.seek(SeekFrom::Current(lookbehind.into())).unwrap();
-
-    let mut data = vec![0; end_of_buffer_or_default as usize];
-    let _ = cursor.read(&mut data).unwrap();
+    let mut data = vec![0; 100 as usize];
+    let _ = cursor.read(&mut data)?;
 
     writeln!(
         s,
         "\n\n---------------------------------------------------------------------------"
-    )
-    .unwrap();
-    writeln!(s, "Current Value {:02x}", data[0]).unwrap();
-    writeln!(s, "              --").unwrap();
-    write!(
-        s,
-        "{}",
-        hexdump(&data, 0, 'C').expect("Writing to a string should not fail")
-    )
-    .unwrap();
+    )?;
+    writeln!(s, "Current Value {:02x}", data[0])?;
+    writeln!(s, "              --")?;
+    write!(s, "{}", hexdump(&data, 0, 'C')?)?;
     writeln!(
         s,
         "\n----------------------------------------------------------------------------"
-    )
-    .unwrap();
+    )?;
 
-    s
+    Ok(s)
 }
 
 /// Dumps bytes at data to the screen as hex.

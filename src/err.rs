@@ -57,11 +57,12 @@ impl WrappedIoError {
             0
         });
 
-        let context = dump_stream(stream, DEFAULT_LOOKBEHIND_LEN);
+        let hexdump = dump_stream(stream, DEFAULT_LOOKBEHIND_LEN)
+            .unwrap_or_else(|_| "<Error while capturing hexdump>".to_string());
 
         WrappedIoError {
             offset,
-            hexdump: context,
+            hexdump,
             message: "".to_string(),
             source: error,
         }
@@ -77,7 +78,8 @@ impl WrappedIoError {
             0
         });
 
-        let hexdump = dump_stream(stream, 100);
+        let hexdump = dump_stream(stream, DEFAULT_LOOKBEHIND_LEN)
+            .unwrap_or_else(|_| "<Error while capturing hexdump>".to_string());
 
         WrappedIoError {
             offset,
@@ -168,7 +170,7 @@ pub enum SerializationError {
     },
 
     #[error("Building a JSON document failed with message: {message}")]
-    JsonStructureError { message: &'static str },
+    JsonStructureError { message: String },
 
     #[error("`serde_json` failed")]
     JsonError {
