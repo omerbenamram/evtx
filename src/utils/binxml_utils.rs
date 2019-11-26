@@ -13,19 +13,6 @@ use std::io::{self, Error, ErrorKind};
 
 #[derive(Debug, Error)]
 pub enum FailedToReadString {
-    #[error(
-        "Expected string of length {}, found string of length {} - \
-         `{}`",
-        expected_len,
-        found_len,
-        data
-    )]
-    UnexpectedLength {
-        expected_len: u16,
-        found_len: usize,
-        data: String,
-    },
-
     #[error("An I/O error has occurred")]
     IoError(#[from] io::Error),
 }
@@ -53,25 +40,11 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
         stream.read_u16::<LittleEndian>()?;
     };
 
-    let s_len = s.as_ref().map(String::len).unwrap_or(0);
-
-    if s_len == expected_number_of_characters as usize {
-        Ok(s)
-    } else {
-        let string_if_successful = s.unwrap_or_else(|| "".to_string());
-        let truncated = if string_if_successful.len() > 25 {
-            let temp = &string_if_successful[0..25];
-            temp.to_owned() + "..."
-        } else {
-            string_if_successful
-        };
-
-        Err(FailedToReadString::UnexpectedLength {
-            expected_len: expected_number_of_characters,
-            found_len: s_len,
-            data: truncated,
-        })
-    }
+    // It is useless to check for size equality, since u16 characters may be decoded into multiple u8 chars,
+    // so we might end up with more characters than originally asked for.
+    //
+    // Moreover, the code will also not read **less** characters than asked.
+    Ok(s)
 }
 
 /// Reads a utf16 string from the given stream.
