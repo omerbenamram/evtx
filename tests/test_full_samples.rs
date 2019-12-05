@@ -47,6 +47,27 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
         "Failed to parse all records as JSON"
     );
     assert_eq!(actual_err_count, err_count, "XML: Expected errors");
+
+    let mut actual_ok_count = 0;
+    let mut actual_err_count = 0;
+    let seperate_json_attributes = ParserSettings::default().separate_json_attributes(true);
+    parser = parser.with_configuration(seperate_json_attributes);
+
+    for r in parser.records_json() {
+        if r.is_ok() {
+            actual_ok_count += 1;
+            if log::log_enabled!(Level::Debug) {
+                println!("{}", r.unwrap().data);
+            }
+        } else {
+            actual_err_count += 1;
+        }
+    }
+    assert_eq!(
+        actual_ok_count, ok_count,
+        "Failed to parse all records as JSON"
+    );
+    assert_eq!(actual_err_count, err_count, "XML: Expected errors");
 }
 
 #[test]
@@ -125,6 +146,11 @@ fn test_dirty_sample_binxml_with_incomplete_template() {
 #[test]
 fn test_sample_with_multiple_xml_fragments() {
     test_full_sample(sample_with_multiple_xml_fragments(), 1146, 0)
+}
+
+#[test]
+fn test_issue_65() {
+    test_full_sample(sample_issue_65(), 459, 0)
 }
 
 #[test]

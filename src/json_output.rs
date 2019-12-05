@@ -7,7 +7,7 @@ use crate::xml_output::BinXmlOutput;
 use crate::ParserSettings;
 
 use core::borrow::BorrowMut;
-use log::trace;
+use log::{trace, warn};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
 
@@ -49,6 +49,14 @@ impl JsonOutput {
 
                     mem::replace(v_temp, Value::Object(map));
                 } else {
+                    // This branch could only happen while `separate-json-attributes` was on,
+                    // and a very non-standard xml structure is going on (character nodes between XML nodes)
+                    // We discard those character nodes in this case (windows XML reader ignores them).
+                    if !v_temp.is_object() {
+                        warn!("Discarded characters between XML nodes {}", v_temp);
+                        mem::replace(v_temp, Value::Object(Map::new()));
+                    }
+
                     let current_object = v_temp
                         .as_object_mut()
                         .expect("It can only be an object or null, and null was covered");
