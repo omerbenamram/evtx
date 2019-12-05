@@ -48,10 +48,32 @@ impl JsonOutput {
                     map.insert(key.clone(), Value::Object(Map::new()));
 
                     mem::replace(v_temp, Value::Object(map));
+                } else if !v_temp.is_object() {
+                    // This branch could only happen while `separate-json-attributes` was on,
+                    // and a very non-standard xml structure is going on (character nodes between XML nodes)
+                    //
+                    // Example:
+                    // ```
+                    //  <URLCacheFlushInfo></URLCacheFlushInfo>&amp;quot&amp;<URLCacheResponseInfo></URLCacheResponseInfo>
+                    // ```
+                    // We shift the characters in to be consistent with regular json parser.
+                    // The resulting JSON looks like:
+                    // ```
+                    // ...
+                    //  "URLCacheResponseInfo": "\"",
+                    //  "URLCacheResponseInfo_attributes": {
+                    //      ...
+                    //   }
+                    // ...
+                    // ```
+                    let mut map = Map::new();
+                    map.insert(key.clone(), v_temp.clone());
+
+                    mem::replace(v_temp, Value::Object(map));
                 } else {
                     let current_object = v_temp
                         .as_object_mut()
-                        .expect("It can only be an object or null, and null was covered");
+                        .expect("!v_temp.is_object was matched above.");
 
                     current_object.insert(key.clone(), Value::Object(Map::new()));
                 }
