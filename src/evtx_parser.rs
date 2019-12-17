@@ -351,7 +351,10 @@ impl<T: ReadSeek> EvtxParser<T> {
                     // We try to read past the `chunk_count` to allow for dirty files.
                     // But if we get an empty chunk, we need to keep looking.
                     // Increment and try again.
-                    chunk_number += 1;
+                    chunk_number = match chunk_number.checked_add(1) {
+                        None => return None,
+                        Some(n) => n,
+                    }
                 }
                 Ok(Some(chunk)) => {
                     return Some((Ok(chunk), chunk_number));
