@@ -41,6 +41,7 @@
 ## Features
 
  - 🔒 Implemented using 100% safe rust - and works on all platforms supported by rust (that have stdlib).
+ - ⚡ Fast - see benchmarks below. It faster than any other implementation by order(s) of magnitude!
  - 🚀 Multi-threaded.
  - ✨ Supports XML and JSON outputs, both being directly constructed from the token tree and independent of each other (no xml2json conversion is performed!)
  - ⛏️ Supports some basic recovery of missing records/chunks!
@@ -90,59 +91,38 @@ fn main() {
 
 The parallel version is enabled when compiling with feature "multithreading" (enabled by default).
 
-## Benchmarking
+## Performance benchmarking
 
-Initial benchmarking I've performed indicate that this implementation is probably the fastest available 🍺.
+When using multithreading - `evtx` is significantly faster than any other parser available.
+For single core performance, it is both the fastest and the only parser than supports both xml and JSON outputs.
 
-I'm using a real world, 30MB sample which contains ~62K records.
+Performance was benched on my machine using `hyperfine` (statistical measurements tool).
 
-This is benchmarked on my 2017 MBP.
+I'm running tests on a 12-Core AMD Ryzen 3900X.
 
-Comparison with other libraries:
+Tests are running under WSL2, on a linux filesystem (so there shouldn't be any overhead incurred from reading windows mounts).
 
-- python-evtx (https://github.com/williballenthin/python-evtx)
-    
-    With CPython this is quite slow 
-    
-    ```
-    time -- python3 ~/Workspace/python-evtx/scripts/evtx_dump.py ./samples/security_big_sample.evtx > /dev/null                                                                      Mon Apr  1 19:41:16 2019
-          363.83 real       356.26 user         2.17 sys
-    ```
-    
-    With PyPy (tested with pypy3.5, 7.0.0), it's taking just less than a minute (a 6x improvement!)
-    ```
-    time -- pypy3 ~/Workspace/python-evtx/scripts/evtx_dump.py ./samples/security_big_sample.evtx > /dev/null                                                                      Mon Apr  1 19:41:16 2019
-          59.30 real        58.10 user         0.51 sys
-    ```
-    
-- libevtx (https://github.com/libyal/libevtx)
-   
-   This library is written in C, so I initially expected it to be faster than my implementation.
+Libraries benched:
 
-   It clocks in about 6x faster than PyPy.
-   
-   ```
-   time -- ~/Workspace/libevtx/dist/bin/evtxexport -f xml ./samples/security_big_sample.evtx > /dev/null
-          11.30 real        10.77 user         0.41 sys
-   ```
-    
-   Note: libevtx does have multi-threading support planned (according to the readme),
-   but isn't implemented as of writing this (April 2019).
-   
-- evtx (this library!)
-    
-    When using a single thread, this implementation is about 2.8x faster than C
-    ```
-    time -- ./target/release/main -t 1 ./samples/security_big_sample.evtx > /dev/null                                                                                     
-            4.04 real         3.90 user         0.11 sys
-    ```
-    
-    With multi-threading enabled, it blazes through the file in just 1.3 seconds:
-    ```
-    time -- ./target/release/main ./samples/security_big_sample.evtx > /dev/null                                                                                 
-            1.30 real         6.10 user         0.29 sys
-    ```
-   
+- `python-evtx`(https://github.com/williballenthin/python-evtx) - With CPython and PyPy
+- `libevtx`(https://github.com/libyal/libevtx)
+- `golang-evtx`(https://github.com/0xrawsec/golang-evtx.git) - only JSON (uses multithreading)
+- `evtx`(https://github.com/Velocidex/evtx) - only JSON.
+- `evtx` (This library)
+
+I've also added a `target_cpu=native` with `-O3` and 1 codegen unit, which did yield about 10% performance on single core benchmarks!
+
+|                  | evtx (1 thread)      | evtx (1 thread + target_cpu=native) | evtx (8 threads)      | evtx (12 threads)     | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (multithreading) | python-evtx (CPython 3.7.6) | python-evtx (PyPy 7.3.0) |
+|------------------|----------------------|-------------------------------------|-----------------------|-----------------------|---------------------------|----------------------|----------------------|------------------------------------|-----------------------------|--------------------------|
+| 30MB evtx (XML)  | 1.468 s  ±   0.009 s | 1.377 s  ±   0.027 s                | 332.6 ms  ±    5.1 ms | 300.2 ms  ±    2.6 ms | **261.6 ms  ±   12.6 ms** | 4.509 s  ±   0.100 s | No support           | No support                         | 4m11.046s (ran once)        | 1m12.828s (ran once)     |
+| 30MB evtx (JSON) | 2.200 s  ±   0.027 s | 2.061 s  ±   0.034 s                | 409.7 ms  ±    8.3 ms | 351.3 ms  ±    3.6 ms | **272.8 ms  ±   14.3 ms** | No support           | 5.587 s  ±   0.086 s | 2.216 s  ±   0.027 s               | No support                  | No support               |
+
+**Note**: numbers shown are `real-time` measurements (time it takes for invocation to complete). `user-time` measurements are higher when more using multithreading/multiprocessing, because of the synchronization overhead.
+
+With 8 threads - `evtx` is more than **650x** faster than `python-evtx` when dumping xml logs.
+
+With maximum viable threads (number of logical cores) - `evtx` is about **8-10x** faster `golang-evtx`. Both implementations utilize similar multithreading strategies.
+
 ## Caveats
 
 - Currently unimplemented:
