@@ -169,7 +169,7 @@ pub fn read_template<'a>(
                     )
                 })?;
         }
-        substitution_array.push(value);
+        substitution_array.push(BinXMLDeserializedTokens::Value(value));
     }
 
     Ok(BinXmlTemplate {
@@ -401,9 +401,9 @@ mod test {
                     name: n!("Event"),
                 }),
                 Attribute(BinXMLAttribute { name: n!("xmlns") }),
-                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed(
-                    "http://schemas.microsoft.com/win/2004/08/events/event",
-                )))),
+                Value(BinXmlValue::StringType(
+                    "http://schemas.microsoft.com/win/2004/08/events/event".into()
+                )),
                 CloseStartElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 982,
@@ -583,9 +583,9 @@ mod test {
                     name: n!("Computer"),
                 }),
                 CloseStartElement,
-                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed(
-                    "37L4247F27-25",
-                )))),
+                Value(BinXmlValue::StringType(
+                    "37L4247F27-25".into()
+                )),
                 CloseElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 66,

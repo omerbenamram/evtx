@@ -15,7 +15,7 @@ pub enum BinXMLDeserializedTokens<'a> {
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
-    Value(Cow<'a, BinXmlValue<'a>>),
+    Value(BinXmlValue<'a>),
     CDATASection,
     CharRef,
     EntityRef(BinXmlEntityReference<'a>),
@@ -53,7 +53,7 @@ pub struct BinXmlEntityReference<'a> {
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXmlTemplate<'a> {
     pub definition: Cow<'a, BinXMLTemplateDefinition<'a>>,
-    pub substitution_array: Vec<BinXmlValue<'a>>,
+    pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
