@@ -57,7 +57,7 @@ pub fn read_template<'a>(
                     )
                 })?;
         }
-        Cow::Borrowed(definition)
+        BinXMLTemplateDefinitionCow::Borrowed(definition)
     } else if template_definition_data_offset != cursor.position() as u32 {
         trace!(
             "Need to seek to offset {} to read template",
@@ -87,9 +87,9 @@ pub fn read_template<'a>(
                 )
             })?;
 
-        Cow::Owned(template_def)
+        BinXMLTemplateDefinitionCow::Owned(template_def)
     } else {
-        Cow::Owned(read_template_definition(cursor, chunk, ansi_codec)?)
+        BinXMLTemplateDefinitionCow::Owned(read_template_definition(cursor, chunk, ansi_codec)?)
     };
 
     let number_of_substitutions = try_read!(cursor, u32)?;

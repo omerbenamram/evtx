@@ -1,7 +1,7 @@
 use crate::err::{EvtxError, Result};
 
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
+use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate, BinXMLTemplateDefinitionCow};
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
 use log::{trace, warn};
@@ -264,8 +264,8 @@ fn expand_owned_template<'a>(
 ) {
     // If the template owns the definition, we can consume the tokens.
     let tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = match template.definition {
-        Cow::Owned(owned_def) => owned_def.tokens.into_iter().map(Cow::Owned).collect(),
-        Cow::Borrowed(ref_def) => ref_def.tokens.iter().map(Cow::Borrowed).collect(),
+        BinXMLTemplateDefinitionCow::Owned(owned_def) => owned_def.tokens.into_iter().map(Cow::Owned).collect(),
+        BinXMLTemplateDefinitionCow::Borrowed(ref_def) => ref_def.tokens.iter().map(Cow::Borrowed).collect(),
     };
 
     for token in tokens {
@@ -309,7 +309,12 @@ fn expand_borrowed_template<'a>(
 ) {
     // Here we can always use refs, since even if the definition is owned by the template,
     // we do not own it.
-    for token in template.definition.as_ref().tokens.iter() {
+    let tokens = match template.definition {
+        BinXMLTemplateDefinitionCow::Owned(ref def) => &def.tokens,
+        BinXMLTemplateDefinitionCow::Borrowed(def) => &def.tokens,
+    };
+
+    for token in tokens.iter() {
         if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
             if substitution_descriptor.ignore {
                 continue;

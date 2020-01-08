@@ -159,18 +159,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    ///
-    /// Note: You cannot pass a mutable reference to `EvtxChunk` and call `iter` on it somewhere else.
-    /// Instead you should pass a mutable reference to `EvtxChunkData`.
-    ///
-    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`)
-    /// than it theoretically needs to be.
-    /// However, this is required in practice because of issues regarding covariance,
-    /// which are caused by extensive use of the `Cow` type within the template cache.
-    ///
-    /// https://github.com/rust-lang/rust/issues/59875
-    /// https://github.com/rust-lang/rust/issues/21726#issuecomment-71949910
-    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords<'a> {
+    pub fn iter(&mut self) -> IterChunkRecords {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,

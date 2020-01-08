@@ -50,9 +50,19 @@ pub struct BinXmlEntityReference<'a> {
     pub name: BinXmlName<'a>,
 }
 
+/// Use an custom impl of `Cow`, because `Cow` has invariance which causes lifetime problems.
+///
+/// https://github.com/rust-lang/rust/issues/59875
+/// https://github.com/rust-lang/rust/issues/21726#issuecomment-71949910
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub enum BinXMLTemplateDefinitionCow<'a> {
+    Owned(BinXMLTemplateDefinition<'a>),
+    Borrowed(&'a BinXMLTemplateDefinition<'a>),
+}
+
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXmlTemplate<'a> {
-    pub definition: Cow<'a, BinXMLTemplateDefinition<'a>>,
+    pub definition: BinXMLTemplateDefinitionCow<'a>,
     pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
