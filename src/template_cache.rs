@@ -8,6 +8,7 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 use encoding::EncodingRef;
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
+use log::trace;
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
@@ -38,23 +39,27 @@ impl<'chunk> TemplateCache<'chunk> {
                     )
                 })?;
 
-            let definition = read_template_definition(&mut cursor, None, ansi_codec)?;
-            cache.insert(*offset, definition);
+            loop {
+                let table_offset = cursor.position();
+                let (definition, next_template_offset) = read_template_definition(&mut cursor, None, ansi_codec)?;
+
+                cache.insert(table_offset as u32, definition);
+
+                trace!("Next TemplateInstance will be at {}", next_template_offset);
+
+                if next_template_offset == 0 {
+                    break;
+                }
+
+                cursor.seek(SeekFrom::Start(u64::from(next_template_offset)))?;
+            }
         }
 
         Ok(TemplateCache(cache))
     }
 
-    pub fn has_template(&self, offset: ChunkOffset) -> bool {
-        self.0.get(&offset).is_some()
-    }
-
     pub fn get_template(&self, offset: ChunkOffset) -> Option<&CachedTemplate<'chunk>> {
         self.0.get(&offset)
-    }
-
-    pub fn insert_template(&mut self, offset: ChunkOffset, template: CachedTemplate<'chunk>) {
-        self.0.insert(offset, template);
     }
 
     pub fn len(&self) -> usize {

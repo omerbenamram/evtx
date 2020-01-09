@@ -127,7 +127,7 @@ pub struct EvtxChunk<'chunk> {
     // but in the future we might want to change that, so it's here.
     pub string_cache: StringCache,
 
-    pub template_table: RefCell<TemplateCache<'chunk>>,
+    pub template_table: TemplateCache<'chunk>,
 
     settings: Arc<ParserSettings>,
 }
@@ -153,7 +153,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             header,
             data,
             string_cache,
-            template_table: template_table.into(),
+            template_table,
             settings,
         })
     }
@@ -161,7 +161,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords<'a> {
+    pub fn iter(&mut self) -> IterChunkRecords {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,

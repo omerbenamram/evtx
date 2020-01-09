@@ -31,84 +31,24 @@ pub fn read_template<'a>(
     let _template_id = try_read!(cursor, u32)?;
     let template_definition_data_offset = try_read!(cursor, u32)?;
 
-    // If name is cached, read it and seek ahead if needed.
-    let template_def_offset = if let Some(definition_data_size) = chunk.and_then(|chunk| {
-        chunk
-            .template_table
-            .borrow()
-            .get_template(template_definition_data_offset).map(|template| template.data_size)
-    }) {
-        // Seek if needed
-        trace!(
-            "{} Got cached template from offset {}",
-            cursor.position(),
-            template_definition_data_offset
-        );
-        // 33 is template definition data size, we've read 9 bytes so far.
-        if template_definition_data_offset == cursor.position() as u32 {
-            cursor
-                .seek(SeekFrom::Current(
-                    i64::from(definition_data_size) + (33 - 9),
-                ))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        "Failed to seek to template definition data offset (cached)",
-                        cursor,
-                    )
-                })?;
-        }
+    // Need to skip over the template data.
+    if (cursor.position() as u32) == template_definition_data_offset {
+        let definition_data_size = read_template_data_size(cursor)?;
 
-        template_definition_data_offset
-    } else if template_definition_data_offset != cursor.position() as u32 {
-        trace!(
-            "Need to seek to offset {} to read template",
-            template_definition_data_offset
-        );
-        let position_before_seek = cursor.position();
+        trace!("Skipping {} an already read template", definition_data_size);
 
         cursor
-            .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
+            .seek(SeekFrom::Current(
+                i64::from(definition_data_size),
+            ))
             .map_err(|e| {
                 WrappedIoError::io_error_with_message(
                     e,
-                    "Failed to seek to template definition data offset (not cached)",
+                    "Failed to seek to template definition data offset (cached)",
                     cursor,
                 )
             })?;
-
-        let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
-
-        chunk.map(|chunk| {
-            chunk
-                .template_table
-                .borrow_mut()
-                .insert_template(template_definition_data_offset, template_def)
-        });
-
-        cursor
-            .seek(SeekFrom::Start(position_before_seek))
-            .map_err(|e| {
-                WrappedIoError::io_error_with_message(
-                    e,
-                    "Failed to seek back to stream after reading template definition",
-                    cursor,
-                )
-            })?;
-
-        template_definition_data_offset
-    } else {
-        let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
-
-        chunk.map(|chunk| {
-            chunk
-                .template_table
-                .borrow_mut()
-                .insert_template(template_definition_data_offset, template_def)
-        });
-
-        template_definition_data_offset
-    };
+    }
 
     let number_of_substitutions = try_read!(cursor, u32)?;
 
@@ -191,16 +131,24 @@ pub fn read_template<'a>(
     }
 
     Ok(BinXmlTemplate {
-        template_def_offset,
+        template_def_offset: template_definition_data_offset,
         substitution_array,
     })
+}
+
+pub fn read_template_data_size(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
+    let _next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
+    let _template_guid = try_read!(cursor, guid, "template_guid")?;
+    let data_size = try_read!(cursor, u32, "template_data_size")?;
+
+    Ok(data_size)
 }
 
 pub fn read_template_definition<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
-) -> Result<BinXMLTemplateDefinition<'a>> {
+) -> Result<(BinXMLTemplateDefinition<'a>, u32)> {
     // If any of these fail we cannot reliably report the template information in error.
     let next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
     let template_guid = try_read!(cursor, guid, "template_guid")?;
@@ -208,24 +156,28 @@ pub fn read_template_definition<'a>(
     // except for the first 33 bytes of the template definition (above)
     let data_size = try_read!(cursor, u32, "template_data_size")?;
 
-    match BinXmlDeserializer::read_binxml_fragment(
+    trace!("Data size of {} is {}", template_guid, data_size);
+
+    let template = match BinXmlDeserializer::read_binxml_fragment(
         cursor,
         chunk,
         Some(data_size),
         false,
         ansi_codec,
     ) {
-        Ok(tokens) => Ok(BinXMLTemplateDefinition {
+        Ok(tokens) => BinXMLTemplateDefinition {
             next_template_offset,
             template_guid,
             data_size,
             tokens,
-        }),
+        },
         Err(e) => Err(DeserializationError::FailedToDeserializeTemplate {
             template_id: template_guid,
             source: Box::new(e),
-        }),
-    }
+        })?,
+    };
+
+    Ok((template, next_template_offset))
 }
 
 pub fn read_entity_ref<'a>(
@@ -631,8 +583,9 @@ mod test {
 
         let mut c = Cursor::new(from_start_of_chunk);
         c.seek(SeekFrom::Start(550)).unwrap();
-        let actual = read_template_definition(&mut c, None, WINDOWS_1252).unwrap();
+        let (actual, next_template_def) = read_template_definition(&mut c, None, WINDOWS_1252).unwrap();
 
         assert_eq!(actual, expected_at_550);
+        assert_eq!(next_template_def, 0);
     }
 }
