@@ -307,7 +307,6 @@ fn expand_template<'a>(
     } else {
         // There can be a template which was not found in the header, if the file was not closed correctly.
         // In that case, we will try to read it directly from the chunk.
-
         debug!("Template in offset {} was not found in cache", template.template_def_offset);
         let mut cursor = Cursor::new(chunk.data);
         let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
@@ -362,6 +361,9 @@ fn _expand_templates<'a>(
             expand_template(template, chunk, stack);
         }
         Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(template)) => {
+            // This can happen if a template has a token which is:
+            // 1. Another template.
+            // 2. Is not a substitution (because they are `Owned` values).
             // We never actually see this in practice, so we don't mind paying for `clone` here.
             expand_template(template.clone(), chunk, stack);
         }
