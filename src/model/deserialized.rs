@@ -39,10 +39,16 @@ pub struct BinXMLOpenStartElement<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLTemplateDefinition<'a> {
-    pub next_template_offset: u32,
-    pub template_guid: Guid,
+pub struct BinXmlTemplateDefinitionHeader {
+    /// A pointer to the next template in the bucket.
+    pub next_template_offset: ChunkOffset,
+    pub  guid: Guid,
     pub data_size: u32,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLTemplateDefinition<'a> {
+    pub header: BinXmlTemplateDefinitionHeader,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
 }
 

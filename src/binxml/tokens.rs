@@ -19,6 +19,7 @@ use std::io::SeekFrom;
 use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
 use std::borrow::Cow;
+use crate::ChunkOffset;
 
 pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
@@ -33,13 +34,13 @@ pub fn read_template<'a>(
 
     // Need to skip over the template data.
     if (cursor.position() as u32) == template_definition_data_offset {
-        let definition_data_size = read_template_data_size(cursor)?;
+        let template_header = read_template_definition_header(cursor)?;
 
-        trace!("Skipping {} an already read template", definition_data_size);
+        trace!("Skipping {} an already read template", template_header.data_size);
 
         cursor
             .seek(SeekFrom::Current(
-                i64::from(definition_data_size),
+                i64::from(template_header.data_size),
             ))
             .map_err(|e| {
                 WrappedIoError::io_error_with_message(
@@ -136,19 +137,8 @@ pub fn read_template<'a>(
     })
 }
 
-pub fn read_template_data_size(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
-    let _next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
-    let _template_guid = try_read!(cursor, guid, "template_guid")?;
-    let data_size = try_read!(cursor, u32, "template_data_size")?;
 
-    Ok(data_size)
-}
-
-pub fn read_template_definition<'a>(
-    cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-    ansi_codec: EncodingRef,
-) -> Result<(BinXMLTemplateDefinition<'a>, u32)> {
+pub fn read_template_definition_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXmlTemplateDefinitionHeader> {
     // If any of these fail we cannot reliably report the template information in error.
     let next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
     let template_guid = try_read!(cursor, guid, "template_guid")?;
@@ -156,28 +146,40 @@ pub fn read_template_definition<'a>(
     // except for the first 33 bytes of the template definition (above)
     let data_size = try_read!(cursor, u32, "template_data_size")?;
 
-    trace!("Data size of {} is {}", template_guid, data_size);
+    Ok(BinXmlTemplateDefinitionHeader{
+        next_template_offset,
+        guid: template_guid,
+        data_size,
+    })
+}
+
+pub fn read_template_definition<'a>(
+    cursor: &mut Cursor<&'a [u8]>,
+    chunk: Option<&'a EvtxChunk<'a>>,
+    ansi_codec: EncodingRef,
+) -> Result<BinXMLTemplateDefinition<'a>> {
+    let header = read_template_definition_header(cursor)?;
+
+    trace!("Read template header {:?}", header);
 
     let template = match BinXmlDeserializer::read_binxml_fragment(
         cursor,
         chunk,
-        Some(data_size),
+        Some(header.data_size),
         false,
         ansi_codec,
     ) {
         Ok(tokens) => BinXMLTemplateDefinition {
-            next_template_offset,
-            template_guid,
-            data_size,
+            header,
             tokens,
         },
         Err(e) => return Err(DeserializationError::FailedToDeserializeTemplate {
-            template_id: template_guid,
+            template_id: header.guid,
             source: Box::new(e),
         }),
     };
 
-    Ok((template, next_template_offset))
+    Ok(template)
 }
 
 pub fn read_entity_ref<'a>(
@@ -338,7 +340,7 @@ mod test {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::ensure_env_logger_initialized;
     use encoding::all::WINDOWS_1252;
-    
+
     use std::io::{Cursor, Seek, SeekFrom};
     use winstructs::guid::Guid;
 
@@ -352,14 +354,16 @@ mod test {
     fn test_read_template_definition() {
         ensure_env_logger_initialized();
         let expected_at_550 = BinXMLTemplateDefinition {
-            next_template_offset: 0,
-            template_guid: Guid::new(
-                3_346_188_909,
-                47309,
-                26506,
-                [241, 69, 105, 59, 93, 11, 147, 140],
-            ),
-            data_size: 1170,
+            header: BinXmlTemplateDefinitionHeader {
+                next_template_offset: 0,
+                guid: Guid::new(
+                    3_346_188_909,
+                    47309,
+                    26506,
+                    [241, 69, 105, 59, 93, 11, 147, 140],
+                ),
+                data_size: 1170,
+            },
             tokens: vec![
                 FragmentHeader(BinXMLFragmentHeader {
                     major_version: 1,
@@ -583,9 +587,8 @@ mod test {
 
         let mut c = Cursor::new(from_start_of_chunk);
         c.seek(SeekFrom::Start(550)).unwrap();
-        let (actual, next_template_def) = read_template_definition(&mut c, None, WINDOWS_1252).unwrap();
+        let actual = read_template_definition(&mut c, None, WINDOWS_1252).unwrap();
 
         assert_eq!(actual, expected_at_550);
-        assert_eq!(next_template_def, 0);
     }
 }

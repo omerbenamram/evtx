@@ -313,7 +313,7 @@ fn expand_template<'a>(
         let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
         let template_def = read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec());
 
-        if let Ok((template_def, _)) = template_def {
+        if let Ok(template_def) = template_def {
             for token in template_def.tokens {
                 if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
                     expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)

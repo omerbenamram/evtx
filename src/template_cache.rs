@@ -41,11 +41,12 @@ impl<'chunk> TemplateCache<'chunk> {
 
             loop {
                 let table_offset = cursor.position();
-                let (definition, next_template_offset) = read_template_definition(&mut cursor, None, ansi_codec)?;
+                let definition = read_template_definition(&mut cursor, None, ansi_codec)?;
+                let next_template_offset = definition.header.next_template_offset;
 
                 cache.insert(table_offset as u32, definition);
 
-                trace!("Next TemplateInstance will be at {}", next_template_offset);
+                trace!("Next template will be at {}", next_template_offset);
 
                 if next_template_offset == 0 {
                     break;
