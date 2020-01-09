@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 use std::mem;
 
-use crate::template_cache::CachedTemplate;
+
 use crate::EvtxChunk;
 use crate::binxml::tokens::read_template_definition;
 use std::io::{Cursor, Seek, SeekFrom};
