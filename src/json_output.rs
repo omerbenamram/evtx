@@ -488,23 +488,31 @@ mod tests {
     #[test]
     fn test_xml_to_json() {
         let s1 = r#"
-
 <HTTPResponseHeadersInfo>
     <Header attribute1="NoProxy"></Header>
     <Header>HTTP/1.1 200 OK</Header>
 </HTTPResponseHeadersInfo>
-
 "#
         .trim();
         let s2 = r#"
-
-"HTTPResponseHeadersInfo": {
-  "Header_attributes": {"attribute1": "NoProxy"},
-  "Header": "HTTP/1.1 200 OK"
+{
+  "HTTPResponseHeadersInfo": {
+    "Header": "HTTP/1.1 200 OK",
+    "Header_attributes": {
+      "attribute1": "NoProxy"
+    }
+  }
 }
-
 "#
         .trim();
-        assert_eq!(xml_to_json(s1, &ParserSettings::default()), s2)
+
+        let settings = ParserSettings::new()
+            .num_threads(1)
+            .separate_json_attributes(true);
+
+        let json = xml_to_json(s1, &settings);
+        println!("json: {}", json);
+
+        assert_eq!(xml_to_json(s1, &settings), s2)
     }
 }
