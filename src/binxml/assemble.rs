@@ -20,7 +20,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
     chunk: &'a EvtxChunk<'a>,
     visitor: &mut T,
 ) -> Result<()> {
-    let expanded_tokens = expand_templates(tokens, chunk);
+    let expanded_tokens = expand_templates(tokens, chunk)?;
     let record_model = create_record_model(expanded_tokens)?;
 
     visitor.visit_start_of_stream()?;
@@ -270,15 +270,14 @@ fn expand_token_substitution<'a>(
     substitution_descriptor: &TemplateSubstitutionDescriptor,
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
-) -> () {
+) -> Result<()> {
     if substitution_descriptor.ignore {
-        return;
+        return Ok(());
     }
 
     let value = template
         .substitution_array
         .get_mut(substitution_descriptor.substitution_index as usize);
-
 
     if let Some(value) = value {
         let value = mem::replace(value,
@@ -287,64 +286,69 @@ fn expand_token_substitution<'a>(
             Cow::Owned(value),
             chunk,
             stack,
-        );
+        )?;
     } else {
         _expand_templates(
             Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::NullType)),
             chunk,
             stack,
-        );
+        )?;
     }
+
+    Ok(())
 }
 
 fn expand_template<'a>(
     mut template: BinXmlTemplateRef<'a>,
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
-) {
-    let template_def = if let Some(template_def) = chunk.template_table.get_template(template.template_def_offset) {
-        template_def
-    } else {
-        // There can be a template which was not found in the header, if the file was not closed correctly.
-        // In that case, we will try to read it directly from the chunk.
-        debug!("Template in offset {} was not found in cache", template.template_def_offset);
-        let mut cursor = Cursor::new(chunk.data);
-        let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
-        let template_def = read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec());
-
-        if let Ok(template_def) = template_def {
-            for token in template_def.tokens {
-                if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
-                    expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)
-                } else {
-                    _expand_templates(Cow::Owned(token), chunk, stack);
-                }
+) -> Result<()> {
+    if let Some(template_def) = chunk.template_table.get_template(template.template_def_offset) {
+        // We expect to find all the templates in the template cache.
+        for token in template_def.tokens.iter() {
+            if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
+                expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
+            } else {
+                _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }
         }
-        return;
+    } else {
+        // If the file was not closed correctly, there can be a template which was not found in the header.
+        // In that case, we will try to read it directly from the chunk.
+        debug!("Template in offset {} was not found in cache", template.template_def_offset);
+
+        let mut cursor = Cursor::new(chunk.data);
+
+        let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
+        let template_def = read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
+
+        for token in template_def.tokens {
+            if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
+                expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
+            } else {
+                _expand_templates(Cow::Owned(token), chunk, stack)?;
+            }
+        }
+
+        return Ok(());
     };
 
-    for token in template_def.tokens.iter() {
-        if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
-            expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)
-        } else {
-            _expand_templates(Cow::Borrowed(token), chunk, stack);
-        }
-    }
+
+    Ok(())
 }
 
 fn _expand_templates<'a>(
     token: Cow<'a, BinXMLDeserializedTokens<'a>>,
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
-) {
+) -> Result<()> {
     match token {
         // Owned values can be consumed when flatting, and passed on as owned.
         Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(
                                                        tokens,
                                                    ))) => {
             for token in tokens.into_iter() {
-                _expand_templates(Cow::Owned(token), chunk, stack);
+                _expand_templates(Cow::Owned(token), chunk, stack)?;
             }
         }
 
@@ -352,36 +356,38 @@ fn _expand_templates<'a>(
                                                           tokens,
                                                       ))) => {
             for token in tokens.iter() {
-                _expand_templates(Cow::Borrowed(token), chunk, stack);
+                _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }
         }
 
         // Actual template handling.
         Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
-            expand_template(template, chunk, stack);
+            expand_template(template, chunk, stack)?;
         }
         Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(template)) => {
             // This can happen if a template has a token which is:
             // 1. Another template.
             // 2. Is not a substitution (because they are `Owned` values).
             // We never actually see this in practice, so we don't mind paying for `clone` here.
-            expand_template(template.clone(), chunk, stack);
+            expand_template(template.clone(), chunk, stack)?;
         }
 
         _ => stack.push(token),
     }
+
+    Ok(())
 }
 
 pub fn expand_templates<'a>(
     token_tree: Vec<BinXMLDeserializedTokens<'a>>,
     chunk: &'a EvtxChunk<'a>,
-) -> Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> {
+) -> Result<Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>> {
     // We can assume the new tree will be at least as big as the old one.
     let mut stack = Vec::with_capacity(token_tree.len());
 
     for token in token_tree {
-        _expand_templates(Cow::Owned(token), chunk, &mut stack)
+        _expand_templates(Cow::Owned(token), chunk, &mut stack)?
     }
 
-    stack
+    Ok(stack)
 }
