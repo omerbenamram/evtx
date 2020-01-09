@@ -18,6 +18,7 @@ use crate::ParserSettings;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
+use std::cell::RefCell;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
@@ -117,6 +118,7 @@ impl EvtxChunkData {
 /// All references are created together,
 /// and can be assume to live for the entire duration of the parsing phase.
 /// See more info about lifetimes in `IterChunkRecords`.
+#[derive(Debug)]
 pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
@@ -125,7 +127,7 @@ pub struct EvtxChunk<'chunk> {
     // but in the future we might want to change that, so it's here.
     pub string_cache: StringCache,
 
-    pub template_table: TemplateCache<'chunk>,
+    pub template_table: RefCell<TemplateCache<'chunk>>,
 
     settings: Arc<ParserSettings>,
 }
@@ -151,7 +153,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             header,
             data,
             string_cache,
-            template_table,
+            template_table: template_table.into(),
             settings,
         })
     }
@@ -159,7 +161,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    pub fn iter(&mut self) -> IterChunkRecords {
+    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords<'a> {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
@@ -267,6 +269,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         }
 
         Some(Ok(EvtxRecord {
+            chunk: self.chunk,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens,

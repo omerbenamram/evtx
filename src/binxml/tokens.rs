@@ -32,10 +32,11 @@ pub fn read_template<'a>(
     let template_definition_data_offset = try_read!(cursor, u32)?;
 
     // If name is cached, read it and seek ahead if needed.
-    let template_def = if let Some(definition) = chunk.and_then(|chunk| {
+    let template_def_offset = if let Some(definition_data_size) = chunk.and_then(|chunk| {
         chunk
             .template_table
-            .get_template(template_definition_data_offset)
+            .borrow()
+            .get_template(template_definition_data_offset).map(|template| template.data_size)
     }) {
         // Seek if needed
         trace!(
@@ -47,7 +48,7 @@ pub fn read_template<'a>(
         if template_definition_data_offset == cursor.position() as u32 {
             cursor
                 .seek(SeekFrom::Current(
-                    i64::from(definition.data_size) + (33 - 9),
+                    i64::from(definition_data_size) + (33 - 9),
                 ))
                 .map_err(|e| {
                     WrappedIoError::io_error_with_message(
@@ -57,7 +58,8 @@ pub fn read_template<'a>(
                     )
                 })?;
         }
-        BinXMLTemplateDefinitionCow::Borrowed(definition)
+
+        template_definition_data_offset
     } else if template_definition_data_offset != cursor.position() as u32 {
         trace!(
             "Need to seek to offset {} to read template",
@@ -77,6 +79,13 @@ pub fn read_template<'a>(
 
         let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
 
+        chunk.map(|chunk| {
+            chunk
+                .template_table
+                .borrow_mut()
+                .insert_template(template_definition_data_offset, template_def)
+        });
+
         cursor
             .seek(SeekFrom::Start(position_before_seek))
             .map_err(|e| {
@@ -87,9 +96,18 @@ pub fn read_template<'a>(
                 )
             })?;
 
-        BinXMLTemplateDefinitionCow::Owned(template_def)
+        template_definition_data_offset
     } else {
-        BinXMLTemplateDefinitionCow::Owned(read_template_definition(cursor, chunk, ansi_codec)?)
+        let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
+
+        chunk.map(|chunk| {
+            chunk
+                .template_table
+                .borrow_mut()
+                .insert_template(template_definition_data_offset, template_def)
+        });
+
+        template_definition_data_offset
     };
 
     let number_of_substitutions = try_read!(cursor, u32)?;
@@ -173,7 +191,7 @@ pub fn read_template<'a>(
     }
 
     Ok(BinXmlTemplate {
-        definition: template_def,
+        template_def_offset,
         substitution_array,
     })
 }
@@ -264,7 +282,7 @@ pub fn read_processing_instruction_data<'a>(cursor: &mut Cursor<&[u8]>) -> Resul
     );
 
     let data = try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or(Cow::Borrowed(""));
-    trace!("PIData - {}", data,);
+    trace!("PIData - {}", data, );
     Ok(data)
 }
 

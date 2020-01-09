@@ -5,7 +5,7 @@ use crate::err::{
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
-use crate::ParserSettings;
+use crate::{ParserSettings, EvtxChunk};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 pub type RecordId = u64;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct EvtxRecord<'a> {
+    pub chunk: &'a EvtxChunk<'a>,
     pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
@@ -67,7 +68,7 @@ impl<'a> EvtxRecord<'a> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
         let event_record_id = self.event_record_id;
-        parse_tokens(self.tokens, output_builder).map_err(|e| EvtxError::FailedToParseRecord {
+        parse_tokens(self.tokens, &self.chunk.template_table.borrow(), output_builder).map_err(|e| EvtxError::FailedToParseRecord {
             record_id: event_record_id,
             source: Box::new(e),
         })?;

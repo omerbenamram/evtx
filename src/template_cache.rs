@@ -45,8 +45,16 @@ impl<'chunk> TemplateCache<'chunk> {
         Ok(TemplateCache(cache))
     }
 
+    pub fn has_template(&self, offset: ChunkOffset) -> bool {
+        self.0.get(&offset).is_some()
+    }
+
     pub fn get_template(&self, offset: ChunkOffset) -> Option<&CachedTemplate<'chunk>> {
         self.0.get(&offset)
+    }
+
+    pub fn insert_template(&mut self, offset: ChunkOffset, template: CachedTemplate<'chunk>) {
+        self.0.insert(offset, template);
     }
 
     pub fn len(&self) -> usize {
