@@ -24,73 +24,32 @@ pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
-) -> Result<BinXmlTemplate<'a>> {
+) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8)?;
     let _template_id = try_read!(cursor, u32)?;
     let template_definition_data_offset = try_read!(cursor, u32)?;
 
-    // If name is cached, read it and seek ahead if needed.
-    let template_def = if let Some(definition) = chunk.and_then(|chunk| {
-        chunk
-            .template_table
-            .get_template(template_definition_data_offset)
-    }) {
-        // Seek if needed
+    // Need to skip over the template data.
+    if (cursor.position() as u32) == template_definition_data_offset {
+        let template_header = read_template_definition_header(cursor)?;
+
         trace!(
-            "{} Got cached template from offset {}",
-            cursor.position(),
-            template_definition_data_offset
+            "Skipping {} an already read template",
+            template_header.data_size
         );
-        // 33 is template definition data size, we've read 9 bytes so far.
-        if template_definition_data_offset == cursor.position() as u32 {
-            cursor
-                .seek(SeekFrom::Current(
-                    i64::from(definition.data_size) + (33 - 9),
-                ))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        "Failed to seek to template definition data offset (cached)",
-                        cursor,
-                    )
-                })?;
-        }
-        Cow::Borrowed(definition)
-    } else if template_definition_data_offset != cursor.position() as u32 {
-        trace!(
-            "Need to seek to offset {} to read template",
-            template_definition_data_offset
-        );
-        let position_before_seek = cursor.position();
 
         cursor
-            .seek(SeekFrom::Start(u64::from(template_definition_data_offset)))
+            .seek(SeekFrom::Current(i64::from(template_header.data_size)))
             .map_err(|e| {
                 WrappedIoError::io_error_with_message(
                     e,
-                    "Failed to seek to template definition data offset (not cached)",
+                    "Failed to seek to template definition data offset (cached)",
                     cursor,
                 )
             })?;
-
-        let template_def = read_template_definition(cursor, chunk, ansi_codec)?;
-
-        cursor
-            .seek(SeekFrom::Start(position_before_seek))
-            .map_err(|e| {
-                WrappedIoError::io_error_with_message(
-                    e,
-                    "Failed to seek back to stream after reading template definition",
-                    cursor,
-                )
-            })?;
-
-        Cow::Owned(template_def)
-    } else {
-        Cow::Owned(read_template_definition(cursor, chunk, ansi_codec)?)
-    };
+    }
 
     let number_of_substitutions = try_read!(cursor, u32)?;
 
@@ -169,12 +128,29 @@ pub fn read_template<'a>(
                     )
                 })?;
         }
-        substitution_array.push(value);
+        substitution_array.push(BinXMLDeserializedTokens::Value(value));
     }
 
-    Ok(BinXmlTemplate {
-        definition: template_def,
+    Ok(BinXmlTemplateRef {
+        template_def_offset: template_definition_data_offset,
         substitution_array,
+    })
+}
+
+pub fn read_template_definition_header(
+    cursor: &mut Cursor<&[u8]>,
+) -> Result<BinXmlTemplateDefinitionHeader> {
+    // If any of these fail we cannot reliably report the template information in error.
+    let next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
+    let template_guid = try_read!(cursor, guid, "template_guid")?;
+    // Data size includes the fragment header, element and end of file token;
+    // except for the first 33 bytes of the template definition (above)
+    let data_size = try_read!(cursor, u32, "template_data_size")?;
+
+    Ok(BinXmlTemplateDefinitionHeader {
+        next_template_offset,
+        guid: template_guid,
+        data_size,
     })
 }
 
@@ -183,31 +159,27 @@ pub fn read_template_definition<'a>(
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
 ) -> Result<BinXMLTemplateDefinition<'a>> {
-    // If any of these fail we cannot reliably report the template information in error.
-    let next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
-    let template_guid = try_read!(cursor, guid, "template_guid")?;
-    // Data size includes the fragment header, element and end of file token;
-    // except for the first 33 bytes of the template definition (above)
-    let data_size = try_read!(cursor, u32, "template_data_size")?;
+    let header = read_template_definition_header(cursor)?;
 
-    match BinXmlDeserializer::read_binxml_fragment(
+    trace!("Read template header {:?}", header);
+
+    let template = match BinXmlDeserializer::read_binxml_fragment(
         cursor,
         chunk,
-        Some(data_size),
+        Some(header.data_size),
         false,
         ansi_codec,
     ) {
-        Ok(tokens) => Ok(BinXMLTemplateDefinition {
-            next_template_offset,
-            template_guid,
-            data_size,
-            tokens,
-        }),
-        Err(e) => Err(DeserializationError::FailedToDeserializeTemplate {
-            template_id: template_guid,
-            source: Box::new(e),
-        }),
-    }
+        Ok(tokens) => BinXMLTemplateDefinition { header, tokens },
+        Err(e) => {
+            return Err(DeserializationError::FailedToDeserializeTemplate {
+                template_id: header.guid,
+                source: Box::new(e),
+            })
+        }
+    };
+
+    Ok(template)
 }
 
 pub fn read_entity_ref<'a>(
@@ -368,7 +340,7 @@ mod test {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::ensure_env_logger_initialized;
     use encoding::all::WINDOWS_1252;
-    use std::borrow::Cow;
+
     use std::io::{Cursor, Seek, SeekFrom};
     use winstructs::guid::Guid;
 
@@ -382,14 +354,16 @@ mod test {
     fn test_read_template_definition() {
         ensure_env_logger_initialized();
         let expected_at_550 = BinXMLTemplateDefinition {
-            next_template_offset: 0,
-            template_guid: Guid::new(
-                3_346_188_909,
-                47309,
-                26506,
-                [241, 69, 105, 59, 93, 11, 147, 140],
-            ),
-            data_size: 1170,
+            header: BinXmlTemplateDefinitionHeader {
+                next_template_offset: 0,
+                guid: Guid::new(
+                    3_346_188_909,
+                    47309,
+                    26506,
+                    [241, 69, 105, 59, 93, 11, 147, 140],
+                ),
+                data_size: 1170,
+            },
             tokens: vec![
                 FragmentHeader(BinXMLFragmentHeader {
                     major_version: 1,
@@ -401,9 +375,9 @@ mod test {
                     name: n!("Event"),
                 }),
                 Attribute(BinXMLAttribute { name: n!("xmlns") }),
-                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed(
-                    "http://schemas.microsoft.com/win/2004/08/events/event",
-                )))),
+                Value(BinXmlValue::StringType(
+                    "http://schemas.microsoft.com/win/2004/08/events/event".into(),
+                )),
                 CloseStartElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 982,
@@ -583,9 +557,7 @@ mod test {
                     name: n!("Computer"),
                 }),
                 CloseStartElement,
-                Value(Cow::Owned(BinXmlValue::StringType(Cow::Borrowed(
-                    "37L4247F27-25",
-                )))),
+                Value(BinXmlValue::StringType("37L4247F27-25".into())),
                 CloseElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 66,

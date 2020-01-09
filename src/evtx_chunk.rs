@@ -117,6 +117,7 @@ impl EvtxChunkData {
 /// All references are created together,
 /// and can be assume to live for the entire duration of the parsing phase.
 /// See more info about lifetimes in `IterChunkRecords`.
+#[derive(Debug)]
 pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
@@ -127,7 +128,7 @@ pub struct EvtxChunk<'chunk> {
 
     pub template_table: TemplateCache<'chunk>,
 
-    settings: Arc<ParserSettings>,
+    pub settings: Arc<ParserSettings>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -159,18 +160,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    ///
-    /// Note: You cannot pass a mutable reference to `EvtxChunk` and call `iter` on it somewhere else.
-    /// Instead you should pass a mutable reference to `EvtxChunkData`.
-    ///
-    /// This is because the lifetime of `self` here is stricter (larger than `'chunk`)
-    /// than it theoretically needs to be.
-    /// However, this is required in practice because of issues regarding covariance,
-    /// which are caused by extensive use of the `Cow` type within the template cache.
-    ///
-    /// https://github.com/rust-lang/rust/issues/59875
-    /// https://github.com/rust-lang/rust/issues/21726#issuecomment-71949910
-    pub fn iter<'a: 'chunk>(&'a mut self) -> IterChunkRecords<'a> {
+    pub fn iter(&mut self) -> IterChunkRecords {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
@@ -200,8 +190,8 @@ impl<'chunk> EvtxChunk<'chunk> {
 ///
 /// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
 /// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
-pub struct IterChunkRecords<'chunk> {
-    chunk: &'chunk EvtxChunk<'chunk>,
+pub struct IterChunkRecords<'a> {
+    chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
     settings: Arc<ParserSettings>,
@@ -278,6 +268,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         }
 
         Some(Ok(EvtxRecord {
+            chunk: self.chunk,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens,
