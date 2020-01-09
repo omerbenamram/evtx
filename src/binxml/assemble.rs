@@ -4,7 +4,7 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
-use log::{trace, warn};
+use log::{trace, warn, debug};
 use std::borrow::{Cow};
 
 use std::mem;
@@ -269,7 +269,12 @@ fn expand_borrowed_template<'a>(
     template_cache: &'a TemplateCache<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) {
-    let template_def = template_cache.get_template(template.template_def_offset).unwrap();
+    let template_def = if let Some(template_def) = template_cache.get_template(template.template_def_offset) {
+        template_def
+    } else {
+        warn!("Template in offset {} was not found in cache", template.template_def_offset);
+        return;
+    };
 
     for token in template_def.tokens.iter() {
         if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
@@ -306,7 +311,13 @@ fn expand_owned_template<'a, 'b>(
     template_cache: &'a TemplateCache<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) {
-    let template_def = template_cache.get_template(template.template_def_offset).unwrap();
+
+    let template_def = if let Some(template_def) = template_cache.get_template(template.template_def_offset) {
+        template_def
+    } else {
+        warn!("Template in offset {} was not found in cache", template.template_def_offset);
+        return;
+    };
 
     for token in template_def.tokens.iter() {
         if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
