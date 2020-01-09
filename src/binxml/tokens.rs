@@ -25,7 +25,7 @@ pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
-) -> Result<BinXmlTemplate<'a>> {
+) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8)?;
@@ -131,7 +131,7 @@ pub fn read_template<'a>(
         substitution_array.push(BinXMLDeserializedTokens::Value(value));
     }
 
-    Ok(BinXmlTemplate {
+    Ok(BinXmlTemplateRef {
         template_def_offset: template_definition_data_offset,
         substitution_array,
     })

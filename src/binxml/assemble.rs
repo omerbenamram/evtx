@@ -1,7 +1,7 @@
 use crate::err::{EvtxError, Result};
 
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate, TemplateSubstitutionDescriptor};
+use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor};
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
 use log::{trace, warn, debug};
@@ -266,7 +266,7 @@ pub fn create_record_model<'a>(
 }
 
 fn expand_token_substitution<'a>(
-    template: &mut BinXmlTemplate<'a>,
+    template: &mut BinXmlTemplateRef<'a>,
     substitution_descriptor: &TemplateSubstitutionDescriptor,
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
@@ -298,7 +298,7 @@ fn expand_token_substitution<'a>(
 }
 
 fn expand_template<'a>(
-    mut template: BinXmlTemplate<'a>,
+    mut template: BinXmlTemplateRef<'a>,
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) {

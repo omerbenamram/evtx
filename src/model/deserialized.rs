@@ -9,7 +9,7 @@ use crate::ChunkOffset;
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
-    TemplateInstance(BinXmlTemplate<'a>),
+    TemplateInstance(BinXmlTemplateRef<'a>),
     OpenStartElement(BinXMLOpenStartElement<'a>),
     AttributeList,
     Attribute(BinXMLAttribute<'a>),
@@ -58,7 +58,7 @@ pub struct BinXmlEntityReference<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXmlTemplate<'a> {
+pub struct BinXmlTemplateRef<'a> {
     pub template_def_offset: ChunkOffset,
     pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
 }
