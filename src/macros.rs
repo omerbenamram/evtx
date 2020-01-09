@@ -170,7 +170,7 @@ macro_rules! try_read {
     ($cursor: ident, null_terminated_utf_16_str, $name: expr) => {
         read_null_terminated_utf16_string($cursor)
             .map_err(|e| capture_context!($cursor, e, "null_terminated_utf_16_str", $name))
-            .map(|s| Cow::Owned(s))
+            .map(Cow::Owned)
     };
 
     ($cursor: ident, sid, $name: expr) => {

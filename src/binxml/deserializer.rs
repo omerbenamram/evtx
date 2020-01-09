@@ -20,7 +20,7 @@ use crate::{
 
 use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
-use std::borrow::Cow;
+
 use std::io::Cursor;
 use std::mem;
 
@@ -154,9 +154,9 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseStartElement => Ok(BinXMLDeserializedTokens::CloseStartElement),
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
-            BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(Cow::Owned(
+            BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
                 BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
-            ))),
+            )),
             BinXMLRawToken::Attribute(_token_information) => Ok(
                 BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
             ),

@@ -3,19 +3,20 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use std::borrow::Cow;
 
+use crate::ChunkOffset;
 use winstructs::guid::Guid;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
-    TemplateInstance(BinXmlTemplate<'a>),
+    TemplateInstance(BinXmlTemplateRef<'a>),
     OpenStartElement(BinXMLOpenStartElement<'a>),
     AttributeList,
     Attribute(BinXMLAttribute<'a>),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
-    Value(Cow<'a, BinXmlValue<'a>>),
+    Value(BinXmlValue<'a>),
     CDATASection,
     CharRef,
     EntityRef(BinXmlEntityReference<'a>),
@@ -38,10 +39,16 @@ pub struct BinXMLOpenStartElement<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLTemplateDefinition<'a> {
-    pub next_template_offset: u32,
-    pub template_guid: Guid,
+pub struct BinXmlTemplateDefinitionHeader {
+    /// A pointer to the next template in the bucket.
+    pub next_template_offset: ChunkOffset,
+    pub guid: Guid,
     pub data_size: u32,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXMLTemplateDefinition<'a> {
+    pub header: BinXmlTemplateDefinitionHeader,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
@@ -51,9 +58,9 @@ pub struct BinXmlEntityReference<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXmlTemplate<'a> {
-    pub definition: Cow<'a, BinXMLTemplateDefinition<'a>>,
-    pub substitution_array: Vec<BinXmlValue<'a>>,
+pub struct BinXmlTemplateRef<'a> {
+    pub template_def_offset: ChunkOffset,
+    pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
