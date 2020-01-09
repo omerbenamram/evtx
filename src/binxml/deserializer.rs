@@ -20,7 +20,7 @@ use crate::{
 
 use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
-use std::borrow::Cow;
+
 use std::io::Cursor;
 use std::mem;
 

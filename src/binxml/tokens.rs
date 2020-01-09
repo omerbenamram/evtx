@@ -171,10 +171,10 @@ pub fn read_template_definition<'a>(
             data_size,
             tokens,
         },
-        Err(e) => Err(DeserializationError::FailedToDeserializeTemplate {
+        Err(e) => return Err(DeserializationError::FailedToDeserializeTemplate {
             template_id: template_guid,
             source: Box::new(e),
-        })?,
+        }),
     };
 
     Ok((template, next_template_offset))
@@ -338,7 +338,7 @@ mod test {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::ensure_env_logger_initialized;
     use encoding::all::WINDOWS_1252;
-    use std::borrow::Cow;
+    
     use std::io::{Cursor, Seek, SeekFrom};
     use winstructs::guid::Guid;
 

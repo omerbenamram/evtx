@@ -119,7 +119,7 @@ impl<'a> EvtxRecord<'a> {
         self.into_output(&mut output_builder)?;
 
         let data = String::from_utf8(output_builder.into_writer())
-            .map_err(|e| SerializationError::from(e))?;
+            .map_err(SerializationError::from)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id,

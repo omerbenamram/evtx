@@ -18,7 +18,7 @@ use crate::ParserSettings;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
-use std::cell::RefCell;
+
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 

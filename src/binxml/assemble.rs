@@ -5,13 +5,13 @@ use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplate};
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
 use log::{trace, warn};
-use std::borrow::{Borrow, BorrowMut, Cow};
+use std::borrow::{Cow};
 
 use std::mem;
-use crate::EvtxChunk;
+
 use crate::template_cache::TemplateCache;
-use std::cell::Ref;
-use std::ops::Deref;
+
+
 
 pub fn parse_tokens<'a, T: BinXmlOutput>(
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
