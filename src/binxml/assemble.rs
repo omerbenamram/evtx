@@ -334,8 +334,6 @@ fn expand_template<'a>(
                 _expand_templates(Cow::Owned(token), chunk, stack)?;
             }
         }
-
-        return Ok(());
     };
 
     Ok(())

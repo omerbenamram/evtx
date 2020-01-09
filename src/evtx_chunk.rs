@@ -190,8 +190,8 @@ impl<'chunk> EvtxChunk<'chunk> {
 ///
 /// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
 /// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
-pub struct IterChunkRecords<'chunk> {
-    chunk: &'chunk EvtxChunk<'chunk>,
+pub struct IterChunkRecords<'a> {
+    chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
     settings: Arc<ParserSettings>,
