@@ -129,7 +129,7 @@ pub struct EvtxChunk<'chunk> {
 
     pub template_table: TemplateCache<'chunk>,
 
-    settings: Arc<ParserSettings>,
+    pub settings: Arc<ParserSettings>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
