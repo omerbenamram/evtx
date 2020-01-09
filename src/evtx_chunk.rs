@@ -19,7 +19,6 @@ use crate::ParserSettings;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
 
-
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 #[derive(Debug)]

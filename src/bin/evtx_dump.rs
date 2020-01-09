@@ -79,7 +79,8 @@ impl EvtxDump {
         };
 
         let num_threads = matches
-            .value_of("num-threads").map(|value| value.parse::<usize>().expect("used validator"));
+            .value_of("num-threads")
+            .map(|value| value.parse::<usize>().expect("used validator"));
 
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
             (true, Some(number)) => number,

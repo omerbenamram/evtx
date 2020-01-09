@@ -3,8 +3,8 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use std::borrow::Cow;
 
-use winstructs::guid::Guid;
 use crate::ChunkOffset;
+use winstructs::guid::Guid;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXMLDeserializedTokens<'a> {
@@ -42,7 +42,7 @@ pub struct BinXMLOpenStartElement<'a> {
 pub struct BinXmlTemplateDefinitionHeader {
     /// A pointer to the next template in the bucket.
     pub next_template_offset: ChunkOffset,
-    pub  guid: Guid,
+    pub guid: Guid,
     pub data_size: u32,
 }
 

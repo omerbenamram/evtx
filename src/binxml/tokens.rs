@@ -20,7 +20,6 @@ use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
 use std::borrow::Cow;
 
-
 pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
     chunk: Option<&'a EvtxChunk<'a>>,
@@ -36,12 +35,13 @@ pub fn read_template<'a>(
     if (cursor.position() as u32) == template_definition_data_offset {
         let template_header = read_template_definition_header(cursor)?;
 
-        trace!("Skipping {} an already read template", template_header.data_size);
+        trace!(
+            "Skipping {} an already read template",
+            template_header.data_size
+        );
 
         cursor
-            .seek(SeekFrom::Current(
-                i64::from(template_header.data_size),
-            ))
+            .seek(SeekFrom::Current(i64::from(template_header.data_size)))
             .map_err(|e| {
                 WrappedIoError::io_error_with_message(
                     e,
@@ -137,8 +137,9 @@ pub fn read_template<'a>(
     })
 }
 
-
-pub fn read_template_definition_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXmlTemplateDefinitionHeader> {
+pub fn read_template_definition_header(
+    cursor: &mut Cursor<&[u8]>,
+) -> Result<BinXmlTemplateDefinitionHeader> {
     // If any of these fail we cannot reliably report the template information in error.
     let next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
     let template_guid = try_read!(cursor, guid, "template_guid")?;
@@ -146,7 +147,7 @@ pub fn read_template_definition_header(cursor: &mut Cursor<&[u8]>) -> Result<Bin
     // except for the first 33 bytes of the template definition (above)
     let data_size = try_read!(cursor, u32, "template_data_size")?;
 
-    Ok(BinXmlTemplateDefinitionHeader{
+    Ok(BinXmlTemplateDefinitionHeader {
         next_template_offset,
         guid: template_guid,
         data_size,
@@ -169,14 +170,13 @@ pub fn read_template_definition<'a>(
         false,
         ansi_codec,
     ) {
-        Ok(tokens) => BinXMLTemplateDefinition {
-            header,
-            tokens,
-        },
-        Err(e) => return Err(DeserializationError::FailedToDeserializeTemplate {
-            template_id: header.guid,
-            source: Box::new(e),
-        }),
+        Ok(tokens) => BinXMLTemplateDefinition { header, tokens },
+        Err(e) => {
+            return Err(DeserializationError::FailedToDeserializeTemplate {
+                template_id: header.guid,
+                source: Box::new(e),
+            })
+        }
     };
 
     Ok(template)
@@ -236,7 +236,7 @@ pub fn read_processing_instruction_data<'a>(cursor: &mut Cursor<&[u8]>) -> Resul
     );
 
     let data = try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or(Cow::Borrowed(""));
-    trace!("PIData - {}", data, );
+    trace!("PIData - {}", data,);
     Ok(data)
 }
 
@@ -376,7 +376,7 @@ mod test {
                 }),
                 Attribute(BinXMLAttribute { name: n!("xmlns") }),
                 Value(BinXmlValue::StringType(
-                    "http://schemas.microsoft.com/win/2004/08/events/event".into()
+                    "http://schemas.microsoft.com/win/2004/08/events/event".into(),
                 )),
                 CloseStartElement,
                 OpenStartElement(BinXMLOpenStartElement {
@@ -557,9 +557,7 @@ mod test {
                     name: n!("Computer"),
                 }),
                 CloseStartElement,
-                Value(BinXmlValue::StringType(
-                    "37L4247F27-25".into()
-                )),
+                Value(BinXmlValue::StringType("37L4247F27-25".into())),
                 CloseElement,
                 OpenStartElement(BinXMLOpenStartElement {
                     data_size: 66,

@@ -1,19 +1,19 @@
 use crate::err::{EvtxError, Result};
 
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::deserialized::{BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor};
+use crate::model::deserialized::{
+    BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
+};
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
-use log::{trace, warn, debug};
+use log::{debug, trace, warn};
 use std::borrow::Cow;
 
 use std::mem;
 
-
-use crate::EvtxChunk;
 use crate::binxml::tokens::read_template_definition;
+use crate::EvtxChunk;
 use std::io::{Cursor, Seek, SeekFrom};
-
 
 pub fn parse_tokens<'a, T: BinXmlOutput>(
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
@@ -280,13 +280,11 @@ fn expand_token_substitution<'a>(
         .get_mut(substitution_descriptor.substitution_index as usize);
 
     if let Some(value) = value {
-        let value = mem::replace(value,
-                                 BinXMLDeserializedTokens::Value(BinXmlValue::NullType));
-        _expand_templates(
-            Cow::Owned(value),
-            chunk,
-            stack,
-        )?;
+        let value = mem::replace(
+            value,
+            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
+        );
+        _expand_templates(Cow::Owned(value), chunk, stack)?;
     } else {
         _expand_templates(
             Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::NullType)),
@@ -303,7 +301,10 @@ fn expand_template<'a>(
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) -> Result<()> {
-    if let Some(template_def) = chunk.template_table.get_template(template.template_def_offset) {
+    if let Some(template_def) = chunk
+        .template_table
+        .get_template(template.template_def_offset)
+    {
         // We expect to find all the templates in the template cache.
         for token in template_def.tokens.iter() {
             if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
@@ -315,12 +316,16 @@ fn expand_template<'a>(
     } else {
         // If the file was not closed correctly, there can be a template which was not found in the header.
         // In that case, we will try to read it directly from the chunk.
-        debug!("Template in offset {} was not found in cache", template.template_def_offset);
+        debug!(
+            "Template in offset {} was not found in cache",
+            template.template_def_offset
+        );
 
         let mut cursor = Cursor::new(chunk.data);
 
         let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
-        let template_def = read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
+        let template_def =
+            read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
 
         for token in template_def.tokens {
             if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
@@ -333,7 +338,6 @@ fn expand_template<'a>(
         return Ok(());
     };
 
-
     Ok(())
 }
 
@@ -344,17 +348,13 @@ fn _expand_templates<'a>(
 ) -> Result<()> {
     match token {
         // Owned values can be consumed when flatting, and passed on as owned.
-        Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(
-                                                       tokens,
-                                                   ))) => {
+        Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens))) => {
             for token in tokens.into_iter() {
                 _expand_templates(Cow::Owned(token), chunk, stack)?;
             }
         }
 
-        Cow::Borrowed(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(
-                                                          tokens,
-                                                      ))) => {
+        Cow::Borrowed(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens))) => {
             for token in tokens.iter() {
                 _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }

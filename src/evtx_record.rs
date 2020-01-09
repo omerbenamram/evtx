@@ -5,7 +5,7 @@ use crate::err::{
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
-use crate::{ParserSettings, EvtxChunk};
+use crate::{EvtxChunk, ParserSettings};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
@@ -68,9 +68,11 @@ impl<'a> EvtxRecord<'a> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
         let event_record_id = self.event_record_id;
-        parse_tokens(self.tokens, &self.chunk, output_builder).map_err(|e| EvtxError::FailedToParseRecord {
-            record_id: event_record_id,
-            source: Box::new(e),
+        parse_tokens(self.tokens, &self.chunk, output_builder).map_err(|e| {
+            EvtxError::FailedToParseRecord {
+                record_id: event_record_id,
+                source: Box::new(e),
+            }
         })?;
 
         Ok(())
@@ -118,8 +120,8 @@ impl<'a> EvtxRecord<'a> {
         let timestamp = self.timestamp;
         self.into_output(&mut output_builder)?;
 
-        let data = String::from_utf8(output_builder.into_writer())
-            .map_err(SerializationError::from)?;
+        let data =
+            String::from_utf8(output_builder.into_writer()).map_err(SerializationError::from)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id,
