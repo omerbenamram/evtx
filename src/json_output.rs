@@ -218,6 +218,12 @@ impl JsonOutput {
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
+                
+                // If the element's main value is empty, we want to remove it because we
+                // do not want the value to represent an empty object.
+                if value[name] == Value::Object(Map::new()) {
+                    value.remove(name);
+                }
             } else {
                 let value = self
                     .get_or_create_current_path()
