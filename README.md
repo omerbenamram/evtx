@@ -94,7 +94,7 @@ The parallel version is enabled when compiling with feature "multithreading" (en
 ## Performance benchmarking
 
 When using multithreading - `evtx` is significantly faster than any other parser available.
-For single core performance, it is both the fastest and the only parser than supports both xml and JSON outputs.
+For single core performance, it is both the fastest and the only cross-platform parser than supports both xml and JSON outputs.
 
 Performance was benched on my machine using `hyperfine` (statistical measurements tool).
 
