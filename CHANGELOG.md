@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3 - 2020-01-11]
+
+This version should be 10-15% faster!
+
+### Fixed
+- When using separate json attributes, if the element's value is empty, remove the empty mapping. #71
+
+
+
 ## [0.6.2 - 2019-12-17]
 
 ### Fixed
