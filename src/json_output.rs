@@ -218,6 +218,12 @@ impl JsonOutput {
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
+                
+                // If the element's main value is empty, we want to remove it because we
+                // do not want the value to represent an empty object.
+                if value[name] == Value::Object(Map::new()) {
+                    value.remove(name);
+                }
             } else {
                 let value = self
                     .get_or_create_current_path()
@@ -382,5 +388,131 @@ impl BinXmlOutput for JsonOutput {
     fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::binxml::name::BinXmlName;
+    use crate::binxml::value_variant::BinXmlValue;
+    use crate::model::xml::{XmlAttribute, XmlElement};
+    use crate::{BinXmlOutput, JsonOutput, ParserSettings};
+    use pretty_assertions::assert_eq;
+    use quick_xml::events::{BytesStart, Event};
+    use quick_xml::Reader;
+    use std::borrow::Cow;
+
+    fn bytes_to_string(bytes: &[u8]) -> String {
+        String::from_utf8(bytes.to_vec()).expect("UTF8 Input")
+    }
+
+    fn dummy_event() -> XmlElement<'static> {
+        XmlElement {
+            name: Cow::Owned(BinXmlName(Cow::Borrowed("Dummy"))),
+            attributes: vec![],
+        }
+    }
+
+    fn event_to_element(event: BytesStart) -> XmlElement {
+        let mut attrs = vec![];
+
+        for attr in event.attributes() {
+            let attr = attr.expect("Failed to read attribute.");
+            attrs.push(XmlAttribute {
+                name: Cow::Owned(BinXmlName(Cow::Owned(bytes_to_string(attr.key)))),
+                // We have to compromise here and assume all values are strings.
+                value: Cow::Owned(BinXmlValue::StringType(Cow::Owned(bytes_to_string(
+                    &attr.value,
+                )))),
+            });
+        }
+
+        XmlElement {
+            name: Cow::Owned(BinXmlName(Cow::Owned(bytes_to_string(event.name())))),
+            attributes: attrs,
+        }
+    }
+
+    /// Converts an XML string to JSON, panics in xml is invalid.
+    fn xml_to_json(xml: &str, settings: &ParserSettings) -> String {
+        let mut reader = Reader::from_str(xml);
+        reader.trim_text(true);
+
+        let mut output = JsonOutput::new(settings);
+        output.visit_start_of_stream().expect("Start of stream");
+
+        let mut buf = vec![];
+
+        loop {
+            match reader.read_event(&mut buf) {
+                Ok(event) => match event {
+                    Event::Start(start) => {
+                        output
+                            .visit_open_start_element(&event_to_element(start))
+                            .expect("Open start element");
+                    }
+                    Event::End(_) => output
+                        .visit_close_element(&dummy_event())
+                        .expect("Close element"),
+                    Event::Empty(empty) => {
+                        output
+                            .visit_open_start_element(&event_to_element(empty))
+                            .expect("Empty Open start element");
+
+                        output
+                            .visit_close_element(&dummy_event())
+                            .expect("Empty Close");
+                    }
+                    Event::Text(text) => output
+                        .visit_characters(&BinXmlValue::StringType(Cow::Owned(bytes_to_string(
+                            text.as_ref(),
+                        ))))
+                        .expect("Text element"),
+                    Event::Comment(_) => {}
+                    Event::CData(_) => unimplemented!(),
+                    Event::Decl(_) => {}
+                    Event::PI(_) => unimplemented!(),
+                    Event::DocType(_) => {}
+                    Event::Eof => {
+                        output.visit_end_of_stream().expect("End of stream");
+                        break;
+                    }
+                },
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            }
+        }
+
+        serde_json::to_string_pretty(&output.into_value().expect("Output")).expect("To serialize")
+    }
+
+    #[test]
+    fn test_xml_to_json() {
+        let s1 = r#"
+<HTTPResponseHeadersInfo>
+    <Header attribute1="NoProxy"></Header>
+    <Header>HTTP/1.1 200 OK</Header>
+</HTTPResponseHeadersInfo>
+"#
+        .trim();
+        let s2 = r#"
+{
+  "HTTPResponseHeadersInfo": {
+    "Header": "HTTP/1.1 200 OK",
+    "Header_attributes": {
+      "attribute1": "NoProxy"
+    }
+  }
+}
+"#
+        .trim();
+
+        let settings = ParserSettings::new()
+            .num_threads(1)
+            .separate_json_attributes(true);
+
+        let json = xml_to_json(s1, &settings);
+        println!("json: {}", json);
+
+        assert_eq!(xml_to_json(s1, &settings), s2)
     }
 }
