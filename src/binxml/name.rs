@@ -55,9 +55,12 @@ impl BinXmlNameLink {
 impl<'a> BinXmlName<'a> {
     #[cfg(test)]
     pub(crate) fn from_str(s: &'a str) -> Self {
+        let nul_terminator_sz = 4;
+
         BinXmlName {
             str: Cow::Borrowed(s),
-            data_size: 0,
+            data_size: (s.len() * 2 + nul_terminator_sz + BinXmlNameLink::data_size() as usize)
+                as u32,
         }
     }
 

@@ -4,7 +4,6 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use std::borrow::Cow;
 
 use crate::ChunkOffset;
-use serde::export::fmt::Error;
 use serde::export::Formatter;
 use std::fmt;
 use winstructs::guid::Guid;
