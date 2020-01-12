@@ -1,4 +1,4 @@
-use crate::binxml::name::{BinXmlName, BinXmlNameRef};
+use crate::binxml::name::{BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use std::borrow::Cow;

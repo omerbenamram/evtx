@@ -7,7 +7,7 @@ use crate::model::deserialized::*;
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::name::{BinXmlName, BinXmlNameRef};
+use crate::binxml::name::{BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::read_len_prefixed_utf16_string;
 
