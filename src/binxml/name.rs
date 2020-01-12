@@ -84,6 +84,7 @@ impl<'a> BinXmlName<'a> {
         if let Some(name) =
             chunk.and_then(|chunk| chunk.string_cache.get_cached_string(name_offset))
         {
+            trace!("String cache hit");
             // Seek if needed
             let position_after_string = cursor.position() + u64::from(name.data_size);
             try_seek!(cursor, position_after_string, "Skip cached string")?;

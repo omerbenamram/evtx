@@ -34,21 +34,11 @@ pub fn read_template<'a>(
     // Need to skip over the template data.
     if (cursor.position() as u32) == template_definition_data_offset {
         let template_header = read_template_definition_header(cursor)?;
-
-        trace!(
-            "Skipping {} an already read template",
-            template_header.data_size
-        );
-
-        cursor
-            .seek(SeekFrom::Current(i64::from(template_header.data_size)))
-            .map_err(|e| {
-                WrappedIoError::io_error_with_message(
-                    e,
-                    "Failed to seek to template definition data offset (cached)",
-                    cursor,
-                )
-            })?;
+        try_seek!(
+            cursor,
+            cursor.position() + u64::from(template_header.data_size),
+            "Skip cached template"
+        )?;
     }
 
     let number_of_substitutions = try_read!(cursor, u32)?;
@@ -79,9 +69,9 @@ pub fn read_template<'a>(
     for descriptor in value_descriptors {
         let position_before_reading_value = cursor.position();
         trace!(
-            "Substitution: {:?} at {}",
-            descriptor.value_type,
-            position_before_reading_value
+            "Offset `0x{offset:08x} ({offset})`: Substitution: {substitution:?}",
+            offset = position_before_reading_value,
+            substitution = descriptor.value_type,
         );
         let value = BinXmlValue::deserialize_value_type(
             &descriptor.value_type,
@@ -94,16 +84,12 @@ pub fn read_template<'a>(
         trace!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
         if value == BinXmlValue::NullType {
-            trace!("\t Skip {}", descriptor.size);
-            cursor
-                .seek(SeekFrom::Current(i64::from(descriptor.size)))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        "Failed to seek while skipping NullType",
-                        cursor,
-                    )
-                })?;
+            trace!("\t Skipping `NullType` descriptor");
+            try_seek!(
+                cursor,
+                cursor.position() + u64::from(descriptor.size),
+                "NullType Descriptor"
+            )?;
         }
 
         let current_position = cursor.position();
@@ -118,15 +104,7 @@ pub fn read_template<'a>(
                   expected_position,
                   &descriptor);
 
-            cursor
-                .seek(SeekFrom::Start((current_position + diff) as u64))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        "Failed to seek while trying to skip broken record",
-                        cursor,
-                    )
-                })?;
+            try_seek!(cursor, current_position + diff, "Broken record")?;
         }
         substitution_array.push(BinXMLDeserializedTokens::Value(value));
     }
