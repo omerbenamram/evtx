@@ -215,8 +215,8 @@ pub fn create_record_model<'a>(
             }
             Cow::Borrowed(BinXMLDeserializedTokens::Value(value)) => {
                 trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                if current_element.is_none() {
-                    match value {
+                match current_element {
+                    None => match value {
                         BinXmlValue::EvtXml => {
                             return Err(EvtxError::FailedToCreateRecordModel(
                                 "Call `expand_templates` before calling this function",
@@ -225,10 +225,10 @@ pub fn create_record_model<'a>(
                         _ => {
                             model.push(XmlModel::Value(Cow::Borrowed(value)));
                         }
+                    },
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Borrowed(value))?;
                     }
-                }
-                if let Some(builder) = current_element.as_mut() {
-                    builder.attribute_value(Cow::Borrowed(value))?
                 }
             }
         }
