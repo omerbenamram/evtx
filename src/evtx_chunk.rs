@@ -125,7 +125,6 @@ pub struct EvtxChunk<'chunk> {
     // For now, `StringCache` does not reference the `chunk lifetime,
     // but in the future we might want to change that, so it's here.
     pub string_cache: StringCache<'chunk>,
-
     pub template_table: TemplateCache<'chunk>,
 
     pub settings: Arc<ParserSettings>,

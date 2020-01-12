@@ -20,6 +20,11 @@ pub struct BinXmlName<'a> {
     data_size: u32,
 }
 
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXmlNameRef {
+    pub offset: ChunkOffset,
+}
+
 impl<'a> fmt::Display for BinXmlName<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.str)
@@ -49,6 +54,33 @@ impl BinXmlNameLink {
 
     pub fn data_size() -> u32 {
         6
+    }
+}
+
+impl BinXmlNameRef {
+    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+        let name_offset = try_read!(cursor, u32, "name_offset")?;
+
+        let position_before_string = cursor.position();
+        let need_to_seek = position_before_string == u64::from(name_offset);
+
+        if need_to_seek {
+            let _ = BinXmlNameLink::from_stream(cursor)?;
+            let len = cursor.read_u16::<LittleEndian>()?;
+
+            let nul_terminator_len = 4;
+            let data_size = BinXmlNameLink::data_size() + u32::from(len * 2) + nul_terminator_len;
+
+            try_seek!(
+                cursor,
+                position_before_string + u64::from(data_size),
+                "Skip string"
+            )?;
+        }
+
+        Ok(BinXmlNameRef {
+            offset: name_offset,
+        })
     }
 }
 

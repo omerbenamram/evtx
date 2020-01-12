@@ -7,7 +7,7 @@ use crate::model::deserialized::*;
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::name::BinXmlName;
+use crate::binxml::name::{BinXmlName, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::read_len_prefixed_utf16_string;
 
@@ -164,23 +164,17 @@ pub fn read_template_definition<'a>(
     Ok(template)
 }
 
-pub fn read_entity_ref<'a>(
-    cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXmlEntityReference<'a>> {
+pub fn read_entity_ref(cursor: &mut Cursor<&[u8]>) -> Result<BinXmlEntityReference> {
     trace!("Offset `0x{:08x}` - EntityReference", cursor.position());
-    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
+    let name = BinXmlNameRef::from_stream(cursor)?;
     trace!("\t name: {:?}", name);
 
     Ok(BinXmlEntityReference { name })
 }
 
-pub fn read_attribute<'a>(
-    cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXMLAttribute<'a>> {
+pub fn read_attribute(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLAttribute> {
     trace!("Offset `0x{:08x}` - Attribute", cursor.position());
-    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
+    let name = BinXmlNameRef::from_stream(cursor)?;
 
     Ok(BinXMLAttribute { name })
 }
@@ -197,16 +191,15 @@ pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragment
     })
 }
 
-pub fn read_processing_instruction_target<'a>(
-    cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-) -> Result<BinXMLProcessingInstructionTarget<'a>> {
+pub fn read_processing_instruction_target(
+    cursor: &mut Cursor<&[u8]>,
+) -> Result<BinXMLProcessingInstructionTarget> {
     trace!(
         "Offset `0x{:08x}` - ProcessingInstructionTarget",
         cursor.position(),
     );
 
-    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
+    let name = BinXmlNameRef::from_stream(cursor)?;
     trace!("\tPITarget Name - {:?}", name);
     Ok(BinXMLProcessingInstructionTarget { name })
 }
@@ -250,12 +243,11 @@ pub fn read_substitution_descriptor(
     })
 }
 
-pub fn read_open_start_element<'a>(
-    cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
+pub fn read_open_start_element(
+    cursor: &mut Cursor<&[u8]>,
     has_attributes: bool,
     is_substitution: bool,
-) -> Result<BinXMLOpenStartElement<'a>> {
+) -> Result<BinXMLOpenStartElement> {
     trace!(
         "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, is_substitution={}>",
         cursor.position(),
@@ -281,26 +273,28 @@ pub fn read_open_start_element<'a>(
     // This is a heuristic, sometimes `dependency_identifier` is not present even though it should have been.
     // This will result in interpreting garbage bytes as the data size.
     // We try to recover from this situation by rolling back the cursor and trying again, without reading the `dependency_identifier`.
-    if let Some(c) = chunk {
-        if data_size >= c.data.len() as u32 {
-            warn!(
-                "Detected a case where `dependency_identifier` should not have been read. \
-                 Trying to read again without it."
-            );
-            cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
-                WrappedIoError::io_error_with_message(
-                    e,
-                    "failed to skip when recovering from `dependency_identifier` hueristic",
-                    cursor,
-                )
-            })?;
-            return read_open_start_element(cursor, chunk, has_attributes, true);
-        }
-    }
+
+    // TODO: See if this can be fixed without the chunk
+    //    if let Some(c) = chunk {
+    //        if data_size >= c.data.len() as u32 {
+    //            warn!(
+    //                "Detected a case where `dependency_identifier` should not have been read. \
+    //                 Trying to read again without it."
+    //            );
+    //            cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
+    //                WrappedIoError::io_error_with_message(
+    //                    e,
+    //                    "failed to skip when recovering from `dependency_identifier` hueristic",
+    //                    cursor,
+    //                )
+    //            })?;
+    //            return read_open_start_element(cursor, has_attributes, true);
+    //        }
+    //    }
 
     trace!("\t Data Size - {}", data_size);
-    let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
-    trace!("\t Name - {}", name);
+    let name = BinXmlNameRef::from_stream(cursor)?;
+    trace!("\t Name - {:?}", name);
 
     let _attribute_list_data_size = if has_attributes {
         try_read!(cursor, u32, "open_start_element_attribute_list_data_size")?
@@ -309,267 +303,4 @@ pub fn read_open_start_element<'a>(
     };
 
     Ok(BinXMLOpenStartElement { data_size, name })
-}
-
-#[cfg(test)]
-mod test {
-    use crate::binxml::name::BinXmlName;
-    use crate::binxml::value_variant::BinXmlValueType::*;
-    use crate::model::deserialized::BinXMLDeserializedTokens::*;
-    use crate::model::deserialized::*;
-    use pretty_assertions::assert_eq;
-
-    use crate::binxml::tokens::read_template_definition;
-    use crate::binxml::value_variant::BinXmlValue;
-    use crate::ensure_env_logger_initialized;
-    use encoding::all::WINDOWS_1252;
-
-    use std::io::{Cursor, Seek, SeekFrom};
-    use winstructs::guid::Guid;
-
-    macro_rules! n {
-        ($s: expr) => {
-            BinXmlName::from_str($s)
-        };
-    }
-
-    #[test]
-    fn test_read_template_definition() {
-        ensure_env_logger_initialized();
-        let expected_at_550 = BinXMLTemplateDefinition {
-            header: BinXmlTemplateDefinitionHeader {
-                next_template_offset: 0,
-                guid: Guid::new(
-                    3_346_188_909,
-                    47309,
-                    26506,
-                    [241, 69, 105, 59, 93, 11, 147, 140],
-                ),
-                data_size: 1170,
-            },
-            tokens: vec![
-                FragmentHeader(BinXMLFragmentHeader {
-                    major_version: 1,
-                    minor_version: 1,
-                    flags: 0,
-                }),
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 1158,
-                    name: n!("Event"),
-                }),
-                Attribute(BinXMLAttribute { name: n!("xmlns") }),
-                Value(BinXmlValue::StringType(
-                    "http://schemas.microsoft.com/win/2004/08/events/event".into(),
-                )),
-                CloseStartElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 982,
-                    name: n!("System"),
-                }),
-                CloseStartElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 89,
-                    name: n!("Provider"),
-                }),
-                Attribute(BinXMLAttribute { name: n!("Name") }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 14,
-                    value_type: StringType,
-                    ignore: false,
-                }),
-                Attribute(BinXMLAttribute { name: n!("Guid") }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 15,
-                    value_type: GuidType,
-                    ignore: false,
-                }),
-                CloseEmptyElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 77,
-                    name: n!("EventID"),
-                }),
-                Attribute(BinXMLAttribute {
-                    name: n!("Qualifiers"),
-                }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 4,
-                    value_type: UInt16Type,
-                    ignore: false,
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 3,
-                    value_type: UInt16Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 34,
-                    name: n!("Version"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 11,
-                    value_type: UInt8Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 30,
-                    name: n!("Level"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 0,
-                    value_type: UInt8Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 28,
-                    name: n!("Task"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 2,
-                    value_type: UInt16Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 32,
-                    name: n!("Opcode"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 1,
-                    value_type: UInt8Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 36,
-                    name: n!("Keywords"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 5,
-                    value_type: HexInt64Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 80,
-                    name: n!("TimeCreated"),
-                }),
-                Attribute(BinXMLAttribute {
-                    name: n!("SystemTime"),
-                }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 6,
-                    value_type: FileTimeType,
-                    ignore: false,
-                }),
-                CloseEmptyElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 46,
-                    name: n!("EventRecordID"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 10,
-                    value_type: UInt64Type,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 133,
-                    name: n!("Correlation"),
-                }),
-                Attribute(BinXMLAttribute {
-                    name: n!("ActivityID"),
-                }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 7,
-                    value_type: GuidType,
-                    ignore: false,
-                }),
-                Attribute(BinXMLAttribute {
-                    name: n!("RelatedActivityID"),
-                }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 13,
-                    value_type: GuidType,
-                    ignore: false,
-                }),
-                CloseEmptyElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 109,
-                    name: n!("Execution"),
-                }),
-                Attribute(BinXMLAttribute {
-                    name: n!("ProcessID"),
-                }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 8,
-                    value_type: UInt32Type,
-                    ignore: false,
-                }),
-                Attribute(BinXMLAttribute {
-                    name: n!("ThreadID"),
-                }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 9,
-                    value_type: UInt32Type,
-                    ignore: false,
-                }),
-                CloseEmptyElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 34,
-                    name: n!("Channel"),
-                }),
-                CloseStartElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 16,
-                    value_type: StringType,
-                    ignore: false,
-                }),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 62,
-                    name: n!("Computer"),
-                }),
-                CloseStartElement,
-                Value(BinXmlValue::StringType("37L4247F27-25".into())),
-                CloseElement,
-                OpenStartElement(BinXMLOpenStartElement {
-                    data_size: 66,
-                    name: n!("Security"),
-                }),
-                Attribute(BinXMLAttribute { name: n!("UserID") }),
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 12,
-                    value_type: SidType,
-                    ignore: false,
-                }),
-                CloseEmptyElement,
-                CloseElement,
-                Substitution(TemplateSubstitutionDescriptor {
-                    substitution_index: 17,
-                    value_type: BinXmlType,
-                    ignore: false,
-                }),
-                CloseElement,
-                EndOfStream,
-            ],
-        };
-        let evtx_file = include_bytes!("../../samples/security.evtx");
-        let from_start_of_chunk = &evtx_file[4096..];
-
-        let mut c = Cursor::new(from_start_of_chunk);
-        c.seek(SeekFrom::Start(550)).unwrap();
-        let actual = read_template_definition(&mut c, None, WINDOWS_1252).unwrap();
-
-        assert_eq!(actual, expected_at_550);
-    }
 }

@@ -512,25 +512,31 @@ mod tests {
 
     use super::*;
     use crate::ensure_env_logger_initialized;
+    use anyhow::anyhow;
 
-    fn process_90_records(buffer: &'static [u8]) {
-        let mut parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
+    fn process_90_records(buffer: &'static [u8]) -> anyhow::Result<()> {
+        let mut parser = EvtxParser::from_buffer(buffer.to_vec())?;
 
         for (i, record) in parser.records().take(90).enumerate() {
             match record {
                 Ok(r) => {
                     assert_eq!(r.event_record_id, i as u64 + 1);
                 }
-                Err(e) => println!("Error while reading record {}, {:?}", i, e),
+                Err(e) => return Err(anyhow!("Error while reading record {}, {:?}", i, e)),
             }
         }
+
+        Ok(())
     }
 
     // For clion profiler
     #[test]
-    fn test_process_single_chunk() {
+    fn test_process_single_chunk() -> anyhow::Result<()> {
+        ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
-        process_90_records(evtx_file);
+        process_90_records(evtx_file)?;
+
+        Ok(())
     }
 
     #[test]

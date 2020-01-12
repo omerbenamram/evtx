@@ -139,7 +139,6 @@ impl<'a> IterTokens<'a> {
                 Ok(BinXMLDeserializedTokens::OpenStartElement(
                     read_open_start_element(
                         cursor,
-                        self.chunk,
                         token_information.has_attributes,
                         self.is_inside_substitution,
                     )?,
@@ -151,9 +150,9 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
                 BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
             )),
-            BinXMLRawToken::Attribute(_token_information) => Ok(
-                BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
-            ),
+            BinXMLRawToken::Attribute(_token_information) => {
+                Ok(BinXMLDeserializedTokens::Attribute(read_attribute(cursor)?))
+            }
             BinXMLRawToken::CDataSection => Err(DeserializationError::UnimplementedToken {
                 name: "CDataSection",
                 offset: cursor.position(),
@@ -163,10 +162,10 @@ impl<'a> IterTokens<'a> {
                 offset: cursor.position(),
             }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
-                read_entity_ref(cursor, self.chunk)?,
+                read_entity_ref(cursor)?,
             )),
             BinXMLRawToken::ProcessingInstructionTarget => Ok(BinXMLDeserializedTokens::PITarget(
-                read_processing_instruction_target(cursor, self.chunk)?,
+                read_processing_instruction_target(cursor)?,
             )),
             BinXMLRawToken::ProcessingInstructionData => Ok(BinXMLDeserializedTokens::PIData(
                 read_processing_instruction_data(cursor)?,

@@ -1,4 +1,4 @@
-use crate::binxml::name::BinXmlName;
+use crate::binxml::name::{BinXmlName, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use std::borrow::Cow;
@@ -12,17 +12,17 @@ use winstructs::guid::Guid;
 pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
     TemplateInstance(BinXmlTemplateRef<'a>),
-    OpenStartElement(BinXMLOpenStartElement<'a>),
+    OpenStartElement(BinXMLOpenStartElement),
     AttributeList,
-    Attribute(BinXMLAttribute<'a>),
+    Attribute(BinXMLAttribute),
     CloseStartElement,
     CloseEmptyElement,
     CloseElement,
     Value(BinXmlValue<'a>),
     CDATASection,
     CharRef,
-    EntityRef(BinXmlEntityReference<'a>),
-    PITarget(BinXMLProcessingInstructionTarget<'a>),
+    EntityRef(BinXmlEntityReference),
+    PITarget(BinXMLProcessingInstructionTarget),
     PIData(Cow<'a, str>),
     Substitution(TemplateSubstitutionDescriptor),
     EndOfStream,
@@ -30,14 +30,14 @@ pub enum BinXMLDeserializedTokens<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLProcessingInstructionTarget<'a> {
-    pub name: BinXmlName<'a>,
+pub struct BinXMLProcessingInstructionTarget {
+    pub name: BinXmlNameRef,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLOpenStartElement<'a> {
+pub struct BinXMLOpenStartElement {
     pub data_size: u32,
-    pub name: BinXmlName<'a>,
+    pub name: BinXmlNameRef,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -66,8 +66,8 @@ pub struct BinXMLTemplateDefinition<'a> {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXmlEntityReference<'a> {
-    pub name: BinXmlName<'a>,
+pub struct BinXmlEntityReference {
+    pub name: BinXmlNameRef,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -99,6 +99,6 @@ pub struct BinXMLFragmentHeader {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLAttribute<'a> {
-    pub name: BinXmlName<'a>,
+pub struct BinXMLAttribute {
+    pub name: BinXmlNameRef,
 }
