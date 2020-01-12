@@ -32,16 +32,18 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().ok_or(
+                visitor.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
-                    ),
-                )?)?;
+                    )
+                })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or(EvtxError::FailedToCreateRecordModel(
-                    "Invalid parser state - expected stack to be non-empty",
-                ))?;
+                let close_element = stack.pop().ok_or_else(|| {
+                    EvtxError::FailedToCreateRecordModel(
+                        "Invalid parser state - expected stack to be non-empty",
+                    )
+                })?;
                 visitor.visit_close_element(&close_element)?
             }
             XmlModel::Value(s) => visitor.visit_characters(&s)?,
