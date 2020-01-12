@@ -42,5 +42,12 @@ static LOGGER_INIT: Once = Once::new();
 // it will crash when attempting to run `cargo test` with some logging facilities.
 #[cfg(test)]
 pub fn ensure_env_logger_initialized() {
-    LOGGER_INIT.call_once(env_logger::init);
+    use std::io::Write;
+
+    LOGGER_INIT.call_once(|| {
+        let mut builder = env_logger::Builder::from_default_env();
+        builder
+            .format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()))
+            .init();
+    });
 }

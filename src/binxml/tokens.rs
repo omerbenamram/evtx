@@ -161,7 +161,11 @@ pub fn read_template_definition<'a>(
 ) -> Result<BinXMLTemplateDefinition<'a>> {
     let header = read_template_definition_header(cursor)?;
 
-    trace!("Read template header {:?}", header);
+    trace!(
+        "Offset `0x{:08x}` - TemplateDefinition {}",
+        cursor.position(),
+        header
+    );
 
     let template = match BinXmlDeserializer::read_binxml_fragment(
         cursor,
@@ -346,7 +350,7 @@ mod test {
 
     macro_rules! n {
         ($s: expr) => {
-            BinXmlName::from_static_string($s)
+            BinXmlName::from_str($s)
         };
     }
 

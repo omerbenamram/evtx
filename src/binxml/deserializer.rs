@@ -199,11 +199,8 @@ impl<'a> IterTokens<'a> {
         let offset_from_chunk_start = cursor.position();
 
         trace!(
-            "Offset `0x{:08x}`: Reading next token",
-            offset_from_chunk_start
-        );
-        trace!(
-            "need to read: {:?}, read so far: {}",
+            "Offset `0x{:08x}`: need to read: {:?}, read so far: {}",
+            offset_from_chunk_start,
             self.data_size,
             self.data_read_so_far
         );

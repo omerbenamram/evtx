@@ -25,13 +25,14 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
     let needed_bytes = u64::from(expected_number_of_characters * 2);
 
     trace!(
-        "Going to read a{}string of len {} from stream",
-        if is_null_terminated {
+        "Offset `0x{offset:08x} ({offset})` reading a{nul}string of len {len}",
+        offset = stream.tell().unwrap_or(0),
+        nul = if is_null_terminated {
             " null terminated "
         } else {
             " "
         },
-        expected_number_of_characters
+        len = expected_number_of_characters
     );
 
     let s = read_utf16_by_size(stream, needed_bytes)?;

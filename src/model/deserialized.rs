@@ -4,6 +4,9 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use std::borrow::Cow;
 
 use crate::ChunkOffset;
+use serde::export::fmt::Error;
+use serde::export::Formatter;
+use std::fmt;
 use winstructs::guid::Guid;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
@@ -44,6 +47,17 @@ pub struct BinXmlTemplateDefinitionHeader {
     pub next_template_offset: ChunkOffset,
     pub guid: Guid,
     pub data_size: u32,
+}
+
+impl fmt::Display for BinXmlTemplateDefinitionHeader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "<BinXmlTemplateDefinitionHeader - id: {guid}, data_size: {size}>",
+            guid = self.guid.to_string(),
+            size = self.data_size
+        )
+    }
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
