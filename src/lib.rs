@@ -7,10 +7,10 @@
 #[macro_use]
 mod macros;
 
-#[cfg(all(jemalloc, not(target_env = "msvc")))]
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 use jemallocator::Jemalloc;
 
-#[cfg(all(jemalloc, not(target_env = "msvc")))]
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

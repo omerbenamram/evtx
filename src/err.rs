@@ -1,6 +1,4 @@
 use quick_xml;
-#[cfg(backtraces)]
-use std::backtrace::Backtrace;
 use thiserror::Error;
 
 use crate::evtx_parser::ReadSeek;
