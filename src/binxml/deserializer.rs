@@ -139,6 +139,7 @@ impl<'a> IterTokens<'a> {
                 Ok(BinXMLDeserializedTokens::OpenStartElement(
                     read_open_start_element(
                         cursor,
+                        self.chunk,
                         token_information.has_attributes,
                         self.is_inside_substitution,
                     )?,

@@ -245,6 +245,7 @@ pub fn read_substitution_descriptor(
 
 pub fn read_open_start_element(
     cursor: &mut Cursor<&[u8]>,
+    chunk: Option<&EvtxChunk>,
     has_attributes: bool,
     is_substitution: bool,
 ) -> Result<BinXMLOpenStartElement> {
@@ -273,24 +274,22 @@ pub fn read_open_start_element(
     // This is a heuristic, sometimes `dependency_identifier` is not present even though it should have been.
     // This will result in interpreting garbage bytes as the data size.
     // We try to recover from this situation by rolling back the cursor and trying again, without reading the `dependency_identifier`.
-
-    // TODO: See if this can be fixed without the chunk
-    //    if let Some(c) = chunk {
-    //        if data_size >= c.data.len() as u32 {
-    //            warn!(
-    //                "Detected a case where `dependency_identifier` should not have been read. \
-    //                 Trying to read again without it."
-    //            );
-    //            cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
-    //                WrappedIoError::io_error_with_message(
-    //                    e,
-    //                    "failed to skip when recovering from `dependency_identifier` hueristic",
-    //                    cursor,
-    //                )
-    //            })?;
-    //            return read_open_start_element(cursor, has_attributes, true);
-    //        }
-    //    }
+    if let Some(c) = chunk {
+        if data_size >= c.data.len() as u32 {
+            warn!(
+                "Detected a case where `dependency_identifier` should not have been read. \
+                 Trying to read again without it."
+            );
+            cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
+                WrappedIoError::io_error_with_message(
+                    e,
+                    "failed to skip when recovering from `dependency_identifier` hueristic",
+                    cursor,
+                )
+            })?;
+            return read_open_start_element(cursor, chunk, has_attributes, true);
+        }
+    }
 
     trace!("\t Data Size - {}", data_size);
     let name = BinXmlNameRef::from_stream(cursor)?;
