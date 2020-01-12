@@ -322,6 +322,7 @@ pub fn read_open_start_element<'a>(
 
     trace!("\t Data Size - {}", data_size);
     let name = BinXmlName::from_binxml_stream(cursor, chunk)?;
+    trace!("\t Name - {}", name);
 
     let _attribute_list_data_size = if has_attributes {
         try_read!(cursor, u32, "open_start_element_attribute_list_data_size")?

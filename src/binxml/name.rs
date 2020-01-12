@@ -9,12 +9,21 @@ use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
 use crate::evtx_chunk::EvtxChunk;
+use log::trace;
 use quick_xml::events::{BytesEnd, BytesStart};
+use serde::export::Formatter;
+use std::fmt;
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub struct BinXmlName<'a> {
     str: Cow<'a, str>,
     data_size: u32,
+}
+
+impl<'a> fmt::Display for BinXmlName<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.str)
+    }
 }
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
@@ -38,8 +47,8 @@ impl BinXmlNameLink {
         })
     }
 
-    pub fn data_size() -> ChunkOffset {
-        12
+    pub fn data_size() -> u32 {
+        6
     }
 }
 
@@ -79,7 +88,21 @@ impl<'a> BinXmlName<'a> {
             // This doesn't actually clone the string, just the reference and the `data_size`.
             Ok(name.clone())
         } else {
-            Self::from_stream(cursor)
+            let current_position = cursor.position();
+
+            if current_position != u64::from(name_offset) {
+                try_seek!(cursor, name_offset, "Seek to string")?;
+
+                let _ = BinXmlNameLink::from_stream(cursor)?;
+                let ret = Self::from_stream(cursor);
+
+                try_seek!(cursor, current_position, "Seek back after reading string")?;
+                ret
+            } else {
+                trace!("name is here");
+                let _ = BinXmlNameLink::from_stream(cursor)?;
+                Self::from_stream(cursor)
+            }
         }
     }
 

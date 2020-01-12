@@ -91,12 +91,6 @@ impl<'a> BinXmlDeserializer<'a> {
         }
 
         let seek_ahead = iterator.cursor.position() - offset;
-
-        trace!(
-            "Position is {}, seeking {} bytes ahead",
-            cursor.position(),
-            seek_ahead
-        );
         cursor.seek(SeekFrom::Current(seek_ahead as i64))?;
 
         Ok(tokens)
@@ -199,10 +193,10 @@ impl<'a> IterTokens<'a> {
         let offset_from_chunk_start = cursor.position();
 
         trace!(
-            "Offset `0x{:08x}`: need to read: {:?}, read so far: {}",
-            offset_from_chunk_start,
-            self.data_size,
-            self.data_read_so_far
+            "Offset `0x{offset:08x} ({offset})`: need to read: {data:?}, read so far: {pos}",
+            offset = offset_from_chunk_start,
+            data = self.data_size,
+            pos = self.data_read_so_far
         );
 
         // Finished reading

@@ -46,7 +46,7 @@ impl<'chunk> TemplateCache<'chunk> {
                     break;
                 }
 
-                try_seek!(cursor, offset, "next template")?;
+                try_seek!(cursor, next_template_offset, "next template")?;
             }
         }
 

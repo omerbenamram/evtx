@@ -213,7 +213,12 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
-        trace!("deserialize_value_type: {:?}, {:?}", value_type, size);
+        trace!(
+            "Offset `0x{offset:08x} ({offset}): {value_type:?}, {size:?}",
+            offset = cursor.position(),
+            value_type = value_type,
+            size = size
+        );
 
         let value = match (value_type, size) {
             (BinXmlValueType::NullType, _) => BinXmlValue::NullType,
