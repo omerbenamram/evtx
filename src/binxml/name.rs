@@ -8,18 +8,16 @@ use crate::utils::read_len_prefixed_utf16_string;
 use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-use crate::evtx_chunk::EvtxChunk;
-use log::trace;
 use quick_xml::events::{BytesEnd, BytesStart};
 use serde::export::Formatter;
 use std::fmt;
 
-#[derive(Debug, PartialEq, PartialOrd, Clone)]
+#[derive(Debug, PartialEq, PartialOrd, Clone, Hash)]
 pub struct BinXmlName<'a> {
     str: Cow<'a, str>,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Clone, Hash)]
 pub struct BinXmlNameRef {
     pub offset: ChunkOffset,
 }
