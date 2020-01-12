@@ -35,27 +35,25 @@ impl<'a> XmlElementBuilder<'a> {
             current_attribute_value: None,
         }
     }
-    pub fn name(mut self, name: Cow<'a, Name<'a>>) -> Self {
+    pub fn name(&mut self, name: Cow<'a, Name<'a>>) {
         self.name = Some(name);
-        self
     }
 
-    pub fn attribute_name(mut self, name: Cow<'a, Name<'a>>) -> Self {
+    pub fn attribute_name(&mut self, name: Cow<'a, Name<'a>>) {
         match self.current_attribute_name {
             None => self.current_attribute_name = Some(name),
-            Some(name) => {
+            Some(_) => {
                 error!("invalid state, overriding name");
                 self.current_attribute_name = Some(name);
             }
         }
-        self
     }
 
-    pub fn attribute_value(mut self, value: Cow<'a, BinXmlValue<'a>>) -> Result<Self, EvtxError> {
+    pub fn attribute_value(&mut self, value: Cow<'a, BinXmlValue<'a>>) -> Result<(), EvtxError> {
         // If we are in an attribute value without a name, simply ignore the request.
         // This is consistent with what windows is doing.
         if self.current_attribute_name.is_none() {
-            return Ok(self);
+            return Ok(());
         }
 
         match self.current_attribute_value {
@@ -72,7 +70,7 @@ impl<'a> XmlElementBuilder<'a> {
             value: self.current_attribute_value.take().unwrap(),
         });
 
-        Ok(self)
+        Ok(())
     }
 
     pub fn finish(self) -> Result<XmlElement<'a>, EvtxError> {

@@ -174,17 +174,14 @@ pub fn create_record_model<'a>(
             Cow::Owned(BinXMLDeserializedTokens::Attribute(ref attr))
             | Cow::Borrowed(BinXMLDeserializedTokens::Attribute(ref attr)) => {
                 trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
-                match current_element.take() {
-                    None => {
-                        return Err(EvtxError::FailedToCreateRecordModel(
-                            "attribute - Bad parser state",
-                        ));
-                    }
-                    Some(builder) => {
-                        current_element =
-                            Some(builder.attribute_name(expand_string_ref(&attr.name, chunk)?));
-                    }
-                };
+                if current_element.is_none() {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "attribute - Bad parser state",
+                    ));
+                }
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_name(expand_string_ref(&attr.name, chunk)?)
+                }
             }
             Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(ref elem))
             | Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(ref elem)) => {
@@ -192,13 +189,13 @@ pub fn create_record_model<'a>(
                     "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
                     elem.name
                 );
-                let builder = XmlElementBuilder::new();
-                current_element = Some(builder.name(expand_string_ref(&elem.name, chunk)?));
+                let mut builder = XmlElementBuilder::new();
+                builder.name(expand_string_ref(&elem.name, chunk)?);
+                current_element = Some(builder);
             }
             Cow::Owned(BinXMLDeserializedTokens::Value(value)) => {
                 trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                match current_element.take() {
-                    // A string that is not inside any element, yield it
+                match current_element {
                     None => match value {
                         BinXmlValue::EvtXml => {
                             return Err(EvtxError::FailedToCreateRecordModel(
@@ -209,17 +206,15 @@ pub fn create_record_model<'a>(
                             model.push(XmlModel::Value(Cow::Owned(value)));
                         }
                     },
-                    // A string that is bound to an attribute
-                    Some(builder) => {
-                        current_element = Some(builder.attribute_value(Cow::Owned(value))?);
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Owned(value))?;
                     }
-                };
+                }
             }
             Cow::Borrowed(BinXMLDeserializedTokens::Value(value)) => {
                 trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                match current_element.take() {
-                    // A string that is not inside any element, yield it
-                    None => match value {
+                if current_element.is_none() {
+                    match value {
                         BinXmlValue::EvtXml => {
                             return Err(EvtxError::FailedToCreateRecordModel(
                                 "Call `expand_templates` before calling this function",
@@ -228,12 +223,11 @@ pub fn create_record_model<'a>(
                         _ => {
                             model.push(XmlModel::Value(Cow::Borrowed(value)));
                         }
-                    },
-                    // A string that is bound to an attribute
-                    Some(builder) => {
-                        current_element = Some(builder.attribute_value(Cow::Borrowed(value))?);
                     }
-                };
+                }
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_value(Cow::Borrowed(value))?
+                }
             }
         }
     }
