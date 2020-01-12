@@ -37,10 +37,13 @@ indoc = { version = "0.3.4", optional = true }
 serde = "^1.0"
 serde_json = "^1.0"
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+# jemalloc is significantly more peformant than the system allocator.
+jemallocator = {version = "0.3.2", optional = true}
+
 [features]
-default = ["multithreading", "evtx_dump"]
-# Available only on nightly
-backtraces = []
+default = ["multithreading", "evtx_dump", "jemalloc"]
+jemalloc = ["jemallocator"]
 evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 
