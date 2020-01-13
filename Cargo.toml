@@ -37,11 +37,19 @@ indoc = { version = "0.3.4", optional = true }
 serde = "^1.0"
 serde_json = "^1.0"
 
+[target.'cfg(not(windows))'.dependencies]
+# jemalloc is significantly more peformant than the system allocator.
+jemallocator = {version = "0.3.2", optional = true}
+
+[target.'cfg(windows)'.dependencies]
+# jemalloc is significantly more peformant than the system allocator.
+rpmalloc = {version = "0.1.0", optional = true}
+
+
 [features]
 default = ["multithreading", "evtx_dump"]
-# Available only on nightly
-backtraces = []
-evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
+fast-alloc = ["jemallocator", "rpmalloc"]
+evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "fast-alloc"]
 multithreading = ["rayon"]
 
 [dev-dependencies]
@@ -52,6 +60,10 @@ assert_cmd = "0.12.0"
 predicates = "^1"
 env_logger = "0.7.1"
 tempfile = "3.1.0"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]

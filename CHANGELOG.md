@@ -4,13 +4,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4 - 2020-01-14]
+
+This release should make `evtx_dump` 3 times faster on windows machines!
+Also - about 25% faster on linux machines.
+
+*NOTE*: this does not affect library code using `evtx`, only the binary target `evtx_dump`.
+
+If you are using `evtx` as a library, you might benefit significantly from adapting a custom allocator!
+
+### Changed
+- Added `jemalloc`/`rpmalloc`(windows) to take advantage of smarter allocation management.
+- Use buffered writing on `evtx_dump`.
+- Better utilization of cached strings.
+
 ## [0.6.3 - 2020-01-11]
 
 This version should be 10-15% faster!
 
 ### Fixed
 - When using separate json attributes, if the element's value is empty, remove the empty mapping. #71
-
 
 
 ## [0.6.2 - 2019-12-17]
