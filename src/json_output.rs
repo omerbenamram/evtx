@@ -106,7 +106,7 @@ impl JsonOutput {
         match element
             .attributes
             .iter()
-            .find(|a| a.name.as_ref().0 == "Name")
+            .find(|a| a.name.as_ref().as_str() == "Name")
         {
             Some(name) => {
                 let data_key: Cow<'_, str> = name.value.as_ref().as_cow_str();
@@ -218,7 +218,7 @@ impl JsonOutput {
                 })?;
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
-                
+
                 // If the element's main value is empty, we want to remove it because we
                 // do not want the value to represent an empty object.
                 if value[name] == Value::Object(Map::new()) {
@@ -361,7 +361,7 @@ impl BinXmlOutput for JsonOutput {
                 let as_string = String::from_utf8(escaped.to_vec())
                     .expect("This cannot fail, since it was a valid string beforehand");
 
-                self.visit_characters(&BinXmlValue::StringType(Cow::Borrowed(&as_string)))?;
+                self.visit_characters(&BinXmlValue::StringType(as_string))?;
                 Ok(())
             }
             Err(_) => Err(JsonStructureError {
@@ -408,7 +408,7 @@ mod tests {
 
     fn dummy_event() -> XmlElement<'static> {
         XmlElement {
-            name: Cow::Owned(BinXmlName(Cow::Borrowed("Dummy"))),
+            name: Cow::Owned(BinXmlName::from_str("Dummy")),
             attributes: vec![],
         }
     }
@@ -419,16 +419,14 @@ mod tests {
         for attr in event.attributes() {
             let attr = attr.expect("Failed to read attribute.");
             attrs.push(XmlAttribute {
-                name: Cow::Owned(BinXmlName(Cow::Owned(bytes_to_string(attr.key)))),
+                name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key))),
                 // We have to compromise here and assume all values are strings.
-                value: Cow::Owned(BinXmlValue::StringType(Cow::Owned(bytes_to_string(
-                    &attr.value,
-                )))),
+                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
             });
         }
 
         XmlElement {
-            name: Cow::Owned(BinXmlName(Cow::Owned(bytes_to_string(event.name())))),
+            name: Cow::Owned(BinXmlName::from_string(bytes_to_string(event.name()))),
             attributes: attrs,
         }
     }
@@ -464,9 +462,7 @@ mod tests {
                             .expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(&BinXmlValue::StringType(Cow::Owned(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(&BinXmlValue::StringType(bytes_to_string(text.as_ref())))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),

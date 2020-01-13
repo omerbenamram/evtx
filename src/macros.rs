@@ -1,4 +1,8 @@
 macro_rules! capture_context {
+    ($cursor: ident, $e: ident, $name: expr) => {{
+        let inner = $crate::err::WrappedIoError::capture_hexdump(Box::new($e), $cursor);
+        $crate::err::DeserializationError::from(inner)
+    }};
     ($cursor: ident, $e: ident, $token: expr, $name: expr) => {{
         let inner = $crate::err::WrappedIoError::capture_hexdump(Box::new($e), $cursor);
         $crate::err::DeserializationError::FailedToReadToken {
@@ -7,6 +11,14 @@ macro_rules! capture_context {
             source: inner,
         }
     }};
+}
+
+macro_rules! try_seek {
+    ($cursor: ident, $offset: expr, $name: expr) => {
+        $cursor
+            .seek(SeekFrom::Start(u64::from($offset.clone())))
+            .map_err(|e| capture_context!($cursor, e, $name));
+    };
 }
 
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
@@ -142,10 +154,6 @@ macro_rules! try_read {
     ($cursor: ident, len_prefixed_utf_16_str, $name: expr) => {
         read_len_prefixed_utf16_string($cursor, false)
             .map_err(|e| capture_context!($cursor, e, "len_prefixed_utf_16_str", $name))
-            .map(|s| match s {
-                Some(s) => Some(Cow::Owned(s)),
-                None => None,
-            })
     };
 
     ($cursor: ident, len_prefixed_utf_16_str_nul_terminated) => {{
@@ -153,14 +161,9 @@ macro_rules! try_read {
     }};
 
     ($cursor: ident, len_prefixed_utf_16_str_nul_terminated, $name: expr) => {
-        read_len_prefixed_utf16_string($cursor, true)
-            .map_err(|e| {
-                capture_context!($cursor, e, "len_prefixed_utf_16_str_nul_terminated", $name)
-            })
-            .map(|s| match s {
-                Some(s) => Some(Cow::Owned(s)),
-                None => None,
-            })
+        read_len_prefixed_utf16_string($cursor, true).map_err(|e| {
+            capture_context!($cursor, e, "len_prefixed_utf_16_str_nul_terminated", $name)
+        })
     };
 
     ($cursor: ident, null_terminated_utf_16_str) => {{
@@ -170,7 +173,6 @@ macro_rules! try_read {
     ($cursor: ident, null_terminated_utf_16_str, $name: expr) => {
         read_null_terminated_utf16_string($cursor)
             .map_err(|e| capture_context!($cursor, e, "null_terminated_utf_16_str", $name))
-            .map(Cow::Owned)
     };
 
     ($cursor: ident, sid, $name: expr) => {

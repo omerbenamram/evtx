@@ -1,5 +1,5 @@
 use crate::binxml::tokens::read_template_definition;
-use crate::err::{DeserializationResult, WrappedIoError};
+use crate::err::DeserializationResult;
 
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::ChunkOffset;
@@ -7,6 +7,7 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use encoding::EncodingRef;
 use log::trace;
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
@@ -27,24 +28,17 @@ impl<'chunk> TemplateCache<'chunk> {
     ) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
         let mut cursor = Cursor::new(data);
+        let cursor_ref = cursor.borrow_mut();
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor
-                .seek(SeekFrom::Start(u64::from(*offset)))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        format!("seeking to template at chunk offset {} failed.", offset),
-                        &mut cursor,
-                    )
-                })?;
+            try_seek!(cursor_ref, offset, "first template")?;
 
             loop {
-                let table_offset = cursor.position();
-                let definition = read_template_definition(&mut cursor, None, ansi_codec)?;
+                let table_offset = cursor_ref.position() as ChunkOffset;
+                let definition = read_template_definition(cursor_ref, None, ansi_codec)?;
                 let next_template_offset = definition.header.next_template_offset;
 
-                cache.insert(table_offset as u32, definition);
+                cache.insert(table_offset, definition);
 
                 trace!("Next template will be at {}", next_template_offset);
 
@@ -52,7 +46,7 @@ impl<'chunk> TemplateCache<'chunk> {
                     break;
                 }
 
-                cursor.seek(SeekFrom::Start(u64::from(next_template_offset)))?;
+                try_seek!(cursor_ref, next_template_offset, "next template")?;
             }
         }
 

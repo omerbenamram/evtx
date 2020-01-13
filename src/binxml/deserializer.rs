@@ -91,12 +91,6 @@ impl<'a> BinXmlDeserializer<'a> {
         }
 
         let seek_ahead = iterator.cursor.position() - offset;
-
-        trace!(
-            "Position is {}, seeking {} bytes ahead",
-            cursor.position(),
-            seek_ahead
-        );
         cursor.seek(SeekFrom::Current(seek_ahead as i64))?;
 
         Ok(tokens)
@@ -157,9 +151,9 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
                 BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
             )),
-            BinXMLRawToken::Attribute(_token_information) => Ok(
-                BinXMLDeserializedTokens::Attribute(read_attribute(cursor, self.chunk)?),
-            ),
+            BinXMLRawToken::Attribute(_token_information) => {
+                Ok(BinXMLDeserializedTokens::Attribute(read_attribute(cursor)?))
+            }
             BinXMLRawToken::CDataSection => Err(DeserializationError::UnimplementedToken {
                 name: "CDataSection",
                 offset: cursor.position(),
@@ -169,10 +163,10 @@ impl<'a> IterTokens<'a> {
                 offset: cursor.position(),
             }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
-                read_entity_ref(cursor, self.chunk)?,
+                read_entity_ref(cursor)?,
             )),
             BinXMLRawToken::ProcessingInstructionTarget => Ok(BinXMLDeserializedTokens::PITarget(
-                read_processing_instruction_target(cursor, self.chunk)?,
+                read_processing_instruction_target(cursor)?,
             )),
             BinXMLRawToken::ProcessingInstructionData => Ok(BinXMLDeserializedTokens::PIData(
                 read_processing_instruction_data(cursor)?,
@@ -199,13 +193,10 @@ impl<'a> IterTokens<'a> {
         let offset_from_chunk_start = cursor.position();
 
         trace!(
-            "Offset `0x{:08x}`: Reading next token",
-            offset_from_chunk_start
-        );
-        trace!(
-            "need to read: {:?}, read so far: {}",
-            self.data_size,
-            self.data_read_so_far
+            "Offset `0x{offset:08x} ({offset})`: need to read: {data:?}, read so far: {pos}",
+            offset = offset_from_chunk_start,
+            data = self.data_size,
+            pos = self.data_read_so_far
         );
 
         // Finished reading

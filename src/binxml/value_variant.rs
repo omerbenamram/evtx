@@ -27,7 +27,7 @@ use std::fmt::Write;
 pub enum BinXmlValue<'a> {
     NullType,
     // String may originate in substitution.
-    StringType(Cow<'a, str>),
+    StringType(String),
     AnsiStringType(Cow<'a, str>),
     Int8Type(i8),
     UInt8Type(u8),
@@ -52,7 +52,7 @@ pub enum BinXmlValue<'a> {
     // Because of the recursive type, we instantiate this enum via a method of the Deserializer
     BinXmlType(Vec<BinXMLDeserializedTokens<'a>>),
     EvtXml,
-    StringArrayType(Vec<Cow<'a, str>>),
+    StringArrayType(Vec<String>),
     AnsiStringArrayType,
     Int8ArrayType(Vec<i8>),
     UInt8ArrayType(Vec<u8>),
@@ -213,11 +213,16 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
-        trace!("deserialize_value_type: {:?}, {:?}", value_type, size);
+        trace!(
+            "Offset `0x{offset:08x} ({offset}): {value_type:?}, {size:?}",
+            offset = cursor.position(),
+            value_type = value_type,
+            size = size
+        );
 
         let value = match (value_type, size) {
             (BinXmlValueType::NullType, _) => BinXmlValue::NullType,
-            (BinXmlValueType::StringType, Some(sz)) => BinXmlValue::StringType(Cow::Owned(
+            (BinXmlValueType::StringType, Some(sz)) => BinXmlValue::StringType(
                 read_utf16_by_size(cursor, u64::from(sz))
                     .map_err(|e| {
                         WrappedIoError::io_error_with_message(
@@ -227,10 +232,10 @@ impl<'a> BinXmlValue<'a> {
                         )
                     })?
                     .unwrap_or_else(|| "".to_owned()),
-            )),
+            ),
             (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
                 try_read!(cursor, len_prefixed_utf_16_str, "<string_value>")?
-                    .unwrap_or(Cow::Borrowed("")),
+                    .unwrap_or_else(|| "".to_string()),
             ),
             (BinXmlValueType::AnsiStringType, Some(sz)) => BinXmlValue::AnsiStringType(Cow::Owned(
                 read_ansi_encoded_string(cursor, u64::from(sz), ansi_codec)?
@@ -401,7 +406,7 @@ impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
     fn into(self) -> Value {
         match self {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s.into_owned()),
+            BinXmlValue::StringType(s) => json!(s),
             BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -464,7 +469,7 @@ impl<'c> Into<serde_json::Value> for &'c BinXmlValue<'c> {
     fn into(self) -> Value {
         match self {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s.as_ref()),
+            BinXmlValue::StringType(s) => json!(s),
             BinXmlValue::AnsiStringType(s) => json!(s.as_ref()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),

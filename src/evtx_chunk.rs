@@ -32,6 +32,15 @@ pub struct EvtxChunkHeader {
     pub free_space_offset: u32,
     pub events_checksum: u32,
     pub header_chunk_checksum: u32,
+    // A list of buckets containing the offsets of all strings in the chunk.
+    // Each bucket contains an initial offset for a `BinXmlNameLink`, which in turn contains
+    // the offset for the next strings.
+    // Empty buckets are given the value 0.
+    //  ----------       ------------------
+    // |          |     |                  |
+    // |  offset  | --> |  BinXmlNameLink  | ---> 0
+    // |          |     |                  |
+    //  ----------       ------------------
     strings_offsets: Vec<u32>,
     template_offsets: Vec<u32>,
 }
@@ -121,11 +130,7 @@ impl EvtxChunkData {
 pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
-
-    // For now, `StringCache` does not reference the `chunk lifetime,
-    // but in the future we might want to change that, so it's here.
     pub string_cache: StringCache,
-
     pub template_table: TemplateCache<'chunk>,
 
     pub settings: Arc<ParserSettings>,

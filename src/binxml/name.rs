@@ -1,137 +1,118 @@
-use crate::err::{DeserializationResult as Result, WrappedIoError};
+use crate::err::DeserializationResult as Result;
 
 use crate::ChunkOffset;
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::utils::read_len_prefixed_utf16_string;
 
-use log::trace;
-use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
-use crate::evtx_chunk::EvtxChunk;
 use quick_xml::events::{BytesEnd, BytesStart};
+use serde::export::Formatter;
+use std::fmt;
+
+#[derive(Debug, PartialEq, PartialOrd, Clone, Hash)]
+pub struct BinXmlName {
+    str: String,
+}
+
+#[derive(Debug, PartialOrd, PartialEq, Clone, Hash)]
+pub struct BinXmlNameRef {
+    pub offset: ChunkOffset,
+}
+
+impl fmt::Display for BinXmlName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.str)
+    }
+}
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
-pub struct BinXmlName<'a>(pub Cow<'a, str>);
+pub(crate) struct BinXmlNameLink {
+    pub next_string: Option<ChunkOffset>,
+    pub hash: u16,
+}
 
-pub type StringHashOffset = (String, u16, ChunkOffset);
+impl BinXmlNameLink {
+    pub fn from_stream(stream: &mut Cursor<&[u8]>) -> Result<Self> {
+        let next_string = try_read!(stream, u32)?;
+        let name_hash = try_read!(stream, u16, "name_hash")?;
 
-impl<'a> BinXmlName<'a> {
-    pub fn from_static_string(s: &'static str) -> Self {
-        BinXmlName(Cow::Borrowed(s))
+        Ok(BinXmlNameLink {
+            next_string: if next_string > 0 {
+                Some(next_string)
+            } else {
+                None
+            },
+            hash: name_hash,
+        })
     }
 
-    pub fn from_binxml_stream(
-        cursor: &mut Cursor<&'a [u8]>,
-        chunk: Option<&'a EvtxChunk<'a>>,
-    ) -> Result<BinXmlName<'a>> {
-        // Important!!
-        // The "offset_from_start" refers to the offset where the name struct begins.
+    pub fn data_size() -> u32 {
+        6
+    }
+}
+
+impl BinXmlNameRef {
+    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
         let name_offset = try_read!(cursor, u32, "name_offset")?;
 
-        // If name is cached, read it and seek ahead if needed.
-        if let Some((name, _, n_bytes_read)) =
-            chunk.and_then(|chunk| chunk.string_cache.get_string_and_hash(name_offset))
-        {
-            // Seek if needed
-            if name_offset == cursor.position() as u32 {
-                cursor
-                    .seek(SeekFrom::Current(i64::from(*n_bytes_read)))
-                    .map_err(|e| {
-                        WrappedIoError::io_error_with_message(
-                            e,
-                            "failed to seek back while reading name",
-                            cursor,
-                        )
-                    })?;
-            }
-            return Ok(BinXmlName(Cow::Borrowed(name)));
+        let position_before_string = cursor.position();
+        let need_to_seek = position_before_string == u64::from(name_offset);
+
+        if need_to_seek {
+            let _ = BinXmlNameLink::from_stream(cursor)?;
+            let len = cursor.read_u16::<LittleEndian>()?;
+
+            let nul_terminator_len = 4;
+            let data_size = BinXmlNameLink::data_size() + u32::from(len * 2) + nul_terminator_len;
+
+            try_seek!(
+                cursor,
+                position_before_string + u64::from(data_size),
+                "Skip string"
+            )?;
         }
 
-        let (name, _, _) = Self::from_stream_at_offset(cursor, name_offset)?;
-        Ok(BinXmlName(Cow::Owned(name)))
+        Ok(BinXmlNameRef {
+            offset: name_offset,
+        })
+    }
+}
+
+impl BinXmlName {
+    #[cfg(test)]
+    pub(crate) fn from_str(s: &str) -> Self {
+        BinXmlName { str: s.to_string() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_string(s: String) -> Self {
+        BinXmlName { str: s }
     }
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
-    pub fn from_stream(cursor: &mut Cursor<&'a [u8]>) -> Result<StringHashOffset> {
-        let position_before_read = cursor.position();
-
-        let _ = try_read!(cursor, u32)?;
-        let name_hash = try_read!(cursor, u16, "name_hash")?;
+    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
         let name = try_read!(cursor, len_prefixed_utf_16_str_nul_terminated, "name")?
-            .unwrap_or(Cow::Borrowed(""));
+            .unwrap_or_else(|| "".to_string());
 
-        let position_after_read = cursor.position();
-
-        Ok((
-            name.to_string(),
-            name_hash,
-            (position_after_read - position_before_read) as ChunkOffset,
-        ))
-    }
-
-    /// Reads a `BinXmlName` from a given offset, seeks if needed.
-    fn from_stream_at_offset(
-        cursor: &mut Cursor<&'a [u8]>,
-        offset: ChunkOffset,
-    ) -> Result<StringHashOffset> {
-        trace!(
-            "Offset {} - Reading name at offset {}.",
-            cursor.position(),
-            offset
-        );
-
-        if offset != cursor.position() as u32 {
-            trace!("Seeking to {}", offset);
-
-            let position_before_seek = cursor.position();
-            // TODO: Seeking would usually fail here, so we need to dump the context at the original offset.
-            cursor
-                .seek(SeekFrom::Start(u64::from(offset)))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        "failed to seek when reading name".to_string(),
-                        cursor,
-                    )
-                })?;
-
-            let (name, hash, n_bytes_read) = Self::from_stream(cursor)?;
-
-            trace!("Restoring cursor to {}", position_before_seek);
-            cursor
-                .seek(SeekFrom::Start(position_before_seek))
-                .map_err(|e| {
-                    WrappedIoError::io_error_with_message(
-                        e,
-                        "failed to seek when reading name".to_string(),
-                        cursor,
-                    )
-                })?;
-
-            Ok((name, hash, n_bytes_read))
-        } else {
-            trace!("Name is at current offset");
-            let (name, hash, n_bytes_read) = Self::from_stream(cursor)?;
-            Ok((name, hash, n_bytes_read))
-        }
+        Ok(BinXmlName { str: name })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.str
     }
 }
 
-impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName<'a> {
+impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName {
     fn into(self) -> BytesStart<'a> {
-        BytesStart::borrowed_name(self.0.as_bytes())
+        BytesStart::borrowed_name(self.as_str().as_bytes())
     }
 }
 
-impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName<'a> {
+impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName {
     fn into(self) -> BytesEnd<'a> {
-        let inner = self.0.as_bytes();
+        let inner = self.as_str().as_bytes();
         BytesEnd::owned(inner.to_vec())
     }
 }

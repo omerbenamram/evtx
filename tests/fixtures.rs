@@ -7,8 +7,16 @@ static LOGGER_INIT: Once = Once::new();
 
 // Rust runs the tests concurrently, so unless we synchronize logging access
 // it will crash when attempting to run `cargo test` with some logging facilities.
+#[cfg(test)]
 pub fn ensure_env_logger_initialized() {
-    LOGGER_INIT.call_once(env_logger::init);
+    use std::io::Write;
+
+    LOGGER_INIT.call_once(|| {
+        let mut builder = env_logger::Builder::from_default_env();
+        builder
+            .format(|buf, record| writeln!(buf, "[{}] - {}", record.level(), record.args()))
+            .init();
+    });
 }
 
 pub fn samples_dir() -> PathBuf {

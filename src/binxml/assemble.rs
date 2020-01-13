@@ -7,10 +7,11 @@ use crate::model::deserialized::{
 use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
 use log::{debug, trace, warn};
-use std::borrow::Cow;
+use std::borrow::{BorrowMut, Cow};
 
 use std::mem;
 
+use crate::binxml::name::{BinXmlName, BinXmlNameRef};
 use crate::binxml::tokens::read_template_definition;
 use crate::EvtxChunk;
 use std::io::{Cursor, Seek, SeekFrom};
@@ -21,7 +22,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
     visitor: &mut T,
 ) -> Result<()> {
     let expanded_tokens = expand_templates(tokens, chunk)?;
-    let record_model = create_record_model(expanded_tokens)?;
+    let record_model = create_record_model(expanded_tokens, chunk)?;
 
     visitor.visit_start_of_stream()?;
 
@@ -31,16 +32,18 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().ok_or(
+                visitor.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
-                    ),
-                )?)?;
+                    )
+                })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or(EvtxError::FailedToCreateRecordModel(
-                    "Invalid parser state - expected stack to be non-empty",
-                ))?;
+                let close_element = stack.pop().ok_or_else(|| {
+                    EvtxError::FailedToCreateRecordModel(
+                        "Invalid parser state - expected stack to be non-empty",
+                    )
+                })?;
                 visitor.visit_close_element(&close_element)?
             }
             XmlModel::Value(s) => visitor.visit_characters(&s)?,
@@ -58,6 +61,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
 
 pub fn create_record_model<'a>(
     tokens: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
+    chunk: &'a EvtxChunk<'a>,
 ) -> Result<Vec<XmlModel<'a>>> {
     let mut current_element: Option<XmlElementBuilder> = None;
     let mut current_pi: Option<XmlPIBuilder> = None;
@@ -106,22 +110,18 @@ pub fn create_record_model<'a>(
                     "Unimplemented - CharacterReference",
                 ));
             }
-            Cow::Owned(BinXMLDeserializedTokens::EntityRef(entity)) => {
-                model.push(XmlModel::EntityRef(Cow::Owned(entity.name)))
+            Cow::Owned(BinXMLDeserializedTokens::EntityRef(ref entity))
+            | Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(ref entity)) => {
+                model.push(XmlModel::EntityRef(expand_string_ref(&entity.name, chunk)?))
             }
-            Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(entity)) => {
-                model.push(XmlModel::EntityRef(Cow::Borrowed(&entity.name)))
-            }
-            Cow::Owned(BinXMLDeserializedTokens::PITarget(name)) => {
-                let builder = XmlPIBuilder::new();
-                if let Some(_pi) = current_pi {
+            Cow::Owned(BinXMLDeserializedTokens::PITarget(ref name))
+            | Cow::Borrowed(BinXMLDeserializedTokens::PITarget(ref name)) => {
+                let mut builder = XmlPIBuilder::new();
+                if current_pi.is_some() {
                     warn!("PITarget without following PIData, previous target will be ignored.")
                 }
-                current_pi = Some(builder.name(Cow::Owned(name.name)));
-            }
-            Cow::Borrowed(BinXMLDeserializedTokens::PITarget(name)) => {
-                let builder = XmlPIBuilder::new();
-                current_pi = Some(builder.name(Cow::Borrowed(&name.name)));
+                builder.name(expand_string_ref(&name.name, chunk)?);
+                current_pi = Some(builder);
             }
             Cow::Owned(BinXMLDeserializedTokens::PIData(data)) => match current_pi.take() {
                 None => {
@@ -129,8 +129,9 @@ pub fn create_record_model<'a>(
                         "PI Data without PI target - Bad parser state",
                     ));
                 }
-                Some(builder) => {
-                    model.push(builder.data(data).finish());
+                Some(mut builder) => {
+                    builder.data(Cow::Owned(data));
+                    model.push(builder.finish());
                 }
             },
             Cow::Borrowed(BinXMLDeserializedTokens::PIData(data)) => match current_pi.take() {
@@ -139,8 +140,9 @@ pub fn create_record_model<'a>(
                         "PI Data without PI target - Bad parser state",
                     ));
                 }
-                Some(builder) => {
-                    model.push(builder.data(Cow::Borrowed(data)).finish());
+                Some(mut builder) => {
+                    builder.data(Cow::Borrowed(data));
+                    model.push(builder.finish());
                 }
             },
             Cow::Owned(BinXMLDeserializedTokens::Substitution(_))
@@ -174,55 +176,31 @@ pub fn create_record_model<'a>(
                 };
             }
 
-            Cow::Owned(BinXMLDeserializedTokens::Attribute(attr)) => {
+            Cow::Owned(BinXMLDeserializedTokens::Attribute(ref attr))
+            | Cow::Borrowed(BinXMLDeserializedTokens::Attribute(ref attr)) => {
                 trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
-                match current_element.take() {
-                    None => {
-                        return Err(EvtxError::FailedToCreateRecordModel(
-                            "attribute - Bad parser state",
-                        ));
-                    }
-                    Some(builder) => {
-                        current_element = Some(builder.attribute_name(Cow::Owned(attr.name)));
-                    }
-                };
+                if current_element.is_none() {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "attribute - Bad parser state",
+                    ));
+                }
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_name(expand_string_ref(&attr.name, chunk)?)
+                }
             }
-
-            Cow::Borrowed(BinXMLDeserializedTokens::Attribute(attr)) => {
-                trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
-                match current_element.take() {
-                    None => {
-                        return Err(EvtxError::FailedToCreateRecordModel(
-                            "attribute - Bad parser state",
-                        ));
-                    }
-                    Some(builder) => {
-                        current_element = Some(builder.attribute_name(Cow::Borrowed(&attr.name)));
-                    }
-                };
-            }
-
-            Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
+            Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(ref elem))
+            | Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(ref elem)) => {
                 trace!(
                     "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
                     elem.name
                 );
-                let builder = XmlElementBuilder::new();
-                current_element = Some(builder.name(Cow::Owned(elem.name)));
+                let mut builder = XmlElementBuilder::new();
+                builder.name(expand_string_ref(&elem.name, chunk)?);
+                current_element = Some(builder);
             }
-            Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
-                trace!(
-                    "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
-                    elem.name
-                );
-                let builder = XmlElementBuilder::new();
-                current_element = Some(builder.name(Cow::Borrowed(&elem.name)));
-            }
-
             Cow::Owned(BinXMLDeserializedTokens::Value(value)) => {
                 trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                match current_element.take() {
-                    // A string that is not inside any element, yield it
+                match current_element {
                     None => match value {
                         BinXmlValue::EvtXml => {
                             return Err(EvtxError::FailedToCreateRecordModel(
@@ -233,16 +211,14 @@ pub fn create_record_model<'a>(
                             model.push(XmlModel::Value(Cow::Owned(value)));
                         }
                     },
-                    // A string that is bound to an attribute
-                    Some(builder) => {
-                        current_element = Some(builder.attribute_value(Cow::Owned(value))?);
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Owned(value))?;
                     }
-                };
+                }
             }
             Cow::Borrowed(BinXMLDeserializedTokens::Value(value)) => {
                 trace!("BinXMLDeserializedTokens::Value(value) - {:?}", value);
-                match current_element.take() {
-                    // A string that is not inside any element, yield it
+                match current_element {
                     None => match value {
                         BinXmlValue::EvtXml => {
                             return Err(EvtxError::FailedToCreateRecordModel(
@@ -253,16 +229,32 @@ pub fn create_record_model<'a>(
                             model.push(XmlModel::Value(Cow::Borrowed(value)));
                         }
                     },
-                    // A string that is bound to an attribute
-                    Some(builder) => {
-                        current_element = Some(builder.attribute_value(Cow::Borrowed(value))?);
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Borrowed(value))?;
                     }
-                };
+                }
             }
         }
     }
 
     Ok(model)
+}
+
+fn expand_string_ref<'a>(
+    string_ref: &BinXmlNameRef,
+    chunk: &'a EvtxChunk<'a>,
+) -> Result<Cow<'a, BinXmlName>> {
+    match chunk.string_cache.get_cached_string(string_ref.offset) {
+        Some(s) => Ok(Cow::Borrowed(s)),
+        None => {
+            let mut cursor = Cursor::new(chunk.data);
+            let cursor_ref = cursor.borrow_mut();
+            try_seek!(cursor_ref, string_ref.offset, "Cache missed string")?;
+
+            let string = BinXmlName::from_stream(cursor_ref)?;
+            Ok(Cow::Owned(string))
+        }
+    }
 }
 
 fn expand_token_substitution<'a>(
@@ -357,7 +349,6 @@ fn _expand_templates<'a>(
                 _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }
         }
-
         // Actual template handling.
         Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
             expand_template(template, chunk, stack)?;

@@ -15,7 +15,7 @@ fn test_event_json_with_multiple_nodes_same_name_separate() {
         .with_configuration(
             ParserSettings::new()
                 .num_threads(1)
-                .separate_json_attributes(true)
+                .separate_json_attributes(true),
         );
 
     let record = parser
