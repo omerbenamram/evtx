@@ -12,6 +12,17 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+#[cfg(all(feature = "fast-alloc", not(target_env = "msvc")))]
+use jemallocator::Jemalloc;
+
+#[cfg(all(feature = "fast-alloc", not(target_env = "msvc")))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
+#[cfg(all(feature = "fast-alloc", target_env = "msvc"))]
+#[global_allocator]
+static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
+
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
 pub enum EvtxOutputFormat {
     JSON,

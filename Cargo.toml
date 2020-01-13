@@ -41,9 +41,14 @@ serde_json = "^1.0"
 # jemalloc is significantly more peformant than the system allocator.
 jemallocator = {version = "0.3.2", optional = true}
 
+[target.'cfg(target_env = "msvc")'.dependencies]
+# jemalloc is significantly more peformant than the system allocator.
+rpmalloc = {version = "0.1.0", optional = true}
+
+
 [features]
-default = ["multithreading", "evtx_dump", "jemalloc"]
-jemalloc = ["jemallocator"]
+default = ["multithreading", "evtx_dump"]
+fast-alloc = ["jemallocator", "rpmalloc"]
 evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 

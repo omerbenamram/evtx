@@ -7,13 +7,6 @@
 #[macro_use]
 mod macros;
 
-#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
-use jemallocator::Jemalloc;
-
-#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
-
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
