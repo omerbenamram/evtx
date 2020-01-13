@@ -9,7 +9,7 @@ use evtx::err::Result as EvtxResult;
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Write, BufWriter};
 use std::path::{Path, PathBuf};
 
 #[derive(Copy, Clone, PartialOrd, PartialEq)]
@@ -111,14 +111,14 @@ impl EvtxDump {
             .expect("possible values are derived from `encodings()`");
 
         let output: Box<dyn Write> = if let Some(path) = matches.value_of("output-target") {
-            Box::new(
+            Box::new(BufWriter::new(
                 Self::create_output_file(path, !matches.is_present("no-confirm-overwrite"))
                     .with_context(|| {
                         format!("An error occurred while creating output file at `{}`", path)
                     })?,
-            )
+            ))
         } else {
-            Box::new(io::stdout())
+            Box::new(BufWriter::new(io::stdout()))
         };
 
         Ok(EvtxDump {
