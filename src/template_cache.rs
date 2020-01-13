@@ -27,15 +27,15 @@ impl<'chunk> TemplateCache<'chunk> {
         ansi_codec: EncodingRef,
     ) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
-        let mut temp_cursor = Cursor::new(data);
-        let cursor = temp_cursor.borrow_mut();
+        let mut cursor = Cursor::new(data);
+        let cursor_ref = cursor.borrow_mut();
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            try_seek!(cursor, offset, "first template")?;
+            try_seek!(cursor_ref, offset, "first template")?;
 
             loop {
-                let table_offset = cursor.position() as ChunkOffset;
-                let definition = read_template_definition(cursor, None, ansi_codec)?;
+                let table_offset = cursor_ref.position() as ChunkOffset;
+                let definition = read_template_definition(cursor_ref, None, ansi_codec)?;
                 let next_template_offset = definition.header.next_template_offset;
 
                 cache.insert(table_offset, definition);
@@ -46,7 +46,7 @@ impl<'chunk> TemplateCache<'chunk> {
                     break;
                 }
 
-                try_seek!(cursor, next_template_offset, "next template")?;
+                try_seek!(cursor_ref, next_template_offset, "next template")?;
             }
         }
 

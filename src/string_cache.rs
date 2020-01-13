@@ -13,16 +13,16 @@ pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
 impl StringCache {
     pub fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
-        let mut temp_cursor = Cursor::new(data);
-        let cursor = temp_cursor.borrow_mut();
+        let mut cursor = Cursor::new(data);
+        let cursor_ref = cursor.borrow_mut();
 
         for &offset in offsets.iter().filter(|&&offset| offset > 0) {
-            try_seek!(cursor, offset, "first xml string")?;
+            try_seek!(cursor_ref, offset, "first xml string")?;
 
             loop {
-                let string_position = cursor.position() as ChunkOffset;
-                let link = BinXmlNameLink::from_stream(cursor)?;
-                let name = BinXmlName::from_stream(cursor)?;
+                let string_position = cursor_ref.position() as ChunkOffset;
+                let link = BinXmlNameLink::from_stream(cursor_ref)?;
+                let name = BinXmlName::from_stream(cursor_ref)?;
 
                 cache.insert(string_position, name);
 
@@ -30,7 +30,7 @@ impl StringCache {
 
                 match link.next_string {
                     Some(offset) => {
-                        try_seek!(cursor, offset, "next xml string")?;
+                        try_seek!(cursor_ref, offset, "next xml string")?;
                     }
                     None => break,
                 }
