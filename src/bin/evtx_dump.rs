@@ -9,17 +9,17 @@ use evtx::err::Result as EvtxResult;
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
-use std::io::{self, Write, BufWriter};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-#[cfg(all(feature = "fast-alloc", not(target_env = "msvc")))]
+#[cfg(all(feature = "fast-alloc", not(windows)))]
 use jemallocator::Jemalloc;
 
-#[cfg(all(feature = "fast-alloc", not(target_env = "msvc")))]
+#[cfg(all(feature = "fast-alloc", not(windows)))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[cfg(all(feature = "fast-alloc", target_env = "msvc"))]
+#[cfg(all(feature = "fast-alloc", windows))]
 #[global_allocator]
 static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
 

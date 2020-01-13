@@ -37,11 +37,11 @@ indoc = { version = "0.3.4", optional = true }
 serde = "^1.0"
 serde_json = "^1.0"
 
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
+[target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
 jemallocator = {version = "0.3.2", optional = true}
 
-[target.'cfg(target_env = "msvc")'.dependencies]
+[target.'cfg(windows)'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
 rpmalloc = {version = "0.1.0", optional = true}
 
