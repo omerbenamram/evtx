@@ -61,6 +61,10 @@ predicates = "^1"
 env_logger = "0.7.1"
 tempfile = "3.1.0"
 
+[profile.release]
+opt-level = 3
+codegen-units = 1
+
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 rexpect = "0.3.0"
