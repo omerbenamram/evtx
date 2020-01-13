@@ -116,11 +116,12 @@ pub fn create_record_model<'a>(
             }
             Cow::Owned(BinXMLDeserializedTokens::PITarget(ref name))
             | Cow::Borrowed(BinXMLDeserializedTokens::PITarget(ref name)) => {
-                let builder = XmlPIBuilder::new();
+                let mut builder = XmlPIBuilder::new();
                 if current_pi.is_some() {
                     warn!("PITarget without following PIData, previous target will be ignored.")
                 }
-                current_pi = Some(builder.name(expand_string_ref(&name.name, chunk)?));
+                builder.name(expand_string_ref(&name.name, chunk)?);
+                current_pi = Some(builder);
             }
             Cow::Owned(BinXMLDeserializedTokens::PIData(data)) => match current_pi.take() {
                 None => {
@@ -128,8 +129,9 @@ pub fn create_record_model<'a>(
                         "PI Data without PI target - Bad parser state",
                     ));
                 }
-                Some(builder) => {
-                    model.push(builder.data(data).finish());
+                Some(mut builder) => {
+                    builder.data(Cow::Owned(data));
+                    model.push(builder.finish());
                 }
             },
             Cow::Borrowed(BinXMLDeserializedTokens::PIData(data)) => match current_pi.take() {
@@ -138,8 +140,9 @@ pub fn create_record_model<'a>(
                         "PI Data without PI target - Bad parser state",
                     ));
                 }
-                Some(builder) => {
-                    model.push(builder.data(Cow::Borrowed(data)).finish());
+                Some(mut builder) => {
+                    builder.data(Cow::Borrowed(data));
+                    model.push(builder.finish());
                 }
             },
             Cow::Owned(BinXMLDeserializedTokens::Substitution(_))
@@ -240,7 +243,7 @@ pub fn create_record_model<'a>(
 fn expand_string_ref<'a>(
     string_ref: &BinXmlNameRef,
     chunk: &'a EvtxChunk<'a>,
-) -> Result<Cow<'a, BinXmlName<'a>>> {
+) -> Result<Cow<'a, BinXmlName>> {
     match chunk.string_cache.get_cached_string(string_ref.offset) {
         Some(s) => Ok(Cow::Borrowed(s)),
         None => {

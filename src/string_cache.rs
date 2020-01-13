@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
 #[derive(Debug)]
-pub struct StringCache<'a>(HashMap<ChunkOffset, BinXmlName<'a>>);
+pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
 
-impl<'a> StringCache<'a> {
-    pub fn populate(data: &'a [u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
+impl StringCache {
+    pub fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
         let mut temp_cursor = Cursor::new(data);
         let cursor = temp_cursor.borrow_mut();
@@ -40,7 +40,7 @@ impl<'a> StringCache<'a> {
         Ok(StringCache(cache))
     }
 
-    pub fn get_cached_string(&self, offset: ChunkOffset) -> Option<&BinXmlName<'a>> {
+    pub fn get_cached_string(&self, offset: ChunkOffset) -> Option<&BinXmlName> {
         self.0.get(&offset)
     }
 

@@ -13,8 +13,8 @@ use serde::export::Formatter;
 use std::fmt;
 
 #[derive(Debug, PartialEq, PartialOrd, Clone, Hash)]
-pub struct BinXmlName<'a> {
-    str: Cow<'a, str>,
+pub struct BinXmlName {
+    str: String,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone, Hash)]
@@ -22,7 +22,7 @@ pub struct BinXmlNameRef {
     pub offset: ChunkOffset,
 }
 
-impl<'a> fmt::Display for BinXmlName<'a> {
+impl fmt::Display for BinXmlName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.str)
     }
@@ -81,23 +81,21 @@ impl BinXmlNameRef {
     }
 }
 
-impl<'a> BinXmlName<'a> {
+impl BinXmlName {
     #[cfg(test)]
-    pub(crate) fn from_str(s: &'a str) -> Self {
-        BinXmlName {
-            str: Cow::Borrowed(s),
-        }
+    pub(crate) fn from_str(s: &str) -> Self {
+        BinXmlName { str: s.to_string() }
     }
 
     #[cfg(test)]
     pub(crate) fn from_string(s: String) -> Self {
-        BinXmlName { str: Cow::Owned(s) }
+        BinXmlName { str: s }
     }
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
-    pub fn from_stream(cursor: &mut Cursor<&'a [u8]>) -> Result<Self> {
+    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
         let name = try_read!(cursor, len_prefixed_utf_16_str_nul_terminated, "name")?
-            .unwrap_or(Cow::Borrowed(""));
+            .unwrap_or_else(|| "".to_string());
 
         Ok(BinXmlName { str: name })
     }
@@ -107,13 +105,13 @@ impl<'a> BinXmlName<'a> {
     }
 }
 
-impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName<'a> {
+impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName {
     fn into(self) -> BytesStart<'a> {
         BytesStart::borrowed_name(self.as_str().as_bytes())
     }
 }
 
-impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName<'a> {
+impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName {
     fn into(self) -> BytesEnd<'a> {
         let inner = self.as_str().as_bytes();
         BytesEnd::owned(inner.to_vec())

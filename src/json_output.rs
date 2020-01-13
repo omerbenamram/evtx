@@ -361,7 +361,7 @@ impl BinXmlOutput for JsonOutput {
                 let as_string = String::from_utf8(escaped.to_vec())
                     .expect("This cannot fail, since it was a valid string beforehand");
 
-                self.visit_characters(&BinXmlValue::StringType(Cow::Borrowed(&as_string)))?;
+                self.visit_characters(&BinXmlValue::StringType(as_string))?;
                 Ok(())
             }
             Err(_) => Err(JsonStructureError {
@@ -421,9 +421,7 @@ mod tests {
             attrs.push(XmlAttribute {
                 name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key))),
                 // We have to compromise here and assume all values are strings.
-                value: Cow::Owned(BinXmlValue::StringType(Cow::Owned(bytes_to_string(
-                    &attr.value,
-                )))),
+                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
             });
         }
 
@@ -464,9 +462,7 @@ mod tests {
                             .expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(&BinXmlValue::StringType(Cow::Owned(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(&BinXmlValue::StringType(bytes_to_string(text.as_ref())))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),

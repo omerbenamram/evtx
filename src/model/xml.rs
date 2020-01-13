@@ -5,14 +5,12 @@ use crate::err::EvtxError;
 use log::error;
 use std::borrow::Cow;
 
-type Name<'a> = BinXmlName<'a>;
-
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
     PI(BinXmlPI<'a>),
-    EntityRef(Cow<'a, Name<'a>>),
+    EntityRef(Cow<'a, BinXmlName>),
     Value(Cow<'a, BinXmlValue<'a>>),
     EndOfStream,
     StartOfStream,
@@ -20,9 +18,9 @@ pub enum XmlModel<'a> {
 
 #[derive(Debug)]
 pub(crate) struct XmlElementBuilder<'a> {
-    name: Option<Cow<'a, Name<'a>>>,
+    name: Option<Cow<'a, BinXmlName>>,
     attributes: Vec<XmlAttribute<'a>>,
-    current_attribute_name: Option<Cow<'a, Name<'a>>>,
+    current_attribute_name: Option<Cow<'a, BinXmlName>>,
     current_attribute_value: Option<Cow<'a, BinXmlValue<'a>>>,
 }
 
@@ -35,11 +33,11 @@ impl<'a> XmlElementBuilder<'a> {
             current_attribute_value: None,
         }
     }
-    pub fn name(&mut self, name: Cow<'a, Name<'a>>) {
+    pub fn name(&mut self, name: Cow<'a, BinXmlName>) {
         self.name = Some(name);
     }
 
-    pub fn attribute_name(&mut self, name: Cow<'a, Name<'a>>) {
+    pub fn attribute_name(&mut self, name: Cow<'a, BinXmlName>) {
         match self.current_attribute_name {
             None => self.current_attribute_name = Some(name),
             Some(_) => {
@@ -84,7 +82,7 @@ impl<'a> XmlElementBuilder<'a> {
 }
 
 pub(crate) struct XmlPIBuilder<'a> {
-    name: Option<Cow<'a, Name<'a>>>,
+    name: Option<Cow<'a, BinXmlName>>,
     data: Option<Cow<'a, str>>,
 }
 
@@ -95,14 +93,12 @@ impl<'a> XmlPIBuilder<'a> {
             data: None,
         }
     }
-    pub fn name(mut self, name: Cow<'a, Name<'a>>) -> Self {
+    pub fn name(&mut self, name: Cow<'a, BinXmlName>) {
         self.name = Some(name);
-        self
     }
 
-    pub fn data(mut self, data: Cow<'a, str>) -> Self {
+    pub fn data(&mut self, data: Cow<'a, str>) {
         self.data = Some(data);
-        self
     }
 
     pub fn finish(self) -> XmlModel<'a> {
@@ -115,18 +111,18 @@ impl<'a> XmlPIBuilder<'a> {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct XmlAttribute<'a> {
-    pub name: Cow<'a, Name<'a>>,
+    pub name: Cow<'a, BinXmlName>,
     pub value: Cow<'a, BinXmlValue<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct XmlElement<'a> {
-    pub name: Cow<'a, Name<'a>>,
+    pub name: Cow<'a, BinXmlName>,
     pub attributes: Vec<XmlAttribute<'a>>,
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXmlPI<'a> {
-    pub name: Cow<'a, Name<'a>>,
+    pub name: Cow<'a, BinXmlName>,
     pub data: Cow<'a, str>,
 }

@@ -7,7 +7,7 @@ use crate::model::deserialized::*;
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::name::{BinXmlNameRef};
+use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::read_len_prefixed_utf16_string;
 
@@ -204,13 +204,14 @@ pub fn read_processing_instruction_target(
     Ok(BinXMLProcessingInstructionTarget { name })
 }
 
-pub fn read_processing_instruction_data<'a>(cursor: &mut Cursor<&[u8]>) -> Result<Cow<'a, str>> {
+pub fn read_processing_instruction_data(cursor: &mut Cursor<&[u8]>) -> Result<String> {
     trace!(
         "Offset `0x{:08x}` - ProcessingInstructionTarget",
         cursor.position(),
     );
 
-    let data = try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or(Cow::Borrowed(""));
+    let data =
+        try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or_else(|| "".to_string());
     trace!("PIData - {}", data,);
     Ok(data)
 }

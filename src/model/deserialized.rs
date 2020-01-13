@@ -1,4 +1,4 @@
-use crate::binxml::name::{BinXmlNameRef};
+use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use std::borrow::Cow;
@@ -23,7 +23,7 @@ pub enum BinXMLDeserializedTokens<'a> {
     CharRef,
     EntityRef(BinXmlEntityReference),
     PITarget(BinXMLProcessingInstructionTarget),
-    PIData(Cow<'a, str>),
+    PIData(String),
     Substitution(TemplateSubstitutionDescriptor),
     EndOfStream,
     StartOfStream,

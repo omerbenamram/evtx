@@ -130,7 +130,7 @@ impl EvtxChunkData {
 pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
-    pub string_cache: StringCache<'chunk>,
+    pub string_cache: StringCache,
     pub template_table: TemplateCache<'chunk>,
 
     pub settings: Arc<ParserSettings>,
