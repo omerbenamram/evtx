@@ -1,8 +1,6 @@
 use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
-use std::borrow::Cow;
-
 use crate::ChunkOffset;
 use serde::export::Formatter;
 use std::fmt;

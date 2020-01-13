@@ -18,7 +18,6 @@ use std::io::SeekFrom;
 
 use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
-use std::borrow::Cow;
 
 pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,

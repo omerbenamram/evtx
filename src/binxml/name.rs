@@ -5,7 +5,6 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::utils::read_len_prefixed_utf16_string;
 
-use std::borrow::Cow;
 use std::io::{Cursor, Seek, SeekFrom};
 
 use quick_xml::events::{BytesEnd, BytesStart};
