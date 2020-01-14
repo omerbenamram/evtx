@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5 - 2020-01-14]
+
+10% Speedup by using LTO on release.
+
+### Changed
+- Enabled link-time-optimizations.
+
 ## [0.6.4 - 2020-01-14]
 
 This release should make `evtx_dump` 3 times faster on windows machines!
