@@ -110,12 +110,11 @@ Libraries benched:
 - `evtx`(https://github.com/Velocidex/evtx) - only JSON.
 - `evtx` (This library)
 
-I've also added a `target_cpu=native` with `-O3` and 1 codegen unit, which did yield about 10% performance on single core benchmarks!
 
-|                  | evtx (1 thread)      | evtx (1 thread + target_cpu=native) | evtx (8 threads)      | evtx (12 threads)     | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (multithreading) | python-evtx (CPython 3.7.6) | python-evtx (PyPy 7.3.0) |
-|------------------|----------------------|-------------------------------------|-----------------------|-----------------------|---------------------------|----------------------|----------------------|------------------------------------|-----------------------------|--------------------------|
-| 30MB evtx (XML)  | 1.468 s  ±   0.009 s | 1.377 s  ±   0.027 s                | 332.6 ms  ±    5.1 ms | 300.2 ms  ±    2.6 ms | **261.6 ms  ±   12.6 ms** | 4.509 s  ±   0.100 s | No support           | No support                         | 4m11.046s (ran once)        | 1m12.828s (ran once)     |
-| 30MB evtx (JSON) | 2.200 s  ±   0.027 s | 2.061 s  ±   0.034 s                | 409.7 ms  ±    8.3 ms | 351.3 ms  ±    3.6 ms | **272.8 ms  ±   14.3 ms** | No support           | 5.587 s  ±   0.086 s | 2.216 s  ±   0.027 s               | No support                  | No support               |
+|                  | evtx (1 thread)      | evtx (8 threads)      | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (uses multiprocessing) | python-evtx (CPython 3.7.6) | python-evtx (PyPy 7.3.0) |
+|------------------|----------------------|-----------------------|---------------------------|----------------------|----------------------|------------------------------------|-----------------------------|--------------------------|
+| 30MB evtx (XML)  | 1.155 s  ±   0.008 s | 277.4 ms  ±    5.8 ms | **177.1 ms  ±    4.5 ms** | 4.509 s  ±   0.100 s | No support           | No support                         | 4m11.046s (ran once)        | 1m12.828s (ran once)     |
+| 30MB evtx (JSON) | 1.631 s  ±   0.006 s | 341.6 ms  ±    7.3 ms | **207.2 ms  ±    7.2 ms** | No support           | 5.587 s  ±   0.086 s | 2.216 s  ±   0.027 s               | No support                  | No support               |
 
 **Note**: numbers shown are `real-time` measurements (time it takes for invocation to complete). `user-time` measurements are higher when more using multithreading/multiprocessing, because of the synchronization overhead.
 
