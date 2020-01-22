@@ -478,7 +478,10 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
         match self.parser.find_next_chunk(self.current_chunk_number) {
             None => None,
             Some((chunk, chunk_number)) => {
-                self.current_chunk_number = chunk_number + 1;
+                self.current_chunk_number = match chunk_number.checked_add(1) {
+                    None => return None,
+                    Some(n) => n,
+                };
 
                 Some(chunk)
             }
@@ -498,7 +501,10 @@ impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
         match self.parser.find_next_chunk(self.current_chunk_number) {
             None => None,
             Some((chunk, chunk_number)) => {
-                self.current_chunk_number = chunk_number + 1;
+                self.current_chunk_number = match chunk_number.checked_add(1) {
+                    None => return None,
+                    Some(n) => n,
+                };
 
                 Some(chunk)
             }
