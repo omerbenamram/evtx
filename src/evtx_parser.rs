@@ -4,8 +4,6 @@ use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
 #[cfg(feature = "multithreading")]
-use rayon;
-#[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
 use log::trace;

@@ -1,7 +1,6 @@
 target
 .idea
 **/*.rs.bk
-Cargo.lock
 .DS_Store
 .vs*
 .history

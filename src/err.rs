@@ -1,4 +1,3 @@
-use quick_xml;
 use thiserror::Error;
 
 use crate::evtx_parser::ReadSeek;
@@ -27,10 +26,10 @@ const DEFAULT_LOOKBEHIND_LEN: i32 = 100;
 #[error(
     "Offset `0x{offset:08x} ({offset})` - An error has occurred while trying to deserialize binary stream \n\
     {message}
-    
+
     Original message:
     `{source}`
-    
+
 Hexdump:
     {hexdump}"
 )]
