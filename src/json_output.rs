@@ -1,5 +1,4 @@
 use crate::err::{SerializationError, SerializationResult};
-use quick_xml;
 
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
