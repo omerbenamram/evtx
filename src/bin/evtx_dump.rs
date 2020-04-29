@@ -1,6 +1,6 @@
 use anyhow::{bail, format_err, Context, Result};
 use clap::{App, AppSettings, Arg, ArgMatches};
-use dialoguer::Confirmation;
+use dialoguer::Confirm;
 use indoc::indoc;
 
 use encoding::all::encodings;
@@ -187,8 +187,8 @@ impl EvtxDump {
 
         if p.exists() {
             if prompt {
-                match Confirmation::new()
-                    .with_text(&format!(
+                match Confirm::new()
+                    .with_prompt(&format!(
                         "Are you sure you want to override output file at {}",
                         p.display()
                     ))
