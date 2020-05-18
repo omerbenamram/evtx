@@ -1117,18 +1117,18 @@ dependencies = [
 
 [[package]]
 name = "rpmalloc"
-version = "0.1.3"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7905258352321550be523d7efe6d23687fc272e980f85fedffcb42509300c715"
+checksum = "8dae55d27fc56f399aec2583434bf22c7100fe983b2115bbc1d961ec4f7df5db"
 dependencies = [
  "rpmalloc-sys",
 ]
 
 [[package]]
 name = "rpmalloc-sys"
-version = "0.1.3"
+version = "0.2.0+c4d2c05"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09db55ff6b15a1f271249e28d37e54a8e5a98e4e6391ad57c4fba85abc990221"
+checksum = "9c0a44672448b9514eecd10fdcea583624a485fb10fa6506c81cdecf710d029b"
 dependencies = [
  "cc",
  "libc",
