@@ -68,7 +68,7 @@ lto = "thin"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.3.0"
+rexpect = "0.4.0"
 
 [build-dependencies]
 skeptic = "0.13.4"
