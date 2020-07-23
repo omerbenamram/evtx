@@ -46,7 +46,7 @@ impl JsonOutput {
                     let mut map = Map::new();
                     map.insert(key.clone(), Value::Object(Map::new()));
 
-                    mem::replace(v_temp, Value::Object(map));
+                    *v_temp = Value::Object(map);
                 } else if !v_temp.is_object() {
                     // This branch could only happen while `separate-json-attributes` was on,
                     // and a very non-standard xml structure is going on (character nodes between XML nodes)
@@ -68,7 +68,7 @@ impl JsonOutput {
                     let mut map = Map::new();
                     map.insert(key.clone(), v_temp.clone());
 
-                    mem::replace(v_temp, Value::Object(map));
+                    *v_temp = Value::Object(map);
                 } else {
                     let current_object = v_temp
                         .as_object_mut()
@@ -306,7 +306,7 @@ impl BinXmlOutput for JsonOutput {
         // we simply swap the null with the string value.
         // This is also true for the case when the attributes were inserted as our siblings.
         if current_value.is_null() || separate_json_attributes {
-            mem::replace(current_value, value.clone().into());
+            *current_value = value.clone().into();
         } else {
             // Otherwise,
             // Should look like:
