@@ -245,13 +245,19 @@ pub enum EvtxError {
     DeserializationError(#[from] DeserializationError),
 
     #[error("Failed to parse chunk number {chunk_id}")]
-    FailedToParseChunk { chunk_id: u16, source: ChunkError },
+    FailedToParseChunk { chunk_id: u64, source: ChunkError },
 
     #[error("Failed to parse record number {record_id}")]
     FailedToParseRecord {
         record_id: RecordId,
         source: Box<EvtxError>,
     },
+
+    #[error("Calculation Error, reason: {}", .0)]
+    CalculationError(String),
+
+    #[error("An IO error occured.")]
+    IoError(#[from] std::io::Error),
 
     // TODO: move this error.
     #[error("Failed to create record model, reason: {}", .0)]
@@ -263,13 +269,18 @@ pub enum EvtxError {
 }
 
 impl EvtxError {
-    pub fn incomplete_chunk(chunk_id: u16) -> EvtxError {
+    pub fn calculation_error(msg: String) -> EvtxError {
+        EvtxError::CalculationError(msg)
+    }
+
+    pub fn incomplete_chunk(chunk_id: u64) -> EvtxError {
         EvtxError::FailedToParseChunk {
             chunk_id,
             source: ChunkError::IncompleteChunk,
         }
     }
 }
+
 
 /// Errors on unimplemented functions instead on panicking.
 #[macro_export]

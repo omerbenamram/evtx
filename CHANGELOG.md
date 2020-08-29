@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.7 - 2020-08-28]
+
+### Added
+- calculated_chunk_count field to EvtxParser
+- impl Debug for EvtxParser
+
+### Changed
+- Use calculated chunk count rather than header chunk count to continue parsing past 
+4294901760 bytes of chunk data.
+- Moved function/error chunk indexes to u64 instead of u16 to allow for chunk indexes larger than u16 MAX
+
 ## [0.6.6 - 2020-01-22]
 
 ### Fixed
