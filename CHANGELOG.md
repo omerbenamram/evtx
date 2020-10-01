@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.8 - 2020-10-01]
+
+### Fixed
+- Allow for arbitrarily large EVTX files to parse correctly. (#128)
+
+
 ## [0.6.7 - 2020-08-28]
 
 ### Added
@@ -11,14 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - impl Debug for EvtxParser
 
 ### Changed
-- Use calculated chunk count rather than header chunk count to continue parsing past 
+- Use calculated chunk count rather than header chunk count to continue parsing past
 4294901760 bytes of chunk data.
 - Moved function/error chunk indexes to u64 instead of u16 to allow for chunk indexes larger than u16 MAX
 
 ## [0.6.6 - 2020-01-22]
 
 ### Fixed
-Another tiny fix where the parser might loop for very specific samples - @codekoala thanks for the patch! 
+Another tiny fix where the parser might loop for very specific samples - @codekoala thanks for the patch!
 
 
 ## [0.6.5 - 2020-01-14]
@@ -59,7 +65,7 @@ This version should be 10-15% faster!
 ## [0.6.1 - 2019-12-05]
 
 ### Fixed
-- A regression with `--seperate-json-attributes` 
+- A regression with `--seperate-json-attributes`
 caused by improvements in 0.6.0 to JSON parsing for non-standard xml documents.
 
 ## [0.6.0 - 2019-11-26]
@@ -115,7 +121,7 @@ Will now be converted to:
 ## [0.5.1 - 2019-10-30]
 
 ### Fixed
-- A bug which causes a panic (bounds check) on some corrupted records. 
+- A bug which causes a panic (bounds check) on some corrupted records.
 
 
 ## [0.5.0 - 2019-10-07]
@@ -160,7 +166,7 @@ File output is now supported by `evtx_dump`
 
 ## [0.3.1] - 2019-05-19
 
-Implemented Ansi codecs! 
+Implemented Ansi codecs!
 
 ### Added
 - `--ansi-codec` to control the codec that will be used to decode ansi encoded strings inside the document.
@@ -170,16 +176,16 @@ Implemented Ansi codecs!
 
 ## [0.3.0] - 2019-05-14
 
-This is a minor release due to the removal of `failure`. 
+This is a minor release due to the removal of `failure`.
 
 ### Added
 - `--backtraces` to control backtraces in errors
-- `-v, -vv, -vv` to control trace output in `evtx_dump`. 
+- `-v, -vv, -vv` to control trace output in `evtx_dump`.
 
 ### Changed
 - All errors in the crate are all of a uniform `evtx::err::Error` type.
   Errors are implemented with `snafu`, and are std compatible.
-  In addition, errors now all contain backtraces.  
+  In addition, errors now all contain backtraces.
 
 ### Fixed
 - Parser will now correctly parse files which refer to binxml fragments as sized values. (#33)
@@ -200,11 +206,11 @@ This version is the first .2 version to have python support!
 
 ### Added
 - `--no-indent` flag for xml and json
-- `--dont-show-record-number` to avoid printing records number. 
+- `--dont-show-record-number` to avoid printing records number.
 - `-o jsonl` for JSON lines output (same as `-o json --no-indent --dont-show-record-number`).
 
 ### Fixed
-- Parser is less strict in dirty samples which contain 
+- Parser is less strict in dirty samples which contain
   some amount of corrupted binxml data, and will try to recover the record.
 
 - Don't unwrap on empty binxmlname elements.
@@ -216,7 +222,7 @@ This version is the first .2 version to have python support!
 - `--validate-checksums` flag to optionally be strict about checksum checks for chunk headers.
 
 ### Fixed
-- Fixed missing data when parsing `StringArray` nodes. (thanks @ohadravid)  
+- Fixed missing data when parsing `StringArray` nodes. (thanks @ohadravid)
 - Samples containing empty chunks (thanks @ohadravid)
 
 ## [0.2.1] - 2019-04-21
@@ -230,19 +236,19 @@ This release contains some minor breaking changes to the API.
 
 ### Added
 - Added JSON output support!
-  JSON support is powered by serde and is zero-copy! 
+  JSON support is powered by serde and is zero-copy!
   This means there isn't much performance difference between the XML output and the JSON output.
 
 - The deserializer is now lazy (thanks @ohadravid !).
-  This will allow to perform some filtering on records based on their metadata before serializing them to save time. 
+  This will allow to perform some filtering on records based on their metadata before serializing them to save time.
 
 ### Changed
 - Changed parallel iteration to rely only on `ParserSettings`, so `.parallel_records` has been removed.
 - `EvtxParser` now needs to be mutable when deserializing records.
-- When outputting target as XML, inner xml strings will be escaped, when using JSON, they will not be escaped. 
+- When outputting target as XML, inner xml strings will be escaped, when using JSON, they will not be escaped.
 
 ### Fixed
-- Parser will now coerce values of booleans which are not zero or one to true.  
+- Parser will now coerce values of booleans which are not zero or one to true.
 
 ## [0.1.9] - 2019-04-19
 
@@ -250,24 +256,24 @@ This release contains some minor breaking changes to the API.
 - Now supporting `SystemTime`, floating types, and all numerical array types.
 
 ### Fixed
-- strip nuls from ascii strings as well.  
+- strip nuls from ascii strings as well.
 
 ### Changed
-- Now using `quick-xml`, which microbenchmarks show that is about 15-20% faster than `xml-rs`. 
+- Now using `quick-xml`, which microbenchmarks show that is about 15-20% faster than `xml-rs`.
 
 ## [0.1.8] - 2019-04-18
 
 ### Fixed
-- Removed trailing nul terminators from all strings.  
+- Removed trailing nul terminators from all strings.
 
 ### Changed
 - Changed hex formatting padding.
-- Changed binary output formatting to hexdump. 
+- Changed binary output formatting to hexdump.
 
 ## [0.1.7] - 2019-04-18
 
 ### Fixed
-- Range error when reading last chunk (#2) 
+- Range error when reading last chunk (#2)
 
 ### Changed
 - Parser will now try to read more records even when surpassing the declared chunk number.
@@ -276,7 +282,7 @@ This release contains some minor breaking changes to the API.
 ## [0.1.6] - 2019-04-13
 
 ### Fixed
-- Fixed missing xml close tag (#1) 
+- Fixed missing xml close tag (#1)
 
 ### Changed
 - Removed `.unwrap()` from xml parsing code.
