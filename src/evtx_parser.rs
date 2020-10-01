@@ -93,6 +93,18 @@ pub struct EvtxParser<T: ReadSeek> {
     data: T,
     header: EvtxFileHeader,
     config: Arc<ParserSettings>,
+    /// The calculated_chunk_count is the: (<file size> - <header size>) / <chunk size>
+    /// This is needed because the chunk count of an EVTX file can be larger than the u16
+    /// value stored in the file header.
+    calculated_chunk_count: u64
+}
+impl<T: ReadSeek> Debug for EvtxParser<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> ::std::fmt::Result {
+        f.debug_struct("EvtxParser")
+            .field("header", &self.header)
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -262,11 +274,36 @@ impl<T: ReadSeek> EvtxParser<T> {
     pub fn from_read_seek(mut read_seek: T) -> Result<Self> {
         let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)?;
 
+        // Because an event log can be larger than u16 MAX * EVTX_CHUNK_SIZE,
+        // We need to calculate the chunk count instead of using the header value
+        // this allows us to continue parsing events past the 4294901760 bytes of
+        // chunk data
+        let stream_size = read_seek.stream_len()?;
+        let chunk_data_size: u64 = match stream_size.checked_sub(
+            evtx_header.header_block_size.into()
+        ){
+            Some(c) => c,
+            None => {
+                return Err(
+                    EvtxError::calculation_error(
+                        format!(
+                            "Could not calculate valid chunk count because stream size is less \
+                            than evtx header block size. (stream_size: {}, header_block_size: {})", 
+                            stream_size, 
+                            evtx_header.header_block_size
+                        )
+                    )
+                );
+            }
+        };
+        let chunk_count = chunk_data_size / EVTX_CHUNK_SIZE as u64;
+
         debug!("EVTX Header: {:#?}", evtx_header);
         Ok(EvtxParser {
             data: read_seek,
             header: evtx_header,
             config: Arc::new(ParserSettings::default()),
+            calculated_chunk_count: chunk_count
         })
     }
 
@@ -282,7 +319,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// If the read chunk is empty, `Ok(None)` will be returned.
     fn allocate_chunk(
         data: &mut T,
-        chunk_number: u16,
+        chunk_number: u64,
         validate_checksum: bool,
     ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
@@ -328,8 +365,8 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// and the number of that chunk.
     pub fn find_next_chunk(
         &mut self,
-        mut chunk_number: u16,
-    ) -> Option<(Result<EvtxChunkData>, u16)> {
+        mut chunk_number: u64,
+    ) -> Option<(Result<EvtxChunkData>, u64)> {
         loop {
             match EvtxParser::allocate_chunk(
                 &mut self.data,
@@ -339,7 +376,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 Err(err) => {
                     // We try to read past the `chunk_count` to allow for dirty files.
                     // But if we failed, it means we really are at the end of the file.
-                    if chunk_number >= self.header.chunk_count {
+                    if chunk_number >= self.calculated_chunk_count {
                         return None;
                     } else {
                         return Some((Err(err), chunk_number));
@@ -423,7 +460,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
                             match chunk_records_res {
                                 Err(err) => vec![Err(EvtxError::FailedToParseChunk {
-                                    chunk_id: i as u16,
+                                    chunk_id: i as u64,
                                     source: err,
                                 })],
                                 Ok(mut chunk_records) => {
@@ -467,7 +504,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
 pub struct IterChunks<'c, T: ReadSeek> {
     parser: &'c mut EvtxParser<T>,
-    current_chunk_number: u16,
+    current_chunk_number: u64,
 }
 
 impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
@@ -489,7 +526,7 @@ impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
 
 pub struct IntoIterChunks<T: ReadSeek> {
     parser: EvtxParser<T>,
-    current_chunk_number: u16,
+    current_chunk_number: u64,
 }
 
 impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
