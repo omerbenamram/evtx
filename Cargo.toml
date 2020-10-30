@@ -70,7 +70,7 @@ lto = "thin"
 rexpect = "0.4.0"
 
 [build-dependencies]
-skeptic = "0.13.4"
+skeptic = "0.13.5"
 
 [[bin]]
 name = "evtx_dump"
