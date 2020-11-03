@@ -20,7 +20,7 @@ crc = "^1.8"
 chrono = { version = "^0.4", features = ["serde"] }
 encoding = "^0.2"
 byteorder = "^1"
-quick-xml = "^0.18"
+quick-xml = "^0.20"
 thiserror = "1"
 log = { version = "^0.4", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
