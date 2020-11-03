@@ -57,7 +57,7 @@ pretty_assertions = "^0.6"
 criterion = "^0.3"
 assert_cmd = "^1.0"
 predicates = "^1"
-env_logger = "^0.7"
+env_logger = "^0.8"
 tempfile = "^3.1"
 
 [profile.release]
