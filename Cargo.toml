@@ -56,7 +56,7 @@ multithreading = ["rayon"]
 pretty_assertions = "0.6.1"
 criterion = "0.3.3"
 assert_cmd = "1.0.2"
-predicates = "1.0.5"
+predicates = "1.0.6"
 env_logger = "0.8.2"
 tempfile = "3.1.0"
 
