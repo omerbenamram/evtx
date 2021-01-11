@@ -19,7 +19,7 @@ exclude = [
 crc = "1.8.1"
 chrono = { version = "0.4.19", features = ["serde"] }
 encoding = "0.2.33"
-byteorder = "1.3.4"
+byteorder = "1.4.2"
 quick-xml = "0.20.0"
 thiserror = "1.0.22"
 log = { version = "0.4.11", features = ["release_max_level_debug"] }
