@@ -5,10 +5,9 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::utils::read_len_prefixed_utf16_string;
 
-use std::io::{Cursor, Seek, SeekFrom};
+use std::{fmt::Formatter, io::{Cursor, Seek, SeekFrom}};
 
 use quick_xml::events::{BytesEnd, BytesStart};
-use serde::export::Formatter;
 use std::fmt;
 
 #[derive(Debug, PartialEq, PartialOrd, Clone, Hash)]

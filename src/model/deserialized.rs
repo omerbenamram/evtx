@@ -2,8 +2,7 @@ use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use crate::ChunkOffset;
-use serde::export::Formatter;
-use std::fmt;
+use std::fmt::{self, Formatter};
 use winstructs::guid::Guid;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]

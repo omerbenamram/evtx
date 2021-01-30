@@ -278,7 +278,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         // We need to calculate the chunk count instead of using the header value
         // this allows us to continue parsing events past the 4294901760 bytes of
         // chunk data
-        let stream_size = read_seek.stream_len()?;
+        let stream_size = ReadSeek::stream_len(&mut read_seek)?;
         let chunk_data_size: u64 = match stream_size.checked_sub(
             evtx_header.header_block_size.into()
         ){
@@ -288,8 +288,8 @@ impl<T: ReadSeek> EvtxParser<T> {
                     EvtxError::calculation_error(
                         format!(
                             "Could not calculate valid chunk count because stream size is less \
-                            than evtx header block size. (stream_size: {}, header_block_size: {})", 
-                            stream_size, 
+                            than evtx header block size. (stream_size: {}, header_block_size: {})",
+                            stream_size,
                             evtx_header.header_block_size
                         )
                     )
