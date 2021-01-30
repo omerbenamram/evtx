@@ -11,7 +11,7 @@ pub fn dump_stream<T: ReadSeek>(cursor: &mut T, lookbehind: i32) -> Result<Strin
 
     cursor.seek(SeekFrom::Current(lookbehind.into()))?;
 
-    let mut data = vec![0; 100 as usize];
+    let mut data = vec![0; 100_usize];
     let _ = cursor.read(&mut data)?;
 
     writeln!(
