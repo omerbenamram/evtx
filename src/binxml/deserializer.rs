@@ -119,12 +119,10 @@ impl<'a> IterTokens<'a> {
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
         let token = try_read!(cursor, u8)?;
 
-        Ok(
-            BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
-                value: token,
-                offset: cursor.position(),
-            })?,
-        )
+        BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
+            value: token,
+            offset: cursor.position(),
+        })
     }
 
     fn visit_token(

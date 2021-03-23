@@ -1,0 +1,144 @@
+name: release
+
+on:
+  push:
+    # Enable when testing release infrastructure on a branch.
+    # branches:
+      # - gh-actions
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  create-release:
+    name: create-release
+    runs-on: ubuntu-latest
+    # env:
+      #Set to force version number, e.g., when no tag exists.
+      # VERSION: TEST-0.0.4
+    steps:
+      - name: Create artifacts directory
+        run: mkdir artifacts
+
+      - name: Get the release version from the tag
+        if: env.VERSION == ''
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "version is: ${{ env.VERSION }}"
+
+      - name: Create GitHub release
+        id: release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.VERSION }}
+          release_name: ${{ env.VERSION }}
+
+      - name: Save release upload URL to artifact
+        run: echo "${{ steps.release.outputs.upload_url }}" > artifacts/release-upload-url
+
+      - name: Save version number to artifact
+        run: echo "${{ env.VERSION }}" > artifacts/release-version
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v1
+        with:
+          name: artifacts
+          path: artifacts
+
+  build-release:
+    name: build-release
+    needs: ["create-release"]
+    runs-on: ${{ matrix.os }}
+    env:
+      # When CARGO is set to CROSS, TARGET_DIR includes matrix.target.
+      TARGET_DIR: ./target
+      # Emit backtraces on panics.
+      RUST_BACKTRACE: 1
+      MACOSX_DEPLOYMENT_TARGET: 10.9
+
+    strategy:
+      matrix:
+        build: [linux, linux-static, macos, windows]
+        include:
+          - build: linux
+            os: ubuntu-18.04
+            rust: stable
+            target: x86_64-unknown-linux-gnu
+          - build: linux-static
+            os: ubuntu-18.04
+            rust: stable
+            target: x86_64-unknown-linux-musl
+          - build: macos
+            os: macos-latest
+            rust: stable
+            target: x86_64-apple-darwin
+          - build: windows
+            os: "windows-2019"
+            rust: stable
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
+          profile: minimal
+          override: true
+          target: ${{ matrix.target }}
+
+      - name: Get release download URL
+        uses: actions/download-artifact@v1
+        with:
+          name: artifacts
+          path: artifacts
+
+      - name: Set release upload URL and release version
+        shell: bash
+        run: |
+          release_upload_url="$(cat artifacts/release-upload-url)"
+          echo "RELEASE_UPLOAD_URL=$release_upload_url" >> $GITHUB_ENV
+          echo "release upload url: $RELEASE_UPLOAD_URL"
+          release_version="$(cat artifacts/release-version)"
+          echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
+          echo "release version: $RELEASE_VERSION"
+
+      - name: Build release binary
+        if: matrix.build == 'linux' || matrix.build == 'macos' || matrix.build == 'windows'
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          toolchain: "${{ matrix.rust }}"
+          args: --target ${{ matrix.target }} --release --features fast-alloc
+
+      - name: Build release binary
+        if: matrix.build == 'linux-static'
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --target ${{ matrix.target }} --release
+
+      - name: Build archive
+        shell: bash
+        run: |
+          if [ "${{ matrix.build }}" = "windows" ]; then
+            echo "ASSET=target/${{ matrix.target }}/release/evtx_dump.exe" >> $GITHUB_ENV
+            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}.exe" >> $GITHUB_ENV
+          else
+            echo "ASSET=target/${{ matrix.target }}/release/evtx_dump" >> $GITHUB_ENV
+            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $GITHUB_ENV
+          fi
+      - name: Upload release archive
+        uses: actions/upload-release-asset@v1.0.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ env.RELEASE_UPLOAD_URL }}
+          asset_path: ${{ env.ASSET }}
+          asset_name: ${{ env.ASSET_NAME }}
+          asset_content_type: application/octet-stream

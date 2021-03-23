@@ -1,3 +1,5 @@
+#![allow(clippy::upper_case_acronyms)]
+
 use anyhow::{bail, format_err, Context, Result};
 use clap::{App, AppSettings, Arg, ArgMatches};
 use dialoguer::Confirm;

@@ -402,9 +402,9 @@ fn to_delimited_list<N: ToString>(ns: impl AsRef<Vec<N>>) -> String {
         .join(",")
 }
 
-impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
-    fn into(self) -> Value {
-        match self {
+impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
+    fn from(value: BinXmlValue<'c>) -> Self {
+        match value {
             BinXmlValue::NullType => Value::Null,
             BinXmlValue::StringType(s) => json!(s),
             BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
@@ -460,14 +460,14 @@ impl<'c> Into<serde_json::Value> for BinXmlValue<'c> {
                 panic!("Unsupported conversion, call `expand_templates` first")
             }
             BinXmlValue::EvtXml => panic!("Unsupported conversion, call `expand_templates` first"),
-            _ => unimplemented!("{:?}", self),
+            _ => unimplemented!("{:?}", value),
         }
     }
 }
 
-impl<'c> Into<serde_json::Value> for &'c BinXmlValue<'c> {
-    fn into(self) -> Value {
-        match self {
+impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
+    fn from(value: &'c BinXmlValue) -> Self {
+        match value {
             BinXmlValue::NullType => Value::Null,
             BinXmlValue::StringType(s) => json!(s),
             BinXmlValue::AnsiStringType(s) => json!(s.as_ref()),
@@ -523,7 +523,7 @@ impl<'c> Into<serde_json::Value> for &'c BinXmlValue<'c> {
                 panic!("Unsupported conversion, call `expand_templates` first")
             }
             BinXmlValue::EvtXml => panic!("Unsupported conversion, call `expand_templates` first"),
-            _ => unimplemented!("{:?}", self),
+            _ => unimplemented!("{:?}", value),
         }
     }
 }
