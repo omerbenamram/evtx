@@ -1,6 +1,6 @@
-on: [push]
-
 name: CI
+
+on: [push]
 
 jobs:
   build_and_test:
@@ -11,6 +11,9 @@ jobs:
         os: [ubuntu-20.04, windows-2019, macos-10.15]
     steps:
       - uses: actions/checkout@v2
+        with:
+          fetch-depth: 1
+
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
