@@ -112,7 +112,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          toolchain: "${{ matrix.target }}"
+          toolchain: "${{ matrix.rust }}"
           args: --target ${{ matrix.target }} --release --feature fast-alloc
 
       - name: Build release binary
