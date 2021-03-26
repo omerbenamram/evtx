@@ -30,8 +30,8 @@
     <img src="https://img.shields.io/badge/unsafe-forbidden-success.svg"
       alt="safety-dance" />
   </a>
-  <a href="https://dev.azure.com/benamram/evtx/_build/latest?definitionId=1&branchName=master">
-    <img src="https://dev.azure.com/benamram/dfir/_apis/build/status/omerbenamram.evtx?branchName=master"
+  <a href="https://github.com/omerbenamram/evtx/actions/workflows/test.yml">
+    <img src="https://github.com/omerbenamram/evtx/actions/workflows/test.yml/badge.svg"
       alt="Build status" />
   </a>
 </div>
