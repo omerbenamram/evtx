@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       #Set to force version number, e.g., when no tag exists.
-      VERSION: TEST-0.0.2
+      VERSION: TEST-0.0.3
     steps:
       - name: Create artifacts directory
         run: mkdir artifacts
@@ -72,6 +72,7 @@ jobs:
           - build: macos
             os: macos-latest
             rust: stable
+            target: x86_64-apple-darwin
           - build: windows
             os: "windows-2019"
             rust: stable
