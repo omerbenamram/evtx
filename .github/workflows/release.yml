@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       #Set to force version number, e.g., when no tag exists.
-      VERSION: TEST-0.0.3
+      VERSION: TEST-0.0.4
     steps:
       - name: Create artifacts directory
         run: mkdir artifacts
@@ -128,8 +128,10 @@ jobs:
         run: |
           if [ "${{ matrix.build }}" = "windows" ]; then
             echo "ASSET=target/${{ matrix.target }}/release/evtx_dump.exe" >> $GITHUB_ENV
+            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}.exe" >> $GITHUB_ENV
           else
             echo "ASSET=target/${{ matrix.target }}/release/evtx_dump" >> $GITHUB_ENV
+            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $GITHUB_ENV
           fi
       - name: Upload release archive
         uses: actions/upload-release-asset@v1.0.1
@@ -138,5 +140,5 @@ jobs:
         with:
           upload_url: ${{ env.RELEASE_UPLOAD_URL }}
           asset_path: ${{ env.ASSET }}
-          asset_name: ${{ env.ASSET }}
+          asset_name: ${{ env.ASSET_NAME }}
           asset_content_type: application/octet-stream
