@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       #Set to force version number, e.g., when no tag exists.
-      VERSION: TEST-0.0.1
+      VERSION: TEST-0.0.2
     steps:
       - name: Create artifacts directory
         run: mkdir artifacts
@@ -113,7 +113,7 @@ jobs:
         with:
           command: build
           toolchain: "${{ matrix.rust }}"
-          args: --target ${{ matrix.target }} --release --feature fast-alloc
+          args: --target ${{ matrix.target }} --release --features fast-alloc
 
       - name: Build release binary
         if: matrix.build == 'linux-static'
