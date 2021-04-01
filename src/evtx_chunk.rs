@@ -398,6 +398,7 @@ mod tests {
             free_space_offset: 65376,
             events_checksum: 4_252_479_141,
             header_chunk_checksum: 978_805_790,
+            flags: ChunkFlags::EMPTY,
             strings_offsets: vec![0_u32; 64],
             template_offsets: vec![0_u32; 32],
         };

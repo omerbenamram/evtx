@@ -83,3 +83,7 @@ pub fn sample_issue_65() -> PathBuf {
 pub fn sample_with_dependency_id_edge_case() -> PathBuf {
     samples_dir().join("Archive-ForwardedEvents-test.evtx")
 }
+
+pub fn sample_with_no_crc32() -> PathBuf {
+    samples_dir().join("Application_no_crc32.evtx")
+}

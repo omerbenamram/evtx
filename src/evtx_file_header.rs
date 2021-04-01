@@ -101,7 +101,7 @@ mod tests {
                 major_version: 3,
                 header_block_size: 4096,
                 chunk_count: 26,
-                flags: HeaderFlags::Dirty,
+                flags: HeaderFlags::DIRTY,
                 checksum: crc32::checksum_ieee(&evtx_file[..120]),
             }
         );
