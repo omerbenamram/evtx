@@ -16,6 +16,7 @@ exclude = [
 ]
 
 [dependencies]
+bitflags = "1.2.1"
 crc = "^1.8"
 chrono = { version = "0.4", features = ["serde"] }
 encoding = "0.2.33"
