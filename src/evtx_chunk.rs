@@ -21,6 +21,14 @@ use std::sync::Arc;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
+bitflags! {
+    pub struct ChunkFlags: u32 {
+        const EMPTY = 0x0;
+        const DIRTY = 0x1;
+        const NO_CRC32 = 0x4;
+    }
+}
+
 #[derive(Debug)]
 pub struct EvtxChunkHeader {
     pub first_event_record_number: u64,
@@ -32,6 +40,7 @@ pub struct EvtxChunkHeader {
     pub free_space_offset: u32,
     pub events_checksum: u32,
     pub header_chunk_checksum: u32,
+    pub flags: ChunkFlags,
     // A list of buckets containing the offsets of all strings in the chunk.
     // Each bucket contains an initial offset for a `BinXmlNameLink`, which in turn contains
     // the offset for the next strings.
@@ -79,24 +88,43 @@ impl EvtxChunkData {
     pub fn validate_data_checksum(&self) -> bool {
         debug!("Validating data checksum");
 
-        let expected_checksum = self.header.events_checksum;
+        let checksum_disabled = self.header.flags.contains(ChunkFlags::NO_CRC32);
 
-        let checksum = crc32::checksum_ieee(
-            &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
-        );
+        let expected_checksum = if !checksum_disabled {
+            self.header.events_checksum
+        }
+        else {
+            0
+        };
+
+        let computed_checksum = if !checksum_disabled {
+            crc32::checksum_ieee(
+                &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
+            )
+        }
+        else {
+            0
+        };
 
         debug!(
             "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, checksum
+            expected_checksum, computed_checksum
         );
 
-        checksum == expected_checksum
+        computed_checksum == expected_checksum
     }
 
     pub fn validate_header_checksum(&self) -> bool {
         debug!("Validating header checksum");
 
-        let expected_checksum = self.header.header_chunk_checksum;
+        let checksum_disabled = self.header.flags.contains(ChunkFlags::NO_CRC32);
+
+        let expected_checksum = if !checksum_disabled {
+            self.header.header_chunk_checksum
+        }
+        else {
+            0
+        };
 
         let header_bytes_1 = &self.data[..120];
         let header_bytes_2 = &self.data[128..512];
@@ -107,14 +135,19 @@ impl EvtxChunkData {
             .cloned()
             .collect();
 
-        let checksum = crc32::checksum_ieee(bytes_for_checksum.as_slice());
+        let computed_checksum = if !checksum_disabled {
+            crc32::checksum_ieee(bytes_for_checksum.as_slice())
+        }
+        else {
+            0
+        };
 
         debug!(
             "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, checksum
+            expected_checksum, computed_checksum
         );
 
-        checksum == expected_checksum
+        computed_checksum == expected_checksum
     }
 
     pub fn validate_checksum(&self) -> bool {
@@ -303,8 +336,12 @@ impl EvtxChunkHeader {
 
         // Reserved
         input.seek(SeekFrom::Current(64))?;
-        // Flags
-        input.seek(SeekFrom::Current(4))?;
+
+        let raw_flags = try_read!(input, u32)?;
+        let flags = match ChunkFlags::from_bits(raw_flags) {
+            Some(val) => val,
+            None => return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: raw_flags }),
+        };
 
         let header_chunk_checksum = try_read!(input, u32)?;
 
@@ -324,6 +361,7 @@ impl EvtxChunkHeader {
             free_space_offset,
             events_checksum,
             header_chunk_checksum,
+            flags,
             template_offsets,
             strings_offsets,
         })

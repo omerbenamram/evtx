@@ -18,11 +18,13 @@ pub struct EvtxFileHeader {
     pub checksum: u32,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum HeaderFlags {
-    Empty,
-    Dirty,
-    Full,
+bitflags! {
+    pub struct HeaderFlags: u32 {
+        const EMPTY = 0x0;
+        const DIRTY = 0x1;
+        const FULL = 0x2;
+        const NO_CRC32 = 0x4;
+    }
 }
 
 impl EvtxFileHeader {
@@ -50,11 +52,10 @@ impl EvtxFileHeader {
             WrappedIoError::io_error_with_message(e, "failed to seek in file_header", stream)
         })?;
 
-        let flags = match try_read!(stream, u32, "file_header_flags")? {
-            0_u32 => HeaderFlags::Empty,
-            1_u32 => HeaderFlags::Dirty,
-            2_u32 => HeaderFlags::Full,
-            other => return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: other }),
+        let raw_flags = try_read!(stream, u32, "file_header_flags")?;
+        let flags = match HeaderFlags::from_bits(raw_flags) {
+            Some(val) => val,
+            None => return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: raw_flags }),
         };
 
         let checksum = try_read!(stream, u32, "file_header_checksum")?;

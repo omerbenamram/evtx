@@ -495,6 +495,7 @@ version = "0.7.2-alpha.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "bitflags",
  "byteorder",
  "chrono",
  "clap",

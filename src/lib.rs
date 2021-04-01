@@ -8,6 +8,9 @@
 #[macro_use]
 mod macros;
 
+#[macro_use]
+extern crate bitflags;
+
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
