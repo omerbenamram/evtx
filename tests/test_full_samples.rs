@@ -166,3 +166,12 @@ fn test_sample_with_binxml_as_substitution_tokens_and_pi_target() {
 fn test_sample_with_dependency_identifier_edge_case() {
     test_full_sample(sample_with_dependency_id_edge_case(), 653, 0)
 }
+
+#[test]
+fn test_sample_with_no_crc32() {
+    test_full_sample(
+        sample_with_no_crc32(),
+        17,
+        0,
+    )
+}
