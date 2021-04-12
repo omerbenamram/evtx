@@ -19,7 +19,14 @@ use crate::ParserSettings;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
 
+use regex::bytes::Regex;
+use lazy_static::lazy_static;
+use std::collections::VecDeque;
+
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
+lazy_static! {
+    static ref RE_RECORD_SIGNITURE: Regex = Regex::new(r"\x2a\x2a\x00\x00").unwrap();
+}
 
 bitflags! {
     pub struct ChunkFlags: u32 {
@@ -199,11 +206,31 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords {
+        let mut offset_array: Option<VecDeque<usize>> = None;
+        // If the page is empty, we want to search for possible record signatures
+        if self.header.first_event_record_number == 1 && 
+           self.header.first_event_record_id == 0xffffffffffffffff &&
+           self.header.last_event_record_number == 0xffffffffffffffff &&
+           self.header.last_event_record_id == 0xffffffffffffffff {
+            // We know that this page is empty, so lets see if we can recover records
+            let found_signatures: VecDeque<usize> = RE_RECORD_SIGNITURE.captures_iter(&self.data)
+                .map(|c|c.get(0).map(|m| m.start()))
+                .filter(|v|v.is_some())
+                .map(|c|c.unwrap())
+                .collect();
+            
+            // If signatures were found, add them to the offset array
+            if !found_signatures.is_empty() {
+                offset_array = Some(found_signatures);
+            }
+        }
+
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
+            offset_array
         }
     }
 }
@@ -233,16 +260,27 @@ pub struct IterChunkRecords<'a> {
     offset_from_chunk_start: u64,
     exhausted: bool,
     settings: Arc<ParserSettings>,
+    /// offset_array is used for record recovery when the page is empty
+    offset_array: Option<VecDeque<usize>>
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.exhausted
-            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
-        {
-            return None;
+        if let Some(offset_array) = self.offset_array.as_mut() {
+            // If we are using an offset_array, we want to set the offset_from_chunk_start with those values
+            if let Some(value) = offset_array.pop_back() {
+                self.offset_from_chunk_start = value as u64;
+            } else {
+                return None;
+            }
+        } else {
+            if self.exhausted
+                || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
+            {
+                return None;
+            }
         }
 
         let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
@@ -299,7 +337,10 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             }
         }
 
-        self.offset_from_chunk_start += u64::from(record_header.data_size);
+        if self.offset_array.is_none() {
+            // Update the offset_from_chunk_start if we are not using an offset_array
+            self.offset_from_chunk_start += u64::from(record_header.data_size);
+        }
 
         if self.chunk.header.last_event_record_id == record_header.event_record_id {
             self.exhausted = true;
