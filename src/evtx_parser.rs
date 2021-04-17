@@ -108,6 +108,19 @@ impl<T: ReadSeek> Debug for EvtxParser<T> {
 }
 
 #[derive(Clone)]
+pub struct EvtxFilter {
+    pub ids: Vec<u32>,
+}
+
+impl EvtxFilter {
+    pub fn empty() -> Self {
+        Self {
+            ids: Vec::new()
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ParserSettings {
     /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
@@ -136,6 +149,8 @@ pub struct ParserSettings {
     indent: bool,
     /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
     ansi_codec: EncodingRef,
+    /// Used to filter the output. Filtering is already done while parsing, for performance reasons
+    evtx_filter: EvtxFilter,
 }
 
 impl Debug for ParserSettings {
@@ -168,6 +183,7 @@ impl Default for ParserSettings {
             separate_json_attributes: false,
             indent: true,
             ansi_codec: WINDOWS_1252,
+            evtx_filter: EvtxFilter::empty(),
         }
     }
 }
@@ -203,6 +219,13 @@ impl ParserSettings {
     pub fn ansi_codec(mut self, ansi_codec: EncodingRef) -> Self {
         self.ansi_codec = ansi_codec;
 
+        self
+    }
+
+    /// Sets the filter options
+    pub fn filter(mut self, filter: EvtxFilter) -> Self {
+        self.evtx_filter = filter;
+        
         self
     }
 

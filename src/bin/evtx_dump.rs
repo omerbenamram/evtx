@@ -8,7 +8,7 @@ use indoc::indoc;
 use encoding::all::encodings;
 use encoding::types::Encoding;
 use evtx::err::Result as EvtxResult;
-use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
+use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord, EvtxFilter};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -31,10 +31,6 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
-struct EvtxFilter {
-    ids: Vec<u32>,
-}
-
 struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
@@ -43,7 +39,6 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
-    evtx_filter: EvtxFilter,
 }
 
 impl EvtxDump {
@@ -150,16 +145,16 @@ impl EvtxDump {
                 .validate_checksums(validate_checksums)
                 .separate_json_attributes(separate_json_attrib_flag)
                 .indent(!no_indent)
-                .ansi_codec(*ansi_codec),
+                .ansi_codec(*ansi_codec)
+                .filter(EvtxFilter {
+                    ids
+                }),
             input,
             show_record_number: !no_show_record_number,
             output_format,
             output,
             verbosity_level,
             stop_after_error,
-            evtx_filter: EvtxFilter {
-                ids
-            }
         })
     }
 
