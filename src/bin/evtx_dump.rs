@@ -39,6 +39,7 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
+    sorted_output: bool
 }
 
 impl EvtxDump {
@@ -134,6 +135,8 @@ impl EvtxDump {
             Box::new(BufWriter::new(io::stdout()))
         };
 
+        let sorted_output = matches.is_present("sorted_output");
+
         Ok(EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
@@ -147,6 +150,7 @@ impl EvtxDump {
             output,
             verbosity_level,
             stop_after_error,
+            sorted_output,
         })
     }
 
@@ -162,14 +166,10 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
-                for record in parser.records() {
-                    self.dump_record(record)?
-                }
+                self.dump_records(parser.records(), self.sorted_output)?
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json() {
-                    self.dump_record(record)?
-                }
+                self.dump_records(parser.records_json(), self.sorted_output)?
             }
         };
 
@@ -240,6 +240,26 @@ impl EvtxDump {
             }
         };
 
+        Ok(())
+    }
+
+    fn dump_records<T> (&mut self, records: T, sorted: bool) -> Result<()> where T: Iterator<Item = Result<SerializedEvtxRecord<String>, evtx::err::EvtxError>> {
+        if sorted {
+            let mut records: Vec<_> = records
+                .filter_map(|r| match r {
+                    Err(_) => None,
+                    Ok(r)  => Some(Ok(r)),
+                })
+                .collect();
+            records.sort_by(|a, b| a.as_ref().unwrap().event_record_id.cmp(&b.as_ref().unwrap().event_record_id));
+            for record in records {
+                self.dump_record(record)?;
+            }
+        } else {
+            for record in records {
+                self.dump_record(record)?;
+            }
+        }
         Ok(())
     }
 
@@ -360,7 +380,13 @@ fn main() -> Result<()> {
                 -vv  - debug
                 -vvv - trace
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
-        ).get_matches();
+        )
+        .arg(Arg::with_name("sorted_output")
+            .short("-S").long("--sort")
+            .takes_value(false)
+            .help("sort output by record id")
+        )
+        .get_matches();
 
     EvtxDump::from_cli_matches(&matches)?.run()?;
 
