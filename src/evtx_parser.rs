@@ -109,14 +109,24 @@ impl<T: ReadSeek> Debug for EvtxParser<T> {
 
 #[derive(Clone)]
 pub struct EvtxFilter {
-    pub ids: Vec<u32>,
+    pub ids: Arc<Vec<u32>>,
 }
 
 impl EvtxFilter {
     pub fn empty() -> Self {
         Self {
-            ids: Vec::new()
+            ids: Arc::new(Vec::new())
         }
+    }
+
+    pub fn new(ids: Vec<u32>) -> Self {
+        Self {
+            ids: Arc::new(ids)
+        }
+    }
+
+    pub fn matches<U: Send>(&self, record: &std::result::Result<U, crate::err::EvtxError>) -> bool {
+        true
     }
 }
 
@@ -487,7 +497,11 @@ impl<T: ReadSeek> EvtxParser<T> {
                                     source: err,
                                 })],
                                 Ok(mut chunk_records) => {
-                                    chunk_records.iter().map(f.clone()).collect()
+                                    chunk_records
+                                        .iter()
+                                        .map(f.clone())
+                                        .filter(|r| chunk_settings.evtx_filter.matches(r))
+                                        .collect()
                                 }
                             }
                         }

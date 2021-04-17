@@ -146,9 +146,7 @@ impl EvtxDump {
                 .separate_json_attributes(separate_json_attrib_flag)
                 .indent(!no_indent)
                 .ansi_codec(*ansi_codec)
-                .filter(EvtxFilter {
-                    ids
-                }),
+                .filter(EvtxFilter::new(ids)),
             input,
             show_record_number: !no_show_record_number,
             output_format,
