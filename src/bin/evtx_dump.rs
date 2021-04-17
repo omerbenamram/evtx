@@ -31,6 +31,10 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
+struct EvtxFilter {
+    ids: Vec<u32>,
+}
+
 struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
@@ -39,6 +43,7 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
+    evtx_filter: EvtxFilter,
 }
 
 impl EvtxDump {
@@ -134,6 +139,11 @@ impl EvtxDump {
             Box::new(BufWriter::new(io::stdout()))
         };
 
+        let ids = match matches.values_of("filter-id") {
+            None => Vec::new(),
+            Some(i) => i.map(|s| s.parse::<u32>().expect("invalid id given")).collect(),
+        };
+
         Ok(EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
@@ -147,6 +157,9 @@ impl EvtxDump {
             output,
             verbosity_level,
             stop_after_error,
+            evtx_filter: EvtxFilter {
+                ids
+            }
         })
     }
 
@@ -360,7 +373,18 @@ fn main() -> Result<()> {
                 -vv  - debug
                 -vvv - trace
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
-        ).get_matches();
+        )
+        .arg(Arg::with_name("filter-id")
+            .short("I").long("--filter-id")
+            .help("display only events with the given event ids. The value of this option must be a comma separated list")
+            .takes_value(true)
+            .use_delimiter(true)
+            .validator(|s| match s.parse::<u32>() {
+                Err(_)  => Err(String::from("EventID must be a number")),
+                _       => Ok(())
+            })
+        )
+        .get_matches();
 
     EvtxDump::from_cli_matches(&matches)?.run()?;
 
