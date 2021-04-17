@@ -12,10 +12,11 @@ mod macros;
 extern crate bitflags;
 
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
-pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings, EvtxFilter};
+pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 pub use json_output::JsonOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
+pub use evtx_filter::EvtxFilter;
 
 pub mod binxml;
 pub mod err;
@@ -25,6 +26,7 @@ mod evtx_chunk;
 mod evtx_file_header;
 mod evtx_parser;
 mod evtx_record;
+mod evtx_filter;
 mod string_cache;
 mod template_cache;
 mod utils;

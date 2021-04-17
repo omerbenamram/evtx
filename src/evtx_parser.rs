@@ -3,6 +3,7 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
+use crate::evtx_filter::EvtxFilter;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
@@ -104,29 +105,6 @@ impl<T: ReadSeek> Debug for EvtxParser<T> {
             .field("header", &self.header)
             .field("config", &self.config)
             .finish()
-    }
-}
-
-#[derive(Clone)]
-pub struct EvtxFilter {
-    pub ids: Arc<Vec<u32>>,
-}
-
-impl EvtxFilter {
-    pub fn empty() -> Self {
-        Self {
-            ids: Arc::new(Vec::new())
-        }
-    }
-
-    pub fn new(ids: Vec<u32>) -> Self {
-        Self {
-            ids: Arc::new(ids)
-        }
-    }
-
-    pub fn matches<U: Send>(&self, record: &std::result::Result<U, crate::err::EvtxError>) -> bool {
-        true
     }
 }
 
@@ -499,8 +477,8 @@ impl<T: ReadSeek> EvtxParser<T> {
                                 Ok(mut chunk_records) => {
                                     chunk_records
                                         .iter()
-                                        .map(f.clone())
                                         .filter(|r| chunk_settings.evtx_filter.matches(r))
+                                        .map(f.clone())
                                         .collect()
                                 }
                             }

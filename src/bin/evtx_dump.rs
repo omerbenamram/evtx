@@ -136,7 +136,7 @@ impl EvtxDump {
 
         let ids = match matches.values_of("filter-id") {
             None => Vec::new(),
-            Some(i) => i.map(|s| s.parse::<u32>().expect("invalid id given")).collect(),
+            Some(i) => i.map(|s| s.parse::<u64>().expect("invalid id given")).collect(),
         };
 
         Ok(EvtxDump {
@@ -372,7 +372,7 @@ fn main() -> Result<()> {
             .help("display only events with the given event ids. The value of this option must be a comma separated list")
             .takes_value(true)
             .use_delimiter(true)
-            .validator(|s| match s.parse::<u32>() {
+            .validator(|s| match s.parse::<u64>() {
                 Err(_)  => Err(String::from("EventID must be a number")),
                 _       => Ok(())
             })
