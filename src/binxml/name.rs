@@ -5,7 +5,10 @@ pub use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::utils::read_len_prefixed_utf16_string;
 
-use std::{fmt::Formatter, io::{Cursor, Seek, SeekFrom}};
+use std::{
+    fmt::Formatter,
+    io::{Cursor, Seek, SeekFrom},
+};
 
 use quick_xml::events::{BytesEnd, BytesStart};
 use std::fmt;
@@ -103,15 +106,15 @@ impl BinXmlName {
     }
 }
 
-impl<'a> Into<quick_xml::events::BytesStart<'a>> for &'a BinXmlName {
-    fn into(self) -> BytesStart<'a> {
-        BytesStart::borrowed_name(self.as_str().as_bytes())
+impl<'a> From<&'a BinXmlName> for quick_xml::events::BytesStart<'a> {
+    fn from(name: &'a BinXmlName) -> Self {
+        BytesStart::borrowed_name(name.as_str().as_bytes())
     }
 }
 
-impl<'a> Into<quick_xml::events::BytesEnd<'a>> for BinXmlName {
-    fn into(self) -> BytesEnd<'a> {
-        let inner = self.as_str().as_bytes();
+impl<'a> From<BinXmlName> for quick_xml::events::BytesEnd<'a> {
+    fn from(name: BinXmlName) -> Self {
+        let inner = name.as_str().as_bytes();
         BytesEnd::owned(inner.to_vec())
     }
 }
