@@ -4,28 +4,32 @@ use crate::binxml::assemble::parse_tokens;
 use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlElement};
 use std::borrow::Cow;
+use regex::Regex;
 
 #[derive(Clone)]
 pub struct EvtxFilter {
-    pub ids: Vec<u64>,
+    ids: Vec<u64>,
+    data: Option<Regex>,
 }
 
 impl EvtxFilter {
     pub fn empty() -> Self {
         Self {
-            ids: Vec::new()
+            ids: Vec::new(),
+            data: None,
         }
     }
 
-    pub fn new(ids: Vec<u64>) -> Self {
+    pub fn new(ids: Vec<u64>, data: Option<Regex>) -> Self {
         Self {
-            ids: ids
+            ids,
+            data
         }
     }
 
     pub fn matches(&self, record: &std::result::Result<crate::EvtxRecord, crate::err::EvtxError>) -> bool {
         // if nobody entered some filter conditions, every record matches
-        if self.ids.len() == 0 {
+        if (self.ids.len() == 0) && (self.data.is_none()) {
             return true
         }
 
@@ -43,27 +47,42 @@ impl EvtxFilter {
         }
     }
 
-    pub fn match_value(&self, _path: &[String], _value: &Cow<str>) -> bool {
-        false
+    pub fn match_value(&self, _path: &[String], value: &Cow<str>) -> bool {
+        match &self.data {
+            None => true,
+            Some(r) => r.is_match(value),
+        }
     }
 
     pub fn match_eventid(&self, eventid: u64) -> bool {
         self.ids.contains(&eventid)
+    }
+
+    pub fn can_filter_id(&self) -> bool {
+        self.ids.len() > 0
+    }
+
+    pub fn can_filter_data(&self) -> bool {
+        self.data.is_some()
     }
 }
 
 struct RecordVisitor<'a> {
     matches_filter: bool,
     node_stack: Vec<String>,
-    filter: &'a EvtxFilter
+    filter: &'a EvtxFilter,
+    found_data_match: bool,
+    found_id_match: bool,
 }
 
 impl<'a> RecordVisitor<'a> {
     pub fn new(filter: &'a EvtxFilter) -> Self {
         Self {
-            matches_filter: false,
+            matches_filter: true,
             node_stack: Vec::new(),
-            filter
+            filter,
+            found_data_match: false,
+            found_id_match: false,
         }
     }
 
@@ -81,12 +100,37 @@ impl<'a> RecordVisitor<'a> {
             _ => ()
         }
     }
+
+    pub fn can_filter_id(&self) -> bool {
+        ! self.found_id_match && self.filter.can_filter_id()
+    }
+
+    pub fn found_matching_id(&mut self) {
+        self.found_id_match = true;
+    }
+
+    pub fn can_filter_data(&self) -> bool {
+        ! self.found_data_match && self.filter.can_filter_data()
+    }
+
+    pub fn found_matching_data(&mut self) {
+        self.found_data_match = true;
+    }
 }
 
 impl<'a> crate::BinXmlOutput for RecordVisitor<'a> {
 
     /// Called once when EOF is reached.
     fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
+        if self.node_stack.len() != 0 {
+            panic!("internal error: node stack is not empty");
+        }
+
+        if self.filter.can_filter_id() && ! self.found_id_match {
+            self.matches_filter = false;
+        } else if self.filter.can_filter_data() && ! self.found_data_match {
+            self.matches_filter = false;
+        }
         Ok(())
     }
 
@@ -108,25 +152,30 @@ impl<'a> crate::BinXmlOutput for RecordVisitor<'a> {
     /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
     ///                                                     ~~~~~~~~~~~~~~~
     fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
-        if self.matches_filter {
-            return Ok(())
-        }
-
         let cow: Cow<str> = value.as_cow_str();
-        if self.node_stack.len() == 3 && 
-            self.node_stack[0] == "Event" &&
-            self.node_stack[1] == "System" &&
-            self.node_stack[2] == "EventID" {
-            match cow.parse::<u64>() {
-                Err(e) => return Err(SerializationError::ParseIntError{source: e}),
-                Ok(eventid) => {
-                    self.matches_filter = self.filter.match_eventid(eventid);
-                    return Ok(())
+
+        if self.can_filter_id() {
+            if      self.node_stack.len() == 3 && 
+                    self.node_stack[0] == "Event" &&
+                    self.node_stack[1] == "System" &&
+                    self.node_stack[2] == "EventID" {
+                match cow.parse::<u64>() {
+                    Err(e) => return Err(SerializationError::ParseIntError{source: e}),
+                    Ok(eventid) => {
+                        if self.filter.match_eventid(eventid) {
+                            self.found_matching_id();
+                        }
+                        return Ok(())
+                    }
                 }
             }
         }
         
-        self.matches_filter = self.filter.match_value(&self.node_stack[..], &cow);
+        if self.can_filter_data() {
+            if self.filter.match_value(&self.node_stack[..], &cow) {
+                self.found_matching_data();
+            }
+        }
         Ok(())
     }
 
@@ -152,6 +201,9 @@ impl<'a> crate::BinXmlOutput for RecordVisitor<'a> {
 
     /// Called once on beginning of parsing.
     fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
+        if self.node_stack.len() != 0 {
+            panic!("internal error: node stack is not empty");
+        }
         Ok(())
     }
 }

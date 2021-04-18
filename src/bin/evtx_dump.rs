@@ -4,6 +4,7 @@ use anyhow::{bail, format_err, Context, Result};
 use clap::{App, AppSettings, Arg, ArgMatches};
 use dialoguer::Confirm;
 use indoc::indoc;
+use regex::Regex;
 
 use encoding::all::encodings;
 use encoding::types::Encoding;
@@ -139,6 +140,10 @@ impl EvtxDump {
             Some(i) => i.map(|s| s.parse::<u64>().expect("invalid id given")).collect(),
         };
 
+        let data_regex = matches.value_of("filter-data").and_then(|d| {
+            Some(Regex::new(d).expect("invalid regular expression"))
+        });
+
         Ok(EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads)
@@ -146,7 +151,7 @@ impl EvtxDump {
                 .separate_json_attributes(separate_json_attrib_flag)
                 .indent(!no_indent)
                 .ansi_codec(*ansi_codec)
-                .filter(EvtxFilter::new(ids)),
+                .filter(EvtxFilter::new(ids, data_regex)),
             input,
             show_record_number: !no_show_record_number,
             output_format,
@@ -375,6 +380,19 @@ fn main() -> Result<()> {
             .validator(|s| match s.parse::<u64>() {
                 Err(_)  => Err(String::from("EventID must be a number")),
                 _       => Ok(())
+            })
+        )
+        .arg(Arg::with_name("filter-data")
+            .short("D").long("--filter-data")
+            .help("filter event data based on a regular expression")
+            .takes_value(true)
+            .validator(|s| match Regex::new(&s){
+                Ok(_) => Ok(()),
+                Err(e) => match e {
+                    regex::Error::Syntax(s) => Err(String::from(s)),
+                    regex::Error::CompiledTooBig(_) => Err(String::from("regex needs too much memory")),
+                    _ => Err(String::from("unknown error"))
+                }
             })
         )
         .get_matches();

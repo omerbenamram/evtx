@@ -34,6 +34,7 @@ simplelog = { version = "0.9.0", optional = true }
 clap = { version = "2.33.3", optional = true }
 dialoguer = { version = "0.8.0", optional = true }
 indoc = { version = "1.0", optional = true }
+regex = { version = "1.4.5", optional = true }
 
 serde = "1.0"
 serde_json = "1.0"
@@ -50,7 +51,7 @@ rpmalloc = { version = "0.2.0", optional = true }
 [features]
 default = ["multithreading", "evtx_dump"]
 fast-alloc = ["jemallocator", "rpmalloc"]
-evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
+evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "regex"]
 multithreading = ["rayon"]
 
 [dev-dependencies]
