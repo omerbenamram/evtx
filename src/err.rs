@@ -183,6 +183,12 @@ pub enum SerializationError {
 
     #[error("Unimplemented: {message}")]
     Unimplemented { message: String },
+
+    #[error("Failed conversion to integer")]
+    ParseIntError {
+        #[from]
+        source: std::num::ParseIntError,
+    },
 }
 
 #[derive(Debug, Error)]
