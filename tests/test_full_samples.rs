@@ -87,6 +87,7 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
       actual_ok_count, ok_count,
       "XML: Failed to parse all expected records"
     );
+    assert_eq!(actual_err_count, err_count, "XML: Expected errors");
 }
 
 #[test]

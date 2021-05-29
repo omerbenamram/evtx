@@ -1,27 +1,74 @@
 use crate::xml_output::BinXmlOutput;
 use crate::err::{SerializationError, SerializationResult};
-use crate::model::xml::{BinXmlPI, XmlElement};
+use crate::model::xml::{BinXmlPI, XmlElement, XmlAttribute};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;
 use chrono::prelude::*;
 use std::mem;
 
+mod xml {
+  use std::collections::HashMap;
+
+  #[derive(Debug)]
+  pub enum XmlContentType {
+    Simple(String),
+    Complex(Vec<XmlElement>),
+    None
+  }
+
+  #[derive(Debug)]
+  pub struct XmlElement {
+    pub name: String,
+    pub attributes: HashMap<String, String>,
+    pub content: XmlContentType,
+  }
+
+  impl XmlElement {
+    pub fn new(name: &str) -> Self {
+      Self {
+        name: name.to_owned(),
+        attributes: HashMap::new(),
+        content: XmlContentType::None
+      }
+    }
+
+    pub fn add_attribute(&mut self, name: &str, value: &str) {
+      self.attributes.insert(name.to_owned(), value.to_owned());
+    }
+
+    pub fn add_simple_content(&mut self, value: &str) {
+      match self.content {
+        XmlContentType::None => self.content = XmlContentType::Simple(value.to_owned()),
+        XmlContentType::Simple(ref mut s) => s.push_str(value),
+        _ => panic!("this xml element has already a value assigned: {:?}, trying to add {:?}", self.content, value),
+      }
+    }
+  }
+
+}
+
 pub struct EvtxStructure {
   event_record_id: u64,
   timestamp: DateTime<Utc>,
+  content: xml::XmlElement,
 }
 
 impl EvtxStructure {
   pub fn new(event_record_id: u64, timestamp: DateTime<Utc>) -> Self {
     Self {
       event_record_id,
-      timestamp
+      timestamp,
+      content: xml::XmlElement::new(""),   // this will be overriden later
     }
   }
 
-  pub fn add_value(&mut self, path: &Vec<String>, value: &str) {
-
+  pub fn new_empty() -> Self {
+    Self {
+      event_record_id: 0,
+      timestamp: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc),
+      content: xml::XmlElement::new(""),
+    }
   }
 
   pub fn event_record_id(&self) -> u64 {
@@ -31,47 +78,65 @@ impl EvtxStructure {
   pub fn timestamp(&self) -> &DateTime<Utc> {
     &self.timestamp
   }
-
-  pub fn is_ok(&self) -> bool {
-    true
-  }
 }
 
 pub struct StructureBuilder {
-  result: Option<EvtxStructure>,
-  node_stack: Vec<String>,
+  result: EvtxStructure,
+  node_stack: Vec<xml::XmlElement>,
+  unstored_nodes: Vec<xml::XmlElement>,
 }
 
 impl StructureBuilder {
   pub fn new(event_record_id: u64, timestamp: DateTime<Utc>) -> Self {
     Self {
-      result: Some(EvtxStructure::new(event_record_id, timestamp)),
-      node_stack: Vec::new()
+      result: EvtxStructure::new(event_record_id, timestamp),
+      node_stack: Vec::new(),
+      unstored_nodes: Vec::new()
     }
   }
 
   /// consumes self and returns the generated structure
   pub fn get_structure(&mut self) -> EvtxStructure {
-    let mut result = None;
+    let mut result = EvtxStructure::new_empty();
     mem::swap(&mut self.result, &mut result);
-    return result.unwrap();
+    return result;
   }
 
-  pub fn enter_named_node(&mut self, name: &str) {
-    self.node_stack.push(String::from(name));
+  pub fn enter_named_node(&mut self, name: &str, attributes: &Vec<XmlAttribute>) {
+    let mut element = xml::XmlElement::new(name);
+    for a in attributes {
+      element.add_attribute(a.name.as_ref().as_str(), &a.value.as_ref().as_cow_str());
+    }
+
+    self.node_stack.push(element);
   }
 
   pub fn leave_node(&mut self, _name: &str) {
       match self.node_stack.pop() {
           None => panic!("stack underflow"),
-          _ => ()
+          Some(mut node) => {
+            match node.content {
+
+              // this element has no contents, but there are still unstored nodes.
+              // we use these as child nodes
+              xml::XmlContentType::None => {
+                let mut new_nodes = Vec::new();
+                mem::swap(&mut self.unstored_nodes, &mut new_nodes);
+                node.content = xml::XmlContentType::Complex(new_nodes);
+              }
+
+              // this element already has contents, so we cannot add contents to it.
+              // we assume this will later be added to its parent
+              _ => (),
+            }
+
+            self.unstored_nodes.push(node);
+          }
       }
   }
 
   pub fn add_value(&mut self, value: &str) {
-    if let Some(result) = &mut self.result {
-      result.add_value(&self.node_stack, value);
-    }
+    self.node_stack.last_mut().unwrap().add_simple_content(value);
   }
 }
 
@@ -82,13 +147,18 @@ impl BinXmlOutput for StructureBuilder {
       if self.node_stack.len() != 0 {
         return Err(SerializationError::StructureBuilderError { message: "node stack is not empty".to_owned() });
       }
+      if self.unstored_nodes.len() != 1 {
+        return Err(SerializationError::StructureBuilderError { message: "invalid number of unstored nodes".to_owned() });
+      }
+      self.result.content = self.unstored_nodes.pop().unwrap();
       Ok(())
     }
 
     /// Called on <Tag attr="value" another_attr="value">.
     fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
       let name = element.name.as_ref().as_str();
-      self.enter_named_node(name);
+
+      self.enter_named_node(name, &element.attributes);
       Ok(())
     }
 
@@ -114,17 +184,17 @@ impl BinXmlOutput for StructureBuilder {
     }
 
     /// Emit the character "&" and the text.
-    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> SerializationResult<()> {
+    fn visit_entity_reference(&mut self, _: &BinXmlName) -> SerializationResult<()> {
       Ok(())
     }
 
     /// Emit the characters "&" and "#" and the decimal string representation of the value.
-    fn visit_character_reference(&mut self, char_ref: Cow<'_, str>) -> SerializationResult<()> {
+    fn visit_character_reference(&mut self, _: Cow<'_, str>) -> SerializationResult<()> {
       Ok(())
     }
 
     /// Unimplemented
-    fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()> {
+    fn visit_processing_instruction(&mut self, _: &BinXmlPI) -> SerializationResult<()> {
       Ok(())
     }
 
