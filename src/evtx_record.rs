@@ -6,6 +6,7 @@ use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
+use crate::evtx_structure::{EvtxStructure, StructureBuilder};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
@@ -110,6 +111,14 @@ impl<'a> EvtxRecord<'a> {
             timestamp: record_with_json_value.timestamp,
             data,
         })
+    }
+
+    /// Consume the record and parses it, producing a EvtxStrusture instance
+    pub fn into_structure(self) -> Result<EvtxStructure> {
+      let mut structure_builder = StructureBuilder::new(self.event_record_id, self.timestamp);
+      self.into_output(&mut structure_builder)?;
+
+      Ok(structure_builder.get_structure())
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.

@@ -181,6 +181,9 @@ pub enum SerializationError {
         source: std::string::FromUtf8Error,
     },
 
+    #[error("Generating an internal structure failed with message: {message}")]
+    StructureBuilderError {message: String },
+
     #[error("Unimplemented: {message}")]
     Unimplemented { message: String },
 }

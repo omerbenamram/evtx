@@ -3,6 +3,8 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
+use crate::evtx_structure::EvtxStructure;
+
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
@@ -491,6 +493,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json()))
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will be instances of `EvtxStructure`
+    pub fn records_struct(&mut self) -> impl Iterator<Item = Result<EvtxStructure>> + '_ {
+      self.serialized_records(|record| record.and_then(|record| record.into_structure()))
     }
 
     /// Return an iterator over all the records.
