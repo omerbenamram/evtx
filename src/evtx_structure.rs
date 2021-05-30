@@ -1,10 +1,10 @@
-use crate::xml_output::BinXmlOutput;
-use crate::err::{SerializationError, SerializationResult};
-use crate::model::xml::{BinXmlPI, XmlElement, XmlAttribute};
-use crate::binxml::value_variant::BinXmlValue;
 use crate::binxml::name::BinXmlName;
-use std::borrow::Cow;
+use crate::binxml::value_variant::BinXmlValue;
+use crate::err::{SerializationError, SerializationResult};
+use crate::model::xml::{BinXmlPI, XmlAttribute, XmlElement};
+use crate::xml_output::BinXmlOutput;
 use chrono::prelude::*;
+use std::borrow::Cow;
 use std::mem;
 
 mod xml {
@@ -14,7 +14,7 @@ mod xml {
   pub enum XmlContentType {
     Simple(String),
     Complex(Vec<XmlElement>),
-    None
+    None,
   }
 
   #[derive(Debug)]
@@ -29,7 +29,7 @@ mod xml {
       Self {
         name: name.to_owned(),
         attributes: HashMap::new(),
-        content: XmlContentType::None
+        content: XmlContentType::None,
       }
     }
 
@@ -41,11 +41,21 @@ mod xml {
       match self.content {
         XmlContentType::None => self.content = XmlContentType::Simple(value.to_owned()),
         XmlContentType::Simple(ref mut s) => s.push_str(value),
-        _ => panic!("this xml element has already a value assigned: {:?}, trying to add {:?}", self.content, value),
+        _ => if ! value.is_empty() { panic!(
+          "this xml element has already a value assigned: {:?}, trying to add {:?}",
+          self.content, value
+        )},
+      }
+    }
+
+    pub fn add_child(&mut self, child: XmlElement) {
+      match self.content {
+        XmlContentType::Simple(_) => panic!("this xml element is a text node and cannot contain child elements"),
+        XmlContentType::None => self.content = XmlContentType::Complex(vec!(child)),
+        XmlContentType::Complex(ref mut v) => v.push(child),
       }
     }
   }
-
 }
 
 pub struct EvtxStructure {
@@ -59,7 +69,7 @@ impl EvtxStructure {
     Self {
       event_record_id,
       timestamp,
-      content: xml::XmlElement::new(""),   // this will be overriden later
+      content: xml::XmlElement::new(""), // this will be overriden later
     }
   }
 
@@ -82,16 +92,14 @@ impl EvtxStructure {
 
 pub struct StructureBuilder {
   result: EvtxStructure,
-  node_stack: Vec<xml::XmlElement>,
-  unstored_nodes: Vec<xml::XmlElement>,
+  node_stack: Vec<xml::XmlElement>
 }
 
 impl StructureBuilder {
   pub fn new(event_record_id: u64, timestamp: DateTime<Utc>) -> Self {
     Self {
       result: EvtxStructure::new(event_record_id, timestamp),
-      node_stack: Vec::new(),
-      unstored_nodes: Vec::new()
+      node_stack: Vec::new()
     }
   }
 
@@ -107,102 +115,83 @@ impl StructureBuilder {
     for a in attributes {
       element.add_attribute(a.name.as_ref().as_str(), &a.value.as_ref().as_cow_str());
     }
-
     self.node_stack.push(element);
   }
 
   pub fn leave_node(&mut self, _name: &str) {
-      match self.node_stack.pop() {
-          None => panic!("stack underflow"),
-          Some(mut node) => {
-            match node.content {
-
-              // this element has no contents, but there are still unstored nodes.
-              // we use these as child nodes
-              xml::XmlContentType::None => {
-                let mut new_nodes = Vec::new();
-                mem::swap(&mut self.unstored_nodes, &mut new_nodes);
-                node.content = xml::XmlContentType::Complex(new_nodes);
-              }
-
-              // this element already has contents, so we cannot add contents to it.
-              // we assume this will later be added to its parent
-              _ => (),
-            }
-
-            self.unstored_nodes.push(node);
-          }
-      }
-  }
-
-  pub fn add_value(&mut self, value: &str) {
-    self.node_stack.last_mut().unwrap().add_simple_content(value);
+    let my_node = self.node_stack.pop().expect("stack underflow");
+    if self.node_stack.is_empty() {
+      self.result.content = my_node;
+    } else {
+      self.node_stack.last_mut().unwrap().add_child(my_node);
+    }
   }
 }
 
 impl BinXmlOutput for StructureBuilder {
-
-    /// Called once when EOF is reached.
-    fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
-      if self.node_stack.len() != 0 {
-        return Err(SerializationError::StructureBuilderError { message: "node stack is not empty".to_owned() });
-      }
-      if self.unstored_nodes.len() != 1 {
-        return Err(SerializationError::StructureBuilderError { message: "invalid number of unstored nodes".to_owned() });
-      }
-      self.result.content = self.unstored_nodes.pop().unwrap();
-      Ok(())
+  /// Called once when EOF is reached.
+  fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
+    if ! self.node_stack.is_empty() {
+      return Err(SerializationError::StructureBuilderError {
+        message: "node stack is not empty".to_owned(),
+      });
     }
+    Ok(())
+  }
 
-    /// Called on <Tag attr="value" another_attr="value">.
-    fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
-      let name = element.name.as_ref().as_str();
+  /// Called on <Tag attr="value" another_attr="value">.
+  fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
+    let name = element.name.as_ref().as_str();
 
-      self.enter_named_node(name, &element.attributes);
-      Ok(())
+    self.enter_named_node(name, &element.attributes);
+    Ok(())
+  }
+
+  /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
+  fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
+    let name = element.name.as_ref().as_str();
+    self.leave_node(&name);
+    Ok(())
+  }
+
+  ///
+  /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
+  ///                                                     ~~~~~~~~~~~~~~~
+  fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+    let cow: Cow<str> = value.as_cow_str();
+    self
+      .node_stack
+      .last_mut()
+      .unwrap()
+      .add_simple_content(&cow);
+    Ok(())
+  }
+
+  /// Unimplemented
+  fn visit_cdata_section(&mut self) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Emit the character "&" and the text.
+  fn visit_entity_reference(&mut self, _: &BinXmlName) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Emit the characters "&" and "#" and the decimal string representation of the value.
+  fn visit_character_reference(&mut self, _: Cow<'_, str>) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Unimplemented
+  fn visit_processing_instruction(&mut self, _: &BinXmlPI) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Called once on beginning of parsing.
+  fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
+    if self.node_stack.len() != 0 {
+      panic!("internal error: node stack is not empty");
     }
-
-    /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
-    fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
-      let name = element.name.as_ref().as_str();
-      self.leave_node(&name);
-      Ok(())
-    }
-
-    ///
-    /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
-    ///                                                     ~~~~~~~~~~~~~~~
-    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
-      let cow: Cow<str> = value.as_cow_str();
-      self.add_value(&cow);
-      Ok(())
-    }
-
-    /// Unimplemented
-    fn visit_cdata_section(&mut self) -> SerializationResult<()> {
-      Ok(())
-    }
-
-    /// Emit the character "&" and the text.
-    fn visit_entity_reference(&mut self, _: &BinXmlName) -> SerializationResult<()> {
-      Ok(())
-    }
-
-    /// Emit the characters "&" and "#" and the decimal string representation of the value.
-    fn visit_character_reference(&mut self, _: Cow<'_, str>) -> SerializationResult<()> {
-      Ok(())
-    }
-
-    /// Unimplemented
-    fn visit_processing_instruction(&mut self, _: &BinXmlPI) -> SerializationResult<()> {
-      Ok(())
-    }
-
-    /// Called once on beginning of parsing.
-    fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
-      if self.node_stack.len() != 0 {
-        panic!("internal error: node stack is not empty");
-      }
-      Ok(())
-    }
+    Ok(())
+  }
 }
