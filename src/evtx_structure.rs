@@ -4,6 +4,7 @@ use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlAttribute, XmlElement};
 use crate::xml_output::BinXmlOutput;
 use chrono::prelude::*;
+use chrono::format::ParseResult;
 use std::borrow::Cow;
 use std::mem;
 use std::cmp::{Ord, Ordering};
@@ -98,7 +99,20 @@ impl EvtxStructure {
 
   /// Returns the event id
   pub fn event_id(&self) -> u32 {
-    self.find(&["System", "EventID"]).expect("missing EventID").parse().expect("invalid EventID")
+    self.find(&["System", "EventID"])
+    .expect("missing EventID")
+    .parse()
+    .expect("invalid EventID")
+  }
+
+  /// returns TimeCreated/@SystemTime
+  pub fn time_created(&self) -> ParseResult<DateTime<Utc>> {
+    let dt = self.find(&["System", "TimeCreated", "@SystemTime"])
+    .expect("missing TimeCreated");
+    match NaiveDateTime::parse_from_str(dt, "%F %T.%f %Z") {
+      Ok(dt) => Ok(DateTime::from_utc(dt, Utc)),
+      Err(e) => Err(e)
+    }
   }
 
   /// Find a single value of the current event record.
