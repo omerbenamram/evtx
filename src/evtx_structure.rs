@@ -10,14 +10,14 @@ use std::cmp::{Ord, Ordering};
 use std::collections::HashMap;
 
 #[derive(Debug)]
-pub enum EvtxXmlContentType {
+enum EvtxXmlContentType {
   Simple(String),
   Complex(Vec<EvtxXmlElement>),
   None,
 }
 
 #[derive(Debug)]
-pub struct EvtxXmlElement {
+struct EvtxXmlElement {
   pub name: String,
   pub attributes: HashMap<String, String>,
   pub content: EvtxXmlContentType,
@@ -85,14 +85,18 @@ impl EvtxStructure {
     }
   }
 
+  /// Returns the current record ID. Beware: This is *not* the event ID!
+  /// If you need the event id, call `event_id()`.
   pub fn event_record_id(&self) -> u64 {
     self.event_record_id
   }
 
+  /// Returns the timestamp of the record structure
   pub fn timestamp(&self) -> &DateTime<Utc> {
     &self.timestamp
   }
 
+  /// Returns the event id
   pub fn event_id(&self) -> u32 {
     self.find(&["System", "EventID"]).expect("missing EventID").parse().expect("invalid EventID")
   }
