@@ -7,7 +7,6 @@ use chrono::prelude::*;
 use std::borrow::Cow;
 use std::mem;
 use std::cmp::{Ord, Ordering};
-
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -98,6 +97,33 @@ impl EvtxStructure {
     self.find(&["System", "EventID"]).expect("missing EventID").parse().expect("invalid EventID")
   }
 
+  /// find a single value of the current event record
+  /// 
+  /// # Example
+  /// ```
+  /// # use evtx::EvtxParser;
+  /// # use std::path::PathBuf;
+  /// # pub fn samples_dir() -> PathBuf {
+  /// #  PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+  /// #  .join("samples")
+  /// #  .canonicalize()
+  /// #  .unwrap()
+  /// # }
+  /// #
+  /// # pub fn regular_sample() -> PathBuf {
+  /// # samples_dir().join("security.evtx")
+  /// # }
+  /// # let mut parser = EvtxParser::from_path(regular_sample()).unwrap();
+  /// for record_res in parser.records_struct() {
+  ///   match record_res {
+  ///     Ok(record) => {
+  ///       let event_id = record.find(&["System", "EventID"]).unwrap();
+  ///       println!("{}", event_id);
+  ///     }
+  ///     _ => eprintln!("error"),
+  ///   }
+  /// }
+  /// ```
   pub fn find(&self, path: &[&str]) -> Option<&str> {
     self.find_r(&self.content, path)
   }
