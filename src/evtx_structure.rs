@@ -7,53 +7,57 @@ use chrono::prelude::*;
 use std::borrow::Cow;
 use std::mem;
 
-mod xml {
-  use std::collections::HashMap;
+use std::collections::HashMap;
 
-  #[derive(Debug)]
-  pub enum XmlContentType {
-    Simple(String),
-    Complex(Vec<XmlElement>),
-    None,
+#[derive(Debug)]
+pub enum EvtxXmlContentType {
+  Simple(String),
+  Complex(Vec<EvtxXmlElement>),
+  None,
+}
+
+#[derive(Debug)]
+pub struct EvtxXmlElement {
+  pub name: String,
+  pub attributes: HashMap<String, String>,
+  pub content: EvtxXmlContentType,
+}
+
+impl EvtxXmlElement {
+  pub fn new(name: &str) -> Self {
+    Self {
+      name: name.to_owned(),
+      attributes: HashMap::new(),
+      content: EvtxXmlContentType::None,
+    }
   }
 
-  #[derive(Debug)]
-  pub struct XmlElement {
-    pub name: String,
-    pub attributes: HashMap<String, String>,
-    pub content: XmlContentType,
+  pub fn add_attribute(&mut self, name: &str, value: &str) {
+    self.attributes.insert(name.to_owned(), value.to_owned());
   }
 
-  impl XmlElement {
-    pub fn new(name: &str) -> Self {
-      Self {
-        name: name.to_owned(),
-        attributes: HashMap::new(),
-        content: XmlContentType::None,
+  pub fn add_simple_content(&mut self, value: &str) {
+    match self.content {
+      EvtxXmlContentType::None => self.content = EvtxXmlContentType::Simple(value.to_owned()),
+      EvtxXmlContentType::Simple(ref mut s) => s.push_str(value),
+      _ => {
+        if !value.is_empty() {
+          panic!(
+            "this xml element has already a value assigned: {:?}, trying to add {:?}",
+            self.content, value
+          )
+        }
       }
     }
+  }
 
-    pub fn add_attribute(&mut self, name: &str, value: &str) {
-      self.attributes.insert(name.to_owned(), value.to_owned());
-    }
-
-    pub fn add_simple_content(&mut self, value: &str) {
-      match self.content {
-        XmlContentType::None => self.content = XmlContentType::Simple(value.to_owned()),
-        XmlContentType::Simple(ref mut s) => s.push_str(value),
-        _ => if ! value.is_empty() { panic!(
-          "this xml element has already a value assigned: {:?}, trying to add {:?}",
-          self.content, value
-        )},
+  pub fn add_child(&mut self, child: EvtxXmlElement) {
+    match self.content {
+      EvtxXmlContentType::Simple(_) => {
+        panic!("this xml element is a text node and cannot contain child elements")
       }
-    }
-
-    pub fn add_child(&mut self, child: XmlElement) {
-      match self.content {
-        XmlContentType::Simple(_) => panic!("this xml element is a text node and cannot contain child elements"),
-        XmlContentType::None => self.content = XmlContentType::Complex(vec!(child)),
-        XmlContentType::Complex(ref mut v) => v.push(child),
-      }
+      EvtxXmlContentType::None => self.content = EvtxXmlContentType::Complex(vec![child]),
+      EvtxXmlContentType::Complex(ref mut v) => v.push(child),
     }
   }
 }
@@ -61,7 +65,7 @@ mod xml {
 pub struct EvtxStructure {
   event_record_id: u64,
   timestamp: DateTime<Utc>,
-  content: xml::XmlElement,
+  content: EvtxXmlElement,
 }
 
 impl EvtxStructure {
@@ -69,7 +73,7 @@ impl EvtxStructure {
     Self {
       event_record_id,
       timestamp,
-      content: xml::XmlElement::new(""), // this will be overriden later
+      content: EvtxXmlElement::new(""), // this will be overriden later
     }
   }
 
@@ -77,7 +81,7 @@ impl EvtxStructure {
     Self {
       event_record_id: 0,
       timestamp: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc),
-      content: xml::XmlElement::new(""),
+      content: EvtxXmlElement::new(""),
     }
   }
 
@@ -92,14 +96,14 @@ impl EvtxStructure {
 
 pub struct StructureBuilder {
   result: EvtxStructure,
-  node_stack: Vec<xml::XmlElement>
+  node_stack: Vec<EvtxXmlElement>,
 }
 
 impl StructureBuilder {
   pub fn new(event_record_id: u64, timestamp: DateTime<Utc>) -> Self {
     Self {
       result: EvtxStructure::new(event_record_id, timestamp),
-      node_stack: Vec::new()
+      node_stack: Vec::new(),
     }
   }
 
@@ -111,7 +115,7 @@ impl StructureBuilder {
   }
 
   pub fn enter_named_node(&mut self, name: &str, attributes: &Vec<XmlAttribute>) {
-    let mut element = xml::XmlElement::new(name);
+    let mut element = EvtxXmlElement::new(name);
     for a in attributes {
       element.add_attribute(a.name.as_ref().as_str(), &a.value.as_ref().as_cow_str());
     }
@@ -131,7 +135,7 @@ impl StructureBuilder {
 impl BinXmlOutput for StructureBuilder {
   /// Called once when EOF is reached.
   fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
-    if ! self.node_stack.is_empty() {
+    if !self.node_stack.is_empty() {
       return Err(SerializationError::StructureBuilderError {
         message: "node stack is not empty".to_owned(),
       });
@@ -159,11 +163,7 @@ impl BinXmlOutput for StructureBuilder {
   ///                                                     ~~~~~~~~~~~~~~~
   fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
     let cow: Cow<str> = value.as_cow_str();
-    self
-      .node_stack
-      .last_mut()
-      .unwrap()
-      .add_simple_content(&cow);
+    self.node_stack.last_mut().unwrap().add_simple_content(&cow);
     Ok(())
   }
 
