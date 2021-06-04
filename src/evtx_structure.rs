@@ -93,6 +93,38 @@ impl EvtxStructure {
   pub fn timestamp(&self) -> &DateTime<Utc> {
     &self.timestamp
   }
+
+  pub fn event_id(&self) -> u32 {
+    self.find(&["System", "EventID"]).expect("missing EventID").parse().expect("invalid EventID")
+  }
+
+  pub fn find(&self, path: &[&str]) -> Option<&str> {
+    self.find_r(&self.content, path)
+  }
+
+  fn find_r<'a>(&'a self, root: &'a EvtxXmlElement, path: &[&str]) -> Option<&'a str> {
+    match root.content {
+      EvtxXmlContentType::None => panic!("invalid node type"),
+      EvtxXmlContentType::Simple(ref s) => 
+        if path.is_empty() { Some(s) } else { log::error!("path is NOT empty"); None },
+      EvtxXmlContentType::Complex(ref c) => {
+        if path.is_empty() {
+          log::error!("path IS empty");
+          None
+        } else {
+          let next_name = &path[0];
+          let remaining = &path[1..];
+          match c.iter().find(|&e| &e.name == next_name) {
+            None => { 
+              let names: Vec<&String> = c.iter().map(|r| &r.name).collect();
+              log::error!("did not find child in {:?}", names); 
+              None},
+            Some(ref next_node) => self.find_r(next_node, remaining)
+          }
+        }
+      }
+    }
+  }
 }
 
 impl PartialEq for EvtxStructure {
