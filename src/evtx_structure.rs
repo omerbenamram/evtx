@@ -97,7 +97,12 @@ impl EvtxStructure {
     self.find(&["System", "EventID"]).expect("missing EventID").parse().expect("invalid EventID")
   }
 
-  /// find a single value of the current event record
+  /// Find a single value of the current event record.
+  /// 
+  /// The path to the required value must be specified by using an XPath-like
+  /// syntax, but not as a single String, but as an array of path components.
+  /// For example, `/System/TimeCreated/@SystemTime` must be specified as 
+  /// `&["System", "TimeCreated", "@SystemTime"]`.
   /// 
   /// # Example
   /// ```
@@ -118,6 +123,7 @@ impl EvtxStructure {
   ///   match record_res {
   ///     Ok(record) => {
   ///       let event_id = record.find(&["System", "EventID"]).unwrap();
+  ///       let time_created = record.find(&["System", "TimeCreated", "@SystemTime"]);
   ///       println!("{}", event_id);
   ///     }
   ///     _ => eprintln!("error"),
@@ -129,6 +135,16 @@ impl EvtxStructure {
   }
 
   fn find_r<'a>(&'a self, root: &'a EvtxXmlElement, path: &[&str]) -> Option<&'a str> {
+    if path.len() == 1 {
+      if path[0].chars().next().unwrap() == '@' {
+        let attribute_name = &path[0][1..];
+        match root.attributes.get(attribute_name) {
+          Some(ref v) => return Some(v),
+          None        => return None,
+        }
+      }
+    }
+
     match root.content {
       EvtxXmlContentType::None => panic!("invalid node type"),
       EvtxXmlContentType::Simple(ref s) => 
