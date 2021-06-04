@@ -115,6 +115,11 @@ impl EvtxStructure {
     }
   }
 
+  /// returns System/Provider/@Name
+  pub fn provider_name(&self) -> &str {
+    self.find(&["System", "Provider", "@Name"]).expect("missing Provider name")
+  }
+
   /// Find a single value of the current event record.
   /// 
   /// The path to the required value must be specified by using an XPath-like
