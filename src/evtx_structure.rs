@@ -6,6 +6,7 @@ use crate::xml_output::BinXmlOutput;
 use chrono::prelude::*;
 use std::borrow::Cow;
 use std::mem;
+use std::cmp::{Ord, Ordering};
 
 use std::collections::HashMap;
 
@@ -91,6 +92,25 @@ impl EvtxStructure {
 
   pub fn timestamp(&self) -> &DateTime<Utc> {
     &self.timestamp
+  }
+}
+
+impl PartialEq for EvtxStructure {
+  fn eq(&self, other: &Self) -> bool {
+    self.event_record_id() == other.event_record_id()
+  }
+}
+impl Eq for EvtxStructure {}
+
+impl Ord for EvtxStructure {
+  fn cmp(&self, other: &Self) -> Ordering {
+    self.event_record_id.cmp(&other.event_record_id)
+  }
+}
+
+impl PartialOrd for EvtxStructure {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
   }
 }
 
