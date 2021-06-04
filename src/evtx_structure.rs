@@ -109,7 +109,7 @@ impl EvtxStructure {
   pub fn time_created(&self) -> ParseResult<DateTime<Utc>> {
     let dt = self.find(&["System", "TimeCreated", "@SystemTime"])
     .expect("missing TimeCreated");
-    match NaiveDateTime::parse_from_str(dt, "%F %T.%f %Z") {
+    match NaiveDateTime::parse_from_str(dt, "%F %T%.f %Z") {
       Ok(dt) => Ok(DateTime::from_utc(dt, Utc)),
       Err(e) => Err(e)
     }
