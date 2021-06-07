@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::mem;
 use std::cmp::{Ord, Ordering};
 use std::collections::HashMap;
+use std::collections::hash_map::Iter;
 
 #[derive(Debug)]
 enum EvtxXmlContentType {
@@ -69,6 +70,13 @@ pub struct EvtxStructure {
   content: EvtxXmlElement,
 }
 
+pub trait EvtxStructureVisitor {
+  fn visit_empty_element(&self, name: &str, attributes: Iter<String, String>);
+  fn visit_simple_element(&self, name: &str, attributes: Iter<String, String>, content: &str);
+  fn visit_start_element(&self, name: &str, attributes: Iter<String, String>);
+  fn visit_end_element(&self, name: &str);
+}
+
 impl EvtxStructure {
   pub fn new(event_record_id: u64, timestamp: DateTime<Utc>) -> Self {
     Self {
@@ -118,6 +126,26 @@ impl EvtxStructure {
   /// returns System/Provider/@Name
   pub fn provider_name(&self) -> &str {
     self.find(&["System", "Provider", "@Name"]).expect("missing Provider name")
+  }
+
+  pub fn visit_structure(&self, visitor: &impl EvtxStructureVisitor) {
+    self.visit_element(visitor, &self.content);
+  }
+
+  fn visit_element<'a>(&'a self,
+                      visitor: &impl EvtxStructureVisitor,
+                      element: &'a EvtxXmlElement) {
+    match element.content {
+      EvtxXmlContentType::None => visitor.visit_empty_element(&element.name, element.attributes.iter()),
+      EvtxXmlContentType::Simple(ref s) => visitor.visit_simple_element(&element.name, element.attributes.iter(), s),
+      EvtxXmlContentType::Complex(ref c) => {
+        visitor.visit_start_element(&element.name, element.attributes.iter());
+        for e in c.iter() {
+          self.visit_element(visitor, e);
+        }
+        visitor.visit_end_element(&element.name);
+      }
+    }
   }
 
   /// Find a single value of the current event record.
