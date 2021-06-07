@@ -64,17 +64,27 @@ impl EvtxXmlElement {
   }
 }
 
+/// Visitor object which can be used the EvtxStructure shall be printed
+pub trait EvtxStructureVisitor {
+
+  /// called on any structure element with a content type of `None`
+  fn visit_empty_element(&self, name: &str, attributes: Iter<String, String>);
+
+  /// called on any structure element which contains only a textual value
+  fn visit_simple_element(&self, name: &str, attributes: Iter<String, String>, content: &str);
+
+  /// called when a complex element (i.e. an element with child elements) starts
+  fn visit_start_element(&self, name: &str, attributes: Iter<String, String>);
+
+  /// called when a complex element (i.e. an element with child elements) ends
+  fn visit_end_element(&self, name: &str);
+}
+
+/// An object of type `EvtxStructure` represents a single event record
 pub struct EvtxStructure {
   event_record_id: u64,
   timestamp: DateTime<Utc>,
   content: EvtxXmlElement,
-}
-
-pub trait EvtxStructureVisitor {
-  fn visit_empty_element(&self, name: &str, attributes: Iter<String, String>);
-  fn visit_simple_element(&self, name: &str, attributes: Iter<String, String>, content: &str);
-  fn visit_start_element(&self, name: &str, attributes: Iter<String, String>);
-  fn visit_end_element(&self, name: &str);
 }
 
 impl EvtxStructure {
@@ -128,6 +138,8 @@ impl EvtxStructure {
     self.find(&["System", "Provider", "@Name"]).expect("missing Provider name")
   }
 
+  /// Walk through this event record to do whatever you want with the record values.
+  /// You need to implement `EvtxStructureVisitor` to use this.
   pub fn visit_structure(&self, visitor: &impl EvtxStructureVisitor) {
     self.visit_element(visitor, &self.content);
   }
