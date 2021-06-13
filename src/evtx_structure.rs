@@ -11,8 +11,6 @@ use std::borrow::Cow;
  * R ... Result of visiting a single record
  */
 
-pub trait VisitorBuilder<V: EvtxStructureVisitor<VisitorResult=R>, R>: Fn() -> V + Send + Sync + Clone {}
-
 /// Visitor object which can be used the EvtxStructure shall be printed
 pub trait EvtxStructureVisitor {
   type VisitorResult;

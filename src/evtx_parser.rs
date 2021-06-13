@@ -3,7 +3,7 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
-use crate::evtx_structure::{VisitorBuilder, EvtxStructureVisitor};
+use crate::evtx_structure::EvtxStructureVisitor;
 
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
@@ -498,7 +498,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     where
         R: Send + 'r,
         V: EvtxStructureVisitor<VisitorResult=R>,
-        C: VisitorBuilder<V, R> + 'r,
+        C: Fn() -> V + Send + Sync + Clone + 'r,
         'r: 'a,
     {
         self.serialized_records(move |record| record.and_then(|record| record.to_visitor(&builder)))
