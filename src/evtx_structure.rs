@@ -9,7 +9,6 @@ use std::borrow::Cow;
 use std::mem;
 use std::cmp::{Ord, Ordering};
 use std::collections::HashMap;
-use std::collections::hash_map::Iter;
 
 #[derive(Debug)]
 enum EvtxXmlContentType {
@@ -66,20 +65,32 @@ impl EvtxXmlElement {
 
 /// Visitor object which can be used the EvtxStructure shall be printed
 pub trait EvtxStructureVisitor {
+  type VisitorResult;
+
+  fn get_result(&self) -> Self::VisitorResult;
+
+  /// called when a new record starts
+  fn start_record(&mut self);
+
+  /// called when the current records is finished
+  fn finalize_record(&mut self);
+
+  // called upon element content
+  fn visit_characters(&mut self, value: &str);  
 
   /// called on any structure element with a content type of `None`
-  fn visit_empty_element(&self, name: &str, attributes: Iter<String, String>);
+  fn visit_empty_element<'a, 'b>(&'a mut self, name: &'b str, attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b;
 
   /// called on any structure element which contains only a textual value
-  fn visit_simple_element(&self, name: &str, attributes: Iter<String, String>, content: &str);
+  fn visit_simple_element<'a, 'b>(&'a mut self, name: &'b str, attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>, content: &'b str) where 'a: 'b;
 
   /// called when a complex element (i.e. an element with child elements) starts
-  fn visit_start_element(&self, name: &str, attributes: Iter<String, String>);
+  fn visit_start_element<'a, 'b>(&'a mut self, name: &'b str, attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b;
 
   /// called when a complex element (i.e. an element with child elements) ends
-  fn visit_end_element(&self, name: &str);
+  fn visit_end_element(&mut self, name: &str);
 }
-
+/*
 /// An object of type `EvtxStructure` represents a single event record
 pub struct EvtxStructure {
   event_record_id: u64,
@@ -140,18 +151,19 @@ impl EvtxStructure {
 
   /// Walk through this event record to do whatever you want with the record values.
   /// You need to implement `EvtxStructureVisitor` to use this.
-  pub fn visit_structure(&self, visitor: &impl EvtxStructureVisitor) {
+  pub fn visit_structure(&self, visitor: &mut impl EvtxStructureVisitor) {
     self.visit_element(visitor, &self.content);
   }
 
   fn visit_element<'a>(&'a self,
-                      visitor: &impl EvtxStructureVisitor,
+                      visitor: &mut impl EvtxStructureVisitor,
                       element: &'a EvtxXmlElement) {
+    let attrib_iter = element.attributes.iter().map(|(k,v)| (&k[..], &v[..]));
     match element.content {
-      EvtxXmlContentType::None => visitor.visit_empty_element(&element.name, element.attributes.iter()),
-      EvtxXmlContentType::Simple(ref s) => visitor.visit_simple_element(&element.name, element.attributes.iter(), s),
+      EvtxXmlContentType::None => visitor.visit_empty_element(&element.name, Box::new(attrib_iter)),
+      EvtxXmlContentType::Simple(ref s) => visitor.visit_simple_element(&element.name, Box::new(attrib_iter), s),
       EvtxXmlContentType::Complex(ref c) => {
-        visitor.visit_start_element(&element.name, element.attributes.iter());
+        visitor.visit_start_element(&element.name, Box::new(attrib_iter));
         for e in c.iter() {
           self.visit_element(visitor, e);
         }
@@ -349,6 +361,87 @@ impl BinXmlOutput for StructureBuilder {
     if self.node_stack.len() != 0 {
       panic!("internal error: node stack is not empty");
     }
+    Ok(())
+  }
+}
+*/
+
+pub struct VisitorAdapter<R> {
+  target: Box<dyn EvtxStructureVisitor<VisitorResult=R>>
+}
+
+impl<R> VisitorAdapter<R> {
+  pub fn new(builder: &fn() -> Box<dyn EvtxStructureVisitor<VisitorResult=R>>) -> Self {
+    Self {
+      target: builder()
+    }
+  }
+
+  pub fn get_result(self) -> Box<R> {
+    Box::new(self.target.get_result())
+  }
+}
+impl<R> BinXmlOutput for VisitorAdapter<R> {
+  /// Called once when EOF is reached.
+  fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
+    self.target.finalize_record();
+    Ok(())
+  }
+
+  /// Called on <Tag attr="value" another_attr="value">.
+  fn visit_open_start_element(
+      &mut self,
+      element: &XmlElement,
+  ) -> SerializationResult<()> {
+    let name = element.name.as_ref().as_str();
+
+    let attributes: Vec<(&str, Cow<'_, str>)> = element.attributes.iter().map(|a| (a.name.as_ref().as_str(), a.value.as_ref().as_cow_str())).collect();
+
+    self.target.visit_start_element(
+      name,
+      Box::new(attributes.iter().map(|(k,v)| (*k, v.as_ref())))
+    );
+    Ok(())
+  }
+
+  /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
+  fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
+    self.target.visit_end_element(element.name.as_ref().as_str());
+    Ok(())
+  }
+
+  ///
+  /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
+  ///                                                     ~~~~~~~~~~~~~~~
+  fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+    let cow: Cow<str> = value.as_cow_str();
+    self.target.visit_characters(&cow);
+    Ok(())
+  }
+
+  /// Unimplemented
+  fn visit_cdata_section(&mut self) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Emit the character "&" and the text.
+  fn visit_entity_reference(&mut self, _entity: &BinXmlName) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Emit the characters "&" and "#" and the decimal string representation of the value.
+  fn visit_character_reference(&mut self, _char_ref: Cow<'_, str>) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Unimplemented
+  fn visit_processing_instruction(&mut self, _pi: &BinXmlPI) -> SerializationResult<()> {
+    Ok(())
+  }
+
+  /// Called once on beginning of parsing.
+  fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
+    self.target.start_record();
     Ok(())
   }
 }

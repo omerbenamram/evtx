@@ -6,12 +6,12 @@ use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
-use crate::evtx_structure::{EvtxStructure, StructureBuilder};
+use crate::evtx_structure::{EvtxStructureVisitor, VisitorAdapter};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
 use std::io::{Cursor, Read};
-use std::sync::Arc;
+use std::sync::{Arc};
 
 pub type RecordId = u64;
 
@@ -112,13 +112,19 @@ impl<'a> EvtxRecord<'a> {
             data,
         })
     }
-
+/*
     /// Consume the record and parses it, producing a EvtxStrusture instance
     pub fn into_structure(self) -> Result<EvtxStructure> {
       let mut structure_builder = StructureBuilder::new(self.event_record_id, self.timestamp);
       self.into_output(&mut structure_builder)?;
 
       Ok(structure_builder.get_structure())
+    }
+*/
+    pub fn to_visitor<R>(self, builder: &fn() -> Box<dyn EvtxStructureVisitor<VisitorResult=R>>) -> Result<R> {
+        let mut adapter = VisitorAdapter::new(builder);
+        self.into_output(& mut adapter)?;
+        Ok(*adapter.get_result())
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.

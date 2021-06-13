@@ -3,7 +3,7 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
-use crate::evtx_structure::EvtxStructure;
+use crate::evtx_structure::{EvtxStructureVisitor};
 
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
@@ -24,7 +24,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::iter::{IntoIterator, Iterator};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc};
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -494,12 +494,18 @@ impl<T: ReadSeek> EvtxParser<T> {
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json()))
     }
-
+/*
     /// Return an iterator over all the records.
     /// Records will be instances of `EvtxStructure`
     pub fn records_struct(&mut self) -> impl Iterator<Item = Result<EvtxStructure>> + '_ {
       self.serialized_records(|record| record.and_then(|record| record.into_structure()))
     }
+*/
+    /// Return an iterator over all the records.
+    /// Records will be instances of `EvtxStructure`
+    pub fn records_to_visitor<'a, 'r, R>(&'a mut self, builder: fn() -> Box<dyn EvtxStructureVisitor<VisitorResult=R>>) -> impl Iterator<Item = Result<R>> + 'a where R: Send + 'r, 'r:'a {
+        self.serialized_records(move |record| record.and_then(|record| record.to_visitor(&builder)))
+      }
 
     /// Return an iterator over all the records.
     /// Records will have a `serde_json::Value` data attribute.
