@@ -5,6 +5,12 @@ use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
 use std::borrow::Cow;
 
+/*
+ * Generic Parameters:
+ * V ... visitor
+ * R ... Result of visiting a single record
+ */
+
 pub trait VisitorBuilder<V: EvtxStructureVisitor<VisitorResult=R>, R>: Fn() -> V + Send + Sync + Clone {}
 
 /// Visitor object which can be used the EvtxStructure shall be printed
