@@ -11,7 +11,7 @@ use crate::evtx_structure::{VisitorAdapter, VisitorBuilder};
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
 use std::io::{Cursor, Read};
-use std::sync::{Arc};
+use std::sync::Arc;
 
 pub type RecordId = u64;
 
@@ -112,15 +112,8 @@ impl<'a> EvtxRecord<'a> {
             data,
         })
     }
-/*
-    /// Consume the record and parses it, producing a EvtxStrusture instance
-    pub fn into_structure(self) -> Result<EvtxStructure> {
-      let mut structure_builder = StructureBuilder::new(self.event_record_id, self.timestamp);
-      self.into_output(&mut structure_builder)?;
 
-      Ok(structure_builder.get_structure())
-    }
-*/
+    /// Consumes the record and returns an object of type `C`
     pub fn to_visitor<C, R>(self, builder: &C) -> Result<R> where C: VisitorBuilder<R> {
         let mut adapter = VisitorAdapter::new(builder);
         self.into_output(& mut adapter)?;
