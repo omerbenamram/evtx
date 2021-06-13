@@ -1,6 +1,6 @@
 mod fixtures;
 
-use evtx::{EvtxParser, ParserSettings};
+use evtx::{EvtxParser, ParserSettings, EvtxStructureVisitor};
 use fixtures::*;
 use log::Level;
 use std::path::Path;
@@ -72,7 +72,7 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
     let mut actual_ok_count = 0;
     let mut actual_err_count = 0;
 
-    for r in parser.records_struct() {
+    for r in parser.records_to_visitor(|| TestVisitor{}) {
       if r.is_ok() {
           actual_ok_count += 1;
           if log::log_enabled!(Level::Debug) {
@@ -194,4 +194,34 @@ fn test_sample_with_no_crc32() {
         17,
         0,
     )
+}
+
+struct TestVisitor {}
+impl EvtxStructureVisitor for TestVisitor {
+  type VisitorResult = Option<()>;
+
+  fn get_result(&self) -> Self::VisitorResult {
+      Some(())
+  }
+
+  /// called when a new record starts
+  fn start_record(&mut self) {}
+
+  /// called when the current records is finished
+  fn finalize_record(&mut self) {}
+
+  // called upon element content
+  fn visit_characters(&mut self, _value: &str) {}
+
+  /// called on any structure element with a content type of `None`
+  fn visit_empty_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b {}
+
+  /// called on any structure element which contains only a textual value
+  fn visit_simple_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>, _content: &'b str) where 'a: 'b {}
+
+  /// called when a complex element (i.e. an element with child elements) starts
+  fn visit_start_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b {}
+
+  /// called when a complex element (i.e. an element with child elements) ends
+  fn visit_end_element(&mut self, _name: &str) {}
 }
