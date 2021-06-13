@@ -6,7 +6,7 @@ use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
-use crate::evtx_structure::{EvtxStructureVisitor, VisitorAdapter};
+use crate::evtx_structure::{VisitorAdapter, VisitorBuilder};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
@@ -121,7 +121,7 @@ impl<'a> EvtxRecord<'a> {
       Ok(structure_builder.get_structure())
     }
 */
-    pub fn to_visitor<R>(self, builder: &fn() -> Box<dyn EvtxStructureVisitor<VisitorResult=R>>) -> Result<R> {
+    pub fn to_visitor<C, R>(self, builder: &C) -> Result<R> where C: VisitorBuilder<R> {
         let mut adapter = VisitorAdapter::new(builder);
         self.into_output(& mut adapter)?;
         Ok(*adapter.get_result())

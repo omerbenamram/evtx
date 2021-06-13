@@ -16,7 +16,7 @@ pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 pub use json_output::JsonOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
-pub use evtx_structure::{EvtxStructureVisitor};
+pub use evtx_structure::{EvtxStructureVisitor, VisitorBuilder};
 
 pub mod binxml;
 pub mod err;
