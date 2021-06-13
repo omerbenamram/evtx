@@ -6,7 +6,7 @@ use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
-use crate::evtx_structure::{VisitorAdapter, VisitorBuilder};
+use crate::evtx_structure::{VisitorAdapter, VisitorBuilder, EvtxStructureVisitor};
 
 use byteorder::ReadBytesExt;
 use chrono::prelude::*;
@@ -114,10 +114,10 @@ impl<'a> EvtxRecord<'a> {
     }
 
     /// Consumes the record and returns an object of type `C`
-    pub fn to_visitor<C, R>(self, builder: &C) -> Result<R> where C: VisitorBuilder<R> {
-        let mut adapter = VisitorAdapter::new(builder);
+    pub fn to_visitor<C, V, R>(self, builder: &C) -> Result<R> where C: VisitorBuilder<V, R>, V: EvtxStructureVisitor<VisitorResult=R> {
+        let mut adapter = VisitorAdapter::new(builder());
         self.into_output(& mut adapter)?;
-        Ok(*adapter.get_result())
+        Ok(adapter.get_result())
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.

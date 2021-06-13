@@ -3,7 +3,7 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
-use crate::evtx_structure::VisitorBuilder;
+use crate::evtx_structure::{VisitorBuilder, EvtxStructureVisitor};
 
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
@@ -24,7 +24,7 @@ use std::fmt;
 use std::fmt::Debug;
 use std::iter::{IntoIterator, Iterator};
 use std::path::Path;
-use std::sync::{Arc};
+use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -98,7 +98,7 @@ pub struct EvtxParser<T: ReadSeek> {
     /// The calculated_chunk_count is the: (<file size> - <header size>) / <chunk size>
     /// This is needed because the chunk count of an EVTX file can be larger than the u16
     /// value stored in the file header.
-    calculated_chunk_count: u64
+    calculated_chunk_count: u64,
 }
 impl<T: ReadSeek> Debug for EvtxParser<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> ::std::fmt::Result {
@@ -281,23 +281,17 @@ impl<T: ReadSeek> EvtxParser<T> {
         // this allows us to continue parsing events past the 4294901760 bytes of
         // chunk data
         let stream_size = ReadSeek::stream_len(&mut read_seek)?;
-        let chunk_data_size: u64 = match stream_size.checked_sub(
-            evtx_header.header_block_size.into()
-        ){
-            Some(c) => c,
-            None => {
-                return Err(
-                    EvtxError::calculation_error(
-                        format!(
-                            "Could not calculate valid chunk count because stream size is less \
+        let chunk_data_size: u64 =
+            match stream_size.checked_sub(evtx_header.header_block_size.into()) {
+                Some(c) => c,
+                None => {
+                    return Err(EvtxError::calculation_error(format!(
+                        "Could not calculate valid chunk count because stream size is less \
                             than evtx header block size. (stream_size: {}, header_block_size: {})",
-                            stream_size,
-                            evtx_header.header_block_size
-                        )
-                    )
-                );
-            }
-        };
+                        stream_size, evtx_header.header_block_size
+                    )));
+                }
+            };
         let chunk_count = chunk_data_size / EVTX_CHUNK_SIZE as u64;
 
         debug!("EVTX Header: {:#?}", evtx_header);
@@ -305,7 +299,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             data: read_seek,
             header: evtx_header,
             config: Arc::new(ParserSettings::default()),
-            calculated_chunk_count: chunk_count
+            calculated_chunk_count: chunk_count,
         })
     }
 
@@ -497,9 +491,18 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records are created by a visitor which must be created by the provided builder
-    pub fn records_to_visitor<'a, 'r, C, R>(&'a mut self, builder: C) -> impl Iterator<Item = Result<R>> + 'a where R: Send + 'r, C: VisitorBuilder<R> + 'r, 'r:'a {
+    pub fn records_to_visitor<'a, 'r, C, V, R>(
+        &'a mut self,
+        builder: C,
+    ) -> impl Iterator<Item = Result<R>> + 'a
+    where
+        R: Send + 'r,
+        V: EvtxStructureVisitor<VisitorResult=R>,
+        C: VisitorBuilder<V, R> + 'r,
+        'r: 'a,
+    {
         self.serialized_records(move |record| record.and_then(|record| record.to_visitor(&builder)))
-      }
+    }
 
     /// Return an iterator over all the records.
     /// Records will have a `serde_json::Value` data attribute.

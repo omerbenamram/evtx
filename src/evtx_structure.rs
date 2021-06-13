@@ -4,11 +4,8 @@ use crate::err::SerializationResult;
 use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
 use std::borrow::Cow;
-use std::marker::PhantomData;
 
-pub trait VisitorBuilder<R>: Send + Sync + Clone + Sized {
-  fn build(&self) -> Box<dyn EvtxStructureVisitor<VisitorResult=R>>;
-}
+pub trait VisitorBuilder<V: EvtxStructureVisitor<VisitorResult=R>, R>: Fn() -> V + Send + Sync + Clone {}
 
 /// Visitor object which can be used the EvtxStructure shall be printed
 pub trait EvtxStructureVisitor {
@@ -38,26 +35,22 @@ pub trait EvtxStructureVisitor {
   fn visit_end_element(&mut self, name: &str);
 }
 
-pub struct VisitorAdapter<C, R> where C: VisitorBuilder<R> {
-  target: Box<dyn EvtxStructureVisitor<VisitorResult=R>>,
-  phantom_c: PhantomData<C>,
-  phantom_r: PhantomData<R>,
+pub struct VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
+  target: V,
 }
 
-impl<C, R> VisitorAdapter<C, R> where C: VisitorBuilder<R> {
-  pub fn new(builder: &C) -> Self {
+impl<V, R> VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
+  pub fn new(target: V) -> Self {
     Self {
-      target: builder.build(),
-      phantom_c: PhantomData,
-      phantom_r: PhantomData
+      target
     }
   }
 
-  pub fn get_result(self) -> Box<R> {
-    Box::new(self.target.get_result())
+  pub fn get_result(self) -> R {
+    self.target.get_result()
   }
 }
-impl<C, R> BinXmlOutput for VisitorAdapter<C, R> where C: VisitorBuilder<R> {
+impl<V, R> BinXmlOutput for VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
   /// Called once when EOF is reached.
   fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
     self.target.finalize_record();
