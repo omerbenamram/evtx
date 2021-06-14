@@ -200,7 +200,7 @@ struct TestVisitor {}
 impl EvtxStructureVisitor for TestVisitor {
   type VisitorResult = Option<()>;
 
-  fn get_result(&self) -> Self::VisitorResult {
+  fn get_result(&self, _event_record_id: u64, _timestamp: chrono::DateTime<chrono::Utc>) -> Self::VisitorResult {
       Some(())
   }
 

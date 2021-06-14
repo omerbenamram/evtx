@@ -15,7 +15,7 @@ use std::borrow::Cow;
 pub trait EvtxStructureVisitor {
   type VisitorResult;
 
-  fn get_result(&self) -> Self::VisitorResult;
+  fn get_result(&self, event_record_id: u64, timestamp: chrono::DateTime<chrono::Utc>) -> Self::VisitorResult;
 
   /// called when a new record starts
   fn start_record(&mut self);
@@ -50,8 +50,8 @@ impl<V, R> VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
     }
   }
 
-  pub fn get_result(self) -> R {
-    self.target.get_result()
+  pub fn get_result(self, event_record_id: u64, timestamp: chrono::DateTime<chrono::Utc>) -> R {
+    self.target.get_result(event_record_id, timestamp)
   }
 }
 impl<V, R> BinXmlOutput for VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {

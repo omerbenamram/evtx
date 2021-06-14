@@ -119,9 +119,11 @@ impl<'a> EvtxRecord<'a> {
         C: Fn() -> V + Send + Sync + Clone,
         V: EvtxStructureVisitor<VisitorResult = R>,
     {
+        let event_record_id = (&self).event_record_id;
+        let timestamp = (&self).timestamp;
         let mut adapter = VisitorAdapter::new(builder());
         self.into_output(&mut adapter)?;
-        Ok(adapter.get_result())
+        Ok(adapter.get_result(event_record_id, timestamp))
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
