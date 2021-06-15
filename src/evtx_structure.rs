@@ -39,16 +39,6 @@ pub trait EvtxStructureVisitor {
   where
     'a: 'b;
 
-  /// called on any structure element which contains only a textual value
-  fn visit_simple_element<'a, 'b>(
-    &'a mut self,
-    name: &'b str,
-    attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
-    content: &'b str,
-  ) -> SerializationResult<()>
-  where
-    'a: 'b;
-
   /// called when a complex element (i.e. an element with child elements) starts
   fn visit_start_element<'a, 'b>(
     &'a mut self,
