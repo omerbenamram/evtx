@@ -20,11 +20,7 @@ pub fn ensure_env_logger_initialized() {
 }
 
 pub fn samples_dir() -> PathBuf {
-    PathBuf::from(file!())
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("samples")
         .canonicalize()
         .unwrap()

@@ -183,6 +183,19 @@ pub enum SerializationError {
 
     #[error("Unimplemented: {message}")]
     Unimplemented { message: String },
+
+    #[error("some external component detected an error: {cause}")]
+    ExternalError {
+        cause: String,
+    },
+}
+
+impl From<Box<dyn std::error::Error>> for SerializationError {
+    fn from(inner: Box<dyn std::error::Error>) -> SerializationError {
+        SerializationError::ExternalError{
+            cause: inner.to_string().to_owned()
+        }
+    }
 }
 
 #[derive(Debug, Error)]

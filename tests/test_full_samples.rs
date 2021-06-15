@@ -4,6 +4,7 @@ use evtx::{EvtxParser, ParserSettings, EvtxStructureVisitor};
 use fixtures::*;
 use log::Level;
 use std::path::Path;
+use evtx::err::SerializationResult;
 
 /// Tests an .evtx file, asserting the number of parsed records matches `count`.
 fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
@@ -205,23 +206,23 @@ impl EvtxStructureVisitor for TestVisitor {
   }
 
   /// called when a new record starts
-  fn start_record(&mut self) {}
+  fn start_record(&mut self) -> SerializationResult<()> { Ok(()) }
 
   /// called when the current records is finished
-  fn finalize_record(&mut self) {}
+  fn finalize_record(&mut self) -> SerializationResult<()> { Ok(()) }
 
   // called upon element content
-  fn visit_characters(&mut self, _value: &str) {}
+  fn visit_characters(&mut self, _value: &str) -> SerializationResult<()> { Ok(()) }
 
   /// called on any structure element with a content type of `None`
-  fn visit_empty_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b {}
+  fn visit_empty_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) -> SerializationResult<()> where 'a: 'b { Ok(()) }
 
   /// called on any structure element which contains only a textual value
-  fn visit_simple_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>, _content: &'b str) where 'a: 'b {}
+  fn visit_simple_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>, _content: &'b str) -> SerializationResult<()>where 'a: 'b { Ok(()) }
 
   /// called when a complex element (i.e. an element with child elements) starts
-  fn visit_start_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b {}
+  fn visit_start_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) -> SerializationResult<()> where 'a: 'b { Ok(()) }
 
   /// called when a complex element (i.e. an element with child elements) ends
-  fn visit_end_element(&mut self, _name: &str) {}
+  fn visit_end_element(&mut self, _name: &str) -> SerializationResult<()> { Ok(()) }
 }

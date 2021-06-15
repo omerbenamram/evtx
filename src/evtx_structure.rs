@@ -15,72 +15,101 @@ use std::borrow::Cow;
 pub trait EvtxStructureVisitor {
   type VisitorResult;
 
-  fn get_result(&self, event_record_id: u64, timestamp: chrono::DateTime<chrono::Utc>) -> Self::VisitorResult;
+  fn get_result(
+    &self,
+    event_record_id: u64,
+    timestamp: chrono::DateTime<chrono::Utc>,
+  ) -> Self::VisitorResult;
 
   /// called when a new record starts
-  fn start_record(&mut self);
+  fn start_record(&mut self) -> SerializationResult<()>;
 
   /// called when the current records is finished
-  fn finalize_record(&mut self);
+  fn finalize_record(&mut self) -> SerializationResult<()>;
 
   // called upon element content
-  fn visit_characters(&mut self, value: &str);  
+  fn visit_characters(&mut self, value: &str) -> SerializationResult<()>;
 
   /// called on any structure element with a content type of `None`
-  fn visit_empty_element<'a, 'b>(&'a mut self, name: &'b str, attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b;
+  fn visit_empty_element<'a, 'b>(
+    &'a mut self,
+    name: &'b str,
+    attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+  ) -> SerializationResult<()>
+  where
+    'a: 'b;
 
   /// called on any structure element which contains only a textual value
-  fn visit_simple_element<'a, 'b>(&'a mut self, name: &'b str, attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>, content: &'b str) where 'a: 'b;
+  fn visit_simple_element<'a, 'b>(
+    &'a mut self,
+    name: &'b str,
+    attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+    content: &'b str,
+  ) -> SerializationResult<()>
+  where
+    'a: 'b;
 
   /// called when a complex element (i.e. an element with child elements) starts
-  fn visit_start_element<'a, 'b>(&'a mut self, name: &'b str, attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) where 'a: 'b;
+  fn visit_start_element<'a, 'b>(
+    &'a mut self,
+    name: &'b str,
+    attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+  ) -> SerializationResult<()> where
+    'a: 'b;
 
   /// called when a complex element (i.e. an element with child elements) ends
-  fn visit_end_element(&mut self, name: &str);
+  fn visit_end_element(&mut self, name: &str) -> SerializationResult<()>;
 }
 
-pub struct VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
+pub struct VisitorAdapter<V, R>
+where
+  V: EvtxStructureVisitor<VisitorResult = R>,
+{
   target: V,
 }
 
-impl<V, R> VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
+impl<V, R> VisitorAdapter<V, R>
+where
+  V: EvtxStructureVisitor<VisitorResult = R>,
+{
   pub fn new(target: V) -> Self {
-    Self {
-      target
-    }
+    Self { target }
   }
 
   pub fn get_result(self, event_record_id: u64, timestamp: chrono::DateTime<chrono::Utc>) -> R {
     self.target.get_result(event_record_id, timestamp)
   }
 }
-impl<V, R> BinXmlOutput for VisitorAdapter<V, R> where V: EvtxStructureVisitor<VisitorResult=R> {
+impl<V, R> BinXmlOutput for VisitorAdapter<V, R>
+where
+  V: EvtxStructureVisitor<VisitorResult = R>,
+{
   /// Called once when EOF is reached.
   fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
-    self.target.finalize_record();
-    Ok(())
+    self.target.finalize_record()
   }
 
   /// Called on <Tag attr="value" another_attr="value">.
-  fn visit_open_start_element(
-      &mut self,
-      element: &XmlElement,
-  ) -> SerializationResult<()> {
+  fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
     let name = element.name.as_ref().as_str();
 
-    let attributes: Vec<(&str, Cow<'_, str>)> = element.attributes.iter().map(|a| (a.name.as_ref().as_str(), a.value.as_ref().as_cow_str())).collect();
+    let attributes: Vec<(&str, Cow<'_, str>)> = element
+      .attributes
+      .iter()
+      .map(|a| (a.name.as_ref().as_str(), a.value.as_ref().as_cow_str()))
+      .collect();
 
     self.target.visit_start_element(
       name,
-      Box::new(attributes.iter().map(|(k,v)| (*k, v.as_ref())))
-    );
-    Ok(())
+      Box::new(attributes.iter().map(|(k, v)| (*k, v.as_ref()))),
+    )
   }
 
   /// Called on </Tag>, implementor may want to keep a stack to properly close tags.
   fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
-    self.target.visit_end_element(element.name.as_ref().as_str());
-    Ok(())
+    self
+      .target
+      .visit_end_element(element.name.as_ref().as_str())
   }
 
   ///
@@ -88,8 +117,7 @@ impl<V, R> BinXmlOutput for VisitorAdapter<V, R> where V: EvtxStructureVisitor<V
   ///                                                     ~~~~~~~~~~~~~~~
   fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
     let cow: Cow<str> = value.as_cow_str();
-    self.target.visit_characters(&cow);
-    Ok(())
+    self.target.visit_characters(&cow)
   }
 
   /// Unimplemented
@@ -114,7 +142,6 @@ impl<V, R> BinXmlOutput for VisitorAdapter<V, R> where V: EvtxStructureVisitor<V
 
   /// Called once on beginning of parsing.
   fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
-    self.target.start_record();
-    Ok(())
+    self.target.start_record()
   }
 }
