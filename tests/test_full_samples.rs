@@ -214,11 +214,9 @@ impl EvtxStructureVisitor for TestVisitor {
   // called upon element content
   fn visit_characters(&mut self, _value: &str) -> SerializationResult<()> { Ok(()) }
 
-  /// called on any structure element with a content type of `None`
-  fn visit_empty_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) -> SerializationResult<()> where 'a: 'b { Ok(()) }
-
   /// called when a complex element (i.e. an element with child elements) starts
-  fn visit_start_element<'a, 'b>(&'a mut self, _name: &'b str, _attributes: Box<dyn Iterator<Item=(&'b str, &'b str)> + 'b>) -> SerializationResult<()> where 'a: 'b { Ok(()) }
+  fn visit_start_element<'a, 'b, I>(&'a mut self, _name: &'b str, _attributes: I) -> SerializationResult<()> where 'a: 'b,
+  I: Iterator<Item = (&'b str, &'b str)> + 'b { Ok(()) }
 
   /// called when a complex element (i.e. an element with child elements) ends
   fn visit_end_element(&mut self, _name: &str) -> SerializationResult<()> { Ok(()) }

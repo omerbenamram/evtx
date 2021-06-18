@@ -30,22 +30,15 @@ pub trait EvtxStructureVisitor {
   // called upon element content
   fn visit_characters(&mut self, value: &str) -> SerializationResult<()>;
 
-  /// called on any structure element with a content type of `None`
-  fn visit_empty_element<'a, 'b>(
+  /// called when a complex element (i.e. an element with child elements) starts
+  fn visit_start_element<'a, 'b, I>(
     &'a mut self,
     name: &'b str,
-    attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+    attributes: I,
   ) -> SerializationResult<()>
   where
-    'a: 'b;
-
-  /// called when a complex element (i.e. an element with child elements) starts
-  fn visit_start_element<'a, 'b>(
-    &'a mut self,
-    name: &'b str,
-    attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
-  ) -> SerializationResult<()> where
-    'a: 'b;
+    'a: 'b,
+    I: Iterator<Item = (&'b str, &'b str)> + 'b;
 
   /// called when a complex element (i.e. an element with child elements) ends
   fn visit_end_element(&mut self, name: &str) -> SerializationResult<()>;
@@ -91,7 +84,7 @@ where
 
     self.target.visit_start_element(
       name,
-      Box::new(attributes.iter().map(|(k, v)| (*k, v.as_ref()))),
+      attributes.iter().map(|(k, v)| (*k, v.as_ref())),
     )
   }
 

@@ -517,22 +517,12 @@ impl<T: ReadSeek> EvtxParser<T> {
     ///   fn finalize_record(&mut self) -> SerializationResult<()>  { Ok(()) }
     ///   fn visit_characters(&mut self, value: &str) -> SerializationResult<()>  { Ok(()) }
     ///
-    ///   fn visit_empty_element<'a, 'b>(
+    ///   fn visit_start_element<'a, 'b, I>(
     ///     &'a mut self,
     ///     name: &'b str,
-    ///     attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
-    ///   ) -> SerializationResult<()>
-    ///   where
-    ///     'a: 'b  {
-    ///     Ok(())
-    ///   }
-    ///
-    ///   fn visit_start_element<'a, 'b>(
-    ///     &'a mut self,
-    ///     name: &'b str,
-    ///     attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+    ///     attributes: I,
     ///   ) -> SerializationResult<()> where
-    ///     'a: 'b  { Ok(()) }
+    ///     'a: 'b, I: Iterator<Item = (&'b str, &'b str)> + 'b  { Ok(()) }
     ///
     ///   fn visit_end_element(&mut self, name: &str) -> SerializationResult<()>  { Ok(()) }
     /// }
