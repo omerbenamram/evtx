@@ -113,7 +113,7 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
-    /// Consumes the record and returns an object of type `C`
+    /// Consumes the record and returns an object of type `R`
     pub fn to_visitor<C, V, R>(self, builder: &C) -> Result<R>
     where
         C: Fn() -> V + Send + Sync + Clone,

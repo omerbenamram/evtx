@@ -491,6 +491,51 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records are created by a visitor which must be created by the provided builder
+    /// # Minimal Working Example
+    /// ```
+    /// # use evtx::err::SerializationResult;
+    /// # use evtx::EvtxStructureVisitor;
+    /// struct MySpecialEvtxDataStructure {}
+    /// struct MyVisitor {}
+    /// impl EvtxStructureVisitor for MyVisitor {
+    ///   type VisitorResult = Option<MySpecialEvtxDataStructure>;
+    ///   fn get_result(
+    ///     &self,
+    ///     event_record_id: u64,
+    ///     timestamp: chrono::DateTime<chrono::Utc>,
+    ///   ) -> Self::VisitorResult {
+    ///     Some(MySpecialEvtxDataStructure {})
+    ///   }
+    ///
+    ///   fn start_record(&mut self) -> SerializationResult<()> { Ok(()) }
+    ///   fn finalize_record(&mut self) -> SerializationResult<()>  { Ok(()) }
+    ///   fn visit_characters(&mut self, value: &str) -> SerializationResult<()>  { Ok(()) }
+    ///
+    ///   fn visit_empty_element<'a, 'b>(
+    ///     &'a mut self,
+    ///     name: &'b str,
+    ///     attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+    ///   ) -> SerializationResult<()>
+    ///   where
+    ///     'a: 'b  {
+    ///     Ok(())
+    ///   }
+    ///
+    ///   fn visit_start_element<'a, 'b>(
+    ///     &'a mut self,
+    ///     name: &'b str,
+    ///     attributes: Box<dyn Iterator<Item = (&'b str, &'b str)> + 'b>,
+    ///   ) -> SerializationResult<()> where
+    ///     'a: 'b  { Ok(()) }
+    ///
+    ///   fn visit_end_element(&mut self, name: &str) -> SerializationResult<()>  { Ok(()) }
+    /// }
+    /// 
+    /// # use evtx::EvtxParser;
+    /// # let fp = std::path::PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap()));
+    /// # let mut parser = EvtxParser::from_path(fp).unwrap();
+    /// let records = parser.records_to_visitor(|| MyVisitor{});
+    /// ```
     pub fn records_to_visitor<'a, 'r, C, V, R>(
         &'a mut self,
         builder: C,
