@@ -61,7 +61,7 @@ Some examples
   - `evtx_dump -o json <evtx_file>` will dump contents of evtx records as JSON. 
   - `evtx_dump -f <output_file> -o json <input_file>` will dump contents of evtx records as JSON to a given file.
 
-`evtx_dump` can be combined with [fd](https://github.com/sharkdp/fd) for convinient batch processing of files:
+`evtx_dump` can be combined with [fd](https://github.com/sharkdp/fd) for convenient batch processing of files:
   - `fd -e evtx -x evtx_dump -o jsonl` will scan a folder and dump all evtx files to a single jsonlines file.
   - `fd -e evtx -x evtx_dump '{}' -f '{.}.xml` will create an xml file next to each evtx file, for all files in folder recursively!
   - If the source of the file needs to be added to json, `xargs` (or `gxargs` on mac) and `jq` can be used: `fd -a -e evtx | xargs -I input sh -c "evtx_dump -o jsonl input | jq --arg path "input" '. + {path: \$path}'"`
