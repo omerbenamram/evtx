@@ -19,14 +19,10 @@ use crate::ParserSettings;
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
 
-use regex::bytes::Regex;
-use lazy_static::lazy_static;
+use memchr::memmem;
 use std::collections::VecDeque;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
-lazy_static! {
-    static ref RE_RECORD_SIGNITURE: Regex = Regex::new(r"\x2a\x2a\x00\x00").unwrap();
-}
 
 bitflags! {
     pub struct ChunkFlags: u32 {
@@ -213,10 +209,7 @@ impl<'chunk> EvtxChunk<'chunk> {
            self.header.last_event_record_number == 0xffffffffffffffff &&
            self.header.last_event_record_id == 0xffffffffffffffff {
             // We know that this page is empty, so lets see if we can recover records
-            let found_signatures: VecDeque<usize> = RE_RECORD_SIGNITURE.captures_iter(&self.data)
-                .map(|c|c.get(0).map(|m| m.start()))
-                .filter(|v|v.is_some())
-                .map(|c|c.unwrap())
+            let found_signatures: VecDeque<usize> = memmem::find_iter(&self.data, &[0x2a, 0x2a, 0x00, 0x00])
                 .collect();
             
             // If signatures were found, add them to the offset array
