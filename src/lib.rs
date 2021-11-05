@@ -42,6 +42,15 @@ use std::sync::Once;
 #[cfg(test)]
 static LOGGER_INIT: Once = Once::new();
 
+use crc32fast::Hasher;
+
+#[inline]
+pub fn checksum_ieee(data: &[u8]) -> u32 {
+    let mut hasher = Hasher::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
 // Rust runs the tests concurrently, so unless we synchronize logging access
 // it will crash when attempting to run `cargo test` with some logging facilities.
 #[cfg(test)]
