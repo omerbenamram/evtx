@@ -210,12 +210,11 @@ impl EvtxDump {
                 Some(parent) =>
                 // Parent exist
                 {
-                    if parent.exists() {
-                        Ok(File::create(p)?)
-                    } else {
+                    if !parent.exists() {
                         fs::create_dir_all(parent)?;
-                        Ok(File::create(p)?)
                     }
+
+                    Ok(File::create(p)?)
                 }
                 None => bail!("Output file cannot be root."),
             }

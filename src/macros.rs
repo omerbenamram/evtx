@@ -17,7 +17,7 @@ macro_rules! try_seek {
     ($cursor: ident, $offset: expr, $name: expr) => {
         $cursor
             .seek(SeekFrom::Start(u64::from($offset.clone())))
-            .map_err(|e| capture_context!($cursor, e, $name));
+            .map_err(|e| capture_context!($cursor, e, $name))
     };
 }
 
@@ -26,7 +26,7 @@ macro_rules! try_read {
     ($cursor: ident, u8, $name: expr) => {
         $cursor
             .read_u8()
-            .map_err(|e| capture_context!($cursor, e, "u8", $name));
+            .map_err(|e| capture_context!($cursor, e, "u8", $name))
     };
 
     ($cursor: ident, u8) => {
@@ -36,7 +36,7 @@ macro_rules! try_read {
     ($cursor: ident, i8, $name: expr) => {
         $cursor
             .read_i8()
-            .map_err(|e| capture_context!($cursor, e, "i8", $name));
+            .map_err(|e| capture_context!($cursor, e, "i8", $name))
     };
 
     ($cursor: ident, i8) => {
@@ -46,7 +46,7 @@ macro_rules! try_read {
     ($cursor: ident, u16, $name: expr) => {
         $cursor
             .read_u16::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "u16", $name));
+            .map_err(|e| capture_context!($cursor, e, "u16", $name))
     };
 
     ($cursor: ident, u16) => {
@@ -56,7 +56,7 @@ macro_rules! try_read {
     ($cursor: ident, i16, $name: expr) => {
         $cursor
             .read_i16::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "i16", $name));
+            .map_err(|e| capture_context!($cursor, e, "i16", $name))
     };
 
     ($cursor: ident, i16) => {
@@ -66,7 +66,7 @@ macro_rules! try_read {
     ($cursor: ident, i32, $name: expr) => {
         $cursor
             .read_i32::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "i32", $name));
+            .map_err(|e| capture_context!($cursor, e, "i32", $name))
     };
 
     ($cursor: ident, i32) => {
@@ -76,7 +76,7 @@ macro_rules! try_read {
     ($cursor: ident, u32, $name: expr) => {
         $cursor
             .read_u32::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "u32", $name));
+            .map_err(|e| capture_context!($cursor, e, "u32", $name))
     };
 
     ($cursor: ident, u32) => {
@@ -86,7 +86,7 @@ macro_rules! try_read {
     ($cursor: ident, f32, $name: expr) => {
         $cursor
             .read_f32::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "f32", $name));
+            .map_err(|e| capture_context!($cursor, e, "f32", $name))
     };
 
     ($cursor: ident, f32) => {
@@ -96,7 +96,7 @@ macro_rules! try_read {
     ($cursor: ident, i64, $name: expr) => {
         $cursor
             .read_i64::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "i64", $name));
+            .map_err(|e| capture_context!($cursor, e, "i64", $name))
     };
 
     ($cursor: ident, i64) => {
@@ -106,7 +106,7 @@ macro_rules! try_read {
     ($cursor: ident, u64, $name: expr) => {
         $cursor
             .read_u64::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "u64", $name));
+            .map_err(|e| capture_context!($cursor, e, "u64", $name))
     };
 
     ($cursor: ident, u64) => {
@@ -116,7 +116,7 @@ macro_rules! try_read {
     ($cursor: ident, f64, $name: expr) => {
         $cursor
             .read_f64::<byteorder::LittleEndian>()
-            .map_err(|e| capture_context!($cursor, e, "f64", $name));
+            .map_err(|e| capture_context!($cursor, e, "f64", $name))
     };
 
     ($cursor: ident, f64) => {
@@ -176,7 +176,7 @@ macro_rules! try_read {
     };
 
     ($cursor: ident, sid, $name: expr) => {
-        Sid::from_reader($cursor).map_err(|e| capture_context!($cursor, e, "ntsid", $name));
+        Sid::from_reader($cursor).map_err(|e| capture_context!($cursor, e, "ntsid", $name))
     };
 
     ($cursor: ident, sid) => {

@@ -81,8 +81,9 @@ impl EvtxFileHeader {
 
 #[cfg(test)]
 mod tests {
+    use crate::checksum_ieee;
+
     use super::*;
-    use crc::crc32;
     use std::io::Cursor;
 
     #[test]
@@ -102,7 +103,7 @@ mod tests {
                 header_block_size: 4096,
                 chunk_count: 26,
                 flags: HeaderFlags::DIRTY,
-                checksum: crc32::checksum_ieee(&evtx_file[..120]),
+                checksum: checksum_ieee(&evtx_file[..120]),
             }
         );
     }

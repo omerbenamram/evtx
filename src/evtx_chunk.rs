@@ -4,7 +4,6 @@ use crate::err::{
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
-use crc::crc32;
 use log::{debug, info, trace};
 use std::{
     io::Cursor,
@@ -14,7 +13,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::ParserSettings;
+use crate::{ParserSettings, checksum_ieee};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
@@ -92,17 +91,15 @@ impl EvtxChunkData {
 
         let expected_checksum = if !checksum_disabled {
             self.header.events_checksum
-        }
-        else {
+        } else {
             0
         };
 
         let computed_checksum = if !checksum_disabled {
-            crc32::checksum_ieee(
+            checksum_ieee(
                 &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
             )
-        }
-        else {
+        } else {
             0
         };
 
@@ -121,8 +118,7 @@ impl EvtxChunkData {
 
         let expected_checksum = if !checksum_disabled {
             self.header.header_chunk_checksum
-        }
-        else {
+        } else {
             0
         };
 
@@ -136,9 +132,8 @@ impl EvtxChunkData {
             .collect();
 
         let computed_checksum = if !checksum_disabled {
-            crc32::checksum_ieee(bytes_for_checksum.as_slice())
-        }
-        else {
+            checksum_ieee(bytes_for_checksum.as_slice())
+        } else {
             0
         };
 
@@ -179,7 +174,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         let _cursor = Cursor::new(data);
 
         info!("Initializing string cache");
-        let string_cache = StringCache::populate(&data, &header.strings_offsets)
+        let string_cache = StringCache::populate(data, &header.strings_offsets)
             .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
 
         info!("Initializing template cache");
@@ -340,7 +335,9 @@ impl EvtxChunkHeader {
         let raw_flags = try_read!(input, u32)?;
         let flags = match ChunkFlags::from_bits(raw_flags) {
             Some(val) => val,
-            None => return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: raw_flags }),
+            None => {
+                return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: raw_flags })
+            }
         };
 
         let header_chunk_checksum = try_read!(input, u32)?;
