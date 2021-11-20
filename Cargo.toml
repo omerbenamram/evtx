@@ -54,6 +54,7 @@ evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 
 [dev-dependencies]
+insta = "^1"
 pretty_assertions = "^1.0"
 criterion = "0.3.3"
 assert_cmd = "^2.0"

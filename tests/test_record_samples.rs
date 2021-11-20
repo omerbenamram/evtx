@@ -2,7 +2,7 @@ mod fixtures;
 use fixtures::*;
 
 use evtx::{EvtxParser, ParserSettings};
-use pretty_assertions::assert_eq;
+use serde_json::Value;
 
 #[test]
 fn test_event_xml_sample() {
@@ -18,13 +18,7 @@ fn test_event_xml_sample() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/security_event_1.xml")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    insta::assert_display_snapshot!(first_record.data);
 }
 
 #[test]
@@ -41,13 +35,8 @@ fn test_event_json_sample() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/security_event_1.json")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
 }
 
 #[test]
@@ -64,13 +53,8 @@ fn test_event_json_sample_with_event_data() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_eventdata.json")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
 }
 
 #[test]
@@ -87,13 +71,7 @@ fn test_event_xml_sample_with_event_data() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_eventdata.xml")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    insta::assert_display_snapshot!(first_record.data);
 }
 
 #[test]
@@ -110,13 +88,8 @@ fn test_event_json_sample_with_event_data_with_attributes_and_text() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_text_and_attributes.json")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
 }
 
 #[test]
@@ -133,13 +106,7 @@ fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_text_and_attributes.xml")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    insta::assert_display_snapshot!(first_record.data);
 }
 
 #[test]
@@ -158,15 +125,7 @@ fn test_event_xml_sample_with_user_data() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    println!("{}", first_record.data);
-
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_template_as_substitution.xml")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    insta::assert_display_snapshot!(first_record.data);
 }
 
 #[test]
@@ -185,15 +144,7 @@ fn test_event_xml_sample_with_entity_ref() {
         .find(|record| record.event_record_id == 28)
         .expect("record to parse correctly");
 
-    println!("{}", record.data);
-
-    assert_eq!(
-        record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_entity_ref.xml")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    insta::assert_display_snapshot!(record.data);
 }
 
 #[test]
@@ -212,15 +163,7 @@ fn test_event_xml_sample_with_entity_ref_2() {
         .find(|record| record.event_record_id == 25)
         .expect("record to parse correctly");
 
-    println!("{}", record.data);
-
-    assert_eq!(
-        record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_entity_ref_2.xml")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    insta::assert_display_snapshot!(record.data);
 }
 
 #[test]
@@ -239,15 +182,8 @@ fn test_event_json_with_multiple_nodes_same_name() {
         .find(|record| record.event_record_id == 28)
         .expect("record to parse correctly");
 
-    println!("{}", record.data);
-
-    assert_eq!(
-        record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/event_with_multiple_nodes_same_name.json")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
-    );
+    let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
 }
 
 #[test]
@@ -268,11 +204,30 @@ fn test_event_json_sample_with_separate_json_attributes() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    assert_eq!(
-        first_record.data.lines().map(str::trim).collect::<String>(),
-        include_str!("../samples/application_event_1_separate_attributes.json")
-            .lines()
-            .map(str::trim)
-            .collect::<String>()
+    let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
+}
+
+#[test]
+fn test_event_json_with_multiple_nodes_same_name_separate() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!(
+        "../samples/E_Windows_system32_winevt_logs_Microsoft-Windows-CAPI2%4Operational.evtx"
     );
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+
+    let record = parser
+        .records_json()
+        .filter_map(|record| record.ok())
+        .find(|record| record.event_record_id == 28)
+        .expect("record to parse correctly");
+
+    let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
 }

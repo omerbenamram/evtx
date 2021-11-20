@@ -114,6 +114,7 @@ impl JsonOutput {
             }
             // Ignore this node
             None => {
+                // self.insert_node_without_attributes(element, "Data")
                 self.stack.push("Data".to_owned());
                 Ok(())
             }

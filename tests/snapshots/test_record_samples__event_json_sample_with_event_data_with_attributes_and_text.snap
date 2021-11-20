@@ -1,3 +1,8 @@
+---
+source: tests/test_record_samples.rs
+expression: "&value"
+
+---
 {
   "Event": {
     "#attributes": {
@@ -6,7 +11,13 @@
     "EventData": {
       "Binary": null,
       "Data": {
-        "#text": ["10.00.","15063","","Multiprocessor Free","0"]
+        "#text": [
+          "10.00.",
+          "15063",
+          "",
+          "Multiprocessor Free",
+          "0"
+        ]
       }
     },
     "System": {
