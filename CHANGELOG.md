@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0 - 2021-11-20]
+
+## Added
+- A new feature for `evtx-dump` which allows selective dumping of event ranges.
+### Changed
+When converting records to JSON - `Data` nodes without a `Name` attribute are no longer ignored.
+This introduces a slightly incompatible change with the previous version, which also treated `StringArray` values as `#text`, which is incorrect.
+
+────────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+    3     3 │       "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+    4     4 │     },
+    5     5 │     "EventData": {
+    6     6 │       "Binary": null,
+    7       │-      "Data": {
+    8       │-        "#text": [
+    9       │-          "10.00.",
+   10       │-          "15063",
+   11       │-          "",
+   12       │-          "Multiprocessor Free",
+   13       │-          "0"
+   14       │-        ]
+   15       │-      }
+          7 │+      "Data": [
+          8 │+        "10.00.",
+          9 │+        "15063",
+         10 │+        "",
+         11 │+        "Multiprocessor Free",
+         12 │+        "0"
+         13 │+      ]
+   16    14 │     },
+   17    15 │     "System": {
+   18    16 │       "Channel": "System",
+   19    17 │       "Computer": "WIN-P4SIAA0SQCO",
+
+
 ## [0.7.2 - 2021-04-01]
 ### Changed
 - Fix flags to be proper bitmasks and add no-CRC flag (#188) - thanks @Robo210

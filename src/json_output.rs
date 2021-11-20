@@ -102,23 +102,14 @@ impl JsonOutput {
     /// Like a regular node, but uses it's "Name" attribute.
     fn insert_data_node(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("inserting data node {:?}", &element);
-        match element
+        let key = element
             .attributes
             .iter()
-            .find(|a| a.name.as_ref().as_str() == "Name")
-        {
-            Some(name) => {
-                let data_key: Cow<'_, str> = name.value.as_ref().as_cow_str();
+            .find(|attr| attr.name.as_ref().as_str() == "Name")
+            .map(|key| key.value.as_ref().as_cow_str())
+            .unwrap_or(Cow::Borrowed("Data"));
 
-                self.insert_node_without_attributes(element, &data_key)
-            }
-            // Ignore this node
-            None => {
-                // self.insert_node_without_attributes(element, "Data")
-                self.stack.push("Data".to_owned());
-                Ok(())
-            }
-        }
+        self.insert_node_without_attributes(element, &key)
     }
 
     fn insert_node_without_attributes(
@@ -279,6 +270,8 @@ impl BinXmlOutput for JsonOutput {
         trace!("visit_open_start_element: {:?}", element.name);
         let element_name = element.name.as_str();
 
+        // Data nodes get special treatment - since they are most commonly contain a `Name` attribute.
+        // We treat them as nodes without attributes other than name.
         if element_name == "Data" {
             return self.insert_data_node(element);
         }

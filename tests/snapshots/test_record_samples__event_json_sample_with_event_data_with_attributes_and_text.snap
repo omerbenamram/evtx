@@ -10,15 +10,13 @@ expression: "&value"
     },
     "EventData": {
       "Binary": null,
-      "Data": {
-        "#text": [
-          "10.00.",
-          "15063",
-          "",
-          "Multiprocessor Free",
-          "0"
-        ]
-      }
+      "Data": [
+        "10.00.",
+        "15063",
+        "",
+        "Multiprocessor Free",
+        "0"
+      ]
     },
     "System": {
       "Channel": "System",
