@@ -231,3 +231,27 @@ fn test_event_json_with_multiple_nodes_same_name_separate() {
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
 }
+
+#[test]
+fn test_event_json_multiple_empty_data_nodes_not_ignored() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!(
+        "../samples/issue_201.evtx"
+    );
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+
+    let record = parser
+        .records_json()
+        .filter_map(|record| record.ok())
+        .next()
+        .expect("record to parse correctly");
+
+    let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
+}
