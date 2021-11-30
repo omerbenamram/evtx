@@ -175,3 +175,8 @@ fn test_sample_with_no_crc32() {
         0,
     )
 }
+
+#[test]
+fn test_sample_with_invalid_flags_in_header() {
+    test_full_sample(sample_with_invalid_flags_in_header(), 126, 0)
+}
