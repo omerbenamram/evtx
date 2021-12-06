@@ -729,8 +729,8 @@ mod tests {
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        let records: Vec<_> = parser.records().collect();
-        assert_eq!(records.len(), 4);
+        
+        assert_eq!(parser.records().count(), 4);
     }
 
     #[test]
@@ -763,8 +763,8 @@ mod tests {
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        let records: Vec<_> = parser.into_chunks().collect();
-        assert_eq!(records.len(), 1);
+        
+        assert_eq!(parser.into_chunks().count(), 1);
     }
 
     #[test]

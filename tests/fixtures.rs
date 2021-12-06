@@ -83,3 +83,7 @@ pub fn sample_with_dependency_id_edge_case() -> PathBuf {
 pub fn sample_with_no_crc32() -> PathBuf {
     samples_dir().join("Application_no_crc32.evtx")
 }
+
+pub fn sample_with_invalid_flags_in_header() -> PathBuf {
+    samples_dir().join("post-Security.evtx")
+}
