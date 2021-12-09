@@ -53,11 +53,7 @@ impl EvtxFileHeader {
         })?;
 
         let raw_flags = try_read!(stream, u32, "file_header_flags")?;
-        let flags = match HeaderFlags::from_bits(raw_flags) {
-            Some(val) => val,
-            None => return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: raw_flags }),
-        };
-
+        let flags = HeaderFlags::from_bits_truncate(raw_flags);
         let checksum = try_read!(stream, u32, "file_header_checksum")?;
         // unused
         stream.seek(SeekFrom::Current(4096 - 128)).map_err(|e| {

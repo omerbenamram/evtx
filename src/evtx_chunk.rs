@@ -367,12 +367,7 @@ impl EvtxChunkHeader {
         input.seek(SeekFrom::Current(64))?;
 
         let raw_flags = try_read!(input, u32)?;
-        let flags = match ChunkFlags::from_bits(raw_flags) {
-            Some(val) => val,
-            None => {
-                return Err(DeserializationError::UnknownEvtxHeaderFlagValue { value: raw_flags })
-            }
-        };
+        let flags = ChunkFlags::from_bits_truncate(raw_flags);
 
         let header_chunk_checksum = try_read!(input, u32)?;
 
