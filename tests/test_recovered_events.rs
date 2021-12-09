@@ -1,5 +1,5 @@
 mod fixtures;
-use evtx::{EvtxParser};
+use evtx::{EvtxParser, ParserSettings};
 use fixtures::*;
 
 
@@ -8,7 +8,12 @@ fn test_empty_page() {
     ensure_env_logger_initialized();
     let evtx_file = include_bytes!("../samples/Microsoft-Windows-WorkFolders%4WHC.evtx");
 
-    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+    let settings = ParserSettings::default()
+      .parse_empty_chunks(true);
+
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+      .unwrap()
+      .with_configuration(settings);
 
     let mut record_vec = vec![];
     let mut count = 0;
