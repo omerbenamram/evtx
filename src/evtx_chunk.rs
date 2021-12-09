@@ -2,7 +2,7 @@ use crate::err::{
     ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError,
 };
 
-use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
+use crate::evtx_record::{RecordAllocation, EvtxRecord, EvtxRecordHeader};
 
 use log::{debug, info, trace};
 use std::{
@@ -198,18 +198,24 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords {
         let mut offset_array: Option<VecDeque<usize>> = None;
-        // If the page is empty, we want to search for possible record signatures
-        if self.header.first_event_record_number == 1 && 
-           self.header.first_event_record_id == 0xffffffffffffffff &&
-           self.header.last_event_record_number == 0xffffffffffffffff &&
-           self.header.last_event_record_id == 0xffffffffffffffff {
-            // We know that this page is empty, so lets see if we can recover records
-            let found_signatures: VecDeque<usize> = memmem::find_iter(&self.data, &[0x2a, 0x2a, 0x00, 0x00])
-                .collect();
-            
-            // If signatures were found, add them to the offset array
-            if !found_signatures.is_empty() {
-                offset_array = Some(found_signatures);
+        // Currently we only support recovering records in empty pages, but, it could be
+        // possible to recover records from chunk slack in the future
+        let recovery_type = RecordAllocation::EmptyPage;
+
+        if self.settings.should_parse_empty_chunks() {
+            // If the page is empty, we want to search for possible record signatures
+            if self.header.first_event_record_number == 1 && 
+            self.header.first_event_record_id == 0xffffffffffffffff &&
+            self.header.last_event_record_number == 0xffffffffffffffff &&
+            self.header.last_event_record_id == 0xffffffffffffffff {
+                // We know that this page is empty, so lets see if we can recover records
+                let found_signatures: VecDeque<usize> = memmem::find_iter(&self.data, &[0x2a, 0x2a, 0x00, 0x00])
+                    .collect();
+                
+                // If signatures were found, add them to the offset array
+                if !found_signatures.is_empty() {
+                    offset_array = Some(found_signatures);
+                }
             }
         }
 
@@ -218,7 +224,8 @@ impl<'chunk> EvtxChunk<'chunk> {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
-            offset_array
+            offset_array,
+            recovery_type
         }
     }
 }
@@ -249,17 +256,22 @@ pub struct IterChunkRecords<'a> {
     exhausted: bool,
     settings: Arc<ParserSettings>,
     /// offset_array is used for record recovery when the page is empty
-    offset_array: Option<VecDeque<usize>>
+    offset_array: Option<VecDeque<usize>>,
+    /// The recovery method that represents the offset array
+    recovery_type: RecordAllocation
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        let mut allocation = RecordAllocation::Allocated;
+
         if let Some(offset_array) = self.offset_array.as_mut() {
             // If we are using an offset_array, we want to set the offset_from_chunk_start with those values
             if let Some(value) = offset_array.pop_back() {
                 self.offset_from_chunk_start = value as u64;
+                allocation = self.recovery_type.clone();
             } else {
                 return None;
             }
@@ -335,11 +347,12 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         }
 
         Some(Ok(EvtxRecord {
+            allocation,
             chunk: self.chunk,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens,
-            settings: Arc::clone(&self.settings),
+            settings: Arc::clone(&self.settings)
         }))
     }
 }
