@@ -167,9 +167,16 @@ impl EvtxDump {
                 }
             }
             EvtxOutputFormat::JSON => {
+                writeln!(self.output, "[")?;
+                let mut first = true;
                 for record in parser.records_json() {
-                    self.dump_record(record)?
+                    if !first{
+                        writeln!(self.output, ",")?;
+                    }
+                    first = false;
+                    self.dump_record(record)?;
                 }
+                writeln!(self.output, "]")?;
             }
         };
 
@@ -226,9 +233,9 @@ impl EvtxDump {
         match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
                 if self.show_record_number {
-                    writeln!(self.output, "Record {}", r.event_record_id)?;
+                    writeln!(self.output, "{{{}: \"{}\",", "\"Record\"", r.event_record_id)?;
                 }
-                writeln!(self.output, "{}", r.data)?;
+                writeln!(self.output, "\"data\": {}}}", r.data)?;
             }
             // This error is non fatal.
             Err(e) => {
