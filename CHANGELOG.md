@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.3]
 ### Changed
 - Ignore invalid header flags - thanks @Oskar65536
+- Don't panic when a date has an invalid value (Use 1061.1.1 if raw value is 0, return an error otherwise) #209
 
 ## [0.7.2 - 2021-04-01]
 ### Changed
