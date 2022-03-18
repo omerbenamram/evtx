@@ -129,6 +129,9 @@ pub enum DeserializationError {
     )]
     InvalidValueVariant { value: u8, offset: u64 },
 
+    #[error("An out-of-range date, invalid month and/or day")]
+    InvalidDateTimeError,
+
     /// Assertion errors.
     #[error("Invalid EVTX record header magic, expected `2a2a0000`, found `{magic:2X?}`")]
     InvalidEvtxRecordHeaderMagic { magic: [u8; 4] },
