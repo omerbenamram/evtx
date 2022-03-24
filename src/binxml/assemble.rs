@@ -249,7 +249,8 @@ fn expand_string_ref<'a>(
         None => {
             let mut cursor = Cursor::new(chunk.data);
             let cursor_ref = cursor.borrow_mut();
-            try_seek!(cursor_ref, string_ref.offset, "Cache missed string")?;
+            // The BinXmlName appears to start 6 bytes in from the offset
+            try_seek!(cursor_ref, string_ref.offset + 6, "Cache missed string")?;
 
             let string = BinXmlName::from_stream(cursor_ref)?;
             Ok(Cow::Owned(string))

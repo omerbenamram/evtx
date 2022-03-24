@@ -28,6 +28,9 @@ winstructs = "0.3.0"
 # Optional for multithreading.
 rayon = { version = "1.5.0", optional = true }
 
+# Required for empty page recovery
+memchr = "2.4.1"
+
 # `evtx_dump` dependencies
 anyhow = { version = "1.0", optional = true }
 simplelog = { version = "^0.10", optional = true }

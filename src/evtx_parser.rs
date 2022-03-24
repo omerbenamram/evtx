@@ -136,6 +136,8 @@ pub struct ParserSettings {
     indent: bool,
     /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
     ansi_codec: EncodingRef,
+    /// Flag to parse empty pages
+    parse_empty_chunks: bool
 }
 
 impl Debug for ParserSettings {
@@ -146,6 +148,7 @@ impl Debug for ParserSettings {
             .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
             .field("ansi_codec", &self.ansi_codec.name())
+            .field("parse_empty_chunks", &self.parse_empty_chunks)
             .finish()
     }
 }
@@ -157,6 +160,7 @@ impl PartialEq for ParserSettings {
             && self.validate_checksums == other.validate_checksums
             && self.separate_json_attributes == other.separate_json_attributes
             && self.indent == other.indent
+            && self.parse_empty_chunks == other.parse_empty_chunks
     }
 }
 
@@ -168,6 +172,7 @@ impl Default for ParserSettings {
             separate_json_attributes: false,
             indent: true,
             ansi_codec: WINDOWS_1252,
+            parse_empty_chunks: false
         }
     }
 }
@@ -218,6 +223,12 @@ impl ParserSettings {
         self
     }
 
+    pub fn parse_empty_chunks(mut self, parse_empty_chunks: bool) -> Self {
+        self.parse_empty_chunks = parse_empty_chunks;
+
+        self
+    }
+
     pub fn indent(mut self, pretty: bool) -> Self {
         self.indent = pretty;
 
@@ -231,6 +242,10 @@ impl ParserSettings {
 
     pub fn should_separate_json_attributes(&self) -> bool {
         self.separate_json_attributes
+    }
+
+    pub fn should_parse_empty_chunks(&self) -> bool {
+        self.parse_empty_chunks
     }
 
     pub fn should_indent(&self) -> bool {

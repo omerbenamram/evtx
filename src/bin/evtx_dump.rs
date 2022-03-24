@@ -39,6 +39,7 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
+    display_allocation: bool
 }
 
 impl EvtxDump {
@@ -72,7 +73,9 @@ impl EvtxDump {
             (v, None) => v,
         };
 
+        let display_allocation = matches.is_present("display-allocation");
         let separate_json_attrib_flag = matches.is_present("separate-json-attributes");
+        let parse_empty_chunks_flag = matches.is_present("parse-empty-chunks");
 
         let no_show_record_number = match (
             matches.is_present("no-show-record-number"),
@@ -139,6 +142,7 @@ impl EvtxDump {
                 .num_threads(num_threads)
                 .validate_checksums(validate_checksums)
                 .separate_json_attributes(separate_json_attrib_flag)
+                .parse_empty_chunks(parse_empty_chunks_flag)
                 .indent(!no_indent)
                 .ansi_codec(*ansi_codec),
             input,
@@ -147,6 +151,7 @@ impl EvtxDump {
             output,
             verbosity_level,
             stop_after_error,
+            display_allocation,
         })
     }
 
@@ -167,8 +172,8 @@ impl EvtxDump {
                 }
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json() {
-                    self.dump_record(record)?
+                for record in parser.records_json_value() {
+                    self.dump_json_record(record)?
                 }
             }
         };
@@ -221,11 +226,38 @@ impl EvtxDump {
         }
     }
 
+    fn dump_json_record(&mut self, record: EvtxResult<SerializedEvtxRecord<serde_json::Value>>) -> Result<()> {
+        match record.with_context(|| "Failed to dump the next record.") {
+            Ok(r) => {
+                let mut json_value = r.data;
+
+                if self.display_allocation {
+                    json_value["allocation"] = serde_json::Value::String(format!("{}", r.allocation));
+                }
+                writeln!(self.output, "{}", json_value)?;
+            }
+            // This error is non fatal.
+            Err(e) => {
+                eprintln!("{:?}", format_err!(e));
+
+                if self.stop_after_error {
+                    std::process::exit(1);
+                }
+            }
+        };
+
+        Ok(())
+    }
+
     fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<String>>) -> Result<()> {
         match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
                 if self.show_record_number {
-                    writeln!(self.output, "Record {}", r.event_record_id)?;
+                    let mut record_display = format!("Record {}", r.event_record_id);
+                    if self.display_allocation {
+                        record_display = format!("{} [{}]", record_display, r.allocation)
+                    }
+                    writeln!(self.output, "{}", record_display)?;
                 }
                 writeln!(self.output, "{}", r.data)?;
             }
@@ -326,6 +358,18 @@ fn main() -> Result<()> {
                 .long("--separate-json-attributes")
                 .takes_value(false)
                 .help("If outputting JSON, XML Element's attributes will be stored in a separate object named '<ELEMENTNAME>_attributes', with <ELEMENTNAME> containing the value of the node."),
+        )
+        .arg(
+            Arg::with_name("parse-empty-chunks")
+                .long("--parse-empty-chunks")
+                .takes_value(false)
+                .help(indoc!("Attempt to recover records from empty chunks.")),
+        )
+        .arg(
+            Arg::with_name("display-allocation")
+                .long("--display-allocation")
+                .takes_value(false)
+                .help(indoc!("Display allocation status in output.")),
         )
         .arg(
             Arg::with_name("no-show-record-number")
