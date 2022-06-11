@@ -31,7 +31,7 @@ rayon = { version = "1.5.0", optional = true }
 # `evtx_dump` dependencies
 anyhow = { version = "1.0", optional = true }
 simplelog = { version = "^0.10", optional = true }
-clap = { version = "2.33.3", optional = true }
+clap = { version = "3.x", optional = true }
 dialoguer = { version = "0.9", optional = true }
 indoc = { version = "1.0", optional = true }
 
