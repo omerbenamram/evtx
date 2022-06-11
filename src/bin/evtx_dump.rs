@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use anyhow::{bail, format_err, Context, Result};
-use clap::{App, AppSettings, Arg, ArgMatches};
+use clap::{Command, AppSettings, Arg, ArgMatches};
 use dialoguer::Confirm;
 use indoc::indoc;
 
@@ -256,32 +256,31 @@ impl EvtxDump {
     }
 }
 
-fn is_a_non_negative_number(value: String) -> Result<(), String> {
-    match value.parse::<usize>() {
+fn is_a_non_negative_number(value: &str) -> Result<(), String> {
+    match value.to_string().parse::<usize>() {
         Ok(_) => Ok(()),
         Err(_) => Err("Expected value to be a positive number.".to_owned()),
     }
 }
 
 fn main() -> Result<()> {
-    let matches = App::new("EVTX Parser")
+    let matches = Command::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
-        .setting(AppSettings::ColoredHelp)
         .setting(AppSettings::DeriveDisplayOrder)
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
-        .arg(Arg::with_name("INPUT").required(true))
+        .arg(Arg::new("INPUT").required(true))
         .arg(
-            Arg::with_name("num-threads")
-                .short("-t")
+            Arg::new("num-threads")
+                .short('t')
                 .long("--threads")
                 .default_value("0")
                 .validator(is_a_non_negative_number)
                 .help("Sets the number of worker threads, defaults to number of CPU cores."),
         )
         .arg(
-            Arg::with_name("output-format")
-                .short("-o")
+            Arg::new("output-format")
+                .short('o')
                 .long("--format")
                 .possible_values(&["json", "xml", "jsonl"])
                 .default_value("xml")
@@ -294,47 +293,47 @@ fn main() -> Result<()> {
                 "#)),
         )
         .arg(
-            Arg::with_name("output-target")
+            Arg::new("output-target")
                 .long("--output")
-                .short("-f")
+                .short('f')
                 .takes_value(true)
                 .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
                        Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
                        Will create parent directories if needed.")),
         )
         .arg(
-            Arg::with_name("no-confirm-overwrite")
+            Arg::new("no-confirm-overwrite")
                 .long("--no-confirm-overwrite")
                 .takes_value(false)
                 .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
         .arg(
-            Arg::with_name("validate-checksums")
+            Arg::new("validate-checksums")
                 .long("--validate-checksums")
                 .takes_value(false)
                 .help(indoc!("When set, chunks with invalid checksums will not be parsed. \
                 Usually dirty files have bad checksums, so using this flag will result in fewer records.")),
         )
         .arg(
-            Arg::with_name("no-indent")
+            Arg::new("no-indent")
                 .long("--no-indent")
                 .takes_value(false)
                 .help("When set, output will not be indented."),
         )
         .arg(
-            Arg::with_name("separate-json-attributes")
+            Arg::new("separate-json-attributes")
                 .long("--separate-json-attributes")
                 .takes_value(false)
                 .help("If outputting JSON, XML Element's attributes will be stored in a separate object named '<ELEMENTNAME>_attributes', with <ELEMENTNAME> containing the value of the node."),
         )
         .arg(
-            Arg::with_name("no-show-record-number")
+            Arg::new("no-show-record-number")
                 .long("--dont-show-record-number")
                 .takes_value(false)
                 .help("When set, `Record <id>` will not be printed."),
         )
         .arg(
-            Arg::with_name("ansi-codec")
+            Arg::new("ansi-codec")
                 .long("--ansi-codec")
                 .possible_values(&encodings().iter()
                     .filter(|&e| e.raw_decoder().is_ascii_compatible())
@@ -344,14 +343,14 @@ fn main() -> Result<()> {
                 .help("When set, controls the codec of ansi encoded strings the file."),
         )
         .arg(
-            Arg::with_name("stop-after-one-error")
+            Arg::new("stop-after-one-error")
                 .long("--stop-after-one-error")
                 .takes_value(false)
                 .help("When set, will exit after any failure of reading a record. Useful for debugging."),
         )
-        .arg(Arg::with_name("verbose")
-            .short("-v")
-            .multiple(true)
+        .arg(Arg::new("verbose")
+            .short('v')
+            .multiple_occurrences(true)
             .takes_value(false)
             .help(indoc!(r#"
             Sets debug prints level for the application:
