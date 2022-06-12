@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "evtx"
-version = "0.7.3-dev"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -507,6 +507,7 @@ dependencies = [
  "indoc",
  "jemallocator",
  "log",
+ "nix 0.24.1",
  "predicates",
  "pretty_assertions",
  "quick-xml",
@@ -710,6 +711,18 @@ dependencies = [
  "cfg-if 0.1.10",
  "libc",
  "void",
+]
+
+[[package]]
+name = "nix"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f17df307904acd05aa8e32e97bb20f2a0df1728bbc2d771ae8f9a90463441e9"
+dependencies = [
+ "bitflags",
+ "cfg-if 1.0.0",
+ "libc",
+ "memoffset",
 ]
 
 [[package]]
@@ -980,7 +993,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "862c0149d91461fab225ddd06a5af919913f5c57405ed4f27d2466d6cc877186"
 dependencies = [
  "error-chain",
- "nix",
+ "nix 0.14.1",
  "regex",
  "tempfile",
 ]

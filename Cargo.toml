@@ -1,12 +1,12 @@
 [package]
 name = "evtx"
-description = "A fork of the evtx Rust crate."
+description = "A fork of the evtx Rust crate for Hayabusa."
 homepage = "https://github.com/Yamato-Security/hayabusa-evtx"
 repository = "https://github.com/Yamato-Security/hayabusa-evtx"
-license = "MIT/Apache-2.0"
+license = "MIT"
 readme = "README.md"
 
-version = "0.7.3-dev"
+version = "0.7.3"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>, Yamato Security"]
 edition = "2021"
 
@@ -16,14 +16,15 @@ exclude = [
 ]
 
 [dependencies]
-bitflags = "1.*" # Previous: 1.2.1
-crc32fast = "1.3.2" # Previous: "^1"
-chrono = { version = "0.4.19", features = ["serde"] } # Previous: 0.4
+bitflags = "1.3.2"
+crc32fast = "1.3.2" 
+chrono = { version = "0.4.19", features = ["serde"] }
 encoding = "0.2.33"
-byteorder = "1.4.3" # Previous: "^1.3"
-quick-xml = "^0.23" # Previous: "^0.22"
-thiserror = "1.0.31" # Previous: "1.0"
-log = { version = "0.4.17", features = ["release_max_level_debug"] } # Previous: 0.4
+byteorder = "1.4.3"
+quick-xml = "^0.23"
+thiserror = "1.0.31"
+nix = "0.24.1"
+log = { version = "0.4.17", features = ["release_max_level_debug"] } 
 winstructs = "0.3.0"
 # Optional for multithreading.
 rayon = { version = "1.5.0", optional = true }
@@ -40,11 +41,11 @@ serde_json = "1.0"
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
-jemallocator = { version = "0.5.0", optional = true } # Previous: 0.3.2
+jemallocator = { version = "0.5.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
-rpmalloc = { version = "0.2.2", optional = true } # Previous: 0.2.0
+rpmalloc = { version = "0.2.2", optional = true }
 
 
 [features]
@@ -54,24 +55,24 @@ evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 
 [dev-dependencies]
-pretty_assertions = "1.2.1" # Previous: "^1.0"
-criterion = "0.3.5" # Previous: 0.3.3
+pretty_assertions = "1.2.1"
+criterion = "0.3.5"
 assert_cmd = "^2.0"
-predicates = "2.1.1" # Previous: "^2.0"
+predicates = "2.1.1"
 env_logger = "0.9.0"
-tempfile = "3.3.0" # Previous: "3.1.0"
+tempfile = "3.3.0"
 
 [profile.release]
 opt-level = 3
 codegen-units = 1
-lto = "thin"
+lto = "fat"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 rexpect = "0.4.0"
 
 [build-dependencies]
-skeptic = "0.13.7" # Previous: 0.13.5
+skeptic = "0.13.7"
 
 [[bin]]
 name = "evtx_dump"

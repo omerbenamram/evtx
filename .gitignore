@@ -4,3 +4,4 @@ target
 .DS_Store
 .vs*
 .history
+.env
