@@ -41,7 +41,7 @@
                 <HTTPRequestHeadersInfo>
                     <Header>GET /pki/crl/products/microsoftrootcert.crl HTTP/1.1</Header>
                     <Header>Accept: */*</Header>
-                    <Header>If-None-Match: &amp;quotea9ee7b1bc43d21:0&amp;quot</Header>
+                    <Header>If-None-Match: &quot;ea9ee7b1bc43d21:0&quot;</Header>
                     <Header>If-Modified-Since: Mon, 21 Nov 2016 06:01:26 GMT</Header>
                     <Header>Cache-Control: max-age = 900</Header>
                     <Header>User-Agent: Microsoft-CryptoAPI/6.1</Header>

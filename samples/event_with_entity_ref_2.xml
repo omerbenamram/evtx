@@ -34,7 +34,7 @@
                 <URLCachePrefetchInfo objectType="CRYPTNET_URL_CACHE_PRE_FETCH_CRL" thisUpdateTime="2016-11-20T21:48:50Z" nextUpdateTime="2017-02-19T10:08:50Z" publishTime="2017-02-18T21:58:50Z">
                 </URLCachePrefetchInfo>
                 <URLCacheFlushInfo expireTime="2017-02-19T10:08:50Z">
-                </URLCacheFlushInfo>&amp;quot&amp;quot<URLCacheResponseInfo responseType="CRYPTNET_URL_CACHE_RESPONSE_HTTP" responseValidated="true" lastModifiedTime="2016-11-21T06:01:26Z" maxAge="900" eTag="ea9ee7b1bc43d21:0">
+                </URLCacheFlushInfo>&quot;&quot;<URLCacheResponseInfo responseType="CRYPTNET_URL_CACHE_RESPONSE_HTTP" responseValidated="true" lastModifiedTime="2016-11-21T06:01:26Z" maxAge="900" eTag="ea9ee7b1bc43d21:0">
             </URLCacheResponseInfo>
             </CacheInfo>
             <RetrievedObjects>
