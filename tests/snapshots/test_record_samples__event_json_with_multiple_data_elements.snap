@@ -1,0 +1,63 @@
+---
+source: tests/test_record_samples.rs
+assertion_line: 229
+expression: "&first_record_xml.data"
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="MSExchange CmdletLogs">
+    </Provider>
+    <EventID Qualifiers="16384">1</EventID>
+    <Level>4</Level>
+    <Task>1</Task>
+    <Keywords>0x80000000000000</Keywords>
+    <TimeCreated SystemTime="2021-11-19T16:52:33.833733500Z">
+    </TimeCreated>
+    <EventRecordID>3229</EventRecordID>
+    <Channel>MSExchange Management</Channel>
+    <Computer>WEC.ave.local</Computer>
+    <Security>
+    </Security>
+  </System>
+  <EventData>
+    <Data>Set-Mailbox</Data>
+    <Data>-Identity &quot;Administrateur&quot; -DeliverToMailboxAndForward &quot;False&quot; -ForwardingSmtpAddress &quot;smtp:test2@example.com&quot;</Data>
+    <Data>ave.local/Users/Administrateur</Data>
+    <Data>S-1-5-21-186559946-3925841745-111227986-500</Data>
+    <Data>S-1-5-21-186559946-3925841745-111227986-500</Data>
+    <Data>Remote-ManagementShell-Unknown</Data>
+    <Data>5668 w3wp#MSExchangePowerShellAppPool</Data>
+    <Data>
+    </Data>
+    <Data>5</Data>
+    <Data>00:00:26.0389557</Data>
+    <Data>Afficher la forêt entière : &apos;False&apos;, Portée par défaut : « ave.local », Configuration du contrôleur de domaine : « DC.ave.local », Catalogue global préféré : « DC.ave.local », Contrôleurs de domaine préférés : « { DC.ave.local } »</Data>
+    <Data>
+    </Data>
+    <Data>
+    </Data>
+    <Data>
+    </Data>
+    <Data>
+    </Data>
+    <Data>
+    </Data>
+    <Data>
+    </Data>
+    <Data>False</Data>
+    <Data>
+    </Data>
+    <Data>0 objects execution has been proxied to remote server.</Data>
+    <Data>
+    </Data>
+    <Data>
+    </Data>
+    <Data>0</Data>
+    <Data>ActivityId: a3591746-a27b-447a-b8be-ff54ae3a46f1</Data>
+    <Data>ServicePlan:;IsAdmin:True;</Data>
+    <Data>
+    </Data>
+    <Data>fr-FR</Data>
+  </EventData>
+</Event>
