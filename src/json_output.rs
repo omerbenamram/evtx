@@ -7,7 +7,7 @@ use crate::ParserSettings;
 
 use core::borrow::BorrowMut;
 use log::trace;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 
 use crate::binxml::name::BinXmlName;
@@ -317,8 +317,35 @@ impl BinXmlOutput for JsonOutput {
             //    },
             //    "#text": "4902"
             //  },
+            //
+            // If multiple nodes with the same name exists, we convert the `#text` attribute into an array.
+            const TEXT_KEY: &str = "#text";
             if let Some(object) = current_value.as_object_mut() {
-                object.insert("#text".to_owned(), value.clone().into());
+                let value: Value = value.clone().into();
+
+                match object.get_mut(TEXT_KEY) {
+                    // Regular, distinct node.
+                    None => {
+                        object.insert(TEXT_KEY.to_owned(), value);
+                    }
+                    // The first time we encounter another node with the same name,
+                    // we convert the exiting value into an array with both values.
+                    Some(Value::String(perv_value)) => {
+                        let perv_value = perv_value.clone();
+                        object.remove(TEXT_KEY);
+                        object.insert(TEXT_KEY.to_owned(), json!([perv_value, value]));
+                    }
+                    // If we already have an array, we can just push into it.
+                    Some(Value::Array(arr)) => arr.push(value),
+                    current_value => {
+                        return Err(SerializationError::JsonStructureError {
+                            message: format!(
+                                "expected current value to be a String or an Array, found {:?}, new value is {:?}",
+                                current_value, value
+                            ),
+                        });
+                    }
+                }
                 return Ok(());
             };
 
