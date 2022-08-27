@@ -1,7 +1,7 @@
 ---
 source: tests/test_record_samples.rs
+assertion_line: 74
 expression: first_record.data
-
 ---
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
@@ -14,7 +14,7 @@ expression: first_record.data
     <Task>13312</Task>
     <Opcode>0</Opcode>
     <Keywords>0x8020000000000000</Keywords>
-    <TimeCreated SystemTime="2018-07-28 07:24:45.754787 UTC">
+    <TimeCreated SystemTime="2018-07-28T07:24:45.754787Z">
     </TimeCreated>
     <EventRecordID>1</EventRecordID>
     <Correlation>

@@ -338,18 +338,18 @@ impl FromStr for Ranges {
     }
 }
 
-fn matches_ranges(value: String) -> Result<(), String> {
-    Ranges::from_str(&value)
+fn matches_ranges(value: &str) -> Result<(), String> {
+    Ranges::from_str(value)
         .map_err(|e| e.to_string())
         .map(|_| ())
 }
 
 #[test]
 fn test_ranges() {
-    assert!(matches_ranges("1-2,3,4-5,6-7,8-9".to_owned()).is_ok());
-    assert!(matches_ranges("1".to_owned()).is_ok());
-    assert!(matches_ranges("1-".to_owned()).is_err());
-    assert!(matches_ranges("-2".to_owned()).is_err());
+    assert!(matches_ranges("1-2,3,4-5,6-7,8-9").is_ok());
+    assert!(matches_ranges("1").is_ok());
+    assert!(matches_ranges("1-").is_err());
+    assert!(matches_ranges("-2").is_err());
 }
 
 fn main() -> Result<()> {

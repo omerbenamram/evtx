@@ -1,7 +1,7 @@
 ---
 source: tests/test_record_samples.rs
+assertion_line: 208
 expression: "&value"
-
 ---
 {
   "Event": {
@@ -34,7 +34,7 @@ expression: "&value"
       "Security": null,
       "Task": 0,
       "TimeCreated_attributes": {
-        "SystemTime": "2010-11-10T18:18:51Z"
+        "SystemTime": "2010-11-10T18:18:51.000000Z"
       },
       "Version": 0
     }

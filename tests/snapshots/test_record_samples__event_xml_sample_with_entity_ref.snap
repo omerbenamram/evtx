@@ -1,7 +1,7 @@
 ---
 source: tests/test_record_samples.rs
+assertion_line: 147
 expression: record.data
-
 ---
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
@@ -14,7 +14,7 @@ expression: record.data
     <Task>53</Task>
     <Opcode>2</Opcode>
     <Keywords>0x4000000000000036</Keywords>
-    <TimeCreated SystemTime="2017-05-19 02:02:36.203125 UTC">
+    <TimeCreated SystemTime="2017-05-19T02:02:36.203125Z">
     </TimeCreated>
     <EventRecordID>28</EventRecordID>
     <Correlation>
@@ -46,7 +46,7 @@ expression: record.data
         <HTTPRequestHeadersInfo>
           <Header>GET /pki/crl/products/microsoftrootcert.crl HTTP/1.1</Header>
           <Header>Accept: */*</Header>
-          <Header>If-None-Match: &amp;quotea9ee7b1bc43d21:0&amp;quot</Header>
+          <Header>If-None-Match: &quot;ea9ee7b1bc43d21:0&quot;</Header>
           <Header>If-Modified-Since: Mon, 21 Nov 2016 06:01:26 GMT</Header>
           <Header>Cache-Control: max-age = 900</Header>
           <Header>User-Agent: Microsoft-CryptoAPI/6.1</Header>

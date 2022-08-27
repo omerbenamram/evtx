@@ -1,7 +1,7 @@
 ---
 source: tests/test_record_samples.rs
+assertion_line: 232
 expression: "&value"
-
 ---
 {
   "Event": {
@@ -41,7 +41,7 @@ expression: "&value"
             "Header": "Connection: Keep-Alive",
             "Header_1": "GET /pki/crl/products/microsoftrootcert.crl HTTP/1.1",
             "Header_2": "Accept: */*",
-            "Header_3": "If-None-Match: \"ea9ee7b1bc43d21:0\"",
+            "Header_3": "\"",
             "Header_4": "If-Modified-Since: Mon, 21 Nov 2016 06:01:26 GMT",
             "Header_5": "Cache-Control: max-age = 900",
             "Header_6": "User-Agent: Microsoft-CryptoAPI/6.1"
