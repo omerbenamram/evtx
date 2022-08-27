@@ -23,6 +23,8 @@ use winstructs::security::Sid;
 use crate::evtx_chunk::EvtxChunk;
 use std::fmt::Write;
 
+static DATETIME_FORMAT: &'static str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXmlValue<'a> {
     NullType,
@@ -426,8 +428,8 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             }
             BinXmlValue::GuidType(guid) => json!(guid.to_string()),
             //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
-            BinXmlValue::FileTimeType(tm) => json!(tm),
-            BinXmlValue::SysTimeType(tm) => json!(tm),
+            BinXmlValue::FileTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
+            BinXmlValue::SysTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
@@ -489,8 +491,8 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             }
             BinXmlValue::GuidType(guid) => json!(guid.to_string()),
             //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
-            BinXmlValue::FileTimeType(tm) => json!(tm),
-            BinXmlValue::SysTimeType(tm) => json!(tm),
+            BinXmlValue::FileTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
+            BinXmlValue::SysTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
@@ -557,8 +559,8 @@ impl<'a> BinXmlValue<'a> {
             }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
-            BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.to_string()),
-            BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.to_string()),
+            BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.format(DATETIME_FORMAT).to_string()),
+            BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.format(DATETIME_FORMAT).to_string()),
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => hex_string.clone(),
             BinXmlValue::HexInt64Type(hex_string) => hex_string.clone(),

@@ -11,7 +11,7 @@ use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::read_len_prefixed_utf16_string;
 
-use log::{trace, warn};
+use log::{trace, warn, error};
 
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -95,7 +95,7 @@ pub fn read_template<'a>(
         let expected_position = position_before_reading_value + u64::from(descriptor.size);
 
         if expected_position != current_position {
-            let diff = expected_position - current_position;
+            let diff = expected_position as i128 - current_position as i128;
             // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
             // Sometimes however the log will contain a lot of zero fields.
             warn!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
@@ -103,7 +103,10 @@ pub fn read_template<'a>(
                   expected_position,
                   &descriptor);
 
-            try_seek!(cursor, current_position + diff, "Broken record")?;
+            match u64::try_from(diff) {
+                Ok(u64_diff) => { try_seek!(cursor, current_position + u64_diff, "Broken record")?; }
+                Err(_) => error!("Broken record"),
+            }
         }
         substitution_array.push(BinXMLDeserializedTokens::Value(value));
     }
