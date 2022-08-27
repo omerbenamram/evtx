@@ -3,7 +3,7 @@ use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
 use byteorder::ReadBytesExt;
 use std::io::{Read, Seek, SeekFrom};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct EvtxFileHeader {
     pub first_chunk_number: u64,
     pub last_chunk_number: u64,

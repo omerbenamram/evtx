@@ -23,7 +23,7 @@ use winstructs::security::Sid;
 use crate::evtx_chunk::EvtxChunk;
 use std::fmt::Write;
 
-static DATETIME_FORMAT: &'static str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+static DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXmlValue<'a> {
@@ -80,7 +80,7 @@ pub enum BinXmlValue<'a> {
     EvtXmlArrayType,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub enum BinXmlValueType {
     NullType,
     StringType,

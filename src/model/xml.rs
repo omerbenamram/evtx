@@ -121,7 +121,7 @@ pub struct XmlElement<'a> {
     pub attributes: Vec<XmlAttribute<'a>>,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXmlPI<'a> {
     pub name: Cow<'a, BinXmlName>,
     pub data: Cow<'a, str>,

@@ -23,14 +23,14 @@ pub struct EvtxRecord<'a> {
     pub settings: Arc<ParserSettings>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvtxRecordHeader {
     pub data_size: u32,
     pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerializedEvtxRecord<T> {
     pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,

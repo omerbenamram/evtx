@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use anyhow::{bail, format_err, Context, Result};
-use clap::{Command, AppSettings, Arg, ArgMatches};
+use clap::{AppSettings, Arg, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
 
@@ -12,7 +12,9 @@ use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 #[cfg(all(feature = "fast-alloc", not(windows)))]
 use jemallocator::Jemalloc;
@@ -25,7 +27,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 #[global_allocator]
 static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
 
-#[derive(Copy, Clone, PartialOrd, PartialEq)]
+#[derive(Copy, Clone, PartialOrd, PartialEq, Eq)]
 pub enum EvtxOutputFormat {
     JSON,
     XML,
@@ -39,6 +41,8 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
+    /// When set, only the specified events (offseted reltaive to file) will be outputted.
+    ranges: Option<Ranges>,
 }
 
 impl EvtxDump {
@@ -107,6 +111,10 @@ impl EvtxDump {
         let validate_checksums = matches.is_present("validate-checksums");
         let stop_after_error = matches.is_present("stop-after-one-error");
 
+        let event_ranges = matches
+            .value_of("event-ranges")
+            .map(|s| Ranges::from_str(s).expect("used validator"));
+
         let verbosity_level = match matches.occurrences_of("verbose") {
             0 => None,
             1 => Some(Level::Info),
@@ -147,6 +155,7 @@ impl EvtxDump {
             output,
             verbosity_level,
             stop_after_error,
+            ranges: event_ranges,
         })
     }
 
@@ -224,10 +233,18 @@ impl EvtxDump {
     fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<String>>) -> Result<()> {
         match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
-                if self.show_record_number {
-                    writeln!(self.output, "Record {}", r.event_record_id)?;
+                let range_filter = if let Some(ranges) = &self.ranges {
+                    ranges.contains(&(r.event_record_id as usize))
+                } else {
+                    true
+                };
+
+                if range_filter {
+                    if self.show_record_number {
+                        writeln!(self.output, "Record {}", r.event_record_id)?;
+                    }
+                    writeln!(self.output, "{}", r.data)?;
                 }
-                writeln!(self.output, "{}", r.data)?;
             }
             // This error is non fatal.
             Err(e) => {
@@ -261,6 +278,78 @@ fn is_a_non_negative_number(value: &str) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(_) => Err("Expected value to be a positive number.".to_owned()),
     }
+}
+
+struct Ranges(Vec<RangeInclusive<usize>>);
+
+impl Ranges {
+    fn contains(&self, number: &usize) -> bool {
+        self.0.iter().any(|r| r.contains(number))
+    }
+}
+
+impl FromStr for Ranges {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut res = vec![];
+
+        for range in s.split(',') {
+            if range.contains('-') {
+                let numbers = range.split('-').collect::<Vec<_>>();
+                let (rstart, rstop) = (numbers.first(), numbers.get(1));
+
+                // verify rstart, rstop are numbers
+                if let (Some(rstart), Some(rstop)) = (rstart, rstop) {
+                    if rstart.parse::<usize>().is_err() || rstop.parse::<usize>().is_err() {
+                        bail!("Expected range to be a positive number, got: {}", range);
+                    }
+                } else {
+                    bail!("Expected range to be a positive number, got: {}", range);
+                }
+
+                if numbers.len() != 2 {
+                    bail!(
+                        "Expected either a single number or range of numbers, but got: {}",
+                        range
+                    );
+                }
+
+                if rstart.is_none() || rstop.is_none() {
+                    bail!(
+                        "Expected range to be in the form of `start-stop`, got `{}`",
+                        range
+                    );
+                }
+
+                res.push(
+                    rstart.unwrap().parse::<usize>().unwrap()
+                        ..=rstop.unwrap().parse::<usize>().unwrap(),
+                );
+            } else {
+                match range.parse::<usize>() {
+                    Ok(r) => res.push(r..=r),
+                    Err(_) => bail!("Expected range to be a positive number, got: {}", range),
+                };
+            }
+        }
+
+        Ok(Ranges(res))
+    }
+}
+
+fn matches_ranges(value: &str) -> Result<(), String> {
+    Ranges::from_str(value)
+        .map_err(|e| e.to_string())
+        .map(|_| ())
+}
+
+#[test]
+fn test_ranges() {
+    assert!(matches_ranges("1-2,3,4-5,6-7,8-9").is_ok());
+    assert!(matches_ranges("1").is_ok());
+    assert!(matches_ranges("1-").is_err());
+    assert!(matches_ranges("-2").is_err());
 }
 
 fn main() -> Result<()> {
@@ -308,7 +397,18 @@ fn main() -> Result<()> {
                 .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
         .arg(
-            Arg::new("validate-checksums")
+            Arg::with_name("event-ranges")
+                .long("--events")
+                .takes_value(true)
+                .validator(matches_ranges)
+                .help(indoc!("When set, only the specified events (offseted reltaive to file) will be outputted.
+                For example:
+                    --events=1 will output the first event.
+                    --events=0-10,20-30 will output events 0-10 and 20-30.
+                ")),
+        )
+        .arg(
+            Arg::with_name("validate-checksums")
                 .long("--validate-checksums")
                 .takes_value(false)
                 .help(indoc!("When set, chunks with invalid checksums will not be parsed. \

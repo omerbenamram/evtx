@@ -1,4 +1,4 @@
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug, PartialOrd, PartialEq, Eq)]
 pub enum BinXMLRawToken {
     EndOfStream,
     // True if has attributes, otherwise false.
@@ -60,12 +60,12 @@ impl BinXMLRawToken {
     }
 }
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug, PartialOrd, PartialEq, Eq)]
 pub struct OpenStartElementTokenMeta {
     pub has_attributes: bool,
 }
 
-#[derive(Debug, PartialOrd, PartialEq)]
+#[derive(Debug, PartialOrd, PartialEq, Eq)]
 pub struct AttributeTokenMeta {
     pub more_attributes_expected: bool,
 }

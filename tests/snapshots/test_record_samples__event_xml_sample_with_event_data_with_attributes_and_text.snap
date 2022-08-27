@@ -1,0 +1,27 @@
+---
+source: tests/test_record_samples.rs
+assertion_line: 109
+expression: first_record.data
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="EventLog">
+    </Provider>
+    <EventID Qualifiers="32768">6009</EventID>
+    <Level>4</Level>
+    <Task>0</Task>
+    <Keywords>0x80000000000000</Keywords>
+    <TimeCreated SystemTime="2017-07-12T17:16:28.214161Z">
+    </TimeCreated>
+    <EventRecordID>1</EventRecordID>
+    <Channel>System</Channel>
+    <Computer>WIN-P4SIAA0SQCO</Computer>
+    <Security>
+    </Security>
+  </System>
+  <EventData>
+    <Data>10.00.,15063,,Multiprocessor Free,0</Data>
+    <Binary></Binary>
+  </EventData>
+</Event>

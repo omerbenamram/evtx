@@ -52,7 +52,7 @@ mod tests {
 
         let date = read_systemtime(&mut Cursor::new(data)).unwrap();
         let expected_date = DateTime::<Utc>::from_utc(
-            NaiveDate::from_ymd(2019, 3, 8).and_hms_nano(23, 22, 05, 0),
+            NaiveDate::from_ymd(2019, 3, 8).and_hms_nano(23, 22, 5, 0),
             Utc,
         );
         assert_eq!(date, expected_date);

@@ -303,7 +303,7 @@ mod tests {
         let mut evtx_chunk = chunk.parse(Arc::new(settings)).unwrap();
         let records = evtx_chunk.iter();
 
-        for record in records.into_iter() {
+        for record in records {
             let r = record.unwrap().into_xml().unwrap();
             for line in r.data.lines() {
                 for char in line.chars() {
