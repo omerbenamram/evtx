@@ -13,12 +13,12 @@ use std::{
 use quick_xml::events::{BytesEnd, BytesStart};
 use std::fmt;
 
-#[derive(Debug, PartialEq, PartialOrd, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Hash)]
 pub struct BinXmlName {
     str: String,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone, Hash)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Hash)]
 pub struct BinXmlNameRef {
     pub offset: ChunkOffset,
 }

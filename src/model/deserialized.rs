@@ -26,12 +26,12 @@ pub enum BinXMLDeserializedTokens<'a> {
     StartOfStream,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXMLProcessingInstructionTarget {
     pub name: BinXmlNameRef,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXMLOpenStartElement {
     pub data_size: u32,
     pub name: BinXmlNameRef,
@@ -50,7 +50,7 @@ impl fmt::Display for BinXmlTemplateDefinitionHeader {
         write!(
             f,
             "<BinXmlTemplateDefinitionHeader - id: {guid}, data_size: {size}>",
-            guid = self.guid.to_string(),
+            guid = self.guid,
             size = self.data_size
         )
     }
@@ -62,7 +62,7 @@ pub struct BinXMLTemplateDefinition<'a> {
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXmlEntityReference {
     pub name: BinXmlNameRef,
 }
@@ -73,13 +73,13 @@ pub struct BinXmlTemplateRef<'a> {
     pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct TemplateValueDescriptor {
     pub size: u16,
     pub value_type: BinXmlValueType,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct TemplateSubstitutionDescriptor {
     // Zero-based (0 is first replacement)
     pub substitution_index: u16,
@@ -88,14 +88,14 @@ pub struct TemplateSubstitutionDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXMLFragmentHeader {
     pub major_version: u8,
     pub minor_version: u8,
     pub flags: u8,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXMLAttribute {
     pub name: BinXmlNameRef,
 }

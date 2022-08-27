@@ -27,7 +27,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 #[global_allocator]
 static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
 
-#[derive(Copy, Clone, PartialOrd, PartialEq)]
+#[derive(Copy, Clone, PartialOrd, PartialEq, Eq)]
 pub enum EvtxOutputFormat {
     JSON,
     XML,
@@ -297,7 +297,7 @@ impl FromStr for Ranges {
         for range in s.split(',') {
             if range.contains('-') {
                 let numbers = range.split('-').collect::<Vec<_>>();
-                let (rstart, rstop) = (numbers.get(0), numbers.get(1));
+                let (rstart, rstop) = (numbers.first(), numbers.get(1));
 
                 // verify rstart, rstop are numbers
                 if let (Some(rstart), Some(rstop)) = (rstart, rstop) {
