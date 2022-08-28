@@ -46,7 +46,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
                 })?;
                 visitor.visit_close_element(&close_element)?
             }
-            XmlModel::Value(s) => visitor.visit_characters(&s)?,
+            XmlModel::Value(s) => visitor.visit_characters(s)?,
             XmlModel::EndOfStream => {}
             XmlModel::StartOfStream => {}
             XmlModel::PI(pi) => visitor.visit_processing_instruction(&pi)?,
