@@ -13,7 +13,6 @@ use std::borrow::Cow;
 use crate::binxml::name::BinXmlName;
 use crate::err::SerializationError::JsonStructureError;
 use quick_xml::events::BytesText;
-use std::mem;
 
 pub struct JsonOutput {
     map: Value,
@@ -296,13 +295,11 @@ impl BinXmlOutput for JsonOutput {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+    fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars {:?}", &self.stack);
         // We need to clone this bool since the next statement will borrow self as mutable.
         let separate_json_attributes = self.separate_json_attributes;
         let current_value = self.get_or_create_current_path();
-
-        let value: Value = value.clone().into();
 
         // If our parent is an element without any attributes,
         // we simply swap the null with the string value.
@@ -311,19 +308,19 @@ impl BinXmlOutput for JsonOutput {
             match current_value {
                 // Regular, distinct node.
                 Value::Null | Value::Object(..) => {
-                    *current_value = value;
+                    if let Cow::Owned(BinXmlValue::StringType(value)) = value {
+                        *current_value = json!(value);
+                    } else {
+                        *current_value = value.into_owned().into();
+                    }
                 }
                 // The first time we encounter another node with the same name,
                 // we convert the exiting value into an array with both values.
                 Value::String(current_string) => {
-                    current_string.push_str(
-                        value
-                            .as_str()
-                            .expect("visit_characters must be called with a string"),
-                    );
+                    current_string.push_str(&value.as_cow_str());
                 }
                 // If we already have an array, we can just push into it.
-                Value::Array(arr) => arr.push(value),
+                Value::Array(arr) => arr.push(value.into_owned().into()),
                 current_value => {
                     return Err(SerializationError::JsonStructureError {
                         message: format!(
@@ -345,16 +342,23 @@ impl BinXmlOutput for JsonOutput {
             //  },
             //
             // If multiple nodes with the same name exists, we convert the `#text` attribute into an array.
-            const TEXT_KEY: &str = "#text";
+
+            let value = if let Cow::Owned(BinXmlValue::StringType(value)) = value {
+                json!(value)
+            } else {
+                value.into_owned().into()
+            };
+
             match current_value {
                 Value::Null => {
                     *current_value = value;
                 }
                 Value::Object(object) => {
+                    const TEXT_KEY: &str = "#text";
                     match object.get_mut(TEXT_KEY) {
                         // Regular, distinct node.
                         None | Some(Value::Null) => {
-                            object.insert(TEXT_KEY.to_owned(), value);
+                            object.insert(TEXT_KEY.to_owned(), json!(value));
                         }
                         // The first time we encounter another node with the same name,
                         // we convert the exiting value into an array with both values.
@@ -364,7 +368,7 @@ impl BinXmlOutput for JsonOutput {
                             object.insert(TEXT_KEY.to_owned(), json!([perv_value, value]));
                         }
                         // If we already have an array, we can just push into it.
-                        Some(Value::Array(arr)) => arr.push(value),
+                        Some(Value::Array(arr)) => arr.push(json!(value)),
                         current_value => {
                             return Err(SerializationError::JsonStructureError {
                                 message: format!(
@@ -375,14 +379,19 @@ impl BinXmlOutput for JsonOutput {
                         }
                     }
                 }
-                // If we already have a string (because we got two consecutive `Character` events,
+                // If we already have a string (because we got two consecutive `Character` events),
                 // Concat them.
                 Value::String(current_string) => {
-                    current_string.push_str(
-                        value
-                            .as_str()
-                            .expect("visit_characters must be called with a string"),
-                    );
+                    if let Some(value_as_str) = value.as_str() {
+                        current_string.push_str(value_as_str);
+                    } else {
+                        return Err(SerializationError::JsonStructureError {
+                            message: format!(
+                                "expected new value to be a String, found {:?}",
+                                value
+                            ),
+                        });
+                    }
                 }
                 other_value => {
                     return Err(SerializationError::JsonStructureError {
@@ -415,7 +424,7 @@ impl BinXmlOutput for JsonOutput {
                 let as_string = String::from_utf8(escaped.to_vec())
                     .expect("This cannot fail, since it was a valid string beforehand");
 
-                self.visit_characters(&BinXmlValue::StringType(as_string))?;
+                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))?;
                 Ok(())
             }
             Err(_) => Err(JsonStructureError {
@@ -516,7 +525,9 @@ mod tests {
                             .expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(&BinXmlValue::StringType(bytes_to_string(text.as_ref())))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
+                            text.as_ref(),
+                        ))))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),
