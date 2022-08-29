@@ -23,8 +23,9 @@ jobs:
         run: mkdir artifacts
       
       - name: Mark manual
-        if: env.VERSION != ''
+        if: inputs.version != ''
         run: |
+          echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
           echo "MANUAL=1" >> $GITHUB_ENV
       
       - name: Get the release version from the tag
