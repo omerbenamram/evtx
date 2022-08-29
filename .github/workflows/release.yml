@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Override version'
+        description: 'Override version - useful to test workflows'
         required: true
 
 
@@ -21,16 +21,21 @@ jobs:
     steps:
       - name: Create artifacts directory
         run: mkdir artifacts
-
+      
+      - name: Mark manual
+        if: env.VERSION != ''
+        run: |
+          echo "MANUAL=1" >> $GITHUB_ENV
+      
       - name: Get the release version from the tag
         if: env.VERSION == ''
         run: |
           echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-          echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           echo "version is: ${{ env.VERSION }}"
-
+            
       - name: Create GitHub release
         id: release
+        if: env.MANUAL != '1'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -45,6 +50,7 @@ jobs:
         run: echo "${{ env.VERSION }}" > artifacts/release-version
 
       - name: Upload artifacts
+        if: env.MANUAL != '1'
         uses: actions/upload-artifact@v1
         with:
           name: artifacts
@@ -161,7 +167,7 @@ jobs:
           fi
       - name: Upload release archive
         uses: actions/upload-release-asset@v1.0.1
-        if: env.TAG != ''
+        if: env.MANUAL != '1'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
