@@ -6,11 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [UNRELEASED]
+## [0.8.0 - 2022-08-29]
 
 ## Added
 
 - A new feature for `evtx-dump` which allows selective dumping of event ranges.
+- Added builds for apple silicon macs via cross compilation.
 
 ### Changed
 
@@ -19,6 +20,12 @@ and this project adheres to
   return an error otherwise) #209
 - Use `insta` for snapshot testing
 - Convert `#text` to an array if multiple elements with the same name exist
+
+### Fixed
+
+- https://github.com/omerbenamram/evtx/issues/201
+- https://github.com/omerbenamram/evtx/issues/209
+- https://github.com/omerbenamram/evtx/issues/221
 
 ## [0.7.2 - 2021-04-01]
 
