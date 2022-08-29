@@ -7,13 +7,12 @@ use crate::ParserSettings;
 
 use core::borrow::BorrowMut;
 use log::trace;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 
 use crate::binxml::name::BinXmlName;
 use crate::err::SerializationError::JsonStructureError;
 use quick_xml::events::BytesText;
-use std::mem;
 
 pub struct JsonOutput {
     map: Value,
@@ -296,48 +295,92 @@ impl BinXmlOutput for JsonOutput {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+    fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars {:?}", &self.stack);
         // We need to clone this bool since the next statement will borrow self as mutable.
         let separate_json_attributes = self.separate_json_attributes;
         let current_value = self.get_or_create_current_path();
 
+        // A small optimization in case we already have an owned string.
+        fn value_to_json(value: Cow<BinXmlValue>) -> Value {
+            if let Cow::Owned(BinXmlValue::StringType(value)) = value {
+                json!(value)
+            } else {
+                value.into_owned().into()
+            }
+        }
+
         // If our parent is an element without any attributes,
         // we simply swap the null with the string value.
         // This is also true for the case when the attributes were inserted as our siblings.
-        if current_value.is_null() || separate_json_attributes {
-            *current_value = value.clone().into();
-        } else {
-            // Otherwise,
-            // Should look like:
-            // ----------------
-            //  "EventID": {
-            //    "#attributes": {
-            //      "Qualifiers": ""
-            //    },
-            //    "#text": "4902"
-            //  },
-            if let Some(object) = current_value.as_object_mut() {
-                object.insert("#text".to_owned(), value.clone().into());
-                return Ok(());
-            };
-
-            // If we already have a string (because we got two consecutive `Character` events,
-            // Concat them.
-            if let Some(s) = current_value.as_str() {
-                let new_string = s.to_string();
-                mem::replace(
-                    current_value,
-                    Value::String(new_string + &value.as_cow_str()),
-                )
-            } else {
+        match current_value {
+            // Regular, distinct node.
+            Value::Null => {
+                *current_value = value_to_json(value);
+            }
+            Value::Object(object) => {
+                if separate_json_attributes {
+                    if object.is_empty() {
+                        *current_value = value_to_json(value);
+                    } else {
+                        // TODO: Currently we discard some of the data in this case. What should we do?
+                    }
+                } else {
+                    // Otherwise,
+                    // Should look like:
+                    // ----------------
+                    //  "EventID": {
+                    //    "#attributes": {
+                    //      "Qualifiers": ""
+                    //    },
+                    //    "#text": "4902"
+                    //  },
+                    //
+                    // If multiple nodes with the same name exists, we convert the `#text` attribute into an array.
+                    const TEXT_KEY: &str = "#text";
+                    match object.get_mut(TEXT_KEY) {
+                        // Regular, distinct node.
+                        None | Some(Value::Null) => {
+                            object.insert(TEXT_KEY.to_owned(), value_to_json(value));
+                        }
+                        // The first time we encounter another node with the same name,
+                        // we convert the exiting value into an array with both values.
+                        Some(Value::String(perv_value)) => {
+                            let perv_value = perv_value.clone();
+                            object.remove(TEXT_KEY);
+                            object.insert(
+                                TEXT_KEY.to_owned(),
+                                json!([perv_value, value_to_json(value)]),
+                            );
+                        }
+                        // If we already have an array, we can just push into it.
+                        Some(Value::Array(arr)) => arr.push(value_to_json(value)),
+                        current_value => {
+                            return Err(SerializationError::JsonStructureError {
+                            message: format!(
+                                "expected current value to be a String or an Array, found {:?}, new value is {:?}",
+                                current_value, value
+                            ),
+                        });
+                        }
+                    }
+                }
+            }
+            // The first time we encounter another node with the same name,
+            // we convert the exiting value into an array with both values.
+            Value::String(current_string) => {
+                current_string.push_str(&value.as_cow_str());
+            }
+            // If we already have an array, we can just push into it.
+            Value::Array(arr) => arr.push(value_to_json(value)),
+            current_value => {
                 return Err(SerializationError::JsonStructureError {
                     message: format!(
-                        "expected current value to be an object type or a String, found {:?}, value is {:?}",
+                        "expected current value to be a String or an Array, found {:?}, new value is {:?}",
                         current_value, value
                     ),
                 });
-            };
+            }
         }
 
         Ok(())
@@ -360,7 +403,7 @@ impl BinXmlOutput for JsonOutput {
                 let as_string = String::from_utf8(escaped.to_vec())
                     .expect("This cannot fail, since it was a valid string beforehand");
 
-                self.visit_characters(&BinXmlValue::StringType(as_string))?;
+                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))?;
                 Ok(())
             }
             Err(_) => Err(JsonStructureError {
@@ -461,7 +504,9 @@ mod tests {
                             .expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(&BinXmlValue::StringType(bytes_to_string(text.as_ref())))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
+                            text.as_ref(),
+                        ))))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),

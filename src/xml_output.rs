@@ -29,7 +29,7 @@ pub trait BinXmlOutput {
     ///
     /// Called with value on xml text node,  (ex. <Computer>DESKTOP-0QT8017</Computer>)
     ///                                                     ~~~~~~~~~~~~~~~
-    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()>;
+    fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()>;
 
     /// Unimplemented
     fn visit_cdata_section(&mut self) -> SerializationResult<()>;
@@ -106,7 +106,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         Ok(())
     }
 
-    fn visit_characters(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+    fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
         let event = BytesText::from_plain_str(&cow);

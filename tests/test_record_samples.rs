@@ -209,7 +209,32 @@ fn test_event_json_sample_with_separate_json_attributes() {
 }
 
 #[test]
-#[ignore = "TODO"]
+fn test_event_json_with_multiple_data_elements() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!("../samples/MSExchange_Management_wec.evtx");
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+
+    let first_record_xml = parser
+        .records()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+
+    insta::assert_display_snapshot!(&first_record_xml.data);
+
+    let first_record = parser
+        .records_json()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+
+    let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
+}
+
+#[test]
 fn test_event_json_with_multiple_nodes_same_name_separate() {
     ensure_env_logger_initialized();
     let evtx_file = include_bytes!(
@@ -234,7 +259,6 @@ fn test_event_json_with_multiple_nodes_same_name_separate() {
 }
 
 #[test]
-#[ignore = "TODO"]
 fn test_event_json_multiple_empty_data_nodes_not_ignored() {
     ensure_env_logger_initialized();
     let evtx_file = include_bytes!("../samples/issue_201.evtx");
