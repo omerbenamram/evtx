@@ -7,14 +7,17 @@ on:
       # - gh-actions
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Log level'
+        required: true
+
 
 jobs:
   create-release:
     name: create-release
     runs-on: ubuntu-latest
-    # env:
-      #Set to force version number, e.g., when no tag exists.
-      # VERSION: TEST-0.0.4
     steps:
       - name: Create artifacts directory
         run: mkdir artifacts
@@ -23,6 +26,7 @@ jobs:
         if: env.VERSION == ''
         run: |
           echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           echo "version is: ${{ env.VERSION }}"
 
       - name: Create GitHub release
@@ -153,6 +157,7 @@ jobs:
           fi
       - name: Upload release archive
         uses: actions/upload-release-asset@v1.0.1
+        if: env.TAG != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
