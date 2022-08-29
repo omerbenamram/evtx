@@ -25,12 +25,12 @@ jobs:
       - name: Mark manual
         if: inputs.version != ''
         run: |
-          echo "MANUAL=1" >> $env:GITHUB_ENV
+          echo "MANUAL=1" >> $GITHUB_ENV
 
       - name: Get the release version from the tag
         if: env.VERSION == ''
         run: |
-          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $env:GITHUB_ENV
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           echo "version is: ${{ env.VERSION }}"
 
       - name: Create GitHub release
@@ -102,12 +102,12 @@ jobs:
         if: inputs.version != '' && matrix.build == 'windows'
         run: |
           chcp 65001 #set code page to utf-8
-          echo "MANUAL=1" >> $env:GITHUB_ENV
+          echo "MANUAL=1" >> $GITHUB_ENV
 
       - name: Mark manual
         if: inputs.version != '' && matrix.build != 'windows'
         run: |
-          echo "MANUAL=1" >> $env:GITHUB_ENV
+          echo "MANUAL=1" >> $GITHUB_ENV
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -139,10 +139,10 @@ jobs:
         shell: bash
         run: |
           release_upload_url="$(cat artifacts/release-upload-url)"
-          echo "RELEASE_UPLOAD_URL=$release_upload_url" >> $env:GITHUB_ENV
+          echo "RELEASE_UPLOAD_URL=$release_upload_url" >> $GITHUB_ENV
           echo "release upload url: $RELEASE_UPLOAD_URL"
           release_version="$(cat artifacts/release-version)"
-          echo "RELEASE_VERSION=$release_version" >> $env:GITHUB_ENV
+          echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
           echo "release version: $RELEASE_VERSION"
 
       - name: Build release binary
@@ -172,11 +172,11 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.build }}" = "windows" ]; then
-            echo "ASSET=target/${{ matrix.target }}/release/evtx_dump.exe" >> $env:GITHUB_ENV
-            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}.exe" >> $env:GITHUB_ENV
+            echo "ASSET=target/${{ matrix.target }}/release/evtx_dump.exe" >> $GITHUB_ENV
+            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}.exe" >> $GITHUB_ENV
           else
-            echo "ASSET=target/${{ matrix.target }}/release/evtx_dump" >> $env:GITHUB_ENV
-            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $env:GITHUB_ENV
+            echo "ASSET=target/${{ matrix.target }}/release/evtx_dump" >> $GITHUB_ENV
+            echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $GITHUB_ENV
           fi
       - name: Upload release archive
         uses: actions/upload-release-asset@v1.0.1
