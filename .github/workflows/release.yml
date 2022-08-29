@@ -118,12 +118,14 @@ jobs:
           cargo install cargo-zigbuild
 
       - name: Get release download URL
+        if: env.MANUAL != '1'
         uses: actions/download-artifact@v1
         with:
           name: artifacts
           path: artifacts
 
       - name: Set release upload URL and release version
+        if: env.MANUAL != '1'
         shell: bash
         run: |
           release_upload_url="$(cat artifacts/release-upload-url)"
