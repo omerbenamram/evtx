@@ -115,6 +115,8 @@ jobs:
       - name: Install Cross toolchain (zig)
         if: matrix.build == 'macos-m1'
         uses: goto-bus-stop/setup-zig@v1
+        with:
+          version: 0.9.0
 
       - name: Install Cross toolchain (cargo-zigbuild)
         if: matrix.build == 'macos-m1'
