@@ -97,6 +97,11 @@ jobs:
         uses: actions/checkout@v2
         with:
           fetch-depth: 1
+          
+      - name: Mark manual
+        if: inputs.version != ''
+        run: |
+          echo "MANUAL=1" >> $GITHUB_ENV
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
