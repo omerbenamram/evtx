@@ -59,7 +59,7 @@ jobs:
 
     strategy:
       matrix:
-        build: [linux, linux-static, macos, windows]
+        build: [linux, linux-static, macos, macos-m1, windows]
         include:
           - build: linux
             os: ubuntu-18.04
@@ -69,6 +69,10 @@ jobs:
             os: ubuntu-18.04
             rust: stable
             target: x86_64-unknown-linux-musl
+          - build: macos-m1
+            os: macos-latest
+            rust: stable
+            target: aarch64-apple-darwin
           - build: macos
             os: macos-latest
             rust: stable
@@ -91,6 +95,12 @@ jobs:
           profile: minimal
           override: true
           target: ${{ matrix.target }}
+
+      - name: Install Cross toolchain
+        if: matrix.build == 'macos-m1'
+        shell: bash
+        run: |
+          cargo install cargo-zigbuild
 
       - name: Get release download URL
         uses: actions/download-artifact@v1
@@ -115,6 +125,14 @@ jobs:
           command: build
           toolchain: "${{ matrix.rust }}"
           args: --target ${{ matrix.target }} --release --features fast-alloc
+
+      - name: Build release binary
+        if: matrix.build == 'macos-m1'
+        uses: actions-rs/cargo@v1
+        with:
+          command: zigbuild
+          toolchain: "${{ matrix.rust }}"
+          args: --target ${{ matrix.target }} --release
 
       - name: Build release binary
         if: matrix.build == 'linux-static'
