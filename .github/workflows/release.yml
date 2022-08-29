@@ -99,13 +99,8 @@ jobs:
           fetch-depth: 1
 
       - name: Mark manual
-        if: inputs.version != '' && matrix.build == 'windows'
-        run: |
-          chcp 65001 #set code page to utf-8
-          echo "MANUAL=1" >> $GITHUB_ENV
-
-      - name: Mark manual
-        if: inputs.version != '' && matrix.build != 'windows'
+        if: inputs.version != ''
+        shell: bash
         run: |
           echo "MANUAL=1" >> $GITHUB_ENV
 
