@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Log level'
+        description: 'Override version'
         required: true
 
 
