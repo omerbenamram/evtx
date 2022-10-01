@@ -79,8 +79,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element);
 
-        let mut event_builder =
-            BytesStart::borrowed_name(element.name.as_ref().as_str().as_bytes());
+        let mut event_builder = BytesStart::new(element.name.as_ref().as_str());
 
         for attr in element.attributes.iter() {
             let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
@@ -99,7 +98,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_close_element");
-        let event = BytesEnd::borrowed(element.name.as_ref().as_str().as_bytes());
+        let event = BytesEnd::new(element.name.as_ref().as_str());
 
         self.writer.write_event(Event::End(event))?;
 
@@ -109,7 +108,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars");
         let cow: Cow<str> = value.as_cow_str();
-        let event = BytesText::from_plain_str(&cow);
+        let event = BytesText::new(&cow);
         self.writer.write_event(Event::Text(event))?;
 
         Ok(())
@@ -124,7 +123,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
         let xml_ref = "&".to_string() + entity.as_str() + ";";
         // xml_ref is already escaped
-        let event = Event::Text(BytesText::from_escaped_str(&xml_ref));
+        let event = Event::Text(BytesText::from_escaped(&xml_ref));
         self.writer.write_event(event)?;
 
         Ok(())
@@ -143,7 +142,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         // PITARGET - Emit the text "<?", the text (as specified by the Name rule in 2.2.12), and then the space character " ".
         // Emit the text (as specified by the NullTerminatedUnicodeString rule in 2.2.12), and then the text "?>".
         let concat = pi.name.as_str().to_owned() + pi.data.as_ref(); // only `String` supports concatenation.
-        let event = Event::PI(BytesText::from_plain_str(concat.as_str()));
+        let event = Event::PI(BytesText::new(concat.as_str()));
         self.writer.write_event(event)?;
 
         Ok(())
@@ -151,7 +150,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
-        let event = BytesDecl::new(b"1.0", Some(b"utf-8"), None);
+        let event = BytesDecl::new("1.0", Some("utf-8"), None);
 
         self.writer.write_event(Event::Decl(event))?;
 
