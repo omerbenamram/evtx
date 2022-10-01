@@ -108,13 +108,12 @@ impl BinXmlName {
 
 impl<'a> From<&'a BinXmlName> for quick_xml::events::BytesStart<'a> {
     fn from(name: &'a BinXmlName) -> Self {
-        BytesStart::borrowed_name(name.as_str().as_bytes())
+        BytesStart::new(name.as_str())
     }
 }
 
-impl<'a> From<BinXmlName> for quick_xml::events::BytesEnd<'a> {
-    fn from(name: BinXmlName) -> Self {
-        let inner = name.as_str().as_bytes();
-        BytesEnd::owned(inner.to_vec())
+impl<'a> From<&'a BinXmlName> for quick_xml::events::BytesEnd<'a> {
+    fn from(name: &'a BinXmlName) -> Self {
+        BytesEnd::new(name.as_str())
     }
 }

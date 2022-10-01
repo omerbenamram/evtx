@@ -18,7 +18,7 @@ crc32fast = "1.3.2"
 chrono = { version = "0.4.22", features = ["serde"] }
 encoding = "0.2.33"
 byteorder = "1.4.3"
-quick-xml = "0.23.0"
+quick-xml = "=0.24.1"
 thiserror = "1.0.32"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"

@@ -96,7 +96,7 @@ pub struct EvtxParser<T: ReadSeek> {
     /// The calculated_chunk_count is the: (<file size> - <header size>) / <chunk size>
     /// This is needed because the chunk count of an EVTX file can be larger than the u16
     /// value stored in the file header.
-    calculated_chunk_count: u64
+    calculated_chunk_count: u64,
 }
 impl<T: ReadSeek> Debug for EvtxParser<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> ::std::fmt::Result {
@@ -279,23 +279,17 @@ impl<T: ReadSeek> EvtxParser<T> {
         // this allows us to continue parsing events past the 4294901760 bytes of
         // chunk data
         let stream_size = ReadSeek::stream_len(&mut read_seek)?;
-        let chunk_data_size: u64 = match stream_size.checked_sub(
-            evtx_header.header_block_size.into()
-        ){
-            Some(c) => c,
-            None => {
-                return Err(
-                    EvtxError::calculation_error(
-                        format!(
-                            "Could not calculate valid chunk count because stream size is less \
+        let chunk_data_size: u64 =
+            match stream_size.checked_sub(evtx_header.header_block_size.into()) {
+                Some(c) => c,
+                None => {
+                    return Err(EvtxError::calculation_error(format!(
+                        "Could not calculate valid chunk count because stream size is less \
                             than evtx header block size. (stream_size: {}, header_block_size: {})",
-                            stream_size,
-                            evtx_header.header_block_size
-                        )
-                    )
-                );
-            }
-        };
+                        stream_size, evtx_header.header_block_size
+                    )));
+                }
+            };
         let chunk_count = chunk_data_size / EVTX_CHUNK_SIZE as u64;
 
         debug!("EVTX Header: {:#?}", evtx_header);
@@ -303,7 +297,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             data: read_seek,
             header: evtx_header,
             config: Arc::new(ParserSettings::default()),
-            calculated_chunk_count: chunk_count
+            calculated_chunk_count: chunk_count,
         })
     }
 
@@ -677,7 +671,6 @@ mod tests {
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        
         assert_eq!(parser.records().count(), 4);
     }
 
@@ -711,7 +704,6 @@ mod tests {
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");
         let parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
 
-        
         assert_eq!(parser.into_chunks().count(), 1);
     }
 

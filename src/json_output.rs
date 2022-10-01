@@ -397,11 +397,10 @@ impl BinXmlOutput for JsonOutput {
         // We also terminate the entity.
         let entity_ref = "&".to_string() + entity.as_str() + ";";
 
-        let xml_event = BytesText::from_escaped_str(&entity_ref);
-        match xml_event.unescaped() {
+        let xml_event = BytesText::from_escaped(&entity_ref);
+        match xml_event.unescape() {
             Ok(escaped) => {
-                let as_string = String::from_utf8(escaped.to_vec())
-                    .expect("This cannot fail, since it was a valid string beforehand");
+                let as_string = escaped.to_string();
 
                 self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))?;
                 Ok(())
@@ -461,14 +460,16 @@ mod tests {
         for attr in event.attributes() {
             let attr = attr.expect("Failed to read attribute.");
             attrs.push(XmlAttribute {
-                name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key))),
+                name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
                 // We have to compromise here and assume all values are strings.
                 value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
             });
         }
 
         XmlElement {
-            name: Cow::Owned(BinXmlName::from_string(bytes_to_string(event.name()))),
+            name: Cow::Owned(BinXmlName::from_string(bytes_to_string(
+                event.name().as_ref(),
+            ))),
             attributes: attrs,
         }
     }
@@ -481,10 +482,8 @@ mod tests {
         let mut output = JsonOutput::new(settings);
         output.visit_start_of_stream().expect("Start of stream");
 
-        let mut buf = vec![];
-
         loop {
-            match reader.read_event(&mut buf) {
+            match reader.read_event() {
                 Ok(event) => match event {
                     Event::Start(start) => {
                         output
