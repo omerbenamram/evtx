@@ -263,7 +263,12 @@ impl<'a> BinXmlValue<'a> {
             (BinXmlValueType::Real64Type, _) => BinXmlValue::Real64Type(try_read!(cursor, f64)?),
             (BinXmlValueType::BoolType, _) => BinXmlValue::BoolType(try_read!(cursor, bool)?),
             (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(try_read!(cursor, guid)?),
-            // TODO: find a sample with this token.
+            (BinXmlValueType::SizeTType, Some(4)) => {
+                BinXmlValue::HexInt32Type(try_read!(cursor, hex32)?)
+            }
+            (BinXmlValueType::SizeTType, Some(8)) => {
+                BinXmlValue::HexInt64Type(try_read!(cursor, hex64)?)
+            }
             (BinXmlValueType::SizeTType, _) => {
                 return Err(DeserializationError::UnimplementedValueVariant {
                     name: "SizeT".to_owned(),
