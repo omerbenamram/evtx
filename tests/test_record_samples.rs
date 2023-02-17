@@ -167,6 +167,24 @@ fn test_event_xml_sample_with_entity_ref_2() {
 }
 
 #[test]
+fn test_event_json_with_size_t() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!("../samples/Security_with_size_t.evtx");
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+
+    let record = parser
+        .records_json()
+        .filter_map(|record| record.ok())
+        .find(|record| record.event_record_id == 196)
+        .expect("record to parse correctly");
+
+    let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
+}
+
+#[test]
 fn test_event_json_with_multiple_nodes_same_name() {
     ensure_env_logger_initialized();
     let evtx_file = include_bytes!(

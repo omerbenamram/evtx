@@ -1,0 +1,55 @@
+---
+source: tests/test_record_samples.rs
+expression: "&value"
+---
+{
+  "Event": {
+    "#attributes": {
+      "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+    },
+    "EventData": {
+      "HandleId": "0x7eec",
+      "NewSd": "S:ARAI(AU;SAFA;DCLCRPCRSDWDWO;;;WD)",
+      "ObjectName": "C:\\Program Files\\Reference Assemblies\\Microsoft\\Framework\\v3.0\\System.IO.Log.dll",
+      "ObjectServer": "Security",
+      "ObjectType": "File",
+      "OldSd": "",
+      "ProcessId": "0x858",
+      "ProcessName": "C:\\Windows\\servicing\\TrustedInstaller.exe",
+      "SubjectDomainName": "WORKGROUP",
+      "SubjectLogonId": "0x3e7",
+      "SubjectUserName": "WIN-L0ZZQ76PMUF$",
+      "SubjectUserSid": "S-1-5-18"
+    },
+    "System": {
+      "Channel": "Security",
+      "Computer": "WIN-L0ZZQ76PMUF",
+      "Correlation": null,
+      "EventID": 4907,
+      "EventRecordID": 196,
+      "Execution": {
+        "#attributes": {
+          "ProcessID": 632,
+          "ThreadID": 684
+        }
+      },
+      "Keywords": "0x8020000000000000",
+      "Level": 0,
+      "Opcode": 0,
+      "Provider": {
+        "#attributes": {
+          "Guid": "{54849625-5478-4994-a5ba-3e3b0328c30d}",
+          "Name": "Microsoft-Windows-Security-Auditing"
+        }
+      },
+      "Security": null,
+      "Task": 13568,
+      "TimeCreated": {
+        "#attributes": {
+          "SystemTime": "2015-08-23T21:25:49.063125Z"
+        }
+      },
+      "Version": 0
+    }
+  }
+}
