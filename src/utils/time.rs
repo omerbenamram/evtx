@@ -24,7 +24,10 @@ pub fn read_systemtime<R: ReadSeek>(r: &mut R) -> DeserializationResult<DateTime
         && milliseconds == 0
     {
         return Ok(DateTime::from_utc(
-            NaiveDate::from_ymd(1601, 1, 1).and_hms_nano(0, 0, 0, 0),
+            NaiveDate::from_ymd_opt(1601, 1, 1)
+                .expect("Always valid")
+                .and_hms_nano_opt(0, 0, 0, 0)
+                .expect("Always valid"),
             Utc,
         ));
     }
@@ -52,7 +55,10 @@ mod tests {
 
         let date = read_systemtime(&mut Cursor::new(data)).unwrap();
         let expected_date = DateTime::<Utc>::from_utc(
-            NaiveDate::from_ymd(2019, 3, 8).and_hms_nano(23, 22, 5, 0),
+            NaiveDate::from_ymd_opt(2019, 3, 8)
+                .unwrap()
+                .and_hms_nano_opt(23, 22, 5, 0)
+                .unwrap(),
             Utc,
         );
         assert_eq!(date, expected_date);

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [0.8.1 - 2023-02-17]
+
+### Fixed
+
+- https://github.com/omerbenamram/evtx/issues/232 - Support for size_t, thanks @alexkornitzer
+
 ## [0.8.0 - 2022-08-29]
 
 ## Added

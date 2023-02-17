@@ -71,7 +71,7 @@ impl<'a> BinXmlDeserializer<'a> {
         let offset = cursor.position();
 
         let de = BinXmlDeserializer::init(
-            *cursor.get_ref(),
+            cursor.get_ref(),
             offset,
             chunk,
             is_inside_substitution,

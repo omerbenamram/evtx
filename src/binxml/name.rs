@@ -95,8 +95,8 @@ impl BinXmlName {
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
     pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let name = try_read!(cursor, len_prefixed_utf_16_str_nul_terminated, "name")?
-            .unwrap_or_else(|| "".to_string());
+        let name =
+            try_read!(cursor, len_prefixed_utf_16_str_nul_terminated, "name")?.unwrap_or_default();
 
         Ok(BinXmlName { str: name })
     }

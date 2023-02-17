@@ -371,7 +371,7 @@ fn main() -> Result<()> {
             Arg::new("output-format")
                 .short('o')
                 .long("--format")
-                .possible_values(&["json", "xml", "jsonl"])
+                .possible_values(["json", "xml", "jsonl"])
                 .default_value("xml")
                 .help("Sets the output format")
                 .long_help(indoc!(

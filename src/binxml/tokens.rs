@@ -11,7 +11,7 @@ use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::read_len_prefixed_utf16_string;
 
-use log::{trace, warn, error};
+use log::{error, trace, warn};
 
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -104,7 +104,9 @@ pub fn read_template<'a>(
                   &descriptor);
 
             match u64::try_from(diff) {
-                Ok(u64_diff) => { try_seek!(cursor, current_position + u64_diff, "Broken record")?; }
+                Ok(u64_diff) => {
+                    try_seek!(cursor, current_position + u64_diff, "Broken record")?;
+                }
                 Err(_) => error!("Broken record"),
             }
         }
@@ -212,8 +214,7 @@ pub fn read_processing_instruction_data(cursor: &mut Cursor<&[u8]>) -> Result<St
         cursor.position(),
     );
 
-    let data =
-        try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or_else(|| "".to_string());
+    let data = try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or_default();
     trace!("PIData - {}", data,);
     Ok(data)
 }
