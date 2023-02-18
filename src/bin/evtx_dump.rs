@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use anyhow::{bail, format_err, Context, Result};
-use clap::{AppSettings, Arg, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
 
@@ -49,19 +49,23 @@ impl EvtxDump {
     pub fn from_cli_matches(matches: &ArgMatches) -> Result<Self> {
         let input = PathBuf::from(
             matches
-                .value_of("INPUT")
+                .get_one::<String>("INPUT")
                 .expect("This is a required argument"),
         );
 
-        let output_format = match matches.value_of("output-format").unwrap_or_default() {
+        let output_format = match matches
+            .get_one::<String>("output-format")
+            .expect("has default")
+            .as_str()
+        {
             "xml" => EvtxOutputFormat::XML,
             "json" | "jsonl" => EvtxOutputFormat::JSON,
             _ => EvtxOutputFormat::XML,
         };
 
         let no_indent = match (
-            matches.is_present("no-indent"),
-            matches.value_of("output-format"),
+            matches.get_flag("no-indent"),
+            matches.get_one::<String>("output-format"),
         ) {
             // "jsonl" --> --no-indent
             (false, Some(fmt)) => fmt == "jsonl",
@@ -76,11 +80,11 @@ impl EvtxDump {
             (v, None) => v,
         };
 
-        let separate_json_attrib_flag = matches.is_present("separate-json-attributes");
+        let separate_json_attrib_flag = matches.get_flag("separate-json-attributes");
 
         let no_show_record_number = match (
-            matches.is_present("no-show-record-number"),
-            matches.value_of("output-format"),
+            matches.get_flag("no-show-record-number"),
+            matches.get_one::<String>("output-format"),
         ) {
             // "jsonl" --> --no-show-record-number
             (false, Some(fmt)) => fmt == "jsonl",
@@ -95,27 +99,24 @@ impl EvtxDump {
             (v, None) => v,
         };
 
-        let num_threads = matches
-            .value_of("num-threads")
-            .map(|value| value.parse::<usize>().expect("used validator"));
+        let num_threads: u32 = *matches.get_one("num-threads").expect("has default");
 
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
-            (true, Some(number)) => number,
-            (true, None) => 0,
+            (true, number) => number,
             (false, _) => {
                 eprintln!("turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator");
                 1
             }
         };
 
-        let validate_checksums = matches.is_present("validate-checksums");
-        let stop_after_error = matches.is_present("stop-after-one-error");
+        let validate_checksums = matches.get_flag("validate-checksums");
+        let stop_after_error = matches.get_flag("stop-after-one-error");
 
         let event_ranges = matches
-            .value_of("event-ranges")
+            .get_one::<&String>("event-ranges")
             .map(|s| Ranges::from_str(s).expect("used validator"));
 
-        let verbosity_level = match matches.occurrences_of("verbose") {
+        let verbosity_level = match matches.get_count("verbose") {
             0 => None,
             1 => Some(Level::Info),
             2 => Some(Level::Debug),
@@ -128,12 +129,19 @@ impl EvtxDump {
 
         let ansi_codec = encodings()
             .iter()
-            .find(|c| c.name() == matches.value_of("ansi-codec").expect("has set default"))
+            .find(|c| {
+                c.name()
+                    == matches
+                        .get_one::<String>("ansi-codec")
+                        .expect("has set default")
+                        .as_str()
+            })
             .expect("possible values are derived from `encodings()`");
 
-        let output: Box<dyn Write> = if let Some(path) = matches.value_of("output-target") {
+        let output: Box<dyn Write> = if let Some(path) = matches.get_one::<String>("output-target")
+        {
             Box::new(BufWriter::new(
-                Self::create_output_file(path, !matches.is_present("no-confirm-overwrite"))
+                Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite"))
                     .with_context(|| {
                         format!("An error occurred while creating output file at `{}`", path)
                     })?,
@@ -144,7 +152,7 @@ impl EvtxDump {
 
         Ok(EvtxDump {
             parser_settings: ParserSettings::new()
-                .num_threads(num_threads)
+                .num_threads(num_threads.try_into().expect("u32 -> usize"))
                 .validate_checksums(validate_checksums)
                 .separate_json_attributes(separate_json_attrib_flag)
                 .indent(!no_indent)
@@ -273,13 +281,6 @@ impl EvtxDump {
     }
 }
 
-fn is_a_non_negative_number(value: &str) -> Result<(), String> {
-    match value.to_string().parse::<usize>() {
-        Ok(_) => Ok(()),
-        Err(_) => Err("Expected value to be a positive number.".to_owned()),
-    }
-}
-
 struct Ranges(Vec<RangeInclusive<usize>>);
 
 impl Ranges {
@@ -353,25 +354,30 @@ fn test_ranges() {
 }
 
 fn main() -> Result<()> {
+    let all_encoings = encodings()
+        .iter()
+        .filter(|&e| e.raw_decoder().is_ascii_compatible())
+        .map(|e| e.name())
+        .collect::<Vec<&'static str>>();
+
     let matches = Command::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
-        .setting(AppSettings::DeriveDisplayOrder)
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
         .arg(Arg::new("INPUT").required(true))
         .arg(
             Arg::new("num-threads")
                 .short('t')
-                .long("--threads")
+                .long("threads")
                 .default_value("0")
-                .validator(is_a_non_negative_number)
+                .value_parser(clap::value_parser!(u32).range(0..))
                 .help("Sets the number of worker threads, defaults to number of CPU cores."),
         )
         .arg(
             Arg::new("output-format")
                 .short('o')
-                .long("--format")
-                .possible_values(["json", "xml", "jsonl"])
+                .long("format")
+                .value_parser(["json", "xml", "jsonl"])
                 .default_value("xml")
                 .help("Sets the output format")
                 .long_help(indoc!(
@@ -383,24 +389,24 @@ fn main() -> Result<()> {
         )
         .arg(
             Arg::new("output-target")
-                .long("--output")
+                .long("output")
                 .short('f')
-                .takes_value(true)
+                .action(ArgAction::Set)
                 .help(indoc!("Writes output to the file specified instead of stdout, errors will still be printed to stderr.
                        Will ask for confirmation before overwriting files, to allow overwriting, pass `--no-confirm-overwrite`
                        Will create parent directories if needed.")),
         )
         .arg(
             Arg::new("no-confirm-overwrite")
-                .long("--no-confirm-overwrite")
-                .takes_value(false)
+                .long("no-confirm-overwrite")
+                .action(ArgAction::SetTrue)
                 .help(indoc!("When set, will not ask for confirmation before overwriting files, useful for automation")),
         )
         .arg(
-            Arg::with_name("event-ranges")
-                .long("--events")
-                .takes_value(true)
-                .validator(matches_ranges)
+            Arg::new("event-ranges")
+                .long("events")
+                .action(ArgAction::Set)
+                .value_parser(matches_ranges)
                 .help(indoc!("When set, only the specified events (offseted reltaive to file) will be outputted.
                 For example:
                     --events=1 will output the first event.
@@ -408,50 +414,46 @@ fn main() -> Result<()> {
                 ")),
         )
         .arg(
-            Arg::with_name("validate-checksums")
-                .long("--validate-checksums")
-                .takes_value(false)
+            Arg::new("validate-checksums")
+                .long("validate-checksums")
+                .action(ArgAction::SetTrue)
                 .help(indoc!("When set, chunks with invalid checksums will not be parsed. \
                 Usually dirty files have bad checksums, so using this flag will result in fewer records.")),
         )
         .arg(
             Arg::new("no-indent")
-                .long("--no-indent")
-                .takes_value(false)
+                .long("no-indent")
+                .action(ArgAction::SetTrue)
                 .help("When set, output will not be indented."),
         )
         .arg(
             Arg::new("separate-json-attributes")
-                .long("--separate-json-attributes")
-                .takes_value(false)
+                .long("separate-json-attributes")
+                .action(ArgAction::SetTrue)
                 .help("If outputting JSON, XML Element's attributes will be stored in a separate object named '<ELEMENTNAME>_attributes', with <ELEMENTNAME> containing the value of the node."),
         )
         .arg(
             Arg::new("no-show-record-number")
-                .long("--dont-show-record-number")
-                .takes_value(false)
+                .long("dont-show-record-number")
+                .action(ArgAction::SetTrue)
                 .help("When set, `Record <id>` will not be printed."),
         )
         .arg(
             Arg::new("ansi-codec")
-                .long("--ansi-codec")
-                .possible_values(&encodings().iter()
-                    .filter(|&e| e.raw_decoder().is_ascii_compatible())
-                    .map(|e| e.name())
-                    .collect::<Vec<&'static str>>())
+                .long("ansi-codec")
+                .value_parser(all_encoings)
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
         )
         .arg(
             Arg::new("stop-after-one-error")
-                .long("--stop-after-one-error")
-                .takes_value(false)
+                .long("stop-after-one-error")
+                .action(ArgAction::SetTrue)
                 .help("When set, will exit after any failure of reading a record. Useful for debugging."),
         )
         .arg(Arg::new("verbose")
             .short('v')
-            .multiple_occurrences(true)
-            .takes_value(false)
+            .action(ArgAction::Count)
             .help(indoc!(r#"
             Sets debug prints level for the application:
                 -v   - info
