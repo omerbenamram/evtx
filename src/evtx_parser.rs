@@ -3,6 +3,8 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
+use crate::evtx_structure::EvtxStructureVisitor;
+
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
 
@@ -485,6 +487,56 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json()))
+    }
+
+    /// Return an iterator over all the records.
+    /// Records are created by a visitor which must be created by the provided builder
+    /// # Minimal Working Example
+    /// ```
+    /// # use evtx::err::SerializationResult;
+    /// # use evtx::EvtxStructureVisitor;
+    /// struct MySpecialEvtxDataStructure {}
+    /// struct MyVisitor {}
+    /// impl EvtxStructureVisitor for MyVisitor {
+    ///   type VisitorResult = Option<MySpecialEvtxDataStructure>;
+    ///   fn get_result(
+    ///     &self,
+    ///     event_record_id: u64,
+    ///     timestamp: chrono::DateTime<chrono::Utc>,
+    ///   ) -> Self::VisitorResult {
+    ///     Some(MySpecialEvtxDataStructure {})
+    ///   }
+    ///
+    ///   fn start_record(&mut self) -> SerializationResult<()> { Ok(()) }
+    ///   fn finalize_record(&mut self) -> SerializationResult<()>  { Ok(()) }
+    ///   fn visit_characters(&mut self, value: &str) -> SerializationResult<()>  { Ok(()) }
+    ///
+    ///   fn visit_start_element<'a, 'b, I>(
+    ///     &'a mut self,
+    ///     name: &'b str,
+    ///     attributes: I,
+    ///   ) -> SerializationResult<()> where
+    ///     'a: 'b, I: Iterator<Item = (&'b str, &'b str)> + 'b  { Ok(()) }
+    ///
+    ///   fn visit_end_element(&mut self, name: &str) -> SerializationResult<()>  { Ok(()) }
+    /// }
+    /// 
+    /// # use evtx::EvtxParser;
+    /// # let fp = std::path::PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap()));
+    /// # let mut parser = EvtxParser::from_path(fp).unwrap();
+    /// let records = parser.records_to_visitor(|| MyVisitor{});
+    /// ```
+    pub fn records_to_visitor<'a, 'r, C, V, R>(
+        &'a mut self,
+        builder: C,
+    ) -> impl Iterator<Item = Result<R>> + 'a
+    where
+        R: Send + 'r,
+        V: EvtxStructureVisitor<VisitorResult=R>,
+        C: Fn() -> V + Send + Sync + Clone + 'r,
+        'r: 'a,
+    {
+        self.serialized_records(move |record| record.and_then(|record| record.to_visitor(&builder)))
     }
 
     /// Return an iterator over all the records.

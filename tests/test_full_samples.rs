@@ -1,9 +1,10 @@
 mod fixtures;
 
-use evtx::{EvtxParser, ParserSettings};
+use evtx::{EvtxParser, ParserSettings, EvtxStructureVisitor};
 use fixtures::*;
 use log::Level;
 use std::path::Path;
+use evtx::err::SerializationResult;
 
 /// Tests an .evtx file, asserting the number of parsed records matches `count`.
 fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
@@ -66,6 +67,26 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
     assert_eq!(
         actual_ok_count, ok_count,
         "Failed to parse all records as JSON"
+    );
+    assert_eq!(actual_err_count, err_count, "XML: Expected errors");
+
+    let mut actual_ok_count = 0;
+    let mut actual_err_count = 0;
+
+    for r in parser.records_to_visitor(|| TestVisitor{}) {
+      if r.is_ok() {
+          actual_ok_count += 1;
+          if log::log_enabled!(Level::Debug) {
+              println!("error");
+          }
+      } else {
+          actual_err_count += 1;
+      }
+    }
+    
+    assert_eq!(
+      actual_ok_count, ok_count,
+      "XML: Failed to parse all expected records"
     );
     assert_eq!(actual_err_count, err_count, "XML: Expected errors");
 }
@@ -179,4 +200,29 @@ fn test_sample_with_no_crc32() {
 #[test]
 fn test_sample_with_invalid_flags_in_header() {
     test_full_sample(sample_with_invalid_flags_in_header(), 126, 0)
+}
+
+struct TestVisitor {}
+impl EvtxStructureVisitor for TestVisitor {
+  type VisitorResult = Option<()>;
+
+  fn get_result(&self, _event_record_id: u64, _timestamp: chrono::DateTime<chrono::Utc>) -> Self::VisitorResult {
+      Some(())
+  }
+
+  /// called when a new record starts
+  fn start_record(&mut self) -> SerializationResult<()> { Ok(()) }
+
+  /// called when the current records is finished
+  fn finalize_record(&mut self) -> SerializationResult<()> { Ok(()) }
+
+  // called upon element content
+  fn visit_characters(&mut self, _value: &str) -> SerializationResult<()> { Ok(()) }
+
+  /// called when a complex element (i.e. an element with child elements) starts
+  fn visit_start_element<'a, 'b, I>(&'a mut self, _name: &'b str, _attributes: I) -> SerializationResult<()> where 'a: 'b,
+  I: Iterator<Item = (&'b str, &'b str)> + 'b { Ok(()) }
+
+  /// called when a complex element (i.e. an element with child elements) ends
+  fn visit_end_element(&mut self, _name: &str) -> SerializationResult<()> { Ok(()) }
 }

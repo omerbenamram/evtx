@@ -2,6 +2,7 @@ use crate::binxml::assemble::parse_tokens;
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
+use crate::evtx_structure::{EvtxStructureVisitor, VisitorAdapter};
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
@@ -110,6 +111,19 @@ impl<'a> EvtxRecord<'a> {
             timestamp: record_with_json_value.timestamp,
             data,
         })
+    }
+
+    /// Consumes the record and returns an object of type `R`
+    pub fn to_visitor<C, V, R>(self, builder: &C) -> Result<R>
+    where
+        C: Fn() -> V + Send + Sync + Clone,
+        V: EvtxStructureVisitor<VisitorResult = R>,
+    {
+        let event_record_id = (&self).event_record_id;
+        let timestamp = (&self).timestamp;
+        let mut adapter = VisitorAdapter::new(builder());
+        self.into_output(&mut adapter)?;
+        Ok(adapter.get_result(event_record_id, timestamp))
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
