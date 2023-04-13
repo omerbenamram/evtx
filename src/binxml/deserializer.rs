@@ -219,12 +219,15 @@ impl<'a> IterTokens<'a> {
                 }
                 let deserialized_token_result = self.visit_token(&mut cursor, t);
 
-                debug_assert!(
-                    cursor.position() >= offset_from_chunk_start,
-                    "Invalid state, cursor position at entering loop {}, now at {}",
-                    offset_from_chunk_start,
-                    cursor.position()
-                );
+                // omit the assert if we ran into error previously
+                if deserialized_token_result.is_ok() {
+                    debug_assert!(
+                        cursor.position() >= offset_from_chunk_start,
+                        "Invalid state, cursor position at entering loop {}, now at {}",
+                        offset_from_chunk_start,
+                        cursor.position()
+                    );
+                }
 
                 Some(deserialized_token_result)
             }
