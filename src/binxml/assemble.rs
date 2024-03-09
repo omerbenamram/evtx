@@ -240,6 +240,8 @@ pub fn create_record_model<'a>(
     Ok(model)
 }
 
+const BINXML_NAME_LINK_SIZE: u32 = 6;
+
 fn expand_string_ref<'a>(
     string_ref: &BinXmlNameRef,
     chunk: &'a EvtxChunk<'a>,
@@ -249,7 +251,11 @@ fn expand_string_ref<'a>(
         None => {
             let mut cursor = Cursor::new(chunk.data);
             let cursor_ref = cursor.borrow_mut();
-            try_seek!(cursor_ref, string_ref.offset, "Cache missed string")?;
+            try_seek!(
+                cursor_ref,
+                string_ref.offset + BINXML_NAME_LINK_SIZE,
+                "Cache missed string"
+            )?;
 
             let string = BinXmlName::from_stream(cursor_ref)?;
             Ok(Cow::Owned(string))
