@@ -1,0 +1,36 @@
+---
+source: tests/test_record_samples.rs
+expression: "&value"
+---
+{
+  "Event": {
+    "EventData": null,
+    "System": {
+      "Channel": "Security",
+      "Computer": "37L4247F27-25",
+      "Correlation": null,
+      "EventID": 4608,
+      "EventRecordID": 1,
+      "Execution_attributes": {
+        "ProcessID": 456,
+        "ThreadID": 460
+      },
+      "Keywords": "0x8020000000000000",
+      "Level": 0,
+      "Opcode": 0,
+      "Provider_attributes": {
+        "Guid": "54849625-5478-4994-A5BA-3E3B0328C30D",
+        "Name": "Microsoft-Windows-Security-Auditing"
+      },
+      "Security": null,
+      "Task": 12288,
+      "TimeCreated_attributes": {
+        "SystemTime": "2016-07-08T18:12:51.681640Z"
+      },
+      "Version": 0
+    }
+  },
+  "Event_attributes": {
+    "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+  }
+}

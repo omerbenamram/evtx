@@ -297,3 +297,25 @@ fn test_event_json_multiple_empty_data_nodes_not_ignored() {
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
 }
+
+#[test]
+fn test_event_json_missing_string_cache_entry() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!("../samples/security_bad_string_cache.evtx");
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+
+    let record = parser
+        .records_json()
+        .filter_map(|record| record.ok())
+        .next()
+        .expect("record to parse correctly");
+
+    let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
+    insta::assert_json_snapshot!(&value);
+}
