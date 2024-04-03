@@ -104,7 +104,16 @@ jobs:
         run: |
           echo "MANUAL=1" >> $GITHUB_ENV
 
-      - name: Install Rust
+      - name: Install Rust (Non-windows)
+        if: matrix.build != 'windows'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.target }}
+          components: llvm-tools
+
+      - name: Install Rust (Windows)
+        if: matrix.build == 'windows'
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rust }}
