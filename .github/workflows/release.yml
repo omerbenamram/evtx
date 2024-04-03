@@ -142,8 +142,15 @@ jobs:
           echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
           echo "release version: $RELEASE_VERSION"
 
+      - name: Build PGO Binary (Linux)
+        if: matrix.build == 'linux'
+        run: |
+          ./build_pgo.sh
+        env:
+          HOME: ${{ github.workspace }}
+
       - name: Build release binary
-        if: matrix.build == 'linux' || matrix.build == 'macos' || matrix.build == 'windows'
+        if: matrix.build == 'macos' || matrix.build == 'windows'
         uses: actions-rs/cargo@v1
         with:
           command: build
@@ -185,3 +192,4 @@ jobs:
           asset_path: ${{ env.ASSET }}
           asset_name: ${{ env.ASSET_NAME }}
           asset_content_type: application/octet-stream
+
