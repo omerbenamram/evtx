@@ -13,16 +13,16 @@ edition = "2021"
 exclude = ["**/*.evtx", "**/*.dat"]
 
 [dependencies]
-bitflags = "1"
+bitflags = "2"
 crc32fast = "1"
 chrono = { version = "0.4", features = ["serde"] }
 encoding = "0.2.33"
 byteorder = "1"
-quick-xml = "^0.27"
+quick-xml = "^0.31"
 thiserror = "1"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
-hashbrown = { version = "^0.13", features = ["inline-more"] }
+hashbrown = { version = "^0.14", features = ["inline-more"] }
 # Optional for multithreading.
 rayon = { version = "1", optional = true }
 
@@ -30,7 +30,7 @@ rayon = { version = "1", optional = true }
 anyhow = { version = "1", optional = true }
 simplelog = { version = "0.12.0", optional = true }
 clap = { version = "4", optional = true }
-dialoguer = { version = "0.10.2", optional = true }
+dialoguer = { version = "0.11", optional = true }
 indoc = { version = "2", optional = true }
 
 serde = "1"
@@ -54,10 +54,10 @@ multithreading = ["rayon"]
 [dev-dependencies]
 insta = { version = "1.19.0", features = ["json"] }
 pretty_assertions = "1.2.1"
-criterion = "0.4.0"
+criterion = "0.5.1"
 assert_cmd = "2.0.4"
-predicates = "2.1.1"
-env_logger = "0.10.0"
+predicates = "3.1"
+env_logger = "0.11.0"
 tempfile = "3.3.0"
 
 [profile.release]
@@ -67,7 +67,7 @@ lto = "thin"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.4.0"
+rexpect = "0.5.0"
 
 [build-dependencies]
 skeptic = "0.13.7"

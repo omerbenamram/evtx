@@ -21,6 +21,7 @@ use std::sync::Arc;
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 bitflags! {
+    #[derive(Debug)]
     pub struct ChunkFlags: u32 {
         const EMPTY = 0x0;
         const DIRTY = 0x1;

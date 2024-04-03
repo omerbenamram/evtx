@@ -19,6 +19,7 @@ pub struct EvtxFileHeader {
 }
 
 bitflags! {
+    #[derive(Debug, PartialEq, Eq)]
     pub struct HeaderFlags: u32 {
         const EMPTY = 0x0;
         const DIRTY = 0x1;
