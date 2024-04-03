@@ -18,7 +18,7 @@ fn test_event_xml_sample() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(first_record.data);
+    insta::assert_snapshot!(first_record.data);
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn test_event_xml_sample_with_event_data() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(first_record.data);
+    insta::assert_snapshot!(first_record.data);
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn test_event_xml_sample_with_event_data_with_attributes_and_text() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(first_record.data);
+    insta::assert_snapshot!(first_record.data);
 }
 
 #[test]
@@ -125,7 +125,7 @@ fn test_event_xml_sample_with_user_data() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(first_record.data);
+    insta::assert_snapshot!(first_record.data);
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn test_event_xml_sample_with_entity_ref() {
         .find(|record| record.event_record_id == 28)
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(record.data);
+    insta::assert_snapshot!(record.data);
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn test_event_xml_sample_with_entity_ref_2() {
         .find(|record| record.event_record_id == 25)
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(record.data);
+    insta::assert_snapshot!(record.data);
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn test_event_json_with_multiple_data_elements() {
         .expect("to have records")
         .expect("record to parse correctly");
 
-    insta::assert_display_snapshot!(&first_record_xml.data);
+    insta::assert_snapshot!(&first_record_xml.data);
 
     let first_record = parser
         .records_json()
