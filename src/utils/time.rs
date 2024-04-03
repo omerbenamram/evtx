@@ -23,21 +23,19 @@ pub fn read_systemtime<R: ReadSeek>(r: &mut R) -> DeserializationResult<DateTime
         && second == 0
         && milliseconds == 0
     {
-        return Ok(DateTime::from_utc(
-            NaiveDate::from_ymd_opt(1601, 1, 1)
+        return Ok(Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(1601, 1, 1)
                 .expect("Always valid")
                 .and_hms_nano_opt(0, 0, 0, 0)
                 .expect("Always valid"),
-            Utc,
         ));
     }
 
-    Ok(DateTime::from_utc(
-        NaiveDate::from_ymd_opt(year, month, day)
+    Ok(Utc.from_utc_datetime(
+        &NaiveDate::from_ymd_opt(year, month, day)
             .ok_or(DeserializationError::InvalidDateTimeError)?
-            .and_hms_nano_opt(hour, minute, second, milliseconds)
+            .and_hms_nano_opt(hour, minute, second, milliseconds * 1_000_000) // Convert milliseconds to nanoseconds
             .ok_or(DeserializationError::InvalidDateTimeError)?,
-        Utc,
     ))
 }
 
@@ -45,7 +43,7 @@ pub fn read_systemtime<R: ReadSeek>(r: &mut R) -> DeserializationResult<DateTime
 mod tests {
     use std::io::Cursor;
 
-    use chrono::{DateTime, Datelike, NaiveDate, Utc};
+    use chrono::{Datelike, NaiveDate, TimeZone, Utc};
 
     use super::read_systemtime;
 
@@ -54,12 +52,11 @@ mod tests {
         let data = [227u8, 7, 3, 0, 5, 0, 8, 0, 23, 0, 22, 0, 5, 0, 0, 0];
 
         let date = read_systemtime(&mut Cursor::new(data)).unwrap();
-        let expected_date = DateTime::<Utc>::from_utc(
-            NaiveDate::from_ymd_opt(2019, 3, 8)
+        let expected_date = Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(2019, 3, 8)
                 .unwrap()
                 .and_hms_nano_opt(23, 22, 5, 0)
                 .unwrap(),
-            Utc,
         );
         assert_eq!(date, expected_date);
     }
