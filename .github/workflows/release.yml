@@ -72,11 +72,11 @@ jobs:
         build: [linux, linux-static, macos, macos-m1, windows]
         include:
           - build: linux
-            os: ubuntu-18.04
+            os: ubuntu-latest
             rust: stable
             target: x86_64-unknown-linux-gnu
           - build: linux-static
-            os: ubuntu-18.04
+            os: ubuntu-latest
             rust: stable
             target: x86_64-unknown-linux-musl
           - build: macos-m1
@@ -116,12 +116,6 @@ jobs:
         with:
           version: 0.11.0
 
-      - name: Install Cross toolchain (cargo-zigbuild)
-        if: matrix.build == 'macos-m1'
-        shell: bash
-        run: |
-          cargo install cargo-zigbuild
-
       - name: Get release download URL
         if: env.MANUAL != '1'
         uses: actions/download-artifact@v1
@@ -143,17 +137,44 @@ jobs:
       - name: Build PGO Binary (Linux)
         if: matrix.build == 'linux'
         run: |
+          export TOOLCHAIN=stable-x86_64-unknown-linux-gnu
+          export TARGET=x86_64-unknown-linux-gnu
           ./build_pgo.sh
         env:
           HOME: ${{ github.workspace }}
 
-      - name: Build release binary
-        if: matrix.build == 'macos' || matrix.build == 'windows' || matrix.build == 'linux-static'
-        run: cargo build --target ${{ matrix.target }} --release --features fast-alloc
+      - name: Build PGO Binary (Linux Static)  
+        if: matrix.build == 'linux-static'
+        run: |
+          export TOOLCHAIN=stable-x86_64-unknown-linux-musl
+          export TARGET=x86_64-unknown-linux-musl
+          ./build_pgo.sh
+        env:
+          HOME: ${{ github.workspace }}
 
-      - name: Build release binary (macos-m1)
+      - name: Build PGO Binary (macOS)
+        if: matrix.build == 'macos'
+        run: |
+          export TOOLCHAIN=stable-x86_64-apple-darwin
+          export TARGET=x86_64-apple-darwin
+          ./build_pgo.sh
+        env:
+          HOME: ${{ github.workspace }}
+
+      - name: Build PGO Binary (macOS M1)
         if: matrix.build == 'macos-m1'
-        run: cargo zigbuild --target ${{ matrix.target }} --release --features fast-alloc
+        run: |
+          export TOOLCHAIN=stable-aarch64-apple-darwin
+          export TARGET=aarch64-apple-darwin
+          export ZIG=1
+          cargo install cargo-zigbuild
+          ./build_pgo.sh
+        env:
+          HOME: ${{ github.workspace }}
+
+      - name: Build release binary (Windows)
+        if: matrix.build == 'windows'
+        run: cargo build --target ${{ matrix.target }} --release --features fast-alloc
 
       - name: Build archive
         shell: bash
