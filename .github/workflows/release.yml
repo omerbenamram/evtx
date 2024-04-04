@@ -59,7 +59,7 @@ jobs:
   build-release:
     name: build-release
     needs: ["create-release"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     env:
       # When CARGO is set to CROSS, TARGET_DIR includes matrix.target.
       TARGET_DIR: ./target
