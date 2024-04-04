@@ -40,7 +40,7 @@ done
 
 echo "Merging profile data"
 if [[ "$OSTYPE" == "darwin"* ]]; then
-    xcrun llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
+    /usr/bin/xcrun llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
 else
     llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
 fi
