@@ -69,32 +69,30 @@ jobs:
 
     strategy:
       matrix:
-        build: [linux, linux-static, macos, macos-m1, windows]
+        build: [linux, linux-aarch64, linux-static, macos-aarch64, macos-x86, windows]
         include:
           - build: linux
-            os: ubuntu-18.04
-            rust: stable
+            os: ubuntu-20.04
             target: x86_64-unknown-linux-gnu
+          - build: linux-aarch64
+            os: ubuntu-20.04
+            target: aarch64-unknown-linux-gnu
           - build: linux-static
-            os: ubuntu-18.04
-            rust: stable
+            os: ubuntu-20.04
             target: x86_64-unknown-linux-musl
-          - build: macos-m1
-            os: macos-latest
-            rust: stable
+          - build: macos-aarch64
+            os: macos-14 # macOS 14 is M1 runner
             target: aarch64-apple-darwin
-          - build: macos
-            os: macos-latest
-            rust: stable
+          - build: macos-x86
+            os: macos-13 
             target: x86_64-apple-darwin
           - build: windows
             os: "windows-2019"
-            rust: stable
             target: x86_64-pc-windows-msvc
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -104,25 +102,38 @@ jobs:
         run: |
           echo "MANUAL=1" >> $GITHUB_ENV
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust (Non-windows)
+        if: matrix.build != 'windows'
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-          profile: minimal
-          override: true
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
+          components: llvm-tools
+
+      - name: Install Rust (Windows)
+        if: matrix.build == 'windows'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+        
+      - name: Install Xcode
+        if: matrix.build == 'macos-x86' || matrix.build == 'macos-aarch64'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Export Rust Environment Variables
+        if: matrix.build != 'windows'
+        run: |
+          echo "RUSTUP_HOME=$HOME/.rustup" >> $GITHUB_ENV
+          echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
+          LLVM_TOOLS_PATH=$(rustc --print sysroot)/lib/rustlib/${{ matrix.target }}/bin
+          echo "PATH=$LLVM_TOOLS_PATH:$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
 
       - name: Install Cross toolchain (zig)
-        if: matrix.build == 'macos-m1'
-        uses: goto-bus-stop/setup-zig@v1
+        if: matrix.build == 'macos-aarch64' || matrix.build == 'linux-aarch64'
+        uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.9.0
-
-      - name: Install Cross toolchain (cargo-zigbuild)
-        if: matrix.build == 'macos-m1'
-        shell: bash
-        run: |
-          cargo install cargo-zigbuild
+          version: 0.11.0
 
       - name: Get release download URL
         if: env.MANUAL != '1'
@@ -142,28 +153,45 @@ jobs:
           echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
           echo "release version: $RELEASE_VERSION"
 
-      - name: Build release binary
-        if: matrix.build == 'linux' || matrix.build == 'macos' || matrix.build == 'windows'
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          toolchain: "${{ matrix.rust }}"
-          args: --target ${{ matrix.target }} --release --features fast-alloc
+      - name: Build PGO Binary (Linux)
+        if: matrix.build == 'linux'
+        shell: bash
+        run: |
+          export TOOLCHAIN=stable-x86_64-unknown-linux-gnu
+          export TARGET=x86_64-unknown-linux-gnu
+          ./build_pgo.sh
+        env:
+          HOME: ${{ github.workspace }}
 
-      - name: Build release binary
-        if: matrix.build == 'macos-m1'
-        uses: actions-rs/cargo@v1
-        with:
-          command: zigbuild
-          toolchain: "${{ matrix.rust }}"
-          args: --target ${{ matrix.target }} --release
+      - name: Build PGO Binary (macOS)
+        if: matrix.build == 'macos-x86'
+        run: |
+          export TOOLCHAIN=stable-x86_64-apple-darwin
+          export TARGET=x86_64-apple-darwin
+          ./build_pgo.sh
+        env:
+          HOME: ${{ github.workspace }}
+      
+      - name: Build PGO binary (macOS AARCH64)
+        if: matrix.build == 'macos-aarch64'
+        run: |
+          export TOOLCHAIN=stable-aarch64-apple-darwin
+          export TARGET=aarch64-apple-darwin
+          ./build_pgo.sh
 
-      - name: Build release binary
-        if: matrix.build == 'linux-static'
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target ${{ matrix.target }} --release
+      - name: Build release binary (linux MUSL)
+        if: matrix.build == 'linux-static' 
+        run: cargo build --target ${{ matrix.target }} --release
+
+      - name: Build release binary (Windows)
+        if: matrix.build == 'windows' 
+        run: cargo build --target ${{ matrix.target }} --release --features fast-alloc
+
+      - name: Build release binary (Linux AARCH64)
+        if: matrix.build == 'linux-aarch64'
+        run: |
+          cargo install cargo-zigbuild
+          cargo zigbuild --target ${{ matrix.target }} --release --features fast-alloc
 
       - name: Build archive
         shell: bash
