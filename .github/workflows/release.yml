@@ -69,7 +69,7 @@ jobs:
 
     strategy:
       matrix:
-        build: [linux, linux-static, macos-x86, macos-aarch64, windows]
+        build: [linux, linux-aarch64, linux-static, macos-aarch64, macos-x86, windows]
         include:
           - build: linux
             os: ubuntu-20.04
