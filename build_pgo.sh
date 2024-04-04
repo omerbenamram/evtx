@@ -22,13 +22,8 @@ cargo clean
 rm -rf /tmp/pgo-data
 
 PATH=$HOME/.rustup/toolchains/$TOOLCHAIN/lib/rustlib/$TARGET/bin:$PATH
-if [ -n "$ZIG" ]; then
-    RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
-        cargo +stable zigbuild --release --target $TARGET --features fast-alloc
-else
-    RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
-        cargo +stable build --release --target $TARGET --features fast-alloc
-fi
+RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
+    cargo +stable build --release --target $TARGET --features fast-alloc
 
 echo "Running instrumented binary"
 for i in $(find samples -name "*.evtx"); do
@@ -46,10 +41,5 @@ else
 fi
 
 echo "Building binary with profile data"
-if [ -n "$ZIG" ]; then
-    RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" \
-        cargo +stable zigbuild --release --target $TARGET --features fast-alloc
-else
-    RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" \
-        cargo +stable build --release --target $TARGET --features fast-alloc
-fi
+RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" \
+    cargo +stable build --release --target $TARGET --features fast-alloc
