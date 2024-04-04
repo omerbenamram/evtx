@@ -122,6 +122,7 @@ jobs:
           xcode-version: latest-stable
 
       - name: Export Rust Environment Variables
+        if: matrix.build != 'windows'
         run: |
           echo "RUSTUP_HOME=$HOME/.rustup" >> $GITHUB_ENV
           echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
