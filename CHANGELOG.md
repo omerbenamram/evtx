@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2 - 2024-04-04]
+
+### Added
+- Binaries for linux and mac are now PGO optimized (should yield 10-20% performance improvement).
+
+### Changed
+- Dependencies updated to their latest versions.
+
+### Fixed
+- (bugfix) Fix off-by-6 bug in assemble.rs by @dgmcdona in https://github.com/omerbenamram/evtx/pull/238
 
 ## [0.8.1 - 2023-02-17]
 
