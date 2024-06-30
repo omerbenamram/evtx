@@ -536,10 +536,10 @@ mod tests {
         let s2 = r#"
 {
   "HTTPResponseHeadersInfo": {
-    "Header": "HTTP/1.1 200 OK",
     "Header_attributes": {
       "attribute1": "NoProxy"
-    }
+    },
+    "Header": "HTTP/1.1 200 OK"
   }
 }
 "#

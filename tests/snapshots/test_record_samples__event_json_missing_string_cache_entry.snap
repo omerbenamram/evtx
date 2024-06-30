@@ -3,34 +3,34 @@ source: tests/test_record_samples.rs
 expression: "&value"
 ---
 {
+  "Event_attributes": {
+    "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+  },
   "Event": {
-    "EventData": null,
     "System": {
-      "Channel": "Security",
-      "Computer": "37L4247F27-25",
-      "Correlation": null,
+      "Provider_attributes": {
+        "Name": "Microsoft-Windows-Security-Auditing",
+        "Guid": "54849625-5478-4994-A5BA-3E3B0328C30D"
+      },
       "EventID": 4608,
+      "Version": 0,
+      "Level": 0,
+      "Task": 12288,
+      "Opcode": 0,
+      "Keywords": "0x8020000000000000",
+      "TimeCreated_attributes": {
+        "SystemTime": "2016-07-08T18:12:51.681640Z"
+      },
       "EventRecordID": 1,
+      "Correlation": null,
       "Execution_attributes": {
         "ProcessID": 456,
         "ThreadID": 460
       },
-      "Keywords": "0x8020000000000000",
-      "Level": 0,
-      "Opcode": 0,
-      "Provider_attributes": {
-        "Guid": "54849625-5478-4994-A5BA-3E3B0328C30D",
-        "Name": "Microsoft-Windows-Security-Auditing"
-      },
-      "Security": null,
-      "Task": 12288,
-      "TimeCreated_attributes": {
-        "SystemTime": "2016-07-08T18:12:51.681640Z"
-      },
-      "Version": 0
-    }
-  },
-  "Event_attributes": {
-    "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+      "Channel": "Security",
+      "Computer": "37L4247F27-25",
+      "Security": null
+    },
+    "EventData": null
   }
 }

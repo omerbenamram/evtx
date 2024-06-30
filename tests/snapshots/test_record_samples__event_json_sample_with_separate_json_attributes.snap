@@ -1,45 +1,44 @@
 ---
 source: tests/test_record_samples.rs
-assertion_line: 208
 expression: "&value"
 ---
 {
+  "Event_attributes": {
+    "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+  },
   "Event": {
-    "EventData": {
-      "param1": "86400",
-      "param2": "SuppressDuplicateDuration",
-      "param3": "Software\\Microsoft\\EventSystem\\EventLog"
-    },
     "System": {
-      "Channel": "Application",
-      "Computer": "37L4247D28-05",
-      "Correlation": null,
-      "EventID": 4625,
+      "Provider_attributes": {
+        "Name": "Microsoft-Windows-EventSystem",
+        "Guid": "{899daace-4868-4295-afcd-9eb8fb497561}",
+        "EventSourceName": "EventSystem"
+      },
       "EventID_attributes": {
         "Qualifiers": 16384
       },
+      "EventID": 4625,
+      "Version": 0,
+      "Level": 4,
+      "Task": 0,
+      "Opcode": 0,
+      "Keywords": "0x80000000000000",
+      "TimeCreated_attributes": {
+        "SystemTime": "2010-11-10T18:18:51.000000Z"
+      },
       "EventRecordID": 1,
+      "Correlation": null,
       "Execution_attributes": {
         "ProcessID": 0,
         "ThreadID": 0
       },
-      "Keywords": "0x80000000000000",
-      "Level": 4,
-      "Opcode": 0,
-      "Provider_attributes": {
-        "EventSourceName": "EventSystem",
-        "Guid": "{899daace-4868-4295-afcd-9eb8fb497561}",
-        "Name": "Microsoft-Windows-EventSystem"
-      },
-      "Security": null,
-      "Task": 0,
-      "TimeCreated_attributes": {
-        "SystemTime": "2010-11-10T18:18:51.000000Z"
-      },
-      "Version": 0
+      "Channel": "Application",
+      "Computer": "37L4247D28-05",
+      "Security": null
+    },
+    "EventData": {
+      "param1": "86400",
+      "param2": "SuppressDuplicateDuration",
+      "param3": "Software\\Microsoft\\EventSystem\\EventLog"
     }
-  },
-  "Event_attributes": {
-    "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
   }
 }

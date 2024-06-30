@@ -1,12 +1,36 @@
 ---
 source: tests/test_record_samples.rs
-assertion_line: 238
 expression: "&value"
 ---
 {
   "Event": {
     "#attributes": {
       "xmlns": "http://schemas.microsoft.com/win/2004/08/events/event"
+    },
+    "System": {
+      "Provider": {
+        "#attributes": {
+          "Name": "MSExchange CmdletLogs"
+        }
+      },
+      "EventID": {
+        "#attributes": {
+          "Qualifiers": "16384"
+        },
+        "#text": "1"
+      },
+      "Level": "4",
+      "Task": "1",
+      "Keywords": "0x80000000000000",
+      "TimeCreated": {
+        "#attributes": {
+          "SystemTime": "2021-11-19T16:52:33.833733500Z"
+        }
+      },
+      "EventRecordID": "3229",
+      "Channel": "MSExchange Management",
+      "Computer": "WEC.ave.local",
+      "Security": null
     },
     "EventData": {
       "Data": {
@@ -28,31 +52,6 @@ expression: "&value"
           "ServicePlan:;IsAdmin:True;",
           "fr-FR"
         ]
-      }
-    },
-    "System": {
-      "Channel": "MSExchange Management",
-      "Computer": "WEC.ave.local",
-      "EventID": {
-        "#attributes": {
-          "Qualifiers": "16384"
-        },
-        "#text": "1"
-      },
-      "EventRecordID": "3229",
-      "Keywords": "0x80000000000000",
-      "Level": "4",
-      "Provider": {
-        "#attributes": {
-          "Name": "MSExchange CmdletLogs"
-        }
-      },
-      "Security": null,
-      "Task": "1",
-      "TimeCreated": {
-        "#attributes": {
-          "SystemTime": "2021-11-19T16:52:33.833733500Z"
-        }
       }
     }
   }
