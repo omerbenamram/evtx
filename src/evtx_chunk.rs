@@ -13,7 +13,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::{ParserSettings, checksum_ieee};
+use crate::{checksum_ieee, ParserSettings};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
