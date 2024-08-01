@@ -16,7 +16,7 @@ fn it_respects_directory_output() {
     let sample = regular_sample();
 
     let mut cmd = Command::cargo_bin("evtx_dump").expect("failed to find binary");
-    cmd.args(&["-f", &f.to_string_lossy(), sample.to_str().unwrap()]);
+    cmd.args(["-f", &f.to_string_lossy(), sample.to_str().unwrap()]);
 
     assert!(
         cmd.output().unwrap().stdout.is_empty(),
@@ -38,7 +38,7 @@ fn test_it_refuses_to_overwrite_directory() {
 
     let sample = regular_sample();
     let mut cmd = Command::cargo_bin("evtx_dump").expect("failed to find binary");
-    cmd.args(&["-f", &d.path().to_string_lossy(), sample.to_str().unwrap()]);
+    cmd.args(["-f", &d.path().to_string_lossy(), sample.to_str().unwrap()]);
 
     cmd.assert().failure().code(1);
 }
@@ -53,7 +53,7 @@ fn test_it_overwrites_file_anyways_if_passed_flag() {
 
     let sample = regular_sample();
     let mut cmd = Command::cargo_bin("evtx_dump").expect("failed to find binary");
-    cmd.args(&[
+    cmd.args([
         "-f",
         &f.to_string_lossy(),
         "--no-confirm-overwrite",
