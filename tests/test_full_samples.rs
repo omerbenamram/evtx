@@ -169,11 +169,7 @@ fn test_sample_with_dependency_identifier_edge_case() {
 
 #[test]
 fn test_sample_with_no_crc32() {
-    test_full_sample(
-        sample_with_no_crc32(),
-        17,
-        0,
-    )
+    test_full_sample(sample_with_no_crc32(), 17, 0)
 }
 
 #[test]

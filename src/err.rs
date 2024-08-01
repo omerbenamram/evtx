@@ -284,7 +284,6 @@ impl EvtxError {
     }
 }
 
-
 /// Errors on unimplemented functions instead on panicking.
 #[macro_export]
 macro_rules! unimplemented_fn {

@@ -72,7 +72,7 @@ mod test_readme {
         ($doc:expr, $id:ident) => {
             #[doc = $doc]
             enum $id {}
-        }
+        };
     }
 
     calculated_doc!(include_str!("../README.md"), _DoctestReadme);
