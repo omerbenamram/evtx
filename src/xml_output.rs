@@ -7,7 +7,7 @@ use log::trace;
 use std::io::Write;
 
 use quick_xml::events::attributes::Attribute;
-use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
 use crate::binxml::name::BinXmlName;
@@ -142,7 +142,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         // PITARGET - Emit the text "<?", the text (as specified by the Name rule in 2.2.12), and then the space character " ".
         // Emit the text (as specified by the NullTerminatedUnicodeString rule in 2.2.12), and then the text "?>".
         let concat = pi.name.as_str().to_owned() + pi.data.as_ref(); // only `String` supports concatenation.
-        let event = Event::PI(BytesText::new(concat.as_str()));
+        let event = Event::PI(BytesPI::new(concat.as_str()));
         self.writer.write_event(event)?;
 
         Ok(())

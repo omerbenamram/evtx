@@ -1,5 +1,4 @@
 #![deny(unused_must_use)]
-#![cfg_attr(backtraces, feature(backtrace))]
 #![forbid(unsafe_code)]
 #![allow(clippy::upper_case_acronyms)]
 // Don't allow dbg! prints in release.

@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "evtx"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -977,9 +977,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.31.0"
+version = "0.36.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1004a344b30a54e2ee58d66a71b32d2db2feb0a31f9a2d302bf0536f15de2a33"
+checksum = "96a05e2e8efddfa51a84ca47cec303fac86c8541b686d37cac5efc0e094417bc"
 dependencies = [
  "memchr",
 ]

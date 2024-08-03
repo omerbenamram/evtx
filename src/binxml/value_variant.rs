@@ -426,9 +426,10 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::Real64Type(num) => json!(num),
             BinXmlValue::BoolType(num) => json!(num),
             BinXmlValue::BinaryType(bytes) => {
-                // Bytes will be formatted as const length of 2 with '0' padding.
-                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
-                json!(repr)
+                json!(bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut acc, &b| {
+                    write!(acc, "{:02X}", b).unwrap();
+                    acc
+                }))
             }
             BinXmlValue::GuidType(guid) => json!(guid.to_string()),
             //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
@@ -489,9 +490,10 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::Real64Type(num) => json!(num),
             BinXmlValue::BoolType(num) => json!(num),
             BinXmlValue::BinaryType(bytes) => {
-                // Bytes will be formatted as const length of 2 with '0' padding.
-                let repr: String = bytes.iter().map(|b| format!("{:02X}", b)).collect();
-                json!(repr)
+                json!(bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut acc, &b| {
+                    write!(acc, "{:02X}", b).unwrap();
+                    acc
+                }))
             }
             BinXmlValue::GuidType(guid) => json!(guid.to_string()),
             //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
@@ -552,14 +554,10 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValue::Real64Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
             BinXmlValue::BinaryType(bytes) => {
-                // Bytes will be formatted as const length of 2 with '0' padding.
-                let mut repr = String::with_capacity(bytes.len() * 2);
-
-                for b in bytes.iter() {
-                    write!(repr, "{:02X}", b).expect("Writing to a String cannot fail");
-                }
-
-                Cow::Owned(repr)
+                Cow::Owned(bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut acc, &b| {
+                    write!(acc, "{:02X}", b).unwrap();
+                    acc
+                }))
             }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),

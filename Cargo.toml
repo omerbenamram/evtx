@@ -6,7 +6,7 @@ repository = "https://github.com/omerbenamram/EVTX"
 license = "MIT/Apache-2.0"
 readme = "README.md"
 
-version = "0.8.2"
+version = "0.8.3"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2021"
 
@@ -18,7 +18,7 @@ crc32fast = "1"
 chrono = { version = "0.4", features = ["serde"] }
 encoding = "0.2.33"
 byteorder = "1"
-quick-xml = "^0.31"
+quick-xml = "^0.36"
 thiserror = "1"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
@@ -52,7 +52,7 @@ evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 
 [dev-dependencies]
-insta = { version = "1.19.0", features = ["json"] }
+insta = { version = "1", features = ["json"] }
 pretty_assertions = "1.2.1"
 criterion = "0.5.1"
 assert_cmd = "2.0.4"

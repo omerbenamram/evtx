@@ -75,16 +75,14 @@ To force single threaded usage (which will also ensure order), `-t 1` can be pas
 use evtx::EvtxParser;
 use std::path::PathBuf;
 
-fn main() {
-    // Change this to a path of your .evtx sample. 
-    let fp = PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap())); 
-    
-    let mut parser = EvtxParser::from_path(fp).unwrap();
-    for record in parser.records() {
-        match record {
-            Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
-            Err(e) => eprintln!("{}", e),
-        }
+// Change this to a path of your .evtx sample. 
+let fp = PathBuf::from(format!("{}/samples/security.evtx", std::env::var("CARGO_MANIFEST_DIR").unwrap())); 
+
+let mut parser = EvtxParser::from_path(fp).unwrap();
+for record in parser.records() {
+    match record {
+        Ok(r) => println!("Record {}\n{}", r.event_record_id, r.data),
+        Err(e) => eprintln!("{}", e),
     }
 }
 ```

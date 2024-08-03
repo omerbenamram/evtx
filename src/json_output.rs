@@ -477,7 +477,7 @@ mod tests {
     /// Converts an XML string to JSON, panics in xml is invalid.
     fn xml_to_json(xml: &str, settings: &ParserSettings) -> String {
         let mut reader = Reader::from_str(xml);
-        reader.trim_text(true);
+        reader.config_mut().trim_text(true);
 
         let mut output = JsonOutput::new(settings);
         output.visit_start_of_stream().expect("Start of stream");
