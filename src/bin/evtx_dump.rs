@@ -16,10 +16,10 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-#[cfg(all(feature = "fast-alloc", not(windows)))]
-use jemallocator::Jemalloc;
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
 
-#[cfg(all(feature = "fast-alloc", not(windows)))]
+#[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

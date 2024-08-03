@@ -38,7 +38,7 @@ serde_json = { version = "1", features = ["preserve_order"]}
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
-jemallocator = { version = "0.5.0", optional = true }
+tikv-jemallocator = { version = "0.6.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
@@ -47,7 +47,7 @@ rpmalloc = { version = "0.2.2", optional = true }
 
 [features]
 default = ["multithreading", "evtx_dump"]
-fast-alloc = ["jemallocator", "rpmalloc"]
+fast-alloc = ["tikv-jemallocator", "rpmalloc"]
 evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
 
@@ -80,27 +80,3 @@ required-features = ["evtx_dump"]
 name = "benchmark"
 path = "./src/benches/benchmark.rs"
 harness = false
-
-[package.metadata.raze]
-# The path at which to write output files.
-#
-# `cargo raze` will generate Bazel-compatible BUILD files into this path.
-# This can either be a relative path (e.g. "foo/bar"), relative to this
-# Cargo.toml file; or relative to the Bazel workspace root (e.g. "//foo/bar").
-workspace_path = "//cargo"
-
-# This causes aliases for dependencies to be rendered in the BUILD
-# file located next to this `Cargo.toml` file.
-package_aliases_dir = "."
-
-# The set of targets to generate BUILD rules for.
-targets = [
-    "x86_64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-    "x86_64-unknown-linux-gnu",
-]
-
-# The two acceptable options are "Remote" and "Vendored" which
-# is used to indicate whether the user is using a non-vendored or
-# vendored set of dependencies.
-genmode = "Remote"
