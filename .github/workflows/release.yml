@@ -102,12 +102,13 @@ jobs:
           components: llvm-tools
 
       - name: Setup Rust environment
+        shell: bash
         run: |
           echo "RUSTUP_HOME=$HOME/.rustup" >> $GITHUB_ENV
           echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
           LLVM_TOOLS_PATH=$(rustc --print sysroot)/lib/rustlib/${{ matrix.target }}/bin
           echo "PATH=$LLVM_TOOLS_PATH:$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
-
+          
       - name: Set up Homebrew (macOS only)
         if: runner.os == 'macOS'
         id: set-up-homebrew
