@@ -1,29 +1,30 @@
+#!/bin/bash
+set -e
+
+# Function to determine the default target
+get_default_target() {
+    case "$(uname -sm)" in
+        "Darwin x86_64") echo "x86_64-apple-darwin" ;;
+        "Darwin arm64") echo "aarch64-apple-darwin" ;;
+        "Linux x86_64") echo "x86_64-unknown-linux-gnu" ;;
+        "Linux aarch64") echo "aarch64-unknown-linux-gnu" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# Use the provided TARGET or default to the current machine's target
+TARGET=${TARGET:-$(get_default_target)}
+
+if [ "$TARGET" = "unknown" ]; then
+    echo "Error: Unable to determine default target. Please specify TARGET explicitly."
+    exit 1
+fi
+
+echo "Using target: $TARGET"
+
 echo "Building binary for instrumented run"
-
-# define toolchain variable
-if [ -n "$TOOLCHAIN" ]; then
-    TOOLCHAIN=$TOOLCHAIN
-elif [ "$(uname)" == "Darwin" ]; then
-    TOOLCHAIN="stable-aarch64-apple-darwin"
-else
-    TOOLCHAIN="stable-x86_64-unknown-linux-gnu"
-fi
-
-if [ -n "$TARGET" ]; then
-    TARGET=$TARGET
-elif [ "$(uname)" == "Darwin" ]; then
-    TARGET="aarch64-apple-darwin"
-else
-    TARGET="x86_64-unknown-linux-gnu"
-fi
-
-echo "Cleaning up old build artifacts"
-cargo clean
-rm -rf /tmp/pgo-data
-
-PATH=$HOME/.rustup/toolchains/$TOOLCHAIN/lib/rustlib/$TARGET/bin:$PATH
 RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
-    cargo +stable build --release --target $TARGET --features fast-alloc
+    cargo build --release --target $TARGET --features fast-alloc
 
 echo "Running instrumented binary"
 for i in $(find samples -name "*.evtx"); do
@@ -34,12 +35,8 @@ for i in $(find samples -name "*.evtx"); do
 done
 
 echo "Merging profile data"
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    /usr/bin/xcrun llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
-else
-    llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
-fi
+llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
 
 echo "Building binary with profile data"
 RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" \
-    cargo +stable build --release --target $TARGET --features fast-alloc
+    cargo build --release --target $TARGET --features fast-alloc
