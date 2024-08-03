@@ -23,7 +23,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[cfg(target_env = "msvc")]
+#[cfg(all(target_env = "msvc", feature = "fast-alloc"))]
 #[global_allocator]
 static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
 
