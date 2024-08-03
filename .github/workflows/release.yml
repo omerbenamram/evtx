@@ -108,17 +108,16 @@ jobs:
           LLVM_TOOLS_PATH=$(rustc --print sysroot)/lib/rustlib/${{ matrix.target }}/bin
           echo "PATH=$LLVM_TOOLS_PATH:$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Install LLVM and Clang (macOS only)
+      - name: Set up Homebrew (macOS only)
         if: runner.os == 'macOS'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18.0"
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@master
 
-      - name: Set up LLVM environment (macOS only)
+      - name: Install LLVM 18 (macOS only)
         if: runner.os == 'macOS'
         run: |
-          echo "LLVM_PATH=${{ env.LLVM_PATH }}" >> $GITHUB_ENV
-          echo "${{ env.LLVM_PATH }}/bin" >> $GITHUB_PATH
+          brew install llvm@18
+          echo "$(brew --prefix llvm@18)/bin" >> $GITHUB_PATH
 
       - name: Install Cross toolchain (zig)
         if: matrix.build == 'macos-aarch64' || matrix.build == 'linux-aarch64'
