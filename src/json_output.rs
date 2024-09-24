@@ -214,28 +214,62 @@ impl JsonOutput {
                             .to_string(),
                 }
                 })?;
+                // We do a linear probe in case XML contains duplicate keys
+                if let Some(old_attribute) = value.insert(format!("{}_attributes", name), Value::Null) {
+                    if let Some(old_value) = value.insert(name.to_string(), Value::Null) {
+                        let mut free_slot = 1;
+                        // If it is a concrete value, we look for another slot.
+                        while value.get(&format!("{}_{}", name, free_slot)).is_some() || value.get(&format!("{}_{}_attributes", name, free_slot)).is_some() {
+                            // Value is an empty object - we can override it's value.
+                            free_slot += 1
+                        }
+                        if let Some(old_value_object) = old_value.as_object() {
+                            if !old_value_object.is_empty(){
+                                value.insert(format!("{}_{}", name, free_slot), old_value);
+                            }
+                        };
+                        if let Some(old_attribute_object) = old_attribute.as_object() {
+                            if !old_attribute_object.is_empty() {
+                                value.insert(format!("{}_{}_attributes", name, free_slot), old_attribute);
+                            };
+                        };
+                    };
+                };
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
 
                 // If the element's main value is empty, we want to remove it because we
                 // do not want the value to represent an empty object.
-                if value[name] == Value::Object(Map::new()) {
+                if value[name].is_null() || value[name] == Value::Object(Map::new()) {
                     value.remove(name);
                 }
             } else {
-                let value = self
-                    .get_or_create_current_path()
-                    .as_object_mut()
-                    .ok_or_else(|| {
-                        SerializationError::JsonStructureError {
-                    message:
-                        "This is a bug - expected current value to exist, and to be an object type.
-                            Check that the value is not `Value::null`"
-                            .to_string(),
-                }
-                    })?;
+                let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
+                    SerializationError::JsonStructureError {
+                        message:
+                            "This is a bug - expected parent container to exist, and to be an object type.\
+                                Check that the referencing parent is not `Value::null`"
+                                .to_string(),
+                    }
+                })?;
+                // We do a linear probe in case XML contains duplicate keys
+                if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+                    if let Some(map) = old_value.as_object() {
+                        if !map.is_empty() {
+                            let mut free_slot = 1;
+                            // If it is a concrete value, we look for another slot.
+                            while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                                // Value is an empty object - we can override it's value.
+                                free_slot += 1
+                            }
+                            container.insert(format!("{}_{}", name, free_slot), old_value);
+                        }
+                    }
+                };
 
+                let mut value = Map::new();
                 value.insert("#attributes".to_owned(), Value::Object(attributes));
+                container.insert(name.to_string(), Value::Object(value));
             }
         } else {
             // If the object does not have attributes, replace it with a null placeholder,

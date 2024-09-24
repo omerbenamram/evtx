@@ -1,6 +1,5 @@
 ---
 source: tests/test_record_samples.rs
-assertion_line: 276
 expression: "&value"
 ---
 {
@@ -62,6 +61,9 @@ expression: "&value"
             "_SENSAPI_NETWORK_ALIVE_LAN": "true"
           },
           "Action_attributes": {
+            "name": "NoProxy"
+          },
+          "Action_1_attributes": {
             "name": "NoProxy"
           },
           "HTTPRequestHeadersInfo": {

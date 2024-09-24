@@ -83,6 +83,11 @@ expression: "&value"
               "name": "NoProxy"
             }
           },
+          "Action_1": {
+            "#attributes": {
+              "name": "NoProxy"
+            }
+          },
           "HTTPRequestHeadersInfo": {
             "Header": "Connection: Keep-Alive",
             "Header_1": "GET /pki/crl/products/microsoftrootcert.crl HTTP/1.1",
