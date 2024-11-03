@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4 - 2024-04-04]
+
+### Fixed
+- (bugfix) Fix json output when a node with attributes has the same key several times. thanks @yardlogs
+
+
 ## [0.8.2 - 2024-04-04]
 
 ### Added
