@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload artifacts
         if: env.MANUAL != '1'
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: artifacts
           path: artifacts
@@ -82,7 +82,7 @@ jobs:
             os: macos-14
             target: aarch64-apple-darwin
           - build: macos-x86
-            os: macos-13 
+            os: macos-13
             target: x86_64-apple-darwin
           - build: windows
             os: windows-2019
@@ -129,7 +129,7 @@ jobs:
 
       - name: Get release download URL
         if: env.MANUAL != '1'
-        uses: actions/download-artifact@v4.1.7
+        uses: actions/download-artifact@v4
         with:
           name: artifacts
           path: artifacts
@@ -161,13 +161,13 @@ jobs:
           ./build_pgo.sh
         env:
           HOME: ${{ github.workspace }}
-      
+
       - name: Build release binary (linux MUSL)
-        if: matrix.build == 'linux-static' 
+        if: matrix.build == 'linux-static'
         run: cargo build --target ${{ matrix.target }} --release
 
       - name: Build release binary (Windows)
-        if: matrix.build == 'windows' 
+        if: matrix.build == 'windows'
         run: cargo build --target ${{ matrix.target }} --release --features fast-alloc
 
       - name: Build release binary (Linux AARCH64)
