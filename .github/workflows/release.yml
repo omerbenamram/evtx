@@ -97,7 +97,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.80.0
+          toolchain: 1.85.0
           targets: ${{ matrix.target }}
           components: llvm-tools
 
