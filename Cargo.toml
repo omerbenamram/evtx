@@ -18,11 +18,11 @@ crc32fast = "1"
 chrono = { version = "0.4", features = ["serde"] }
 encoding = "0.2.33"
 byteorder = "1"
-quick-xml = "^0.36"
-thiserror = "1"
+quick-xml = "^0.37"
+thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
-hashbrown = { version = "^0.14", features = ["inline-more"] }
+hashbrown = { version = "^0.15", features = ["inline-more"] }
 # Optional for multithreading.
 rayon = { version = "1", optional = true }
 
@@ -67,7 +67,7 @@ lto = "thin"
 
 # rexpect relies on unix process semantics, but it's only used for process interaction tests.
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-rexpect = "0.5.0"
+rexpect = "0.6.0"
 
 [build-dependencies]
 skeptic = "0.13.7"
