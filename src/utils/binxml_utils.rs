@@ -5,7 +5,7 @@ use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use encoding::{decode, DecoderTrap, EncodingRef};
+use encoding::{DecoderTrap, EncodingRef, decode};
 use log::trace;
 use std::char::decode_utf16;
 use std::error::Error as StdErr;
@@ -54,15 +54,15 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
     match size {
         0 => Ok(None),
         _ => read_utf16_string(stream, Some(size as usize / 2)).map(|mut s| {
-            // Strip nul terminator if needed
-            if let Some('\0') = s.chars().last() {
-                s.pop();
+            // Efficiently remove trailing whitespace (for example, spaces) by modifying in place.
+            let trimmed_len = s.trim_end().len();
+            if trimmed_len < s.len() {
+                s.truncate(trimmed_len);
             }
             Some(s)
         }),
     }
 }
-
 /// Reads an ansi encoded string from the given stream using `ansi_codec`.
 pub fn read_ansi_encoded_string<T: ReadSeek>(
     stream: &mut T,

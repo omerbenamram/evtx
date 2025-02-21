@@ -1,0 +1,50 @@
+---
+source: tests/test_record_samples.rs
+expression: record.data
+---
+<?xml version="1.0" encoding="utf-8"?>
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="Microsoft-Windows-Security-Auditing" Guid="54849625-5478-4994-A5BA-3E3B0328C30D">
+    </Provider>
+    <EventID>4624</EventID>
+    <Version>0</Version>
+    <Level>0</Level>
+    <Task>12544</Task>
+    <Opcode>0</Opcode>
+    <Keywords>0x8020000000000000</Keywords>
+    <TimeCreated SystemTime="2017-04-14T01:21:10.906949Z">
+    </TimeCreated>
+    <EventRecordID>2260</EventRecordID>
+    <Correlation>
+    </Correlation>
+    <Execution ProcessID="536" ThreadID="624">
+    </Execution>
+    <Channel>Security</Channel>
+    <Computer>WIN-03DLIIOFRRA</Computer>
+    <Security>
+    </Security>
+  </System>
+  <EventData>
+    <Data Name="SubjectUserSid">S-1-5-18</Data>
+    <Data Name="SubjectUserName">WIN-03DLIIOFRRA$</Data>
+    <Data Name="SubjectDomainName">WORKGROUP</Data>
+    <Data Name="SubjectLogonId">0x3e7</Data>
+    <Data Name="TargetUserSid">S-1-5-18</Data>
+    <Data Name="TargetUserName">SYSTEM</Data>
+    <Data Name="TargetDomainName">NT AUTHORITY</Data>
+    <Data Name="TargetLogonId">0x3e7</Data>
+    <Data Name="LogonType">5</Data>
+    <Data Name="LogonProcessName">Advapi</Data>
+    <Data Name="AuthenticationPackageName">Negotiate</Data>
+    <Data Name="WorkstationName"></Data>
+    <Data Name="LogonGuid">00000000-0000-0000-0000-000000000000</Data>
+    <Data Name="TransmittedServices">-</Data>
+    <Data Name="LmPackageName">-</Data>
+    <Data Name="KeyLength">0</Data>
+    <Data Name="ProcessId">0x204</Data>
+    <Data Name="ProcessName">C:\Windows\System32\services.exe</Data>
+    <Data Name="IpAddress">-</Data>
+    <Data Name="IpPort">-</Data>
+  </EventData>
+</Event>

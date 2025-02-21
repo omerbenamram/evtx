@@ -6,3 +6,5 @@ target
 .history
 bazel-*
 result*
+
+repomix-output.txt
