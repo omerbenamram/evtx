@@ -68,7 +68,7 @@ pub fn ensure_env_logger_initialized() {
 #[cfg(debug_assertions)]
 mod test_readme {
     macro_rules! calculated_doc {
-        ($doc:expr, $id:ident) => {
+        ($doc:expr_2021, $id:ident) => {
             #[doc = $doc]
             enum $id {}
         };

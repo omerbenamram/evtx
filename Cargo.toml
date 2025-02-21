@@ -8,7 +8,7 @@ readme = "README.md"
 
 version = "0.8.5"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 exclude = ["**/*.evtx", "**/*.dat"]
 
