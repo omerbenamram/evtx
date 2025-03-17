@@ -28,7 +28,7 @@ chmod 777 /tmp/pgo-data
 
 # Build the test binary with profiling and mimalloc
 echo -e "${BLUE}Building test binary with PGO instrumentation and mimalloc${NC}"
-RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data -g" cargo +nightly build --release --bin mimalloc_pgo_test --features fast-alloc-mimalloc-secure
+RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data -g" cargo build --release --bin mimalloc_pgo_test
 
 # Create LLDB script for debugging
 echo -e "${BLUE}Creating LLDB script${NC}"
@@ -67,8 +67,15 @@ echo -e "${BLUE}Checking for profile data${NC}"
 ls -la /tmp/pgo-data/
 
 # Run with LLDB to get more info if it crashed
-# echo -e "${BLUE}Running with LLDB${NC}"
-# lldb -s /tmp/mimalloc_pgo.lldb ./target/release/mimalloc_pgo_test >/tmp/mimalloc_pgo_debug.log 2>&1
+echo -e "${BLUE}Running with LLDB${NC}"
+gtimeout 10 lldb -s /tmp/mimalloc_pgo.lldb ./target/release/mimalloc_pgo_test >/tmp/mimalloc_pgo_debug.log 2>&1
+LLDB_EXIT_CODE=$?
+
+if [ $LLDB_EXIT_CODE -eq 124 ]; then
+    echo -e "${RED}LLDB timed out after 20 seconds${NC}"
+    # Force kill any hanging lldb processes
+    pkill -9 lldb
+fi
 
 # Print key parts of the debug log
 echo -e "${BLUE}Debug log highlights${NC}"
