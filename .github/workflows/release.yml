@@ -33,9 +33,33 @@ jobs:
           echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           echo "version is: ${{ env.VERSION }}"
 
+      - name: Check for existing release
+        if: env.MANUAL != '1'
+        id: check_release
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              const tag = process.env.VERSION || context.ref.replace('refs/tags/', '');
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: tag
+              });
+
+              core.setOutput('exists', 'true');
+              core.setOutput('upload_url', release.data.upload_url);
+              core.setOutput('id', release.data.id);
+              console.log(`Release for tag ${tag} already exists, using existing release.`);
+            } catch (error) {
+              core.setOutput('exists', 'false');
+              console.log(`Release for tag does not exist. Creating new release.`);
+            }
+
       - name: Create GitHub release
         id: release
-        if: env.MANUAL != '1'
+        if: env.MANUAL != '1' && steps.check_release.outputs.exists != 'true'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,7 +68,12 @@ jobs:
           release_name: ${{ env.VERSION }}
 
       - name: Save release upload URL to artifact
-        run: echo "${{ steps.release.outputs.upload_url }}" > artifacts/release-upload-url
+        run: |
+          if [ "${{ steps.check_release.outputs.exists }}" == "true" ]; then
+            echo "${{ steps.check_release.outputs.upload_url }}" > artifacts/release-upload-url
+          else
+            echo "${{ steps.release.outputs.upload_url }}" > artifacts/release-upload-url
+          fi
 
       - name: Save version number to artifact
         run: echo "${{ env.VERSION }}" > artifacts/release-version
@@ -63,7 +92,7 @@ jobs:
     env:
       TARGET_DIR: ./target
       RUST_BACKTRACE: 1
-      MACOSX_DEPLOYMENT_TARGET: 10.9
+      MACOSX_DEPLOYMENT_TARGET: 10.12
 
     strategy:
       matrix:
@@ -97,7 +126,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.80.0
+          toolchain: 1.85.0
           targets: ${{ matrix.target }}
           components: llvm-tools
 

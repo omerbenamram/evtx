@@ -15,8 +15,8 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use crate::EvtxRecord;
-use encoding::all::WINDOWS_1252;
 use encoding::EncodingRef;
+use encoding::all::WINDOWS_1252;
 use std::cmp::max;
 use std::fmt;
 use std::fmt::Debug;
@@ -321,9 +321,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
         trace!(
             "Offset `0x{:08x} ({})` - Reading chunk number `{}`",
-            chunk_offset,
-            chunk_offset,
-            chunk_number
+            chunk_offset, chunk_offset, chunk_number
         );
 
         data.seek(SeekFrom::Start(chunk_offset as u64))
@@ -380,10 +378,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                     // We try to read past the `chunk_count` to allow for dirty files.
                     // But if we get an empty chunk, we need to keep looking.
                     // Increment and try again.
-                    chunk_number = match chunk_number.checked_add(1) {
-                        None => return None,
-                        Some(n) => n,
-                    }
+                    chunk_number = chunk_number.checked_add(1)?
                 }
                 Ok(Some(chunk)) => {
                     return Some((Ok(chunk), chunk_number));
@@ -416,7 +411,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     pub fn serialized_records<'a, U: Send>(
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
-    ) -> impl Iterator<Item = Result<U>> + '_ {
+    ) -> impl Iterator<Item = Result<U>> + 'a {
         // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = Arc::clone(&self.config);
@@ -501,16 +496,13 @@ pub struct IterChunks<'c, T: ReadSeek> {
     current_chunk_number: u64,
 }
 
-impl<'c, T: ReadSeek> Iterator for IterChunks<'c, T> {
+impl<T: ReadSeek> Iterator for IterChunks<'_, T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         match self.parser.find_next_chunk(self.current_chunk_number) {
             None => None,
             Some((chunk, chunk_number)) => {
-                self.current_chunk_number = match chunk_number.checked_add(1) {
-                    None => return None,
-                    Some(n) => n,
-                };
+                self.current_chunk_number = chunk_number.checked_add(1)?;
 
                 Some(chunk)
             }
@@ -530,10 +522,7 @@ impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
         match self.parser.find_next_chunk(self.current_chunk_number) {
             None => None,
             Some((chunk, chunk_number)) => {
-                self.current_chunk_number = match chunk_number.checked_add(1) {
-                    None => return None,
-                    Some(n) => n,
-                };
+                self.current_chunk_number = chunk_number.checked_add(1)?;
 
                 Some(chunk)
             }
@@ -595,16 +584,20 @@ mod tests {
         }
 
         // It should be empty, and not a [].
-        assert!(records[0]
-            .as_ref()
-            .unwrap()
-            .data
-            .contains("<Binary></Binary>"));
-        assert!(records[1]
-            .as_ref()
-            .unwrap()
-            .data
-            .contains("<Binary>E107070003000C00110010001C00D6000000000000000000</Binary>"));
+        assert!(
+            records[0]
+                .as_ref()
+                .unwrap()
+                .data
+                .contains("<Binary></Binary>")
+        );
+        assert!(
+            records[1]
+                .as_ref()
+                .unwrap()
+                .data
+                .contains("<Binary>E107070003000C00110010001C00D6000000000000000000</Binary>")
+        );
     }
 
     #[test]

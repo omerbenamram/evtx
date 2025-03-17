@@ -1,9 +1,9 @@
 macro_rules! capture_context {
-    ($cursor: ident, $e: ident, $name: expr) => {{
+    ($cursor: ident, $e: ident, $name: expr_2021) => {{
         let inner = $crate::err::WrappedIoError::capture_hexdump(Box::new($e), $cursor);
         $crate::err::DeserializationError::from(inner)
     }};
-    ($cursor: ident, $e: ident, $token: expr, $name: expr) => {{
+    ($cursor: ident, $e: ident, $token: expr_2021, $name: expr_2021) => {{
         let inner = $crate::err::WrappedIoError::capture_hexdump(Box::new($e), $cursor);
         $crate::err::DeserializationError::FailedToReadToken {
             t: $token.to_owned(),
@@ -14,7 +14,7 @@ macro_rules! capture_context {
 }
 
 macro_rules! try_seek {
-    ($cursor: ident, $offset: expr, $name: expr) => {
+    ($cursor: ident, $offset: expr_2021, $name: expr_2021) => {
         $cursor
             .seek(SeekFrom::Start(u64::from($offset.clone())))
             .map_err(|e| capture_context!($cursor, e, $name))
@@ -23,7 +23,7 @@ macro_rules! try_seek {
 
 /// Tries to read X bytes from the cursor, if reading fails, captures position nicely.
 macro_rules! try_read {
-    ($cursor: ident, u8, $name: expr) => {
+    ($cursor: ident, u8, $name: expr_2021) => {
         $cursor
             .read_u8()
             .map_err(|e| capture_context!($cursor, e, "u8", $name))
@@ -33,7 +33,7 @@ macro_rules! try_read {
         try_read!($cursor, u8, "<Unknown>")
     };
 
-    ($cursor: ident, i8, $name: expr) => {
+    ($cursor: ident, i8, $name: expr_2021) => {
         $cursor
             .read_i8()
             .map_err(|e| capture_context!($cursor, e, "i8", $name))
@@ -43,7 +43,7 @@ macro_rules! try_read {
         try_read!($cursor, i8, "<Unknown>")
     };
 
-    ($cursor: ident, u16, $name: expr) => {
+    ($cursor: ident, u16, $name: expr_2021) => {
         $cursor
             .read_u16::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "u16", $name))
@@ -53,7 +53,7 @@ macro_rules! try_read {
         try_read!($cursor, u16, "<Unknown>")
     };
 
-    ($cursor: ident, i16, $name: expr) => {
+    ($cursor: ident, i16, $name: expr_2021) => {
         $cursor
             .read_i16::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "i16", $name))
@@ -63,7 +63,7 @@ macro_rules! try_read {
         try_read!($cursor, i16, "<Unknown>")
     };
 
-    ($cursor: ident, i32, $name: expr) => {
+    ($cursor: ident, i32, $name: expr_2021) => {
         $cursor
             .read_i32::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "i32", $name))
@@ -73,7 +73,7 @@ macro_rules! try_read {
         try_read!($cursor, i32, "<Unknown>")
     };
 
-    ($cursor: ident, u32, $name: expr) => {
+    ($cursor: ident, u32, $name: expr_2021) => {
         $cursor
             .read_u32::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "u32", $name))
@@ -83,7 +83,7 @@ macro_rules! try_read {
         try_read!($cursor, u32, "<Unknown>")
     };
 
-    ($cursor: ident, f32, $name: expr) => {
+    ($cursor: ident, f32, $name: expr_2021) => {
         $cursor
             .read_f32::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "f32", $name))
@@ -93,7 +93,7 @@ macro_rules! try_read {
         try_read!($cursor, f32, "<Unknown>")
     };
 
-    ($cursor: ident, i64, $name: expr) => {
+    ($cursor: ident, i64, $name: expr_2021) => {
         $cursor
             .read_i64::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "i64", $name))
@@ -103,7 +103,7 @@ macro_rules! try_read {
         try_read!($cursor, i64, "<Unknown>")
     };
 
-    ($cursor: ident, u64, $name: expr) => {
+    ($cursor: ident, u64, $name: expr_2021) => {
         $cursor
             .read_u64::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "u64", $name))
@@ -113,7 +113,7 @@ macro_rules! try_read {
         try_read!($cursor, u64, "<Unknown>")
     };
 
-    ($cursor: ident, f64, $name: expr) => {
+    ($cursor: ident, f64, $name: expr_2021) => {
         $cursor
             .read_f64::<byteorder::LittleEndian>()
             .map_err(|e| capture_context!($cursor, e, "f64", $name))
@@ -143,7 +143,7 @@ macro_rules! try_read {
         try_read!($cursor, guid, "<Unknown>")
     };
 
-    ($cursor: ident, guid, $name: expr) => {
+    ($cursor: ident, guid, $name: expr_2021) => {
         Guid::from_reader($cursor).map_err(|e| capture_context!($cursor, e, "guid", $name))
     };
 
@@ -151,7 +151,7 @@ macro_rules! try_read {
         try_read!($cursor, len_prefixed_utf_16_str, "<Unknown>")
     }};
 
-    ($cursor: ident, len_prefixed_utf_16_str, $name: expr) => {
+    ($cursor: ident, len_prefixed_utf_16_str, $name: expr_2021) => {
         read_len_prefixed_utf16_string($cursor, false)
             .map_err(|e| capture_context!($cursor, e, "len_prefixed_utf_16_str", $name))
     };
@@ -160,7 +160,7 @@ macro_rules! try_read {
         try_read!($cursor, len_prefixed_utf_16_str_nul_terminated, "<Unknown>")
     }};
 
-    ($cursor: ident, len_prefixed_utf_16_str_nul_terminated, $name: expr) => {
+    ($cursor: ident, len_prefixed_utf_16_str_nul_terminated, $name: expr_2021) => {
         read_len_prefixed_utf16_string($cursor, true).map_err(|e| {
             capture_context!($cursor, e, "len_prefixed_utf_16_str_nul_terminated", $name)
         })
@@ -170,12 +170,12 @@ macro_rules! try_read {
         try_read!($cursor, null_terminated_utf_16_str, "<Unknown>")
     }};
 
-    ($cursor: ident, null_terminated_utf_16_str, $name: expr) => {
+    ($cursor: ident, null_terminated_utf_16_str, $name: expr_2021) => {
         read_null_terminated_utf16_string($cursor)
             .map_err(|e| capture_context!($cursor, e, "null_terminated_utf_16_str", $name))
     };
 
-    ($cursor: ident, sid, $name: expr) => {
+    ($cursor: ident, sid, $name: expr_2021) => {
         Sid::from_reader($cursor).map_err(|e| capture_context!($cursor, e, "ntsid", $name))
     };
 
@@ -195,7 +195,7 @@ macro_rules! try_read {
         try_read!($cursor, filetime, "<Unknown>")
     };
 
-    ($cursor: ident, filetime, $name: expr) => {
+    ($cursor: ident, filetime, $name: expr_2021) => {
         winstructs::timestamp::WinTimestamp::from_reader($cursor)
             .map_err(|e| capture_context!($cursor, e, "filetime", $name))
             .map(|t| t.to_datetime())

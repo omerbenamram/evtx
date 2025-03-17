@@ -11,9 +11,9 @@ use std::borrow::{BorrowMut, Cow};
 
 use std::mem;
 
+use crate::EvtxChunk;
 use crate::binxml::name::{BinXmlName, BinXmlNameRef};
 use crate::binxml::tokens::read_template_definition;
-use crate::EvtxChunk;
 use std::io::{Cursor, Seek, SeekFrom};
 
 pub fn parse_tokens<'a, T: BinXmlOutput>(
@@ -111,11 +111,11 @@ pub fn create_record_model<'a>(
                 ));
             }
             Cow::Owned(BinXMLDeserializedTokens::EntityRef(ref entity))
-            | Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(ref entity)) => {
+            | Cow::Borrowed(&BinXMLDeserializedTokens::EntityRef(ref entity)) => {
                 model.push(XmlModel::EntityRef(expand_string_ref(&entity.name, chunk)?))
             }
             Cow::Owned(BinXMLDeserializedTokens::PITarget(ref name))
-            | Cow::Borrowed(BinXMLDeserializedTokens::PITarget(ref name)) => {
+            | Cow::Borrowed(&BinXMLDeserializedTokens::PITarget(ref name)) => {
                 let mut builder = XmlPIBuilder::new();
                 if current_pi.is_some() {
                     warn!("PITarget without following PIData, previous target will be ignored.")
@@ -177,7 +177,7 @@ pub fn create_record_model<'a>(
             }
 
             Cow::Owned(BinXMLDeserializedTokens::Attribute(ref attr))
-            | Cow::Borrowed(BinXMLDeserializedTokens::Attribute(ref attr)) => {
+            | Cow::Borrowed(&BinXMLDeserializedTokens::Attribute(ref attr)) => {
                 trace!("BinXMLDeserializedTokens::Attribute(attr) - {:?}", attr);
                 if current_element.is_none() {
                     return Err(EvtxError::FailedToCreateRecordModel(
@@ -189,7 +189,7 @@ pub fn create_record_model<'a>(
                 }
             }
             Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(ref elem))
-            | Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(ref elem)) => {
+            | Cow::Borrowed(&BinXMLDeserializedTokens::OpenStartElement(ref elem)) => {
                 trace!(
                     "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
                     elem.name
@@ -305,7 +305,7 @@ fn expand_template<'a>(
     {
         // We expect to find all the templates in the template cache.
         for token in template_def.tokens.iter() {
-            if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
+            if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
                 expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
             } else {
                 _expand_templates(Cow::Borrowed(token), chunk, stack)?;
@@ -326,8 +326,8 @@ fn expand_template<'a>(
             read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
 
         for token in template_def.tokens {
-            if let BinXMLDeserializedTokens::Substitution(ref substitution_descriptor) = token {
-                expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
+            if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
+                expand_token_substitution(&mut template, &substitution_descriptor, chunk, stack)?;
             } else {
                 _expand_templates(Cow::Owned(token), chunk, stack)?;
             }

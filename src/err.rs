@@ -166,7 +166,7 @@ pub enum SerializationError {
     #[error("Writing to XML failed")]
     XmlOutputError {
         #[from]
-        source: quick_xml::Error,
+        source: io::Error,
     },
 
     #[error("Building a JSON document failed with message: {message}")]
