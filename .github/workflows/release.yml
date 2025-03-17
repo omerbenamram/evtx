@@ -144,11 +144,11 @@ jobs:
         id: set-up-homebrew
         uses: Homebrew/actions/setup-homebrew@master
 
-      - name: Install LLVM 18 (macOS only)
+      - name: Install LLVM 19 (macOS only)
         if: runner.os == 'macOS'
         run: |
-          brew install llvm@18
-          echo "$(brew --prefix llvm@18)/bin" >> $GITHUB_PATH
+          brew install llvm@19
+          echo "$(brew --prefix llvm@19)/bin" >> $GITHUB_PATH
 
       - name: Install Cross toolchain (zig)
         if: matrix.build == 'macos-aarch64' || matrix.build == 'linux-aarch64'
