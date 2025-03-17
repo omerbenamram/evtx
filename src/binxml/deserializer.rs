@@ -83,11 +83,11 @@ impl<'a> BinXmlDeserializer<'a> {
 
         loop {
             let token = iterator.next();
-            if let Some(t) = token {
+            match token { Some(t) => {
                 tokens.push(t?);
-            } else {
+            } _ => {
                 break;
-            }
+            }}
         }
 
         let seek_ahead = iterator.cursor.position() - offset;

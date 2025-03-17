@@ -64,7 +64,7 @@ impl EvtxRecordHeader {
     }
 }
 
-impl<'a> EvtxRecord<'a> {
+impl EvtxRecord<'_> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
         let event_record_id = self.event_record_id;
