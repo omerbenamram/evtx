@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use anyhow::{bail, format_err, Context, Result};
+use anyhow::{Context, Result, bail, format_err};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
@@ -16,13 +16,75 @@ use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-#[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
+// Code for explicit profile data flushing during PGO
+// Only active when the pgo-flush feature is enabled
+#[cfg(feature = "pgo-flush")]
+unsafe extern "C" {
+    fn __llvm_profile_write_file() -> i32;
+}
+
+#[cfg(feature = "pgo-flush")]
+fn flush_profile_data() {
+    unsafe {
+        eprintln!("Explicitly flushing PGO profile data before exit...");
+        let result = __llvm_profile_write_file();
+        eprintln!("Profile data flush result: {}", result);
+    }
+}
+
+// jemalloc allocator config
+#[cfg(all(not(target_env = "msvc"), feature = "fast-alloc-jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
-#[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
+#[cfg(all(not(target_env = "msvc"), feature = "fast-alloc-jemalloc"))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+// Original fast-alloc feature for backward compatibility
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "fast-alloc",
+    not(feature = "fast-alloc-jemalloc"),
+    not(feature = "fast-alloc-mimalloc"),
+    not(feature = "fast-alloc-mimalloc-secure")
+))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "fast-alloc",
+    not(feature = "fast-alloc-jemalloc"),
+    not(feature = "fast-alloc-mimalloc"),
+    not(feature = "fast-alloc-mimalloc-secure")
+))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
+// mimalloc standard config
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "fast-alloc-mimalloc",
+    not(feature = "fast-alloc-mimalloc-secure")
+))]
+use mimalloc::MiMalloc;
+
+#[cfg(all(
+    not(target_env = "msvc"),
+    feature = "fast-alloc-mimalloc",
+    not(feature = "fast-alloc-mimalloc-secure")
+))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+// mimalloc secure config
+#[cfg(all(not(target_env = "msvc"), feature = "fast-alloc-mimalloc-secure"))]
+use mimalloc::MiMalloc;
+
+#[cfg(all(not(target_env = "msvc"), feature = "fast-alloc-mimalloc-secure"))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+// Windows allocator
 #[cfg(all(target_env = "msvc", feature = "fast-alloc"))]
 #[global_allocator]
 static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
@@ -104,7 +166,9 @@ impl EvtxDump {
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
             (true, number) => number,
             (false, _) => {
-                eprintln!("turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator");
+                eprintln!(
+                    "turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator"
+                );
                 1
             }
         };
@@ -463,6 +527,10 @@ fn main() -> Result<()> {
         ).get_matches();
 
     EvtxDump::from_cli_matches(&matches)?.run()?;
+
+    // Explicitly flush profile data when the pgo-flush feature is enabled
+    #[cfg(feature = "pgo-flush")]
+    flush_profile_data();
 
     Ok(())
 }
