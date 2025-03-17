@@ -186,7 +186,8 @@ jobs:
       - name: Build release binary (macOS)
         if: matrix.build == 'macos-x86' || matrix.build == 'macos-aarch64'
         run: |
-          cargo build --target ${{ matrix.target }} --release --features fast-alloc
+          export TARGET=${{ matrix.target }}
+          ./build_pgo.sh
         env:
           HOME: ${{ github.workspace }}
 
