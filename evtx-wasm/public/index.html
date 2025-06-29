@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EVTX Parser Explorer</title>
+    <link rel="stylesheet" href="/assets/styles.css">
+    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>EVTX Parser Explorer</h1>
+            <p class="subtitle">Parse and explore Windows Event Log files in your browser</p>
+        </header>
+        
+        <main>
+            <section class="upload-section">
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-zone-content">
+                        <div class="icon">📁</div>
+                        <p>Drag and drop an EVTX file here or click to browse</p>
+                        <p class="hint">Supports .evtx files only</p>
+                    </div>
+                    <input type="file" id="fileInput" accept=".evtx" aria-label="Select EVTX file">
+                </div>
+            </section>
+
+            <div id="errorContainer" class="error-container"></div>
+
+            <div id="fileInfoContainer" style="display: none;">
+                <section class="file-info card">
+                    <h2>File Information</h2>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <label>File Name:</label>
+                            <span id="fileName">-</span>
+                        </div>
+                        <div class="info-item">
+                            <label>File Size:</label>
+                            <span id="fileSize">-</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Total Chunks:</label>
+                            <span id="totalChunks">-</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Next Record ID:</label>
+                            <span id="nextRecordId">-</span>
+                        </div>
+                        <div class="info-item">
+                            <label>Status:</label>
+                            <span id="fileStatus">-</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="stats-section">
+                    <div class="stats">
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalRecords">0</div>
+                            <div class="stat-label">Total Records</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="parsedRecords">0</div>
+                            <div class="stat-label">Parsed Records</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="errorCount">0</div>
+                            <div class="stat-label">Errors</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="chunks-container card">
+                    <h2>Chunks</h2>
+                    <div class="chunk-list" id="chunkList"></div>
+                </section>
+
+                <section class="records-container card">
+                    <h2>Records</h2>
+                    <div class="controls">
+                        <button class="btn btn-primary" id="parseAllBtn">
+                            Parse All Records
+                        </button>
+                        <button class="btn btn-secondary" id="parseSelectedChunkBtn" disabled>
+                            Parse Selected Chunk
+                        </button>
+                        <input 
+                            type="text" 
+                            class="search-box" 
+                            id="searchBox" 
+                            placeholder="Search records..."
+                            aria-label="Search records"
+                        >
+                        <button class="btn btn-secondary" id="exportBtn" disabled>
+                            Export JSON
+                        </button>
+                    </div>
+                    <div class="record-list" id="recordList"></div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <div class="overlay" id="overlay"></div>
+    <div class="modal record-detail" id="recordDetail">
+        <div class="modal-header">
+            <h2>Record Details</h2>
+            <button class="close-btn" id="closeDetailBtn" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="json-viewer" id="jsonViewer"></div>
+        </div>
+    </div>
+
+    <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
