@@ -1,0 +1,94 @@
+---
+alwaysApply: true
+---
+
+# WASM Bindings & Regeneration Guide
+
+This project uses `wasm-pack` to compile the Rust crate under
+[`evtx-wasm/`](mdc:evtx-wasm/src/lib.rs) into the viewer.  The output lives in
+[`src/wasm/`](mdc:evtx-wasm/evtx-viewer/src/wasm/) and contains:
+
+* `evtx_wasm.js` – JS glue
+* `evtx_wasm_bg.wasm` – compiled WebAssembly
+* `evtx_wasm.d.ts` – **typings used by TypeScript**
+
+Whenever you add or rename a function in the Rust `#[wasm_bindgen]` interface
+(e.g. `parse_chunk_records`) you **MUST** regenerate the pkg so the `.d.ts`
+reflects the change; otherwise TS won’t see the method.
+
+## Regeneration steps
+```bash
+# from repo root
+cd evtx-wasm           # workspace with Cargo.toml
+wasm-pack build --target web --release \
+  --out-dir ../evtx-wasm/evtx-viewer/src/wasm
+```
+The helper script [`evtx-wasm/evtx-viewer/setup-dev.sh`](mdc:evtx-wasm/evtx-viewer/setup-dev.sh)
+performs a similar copy using symlinks during dev.
+
+## Importing in TS
+Use a **type-only** import for static typing and a dynamic import for runtime:
+```ts
+// type side
+type WasmBindings = typeof import('../wasm/evtx_wasm');
+
+// runtime side (inside an async function)
+const wasm: WasmBindings = await import('../wasm/evtx_wasm.js') as WasmBindings;
+const parser = new wasm.EvtxWasmParser(bytes);
+```
+Do **NOT** cast to `any`; rely on the generated typings. If TypeScript complains
+that a new method doesn’t exist, first verify you rebuilt the pkg and that
+`evtx_wasm.d.ts` lists the method.
+
+## Linting / ESLint
+The generated `*_bg.wasm.d.ts` contains disable directives ESLint trips over.
+We ignore those globally via `globalIgnores` in `eslint.config.js`:
+```js
+globalIgnores(['**/*_bg.wasm.d.ts']);
+```
+Never edit generated files; update the Rust code and rebuild instead.
+# WASM Bindings & Regeneration Guide
+
+This project uses `wasm-pack` to compile the Rust crate under
+[`evtx-wasm/`](mdc:evtx-wasm/src/lib.rs) into the viewer.  The output lives in
+[`src/wasm/`](mdc:evtx-wasm/evtx-viewer/src/wasm/) and contains:
+
+* `evtx_wasm.js` – JS glue
+* `evtx_wasm_bg.wasm` – compiled WebAssembly
+* `evtx_wasm.d.ts` – **typings used by TypeScript**
+
+Whenever you add or rename a function in the Rust `#[wasm_bindgen]` interface
+(e.g. `parse_chunk_records`) you **MUST** regenerate the pkg so the `.d.ts`
+reflects the change; otherwise TS won’t see the method.
+
+## Regeneration steps
+```bash
+# from repo root
+cd evtx-wasm           # workspace with Cargo.toml
+wasm-pack build --target web --release \
+  --out-dir ../evtx-wasm/evtx-viewer/src/wasm
+```
+The helper script [`evtx-wasm/evtx-viewer/setup-dev.sh`](mdc:evtx-wasm/evtx-viewer/setup-dev.sh)
+performs a similar copy using symlinks during dev.
+
+## Importing in TS
+Use a **type-only** import for static typing and a dynamic import for runtime:
+```ts
+// type side
+type WasmBindings = typeof import('../wasm/evtx_wasm');
+
+// runtime side (inside an async function)
+const wasm: WasmBindings = await import('../wasm/evtx_wasm.js') as WasmBindings;
+const parser = new wasm.EvtxWasmParser(bytes);
+```
+Do **NOT** cast to `any`; rely on the generated typings. If TypeScript complains
+that a new method doesn’t exist, first verify you rebuilt the pkg and that
+`evtx_wasm.d.ts` lists the method.
+
+## Linting / ESLint
+The generated `*_bg.wasm.d.ts` contains disable directives ESLint trips over.
+We ignore those globally via `globalIgnores` in `eslint.config.js`:
+```js
+globalIgnores(['**/*_bg.wasm.d.ts']);
+```
+Never edit generated files; update the Rust code and rebuild instead.

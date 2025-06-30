@@ -1,4 +1,10 @@
-import React, { useState, useMemo, useRef, useCallback } from "react";
+import React, {
+  useState,
+  useMemo,
+  useRef,
+  useCallback,
+  useEffect,
+} from "react";
 import styled from "styled-components";
 import {
   useReactTable,
@@ -541,6 +547,21 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
     return JSON.stringify(eventData, null, 2);
   };
 
+  // When the dataset changes (e.g., filters applied) make sure the currently
+  // selected row still exists; otherwise clear the selection to avoid running
+  // into undefined access errors in the details pane.
+  useEffect(() => {
+    if (selectedRowId !== null && parseInt(selectedRowId) >= data.length) {
+      setSelectedRowId(null);
+    }
+  }, [data.length, selectedRowId]);
+
+  const selectedIdx = selectedRowId ? parseInt(selectedRowId) : -1;
+  const selectedRecord =
+    selectedIdx >= 0 && selectedIdx < data.length
+      ? data[selectedIdx]
+      : undefined;
+
   return (
     <Container
       ref={containerRef}
@@ -655,7 +676,7 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
         </div>
       </TableContainer>
 
-      {selectedRowId && (
+      {selectedRecord && (
         <>
           <Divider onMouseDown={handleDividerMouseDown} />
           <DetailsPane style={{ height: `${detailsHeight}px` }}>
@@ -664,73 +685,63 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
               <DetailRow>
                 <DetailLabel>Log Name:</DetailLabel>
                 <DetailValue>
-                  {getSystemData(data[parseInt(selectedRowId)]).Channel || "-"}
+                  {getSystemData(selectedRecord).Channel || "-"}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Source:</DetailLabel>
                 <DetailValue>
-                  {getProvider(getSystemData(data[parseInt(selectedRowId)]))}
+                  {getProvider(getSystemData(selectedRecord))}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Event ID:</DetailLabel>
                 <DetailValue>
-                  {getEventId(getSystemData(data[parseInt(selectedRowId)]))}
+                  {getEventId(getSystemData(selectedRecord))}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Level:</DetailLabel>
                 <DetailValue>
-                  {
-                    LEVEL_NAMES[
-                      getSystemData(data[parseInt(selectedRowId)]).Level || 4
-                    ]
-                  }
+                  {LEVEL_NAMES[getSystemData(selectedRecord).Level || 4]}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>User:</DetailLabel>
                 <DetailValue>
-                  {getUserId(getSystemData(data[parseInt(selectedRowId)]))}
+                  {getUserId(getSystemData(selectedRecord))}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Logged:</DetailLabel>
                 <DetailValue>
                   {formatDateTime(
-                    getTimeCreated(getSystemData(data[parseInt(selectedRowId)]))
+                    getTimeCreated(getSystemData(selectedRecord))
                   )}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Computer:</DetailLabel>
                 <DetailValue>
-                  {getSystemData(data[parseInt(selectedRowId)]).Computer || "-"}
+                  {getSystemData(selectedRecord).Computer || "-"}
                 </DetailValue>
               </DetailRow>
             </DetailSection>
 
-            {!!data[parseInt(selectedRowId)].Event?.EventData && (
+            {!!selectedRecord.Event?.EventData && (
               <DetailSection>
                 <DetailTitle>Event Data</DetailTitle>
                 <DetailContent>
-                  {renderEventData(
-                    data[parseInt(selectedRowId)].Event.EventData
-                  )}
+                  {renderEventData(selectedRecord.Event.EventData)}
                 </DetailContent>
               </DetailSection>
             )}
 
-            {!!data[parseInt(selectedRowId)].Event?.UserData && (
+            {!!selectedRecord.Event?.UserData && (
               <DetailSection>
                 <DetailTitle>User Data</DetailTitle>
                 <DetailContent>
-                  {JSON.stringify(
-                    data[parseInt(selectedRowId)].Event.UserData,
-                    null,
-                    2
-                  )}
+                  {JSON.stringify(selectedRecord.Event.UserData, null, 2)}
                 </DetailContent>
               </DetailSection>
             )}

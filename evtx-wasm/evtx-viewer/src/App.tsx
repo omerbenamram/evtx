@@ -30,7 +30,7 @@ import {
 } from "./lib/types";
 import { logger } from "./lib/logger";
 import init from "./wasm/evtx_wasm.js";
-import { FilterBar } from "./components/FilterBar";
+import { FilterSidebar } from "./components/FilterSidebar";
 
 const AppContainer = styled.div`
   display: flex;
@@ -57,8 +57,39 @@ const Sidebar = styled.aside`
 const ContentArea = styled.main`
   flex: 1;
   display: flex;
+  flex-direction: row;
+  overflow: hidden;
+`;
+
+const RecordsArea = styled.div`
+  flex: 1;
+  display: flex;
   flex-direction: column;
   overflow: hidden;
+`;
+
+const FilterPanel = styled.aside<{ $width: number }>`
+  width: ${({ $width }) => $width}px;
+  min-width: 220px;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+`;
+
+const FilterDivider = styled.div`
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  cursor: col-resize;
+  background: ${theme.colors.border.light};
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: ${theme.colors.accent.primary};
+  }
 `;
 
 const StatusBar = styled.div`
@@ -110,6 +141,7 @@ function App() {
   const [isWasmReady, setIsWasmReady] = useState(false);
   const [filters, setFilters] = useState<FilterOptions>({});
   const [showFilters, setShowFilters] = useState(false);
+  const [filterPanelWidth, setFilterPanelWidth] = useState(300);
 
   // Initialize WASM module
   useEffect(() => {
@@ -125,6 +157,31 @@ function App() {
     };
     initWasm();
   }, []);
+
+  // Handle dragging of the filter panel divider
+  const handleFilterDividerMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault();
+
+      const startX = e.clientX;
+      const startWidth = filterPanelWidth;
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        const deltaX = startX - moveEvent.clientX;
+        const newWidth = Math.max(220, Math.min(400, startWidth + deltaX));
+        setFilterPanelWidth(newWidth);
+      };
+
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      };
+
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [filterPanelWidth]
+  );
 
   const handleFileSelect = useCallback(
     async (file: File) => {
@@ -207,7 +264,13 @@ function App() {
   // Helper – apply current filters to full record list
   const applyFilters = useCallback(
     (allRecords: EvtxRecord[], opts: FilterOptions): EvtxRecord[] => {
-      if (!opts.searchTerm && (!opts.level || opts.level.length === 0)) {
+      if (
+        !opts.searchTerm &&
+        (!opts.level || opts.level.length === 0) &&
+        (!opts.provider || opts.provider.length === 0) &&
+        (!opts.channel || opts.channel.length === 0) &&
+        (!opts.eventId || opts.eventId.length === 0)
+      ) {
         return allRecords;
       }
 
@@ -220,12 +283,33 @@ function App() {
             ? true
             : opts.level.includes(sys.Level ?? 4);
 
+        const providerMatch =
+          !opts.provider || opts.provider.length === 0
+            ? true
+            : opts.provider.includes(sys.Provider?.Name ?? "");
+
+        const channelMatch =
+          !opts.channel || opts.channel.length === 0
+            ? true
+            : opts.channel.includes(sys.Channel ?? "");
+
+        const eventIdMatch =
+          !opts.eventId || opts.eventId.length === 0
+            ? true
+            : opts.eventId.includes(Number(sys.EventID ?? -1));
+
         const searchStr = `${sys.Provider?.Name ?? ""} ${sys.Computer ?? ""} ${
           sys.EventID ?? ""
         }`.toLowerCase();
         const termMatch = term === "" || searchStr.includes(term);
 
-        return levelMatch && termMatch;
+        return (
+          levelMatch &&
+          providerMatch &&
+          channelMatch &&
+          eventIdMatch &&
+          termMatch
+        );
       });
     },
     []
@@ -335,7 +419,7 @@ function App() {
       submenu: [
         {
           id: "view-filter",
-          label: showFilters ? "Hide Filter Bar" : "Filter Current Log",
+          label: showFilters ? "Hide Filters" : "Filter Current Log",
           icon: <Filter20Regular />,
           disabled: records.length === 0,
           onClick: () => setShowFilters((prev) => !prev),
@@ -427,8 +511,19 @@ function App() {
             />
           </Sidebar>
           <ContentArea>
-            {showFilters && <FilterBar value={filters} onChange={setFilters} />}
-            <LogTable data={filteredRecords} />
+            <RecordsArea>
+              <LogTable data={filteredRecords} />
+            </RecordsArea>
+            {showFilters && (
+              <FilterPanel $width={filterPanelWidth}>
+                <FilterDivider onMouseDown={handleFilterDividerMouseDown} />
+                <FilterSidebar
+                  records={records}
+                  filters={filters}
+                  onChange={setFilters}
+                />
+              </FilterPanel>
+            )}
           </ContentArea>
         </MainContent>
 
