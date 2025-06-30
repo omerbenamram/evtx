@@ -1,0 +1,38 @@
+---
+alwaysApply: true
+---
+# EVTX Viewer – Storage & Chunk Loading Architecture
+
+1. **Persistent File Storage**
+   * Browser-side EVTX files are cached in IndexedDB via the helper in
+     [`src/lib/storage.ts`](mdc:evtx-wasm/evtx-viewer/src/lib/storage.ts).
+   * Store schema `files` keeps:
+     ```ts
+     { fileId, fileName, fileSize, lastOpened, pinned, chunkCount, blob }
+     ```
+   * `fileId` is deterministic (`${name}_${size}`) so duplicate uploads collapse.
+   * Helper APIs:
+     - `saveFile(file, chunkCount) → fileId`
+     - `getChunk(fileId, chunkIndex, chunkSize?) → ArrayBuffer`
+     - CRUD + pin/touch utilities.
+
+2. **Chunk as Minimal I/O Unit**
+   * EVTX format is naturally divided into 64-KiB chunks (see Rust struct `EvtxChunk`).
+   * All reading/parsing operations MUST operate on a single chunk at a time to
+     enable incremental loading of very large logs.
+   * New WASM binding `parse_records(chunk_idx, start, limit)` will expose
+     record-iterator per chunk.
+
+3. **Lazy Loading Flow**
+   1. `EvtxParser.parseFile()` loads the *header only* to get `chunkCount`, then
+      calls `EvtxStorage.saveFile()`.
+   2. `LogTable` requests rows; `LazyEvtxReader` calls
+      `EvtxStorage.getChunk()` to fetch the chunk slice and forwards it to the
+      WASM iterator.
+   3. Results are cached in an in-memory LRU keyed by `chunkIndex`.
+
+4. **Filtering Strategy**
+   * Filtering callbacks are pure predicates; they are applied on each record as
+     it streams in from the iterator.
+   * Facet counts are maintained incrementally so the sidebar stays in sync
+     without loading the whole file.

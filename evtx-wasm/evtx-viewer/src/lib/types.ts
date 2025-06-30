@@ -105,4 +105,6 @@ export interface FilterOptions {
     start: Date;
     end: Date;
   };
+  provider?: string[];
+  channel?: string[];
 }
