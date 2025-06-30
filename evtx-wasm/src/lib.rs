@@ -62,7 +62,7 @@ impl EvtxWasmParser {
     pub fn get_file_info(&self) -> Result<JsValue, JsError> {
         // Parse header from raw data
         let mut header_cursor = Cursor::new(&self.data[..4096.min(self.data.len())]);
-        let header = evtx::evtx_file_header::EvtxFileHeader::from_stream(&mut header_cursor)
+        let header = evtx::EvtxFileHeader::from_stream(&mut header_cursor)
             .map_err(|e| JsError::new(&format!("Failed to parse header: {}", e)))?;
 
         let cursor = Cursor::new(&self.data);
@@ -112,12 +112,8 @@ impl EvtxWasmParser {
             first_chunk: header.first_chunk_number,
             last_chunk: header.last_chunk_number,
             next_record_id: header.next_record_id.to_string(),
-            is_dirty: header
-                .flags
-                .contains(evtx::evtx_file_header::HeaderFlags::DIRTY),
-            is_full: header
-                .flags
-                .contains(evtx::evtx_file_header::HeaderFlags::FULL),
+            is_dirty: header.flags.contains(evtx::HeaderFlags::DIRTY),
+            is_full: header.flags.contains(evtx::HeaderFlags::FULL),
         };
 
         serde_wasm_bindgen::to_value(&file_info)
