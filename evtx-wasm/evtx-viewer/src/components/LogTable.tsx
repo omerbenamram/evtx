@@ -290,39 +290,6 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const tableContainerRef = useRef<HTMLDivElement>(null);
 
-  // Handle dragging of the divider to resize the details pane
-  const handleDividerMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      e.preventDefault();
-
-      const startY = e.clientY;
-      const startHeight = detailsHeight;
-
-      const onMouseMove = (moveEvent: MouseEvent) => {
-        if (!containerRef.current) return;
-
-        const deltaY = moveEvent.clientY - startY;
-        const newHeight = Math.max(100, startHeight - deltaY); // Minimum 100px
-        setDetailsHeight(newHeight);
-      };
-
-      const onMouseUp = () => {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-      };
-
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-    },
-    [detailsHeight]
-  );
-
-  const selectedRecord = useMemo(() => {
-    if (!selectedRowId) return null;
-    const index = parseInt(selectedRowId);
-    return data[index] || null;
-  }, [selectedRowId, data]);
-
   const columns = useMemo<ColumnDef<EvtxRecord>[]>(
     () => [
       {
@@ -434,16 +401,117 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
 
   const virtualRows = virtualizer.getVirtualItems();
 
-  const handleRowClick = useCallback(
-    (index: number) => {
-      const rowId = String(index);
-      setSelectedRowId(rowId);
+  // ------ Keyboard navigation helpers (defined **after** virtualizer) ------
+
+  // Helper to programmatically select a row and optionally ensure it is visible
+  const selectRow = useCallback(
+    (index: number, ensureVisible = false) => {
+      setSelectedRowId(String(index));
 
       if (onRowSelect && data[index]) {
         onRowSelect(data[index]);
       }
+
+      if (ensureVisible) {
+        const items = virtualizer.getVirtualItems();
+        const target = items.find((v) => v.index === index);
+
+        const scrollEl = tableContainerRef.current;
+        if (!scrollEl) return;
+
+        if (target) {
+          const viewportStart = scrollEl.scrollTop;
+          const viewportEnd = viewportStart + scrollEl.clientHeight;
+
+          const rowTop = target.start;
+          const rowBottom = target.end;
+
+          // A row is considered "visible" only when *any* part of it overlaps
+          // the viewport that is not covered by the divider/details pane. In
+          // practice this means treating the equality case (rowBottom ===
+          // viewportEnd) as already out-of-view because the 2-pixel divider +
+          // details pane begin immediately below the viewport.
+          if (rowTop <= viewportStart) {
+            // Row is above – reveal it at the top of the list.
+            virtualizer.scrollToIndex(index, { align: "start" });
+          } else if (rowBottom >= viewportEnd) {
+            // Row bottom is flush with or past the viewport's end, so place it
+            // slightly higher than the very bottom to avoid it hiding behind
+            // the divider. Using "center" gives a comfortable margin without
+            // hard-coding pixel offsets.
+            virtualizer.scrollToIndex(index, { align: "center" });
+          }
+        } else {
+          // Fallback: ensure it by centering
+          virtualizer.scrollToIndex(index, { align: "center" });
+        }
+      }
     },
-    [data, onRowSelect]
+    [data, onRowSelect, virtualizer]
+  );
+
+  // Handle keyboard navigation (ArrowUp / ArrowDown)
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+
+      // Prevent default page/element scrolling
+      e.preventDefault();
+
+      if (rows.length === 0) return;
+
+      const currentIndex =
+        selectedRowId === null ? -1 : parseInt(selectedRowId);
+      let newIndex = currentIndex;
+
+      if (e.key === "ArrowDown") {
+        newIndex = Math.min(rows.length - 1, currentIndex + 1);
+      } else if (e.key === "ArrowUp") {
+        newIndex = Math.max(0, currentIndex - 1);
+      }
+
+      if (newIndex !== currentIndex) {
+        selectRow(newIndex, true);
+      }
+    },
+    [rows.length, selectedRowId, selectRow]
+  );
+
+  // Handle dragging of the divider to resize the details pane
+  const handleDividerMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault();
+
+      const startY = e.clientY;
+      const startHeight = detailsHeight;
+
+      const onMouseMove = (moveEvent: MouseEvent) => {
+        if (!containerRef.current) return;
+
+        const deltaY = moveEvent.clientY - startY;
+        const newHeight = Math.max(100, startHeight - deltaY); // Minimum 100px
+        setDetailsHeight(newHeight);
+      };
+
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+      };
+
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    },
+    [detailsHeight]
+  );
+
+  const handleRowClick = useCallback(
+    (index: number) => {
+      selectRow(index);
+
+      // Ensure the table container has focus so keyboard navigation works
+      containerRef.current?.focus();
+    },
+    [selectRow]
   );
 
   const renderEventData = (eventData: unknown): React.ReactNode => {
@@ -474,7 +542,13 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
   };
 
   return (
-    <Container ref={containerRef}>
+    <Container
+      ref={containerRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      // Hide default outline; focus styles are managed globally
+      style={{ outline: "none" }}
+    >
       <TableContainer ref={tableContainerRef}>
         {/* Spacer div ensures the scroll container has the full height of all rows */}
         <div
@@ -581,74 +655,82 @@ export const LogTable: React.FC<LogTableProps> = ({ data, onRowSelect }) => {
         </div>
       </TableContainer>
 
-      {selectedRecord && (
+      {selectedRowId && (
         <>
-          {/* Divider for resizing */}
           <Divider onMouseDown={handleDividerMouseDown} />
-
           <DetailsPane style={{ height: `${detailsHeight}px` }}>
             <DetailSection>
               <DetailTitle>General</DetailTitle>
               <DetailRow>
                 <DetailLabel>Log Name:</DetailLabel>
                 <DetailValue>
-                  {getSystemData(selectedRecord).Channel || "-"}
+                  {getSystemData(data[parseInt(selectedRowId)]).Channel || "-"}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Source:</DetailLabel>
                 <DetailValue>
-                  {getProvider(getSystemData(selectedRecord))}
+                  {getProvider(getSystemData(data[parseInt(selectedRowId)]))}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Event ID:</DetailLabel>
                 <DetailValue>
-                  {getEventId(getSystemData(selectedRecord))}
+                  {getEventId(getSystemData(data[parseInt(selectedRowId)]))}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Level:</DetailLabel>
                 <DetailValue>
-                  {LEVEL_NAMES[getSystemData(selectedRecord).Level || 4]}
+                  {
+                    LEVEL_NAMES[
+                      getSystemData(data[parseInt(selectedRowId)]).Level || 4
+                    ]
+                  }
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>User:</DetailLabel>
                 <DetailValue>
-                  {getUserId(getSystemData(selectedRecord))}
+                  {getUserId(getSystemData(data[parseInt(selectedRowId)]))}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Logged:</DetailLabel>
                 <DetailValue>
                   {formatDateTime(
-                    getTimeCreated(getSystemData(selectedRecord))
+                    getTimeCreated(getSystemData(data[parseInt(selectedRowId)]))
                   )}
                 </DetailValue>
               </DetailRow>
               <DetailRow>
                 <DetailLabel>Computer:</DetailLabel>
                 <DetailValue>
-                  {getSystemData(selectedRecord).Computer || "-"}
+                  {getSystemData(data[parseInt(selectedRowId)]).Computer || "-"}
                 </DetailValue>
               </DetailRow>
             </DetailSection>
 
-            {!!selectedRecord.Event?.EventData && (
+            {!!data[parseInt(selectedRowId)].Event?.EventData && (
               <DetailSection>
                 <DetailTitle>Event Data</DetailTitle>
                 <DetailContent>
-                  {renderEventData(selectedRecord.Event.EventData)}
+                  {renderEventData(
+                    data[parseInt(selectedRowId)].Event.EventData
+                  )}
                 </DetailContent>
               </DetailSection>
             )}
 
-            {!!selectedRecord.Event?.UserData && (
+            {!!data[parseInt(selectedRowId)].Event?.UserData && (
               <DetailSection>
                 <DetailTitle>User Data</DetailTitle>
                 <DetailContent>
-                  {JSON.stringify(selectedRecord.Event.UserData, null, 2)}
+                  {JSON.stringify(
+                    data[parseInt(selectedRowId)].Event.UserData,
+                    null,
+                    2
+                  )}
                 </DetailContent>
               </DetailSection>
             )}

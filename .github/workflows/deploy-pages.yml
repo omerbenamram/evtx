@@ -1,0 +1,77 @@
+name: Deploy EVTX Viewer to GitHub Pages
+
+on:
+  push:
+    branches: [ wasm-viewer ]
+  # Allow manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----------------------
+      # Install build tooling
+      # ----------------------
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Set up Rust toolchain (stable) with wasm target
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          override: true
+
+      - name: Install & cache wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.13.1
+
+      # ----------------------
+      # Build the WASM crate
+      # ----------------------
+      - name: Build evtx-wasm crate (release)
+        run: |
+          wasm-pack build evtx-wasm \
+            --target web \
+            --out-dir evtx-viewer/src/wasm \
+            --out-name evtx_wasm \
+            --release
+
+      # ----------------------
+      # Build the React viewer
+      # ----------------------
+      - name: Install JS/TS dependencies
+        working-directory: evtx-wasm/evtx-viewer
+        run: bun install --frozen-lockfile
+
+      - name: Build viewer
+        working-directory: evtx-wasm/evtx-viewer
+        run: bun run build
+
+      # ----------------------
+      # Upload artifact for Pages
+      # ----------------------
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: evtx-wasm/evtx-viewer/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
