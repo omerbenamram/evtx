@@ -1,6 +1,6 @@
 import React, { useMemo, useCallback, useState } from "react";
 import styled, { css } from "styled-components";
-import type { EvtxRecord, FilterOptions } from "../lib/types";
+import type { EvtxRecord, FilterOptions, BucketCounts } from "../lib/types";
 import {
   ChevronRight20Regular,
   ChevronDown20Regular,
@@ -10,6 +10,7 @@ import {
 interface FilterSidebarProps {
   records: EvtxRecord[];
   filters: FilterOptions;
+  bucketCounts?: BucketCounts | null;
   onChange: (filters: FilterOptions) => void;
 }
 
@@ -147,11 +148,133 @@ function increment(map: Map<string | number, number>, key: string | number) {
 export const FilterSidebar: React.FC<FilterSidebarProps> = ({
   records,
   filters,
+  bucketCounts,
   onChange,
 }) => {
-  // Compute facet counts
+  // Compute facet counts either from pre-computed buckets or on-the-fly
   const facetCounts = useMemo(() => {
-    // Helper to test record against current filters, optionally ignoring one facet.
+    // Prefer the pre-computed full-file buckets whenever available. They give
+    // accurate counts even when the in-memory `records` slice only covers a
+    // window of the log (which is common when using the virtualised reader).
+    if (bucketCounts) {
+      const toMap = (
+        obj?: Record<string, number>,
+        numericKeys = false
+      ): Map<string | number, number> => {
+        const m = new Map<string | number, number>();
+        if (!obj) return m;
+        Object.entries(obj).forEach(([k, v]) => {
+          const key = numericKeys ? Number(k) : k;
+          m.set(key, v);
+        });
+        return m;
+      };
+
+      // Start maps with all keys from the full-file buckets so they never disappear.
+      const levelMap = toMap(bucketCounts.level, true);
+      const providerMap = toMap(bucketCounts.provider);
+      const channelMap = toMap(bucketCounts.channel);
+      const eventIdMap = toMap(bucketCounts.event_id, true);
+
+      // If there are any in-memory records, use them to compute live counts so
+      // that numbers respond to additional filters.  This still preserves keys
+      // that drop to 0.
+      if (records.length > 0) {
+        const inc = (map: Map<string | number, number>, key: string | number) =>
+          map.set(key, (map.get(key) || 0) + 1);
+
+        const recordMatchesFilters = (
+          rec: EvtxRecord,
+          ignoreFacet?: keyof FilterOptions
+        ) => {
+          const sys = rec.Event.System ?? {};
+
+          if (filters.searchTerm && ignoreFacet !== "searchTerm") {
+            const termLower = filters.searchTerm.toLowerCase();
+            const searchStr = `${sys.Provider?.Name ?? ""} ${
+              sys.Computer ?? ""
+            } ${sys.EventID ?? ""}`.toLowerCase();
+            if (!searchStr.includes(termLower)) return false;
+          }
+
+          if (
+            filters.level &&
+            ignoreFacet !== "level" &&
+            filters.level.length
+          ) {
+            if (!filters.level.includes(sys.Level ?? 4)) return false;
+          }
+
+          if (
+            filters.provider &&
+            ignoreFacet !== "provider" &&
+            filters.provider.length
+          ) {
+            if (!filters.provider.includes(sys.Provider?.Name ?? ""))
+              return false;
+          }
+
+          if (
+            filters.channel &&
+            ignoreFacet !== "channel" &&
+            filters.channel.length
+          ) {
+            if (!filters.channel.includes(sys.Channel ?? "")) return false;
+          }
+
+          if (
+            filters.eventId &&
+            ignoreFacet !== "eventId" &&
+            filters.eventId.length
+          ) {
+            const idNum =
+              typeof sys.EventID === "string"
+                ? parseInt(sys.EventID, 10)
+                : sys.EventID;
+            if (!filters.eventId.includes(Number(idNum))) return false;
+          }
+          return true;
+        };
+
+        records.forEach((rec) => {
+          const sys = rec.Event.System ?? {};
+
+          if (recordMatchesFilters(rec, "level")) {
+            const lvl =
+              sys.Level !== undefined && sys.Level !== null ? sys.Level : 4;
+            inc(levelMap, lvl as number);
+          }
+
+          const pName = sys.Provider?.Name;
+          if (recordMatchesFilters(rec, "provider") && pName) {
+            inc(providerMap, pName);
+          }
+
+          const ch = sys.Channel;
+          if (recordMatchesFilters(rec, "channel") && ch) {
+            inc(channelMap, ch);
+          }
+          if (recordMatchesFilters(rec, "eventId")) {
+            const idNum =
+              typeof sys.EventID === "string"
+                ? parseInt(sys.EventID, 10)
+                : sys.EventID;
+            if (typeof idNum === "number" && !Number.isNaN(idNum)) {
+              inc(eventIdMap, idNum);
+            }
+          }
+        });
+      }
+
+      return {
+        level: levelMap,
+        provider: providerMap,
+        channel: channelMap,
+        eventId: eventIdMap,
+      } as const;
+    }
+
+    // Fallback: compute from current (possibly partial) record list
     const recordMatchesFilters = (
       rec: EvtxRecord,
       ignoreFacet?: keyof FilterOptions
@@ -241,7 +364,7 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
       channel,
       eventId,
     } as const;
-  }, [records, filters]);
+  }, [records, filters, bucketCounts]);
 
   // Collapsed state per section
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({

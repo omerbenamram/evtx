@@ -1,15 +1,12 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
+import EvtxStorage from "../lib/storage";
 import styled from "styled-components";
-import { TreeView, type TreeNode } from "./Windows";
+import { TreeView, type TreeNode, ContextMenu } from "./Windows";
 import {
   Folder20Regular,
   FolderOpen20Filled,
   Document20Regular,
-  Warning20Regular,
-  Apps20Regular,
-  Shield20Regular,
-  Settings20Regular,
-  WindowDevTools20Regular,
+  Delete20Regular,
 } from "@fluentui/react-icons";
 import { theme } from "../styles/theme";
 
@@ -35,135 +32,59 @@ interface EventLogNode {
   children?: EventLogNode[];
   logPath?: string;
   description?: string;
+  fileId?: string; // For cached recent logs
 }
 
-const eventLogStructure: EventLogNode[] = [
-  {
-    id: "event-viewer",
-    label: "Event Viewer (Local)",
-    icon: <WindowDevTools20Regular />,
-    expandedIcon: <WindowDevTools20Regular />,
-    children: [
-      {
-        id: "custom-views",
-        label: "Custom Views",
-        icon: <Folder20Regular />,
-        expandedIcon: <FolderOpen20Filled />,
-        children: [
-          {
-            id: "administrative-events",
-            label: "Administrative Events",
-            icon: <Warning20Regular />,
-            description:
-              "Critical, Error, and Warning events from all administrative logs",
-          },
-        ],
-      },
-      {
-        id: "windows-logs",
-        label: "Windows Logs",
-        icon: <Folder20Regular />,
-        expandedIcon: <FolderOpen20Filled />,
-        children: [
-          {
-            id: "application",
-            label: "Application",
-            icon: <Apps20Regular />,
-            logPath: "Application.evtx",
-            description: "Events logged by applications",
-          },
-          {
-            id: "security",
-            label: "Security",
-            icon: <Shield20Regular />,
-            logPath: "Security.evtx",
-            description: "Security audit events",
-          },
-          {
-            id: "setup",
-            label: "Setup",
-            icon: <Settings20Regular />,
-            logPath: "Setup.evtx",
-            description: "Events related to application setup",
-          },
-          {
-            id: "system",
-            label: "System",
-            icon: <WindowDevTools20Regular />,
-            logPath: "System.evtx",
-            description: "Events logged by Windows system components",
-          },
-          {
-            id: "forwarded-events",
-            label: "Forwarded Events",
-            icon: <Document20Regular />,
-            logPath: "ForwardedEvents.evtx",
-            description: "Events forwarded from other computers",
-          },
-        ],
-      },
-      {
-        id: "applications-services",
-        label: "Applications and Services Logs",
-        icon: <Folder20Regular />,
-        expandedIcon: <FolderOpen20Filled />,
-        children: [
-          {
-            id: "hardware-events",
-            label: "Hardware Events",
-            icon: <Document20Regular />,
-          },
-          {
-            id: "internet-explorer",
-            label: "Internet Explorer",
-            icon: <Document20Regular />,
-          },
-          {
-            id: "key-management",
-            label: "Key Management Service",
-            icon: <Document20Regular />,
-          },
-          {
-            id: "microsoft",
-            label: "Microsoft",
-            icon: <Folder20Regular />,
-            expandedIcon: <FolderOpen20Filled />,
-            children: [
-              {
-                id: "windows",
-                label: "Windows",
-                icon: <Folder20Regular />,
-                expandedIcon: <FolderOpen20Filled />,
-                children: [
-                  {
-                    id: "powershell",
-                    label: "PowerShell",
-                    icon: <Document20Regular />,
-                    logPath: "Microsoft-Windows-PowerShell%4Operational.evtx",
-                  },
-                  {
-                    id: "windows-defender",
-                    label: "Windows Defender",
-                    icon: <Shield20Regular />,
-                    logPath:
-                      "Microsoft-Windows-Windows Defender%4Operational.evtx",
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-      {
-        id: "saved-logs",
-        label: "Saved Logs",
-        icon: <Folder20Regular />,
-        expandedIcon: <FolderOpen20Filled />,
-        children: [],
-      },
-    ],
-  },
-];
+// Removed the placeholder “Event Viewer (Local)” hierarchy – it did not provide any functionality.
+const baseStructure: EventLogNode[] = [];
+
+async function fetchRecentNodes(): Promise<EventLogNode[]> {
+  const storage = await EvtxStorage.getInstance();
+  const files = await storage.listFiles();
+
+  // sort by pinned then lastOpened desc
+  files.sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return b.lastOpened - a.lastOpened;
+  });
+
+  const pinnedChildren: EventLogNode[] = [];
+  const recentChildren: EventLogNode[] = [];
+
+  files.forEach((f) => {
+    const node: EventLogNode = {
+      id: `recent-${f.fileId}`,
+      label: f.fileName,
+      icon: <Document20Regular />,
+      fileId: f.fileId,
+      description: `${(f.fileSize / 1024 / 1024).toFixed(1)} MB`,
+    };
+    if (f.pinned) pinnedChildren.push(node);
+    else recentChildren.push(node);
+  });
+
+  const nodes: EventLogNode[] = [];
+  if (pinnedChildren.length) {
+    nodes.push({
+      id: "pinned",
+      label: "Pinned Logs",
+      icon: <Folder20Regular />,
+      expandedIcon: <FolderOpen20Filled />,
+      children: pinnedChildren,
+    });
+  }
+  if (recentChildren.length) {
+    nodes.push({
+      id: "recent",
+      label: "Recent Logs",
+      icon: <Folder20Regular />,
+      expandedIcon: <FolderOpen20Filled />,
+      children: recentChildren,
+    });
+  }
+  return nodes;
+}
 
 interface FileTreeProps {
   onNodeSelect?: (node: EventLogNode) => void;
@@ -174,7 +95,21 @@ export const FileTree: React.FC<FileTreeProps> = ({
   onNodeSelect,
   selectedNodeId,
 }) => {
-  const [treeData] = useState(eventLogStructure);
+  const [treeData, setTreeData] = useState<EventLogNode[]>(baseStructure);
+
+  useEffect(() => {
+    // Load recent logs once component mounts
+    (async () => {
+      const recent = await fetchRecentNodes();
+      setTreeData([...recent, ...baseStructure]);
+    })();
+  }, []);
+
+  // refresh helper (e.g., after load) – exposed via context could be nicer
+  const refreshRecent = useCallback(async () => {
+    const recent = await fetchRecentNodes();
+    setTreeData([...recent, ...baseStructure]);
+  }, []);
 
   const convertToTreeNodes = (nodes: EventLogNode[]): TreeNode[] => {
     return nodes.map((node) => ({
@@ -202,10 +137,42 @@ export const FileTree: React.FC<FileTreeProps> = ({
     };
 
     const selectedNode = findNode(treeData);
-    if (selectedNode && onNodeSelect) {
-      onNodeSelect(selectedNode);
+    if (selectedNode) {
+      if (onNodeSelect) onNodeSelect(selectedNode);
+      // If a recent log was opened, bump lastOpened and refresh tree
+      if (selectedNode.fileId) {
+        refreshRecent();
+      }
     }
   };
+
+  // -----------------------------
+  // Context menu (right-click)
+  // -----------------------------
+
+  const [menuState, setMenuState] = useState<{
+    x: number;
+    y: number;
+    target: EventLogNode;
+  } | null>(null);
+
+  const handleContextMenu = (treeNode: TreeNode, e: React.MouseEvent) => {
+    const dataNode = treeNode.data as EventLogNode | undefined;
+    if (!dataNode?.fileId) return; // Only for cached files
+
+    e.preventDefault();
+    setMenuState({ x: e.clientX, y: e.clientY, target: dataNode });
+  };
+
+  const closeMenu = useCallback(() => setMenuState(null), []);
+
+  const handleDelete = useCallback(async () => {
+    if (!menuState) return;
+    const storage = await EvtxStorage.getInstance();
+    await storage.deleteFile(menuState.target.fileId!);
+    await refreshRecent();
+    closeMenu();
+  }, [menuState, refreshRecent, closeMenu]);
 
   return (
     <TreeContainer>
@@ -214,9 +181,25 @@ export const FileTree: React.FC<FileTreeProps> = ({
         nodes={convertToTreeNodes(treeData)}
         selectedNodeId={selectedNodeId}
         onNodeClick={handleSelect}
+        onNodeContextMenu={handleContextMenu}
         showLines={false}
-        defaultExpanded={["event-viewer", "windows-logs"]}
+        defaultExpanded={[]}
       />
+
+      {menuState && (
+        <ContextMenu
+          position={{ x: menuState.x, y: menuState.y }}
+          onClose={closeMenu}
+          items={[
+            {
+              id: "delete",
+              label: "Delete",
+              icon: <Delete20Regular />,
+              onClick: handleDelete,
+            },
+          ]}
+        />
+      )}
     </TreeContainer>
   );
 };

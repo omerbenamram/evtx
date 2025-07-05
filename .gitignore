@@ -8,3 +8,6 @@ bazel-*
 result*
 
 repomix-output.txt
+
+# WASM artefacts generated at runtime – do not commit
+evtx-wasm/evtx-viewer/public/pkg
