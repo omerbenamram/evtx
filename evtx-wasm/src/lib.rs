@@ -1,6 +1,7 @@
 use evtx::{EvtxParser, ParserSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Cursor;
 use wasm_bindgen::prelude::*;
 
@@ -41,6 +42,114 @@ pub struct FileInfo {
     pub next_record_id: String,
     pub is_dirty: bool,
     pub is_full: bool,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct BucketCounts {
+    pub level: HashMap<String, u64>,
+    pub provider: HashMap<String, u64>,
+    pub channel: HashMap<String, u64>,
+    pub event_id: HashMap<String, u64>,
+}
+
+/// Compute distinct values + counts for common facets across **all** records.
+/// Returned object shape (JSON):
+/// {
+///   level:    { "0": 123, "4": 456, ... },
+///   provider: { "Microsoft-Windows-Security-Auditing": 789, ... },
+///   channel:  { "Security": 789, ... },
+///   event_id: { "4688": 321, ... }
+/// }
+#[wasm_bindgen]
+pub fn compute_buckets(data: &[u8]) -> Result<JsValue, JsError> {
+    let cursor = Cursor::new(data);
+    let settings = ParserSettings::default()
+        .separate_json_attributes(true)
+        .indent(false);
+
+    let mut parser = EvtxParser::from_read_seek(cursor)
+        .map_err(|e| JsError::new(&format!("Failed to create parser: {}", e)))?
+        .with_configuration(settings);
+
+    let mut buckets: BucketCounts = BucketCounts::default();
+    let mut record_counter = 0u64;
+
+    for record in parser.records_json_value() {
+        record_counter += 1;
+        let rec = match record {
+            Ok(r) => r.data,
+            Err(_) => continue,
+        };
+
+        // Navigate to Event.System if present
+        let sys = match rec.get("Event").and_then(|v| v.get("System")) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Level
+        if let Some(level_val) = sys.get("Level") {
+            let key = level_val.to_string();
+            *buckets.level.entry(key).or_insert(0) += 1;
+        }
+
+        // Provider.Name – might be nested under Provider or Provider_attributes
+        if let Some(provider_name) = sys
+            .get("Provider")
+            .and_then(|p| p.get("Name"))
+            .or_else(|| sys.get("Provider_attributes").and_then(|p| p.get("Name")))
+        {
+            let key_owned = provider_name
+                .as_str()
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| provider_name.to_string());
+            *buckets.provider.entry(key_owned).or_insert(0) += 1;
+        }
+
+        // Channel
+        if let Some(ch) = sys.get("Channel") {
+            let key_owned = ch
+                .as_str()
+                .map(|s| s.to_owned())
+                .unwrap_or_else(|| ch.to_string());
+            *buckets.channel.entry(key_owned).or_insert(0) += 1;
+        }
+
+        // EventID (may be object when attributes enabled)
+        if let Some(eid) = sys.get("EventID") {
+            let id_str = if eid.is_object() {
+                eid.get("#text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&eid.to_string())
+                    .to_owned()
+            } else if eid.is_string() {
+                eid.as_str().unwrap().to_owned()
+            } else {
+                eid.to_string()
+            };
+            *buckets.event_id.entry(id_str).or_insert(0) += 1;
+        }
+    }
+
+    // DEBUG: emit some stats to the browser console so we can confirm logic works.
+    #[cfg(target_arch = "wasm32")]
+    {
+        use web_sys::console;
+        console::log_1(&JsValue::from_str(&format!(
+            "compute_buckets finished – processed {} records, level keys={} provider keys={} channel keys={} event_id keys={}",
+            record_counter,
+            buckets.level.len(),
+            buckets.provider.len(),
+            buckets.channel.len(),
+            buckets.event_id.len()
+        )));
+    }
+
+    let serializer = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
+
+    buckets
+        .serialize(&serializer)
+        .map_err(|e| JsError::new(&format!("Failed to serialise buckets: {}", e)))
 }
 
 #[wasm_bindgen]
@@ -258,6 +367,76 @@ impl EvtxWasmParser {
             "Record with ID {} not found",
             record_id
         )))
+    }
+
+    /// Parse records from a specific chunk with offset/limit.
+    /// `chunk_index` – zero-based index of the chunk.
+    /// `start` – zero-based record offset within the chunk to begin at.
+    /// `limit` – maximum number of records to return (0 = no limit).
+    #[wasm_bindgen]
+    pub fn parse_chunk_records(
+        &self,
+        chunk_index: usize,
+        start: usize,
+        limit: Option<usize>,
+    ) -> Result<JsValue, JsError> {
+        let cursor = Cursor::new(&self.data);
+        let mut parser = EvtxParser::from_read_seek(cursor)
+            .map_err(|e| JsError::new(&format!("Failed to create parser: {}", e)))?;
+
+        let mut records = Vec::new();
+        let mut errors = Vec::new();
+
+        for (idx, chunk) in parser.chunks().enumerate() {
+            if idx != chunk_index {
+                continue;
+            }
+
+            match chunk {
+                Ok(mut chunk_data) => {
+                    let chunk_settings = ParserSettings::default()
+                        .separate_json_attributes(true)
+                        .indent(false);
+                    match chunk_data.parse(std::sync::Arc::new(chunk_settings)) {
+                        Ok(mut chunk) => {
+                            for (rec_idx, record) in chunk.iter().enumerate() {
+                                if rec_idx < start {
+                                    continue;
+                                }
+
+                                if let Some(max) = limit {
+                                    if records.len() >= max {
+                                        break;
+                                    }
+                                }
+
+                                match record {
+                                    Ok(record_data) => match record_data.into_json_value() {
+                                        Ok(json_record) => records.push(json_record.data),
+                                        Err(e) => errors.push(format!("Record JSON error: {}", e)),
+                                    },
+                                    Err(e) => errors.push(format!("Record error: {}", e)),
+                                }
+                            }
+                        }
+                        Err(e) => errors.push(format!("Chunk parse error: {}", e)),
+                    }
+                }
+                Err(e) => errors.push(format!("Chunk error: {}", e)),
+            }
+
+            break; // Only process the requested chunk
+        }
+
+        let result = ParseResult {
+            total_records: records.len(),
+            records,
+            chunk_count: 1,
+            errors,
+        };
+
+        serde_wasm_bindgen::to_value(&result)
+            .map_err(|e| JsError::new(&format!("Failed to serialize result: {}", e)))
     }
 }
 

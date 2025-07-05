@@ -1,5 +1,6 @@
 // EVTX Parser interface - wraps the WASM module
 import type { EvtxFileInfo, ParseResult, EvtxRecord } from "./types";
+import EvtxStorage from "./storage";
 
 // Minimal runtime shape of the WASM parser instance. We only include the
 // methods we actually call from the TypeScript side.
@@ -84,6 +85,15 @@ export class EvtxParser implements IEvtxParser {
 
     // Get file info
     const fileInfo = await quick_file_info(this.fileData);
+
+    // Persist file in IndexedDB for quick reloads
+    try {
+      const storage = await EvtxStorage.getInstance();
+      await storage.saveFile(file, fileInfo.total_chunks as number);
+    } catch (err) {
+      // Non-blocking – log and continue
+      console.warn("Failed to persist EVTX file:", err);
+    }
 
     // Create parser instance – we cast it to the minimal interface we defined
     // above. This avoids introducing `any` while still acknowledging the

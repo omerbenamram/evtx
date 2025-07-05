@@ -5,15 +5,21 @@ export interface TreeNode {
   id: string;
   label: string;
   icon?: React.ReactNode;
+  /** Optional icon to display when node is expanded (if different). */
+  expandedIcon?: React.ReactNode;
   children?: TreeNode[];
   isExpanded?: boolean;
   isSelected?: boolean;
   onClick?: () => void;
+  /** Arbitrary metadata associated with the node (not used by TreeView itself). */
+  data?: unknown;
 }
 
 export interface TreeViewProps {
   nodes: TreeNode[];
   onNodeClick?: (node: TreeNode) => void;
+  /** Fired when a contextmenu (right-click) event occurs on a node. */
+  onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
   onNodeExpand?: (node: TreeNode, isExpanded: boolean) => void;
   selectedNodeId?: string;
   expandedNodeIds?: Set<string>;
@@ -119,6 +125,8 @@ interface TreeNodeComponentProps {
   node: TreeNode;
   level: number;
   onNodeClick?: (node: TreeNode) => void;
+  /** Fired when a contextmenu (right-click) event occurs on a node. */
+  onNodeContextMenu?: (node: TreeNode, event: React.MouseEvent) => void;
   onNodeExpand?: (node: TreeNode, isExpanded: boolean) => void;
   selectedNodeId?: string;
   expandedNodeIds: Set<string>;
@@ -129,6 +137,7 @@ const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
   node,
   level,
   onNodeClick,
+  onNodeContextMenu,
   onNodeExpand,
   selectedNodeId,
   expandedNodeIds,
@@ -147,6 +156,16 @@ const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
     }
   }, [node, onNodeClick]);
 
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (onNodeContextMenu) {
+        onNodeContextMenu(node, e);
+      }
+    },
+    [node, onNodeContextMenu]
+  );
+
   const handleExpand = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -163,13 +182,18 @@ const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
         $isSelected={isSelected}
         $level={level}
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
       >
         {hasChildren ? (
           <ExpandIcon $isExpanded={isExpanded} onClick={handleExpand} />
         ) : (
           <EmptySpace />
         )}
-        {node.icon && <NodeIcon>{node.icon}</NodeIcon>}
+        {node.icon && (
+          <NodeIcon>
+            {isExpanded && node.expandedIcon ? node.expandedIcon : node.icon}
+          </NodeIcon>
+        )}
         <NodeLabel>{node.label}</NodeLabel>
       </TreeNodeContent>
       {hasChildren && isExpanded && (
@@ -180,6 +204,7 @@ const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
               node={childNode}
               level={level + 1}
               onNodeClick={onNodeClick}
+              onNodeContextMenu={onNodeContextMenu}
               onNodeExpand={onNodeExpand}
               selectedNodeId={selectedNodeId}
               expandedNodeIds={expandedNodeIds}
@@ -195,6 +220,7 @@ const TreeNodeComponent: React.FC<TreeNodeComponentProps> = ({
 export const TreeView: React.FC<TreeViewProps> = ({
   nodes,
   onNodeClick,
+  onNodeContextMenu,
   onNodeExpand,
   selectedNodeId,
   expandedNodeIds: providedExpandedNodeIds,
@@ -234,6 +260,7 @@ export const TreeView: React.FC<TreeViewProps> = ({
           node={node}
           level={0}
           onNodeClick={onNodeClick}
+          onNodeContextMenu={onNodeContextMenu}
           onNodeExpand={handleNodeExpand}
           selectedNodeId={selectedNodeId}
           expandedNodeIds={expandedNodeIds}

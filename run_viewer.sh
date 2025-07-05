@@ -26,6 +26,7 @@ echo "📦 Building WASM in $MODE mode..."
 
 # Clean previous artefacts so we never serve stale code
 rm -rf "$VIEWER_WASM_DIR"
+rm -rf "$VIEWER_DIR/public/pkg" # remove old public/pkg if present
 mkdir -p "$VIEWER_WASM_DIR"
 
 # Convert to an absolute path so it stays valid after we cd into the crate dir

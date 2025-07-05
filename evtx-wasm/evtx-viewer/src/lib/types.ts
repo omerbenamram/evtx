@@ -108,3 +108,11 @@ export interface FilterOptions {
   provider?: string[];
   channel?: string[];
 }
+
+// Pre-computed facet buckets across the entire log file
+export interface BucketCounts {
+  level: Record<string, number>;
+  provider: Record<string, number>;
+  channel: Record<string, number>;
+  event_id: Record<string, number>;
+}

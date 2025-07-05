@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo } from "react";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import styled, { ThemeProvider } from "styled-components";
 import { GlobalStyles } from "./styles/GlobalStyles";
 import { theme } from "./styles/theme";
@@ -8,6 +9,7 @@ import {
   Toolbar,
   ToolbarButton,
   ToolbarSeparator,
+  Dropdown,
 } from "./components/Windows";
 import { FileTree } from "./components/FileTree";
 import { LogTable } from "./components/LogTable";
@@ -19,7 +21,6 @@ import {
   Filter20Regular,
   ArrowClockwise20Regular,
   Info20Regular,
-  Settings20Regular,
   ArrowExportLtr20Regular,
 } from "@fluentui/react-icons";
 import { EvtxParser } from "./lib/parser";
@@ -27,10 +28,15 @@ import {
   type EvtxRecord,
   type EvtxFileInfo,
   type FilterOptions,
+  type BucketCounts,
 } from "./lib/types";
-import { logger } from "./lib/logger";
+import { logger, LogLevel } from "./lib/logger";
+import EvtxStorage from "./lib/storage";
 import init from "./wasm/evtx_wasm.js";
 import { FilterSidebar } from "./components/FilterSidebar";
+import { LazyEvtxReader } from "./lib/lazyReader";
+import { ChunkDataSource } from "./lib/chunkDataSource";
+import { LogTableVirtual } from "./components/LogTableVirtual";
 
 const AppContainer = styled.div`
   display: flex;
@@ -142,6 +148,25 @@ function App() {
   const [filters, setFilters] = useState<FilterOptions>({});
   const [showFilters, setShowFilters] = useState(false);
   const [filterPanelWidth, setFilterPanelWidth] = useState(300);
+  const [dataSource, setDataSource] = useState<ChunkDataSource | null>(null);
+  const [bucketCounts, setBucketCounts] = useState<BucketCounts | null>(null);
+  const [currentFile, setCurrentFile] = useState<File | null>(null);
+  const [currentFileId, setCurrentFileId] = useState<string | null>(null);
+
+  // --- Logging level state ---
+  const [logLevel, setLogLevel] = useState<LogLevel>(logger.getLogLevel());
+
+  const handleLogLevelChange = useCallback((level: LogLevel) => {
+    logger.setLogLevel(level);
+    setLogLevel(level);
+  }, []);
+
+  const logLevelOptions = [
+    { label: "DEBUG", value: LogLevel.DEBUG },
+    { label: "INFO", value: LogLevel.INFO },
+    { label: "WARN", value: LogLevel.WARN },
+    { label: "ERROR", value: LogLevel.ERROR },
+  ];
 
   // Initialize WASM module
   useEffect(() => {
@@ -195,35 +220,38 @@ function App() {
       logger.info(`Loading file: ${file.name}`);
 
       try {
+        setCurrentFile(file);
+        setFilters({}); // reset any active filters
+        // ----------------- NEW LAZY PATH -----------------
+        const reader = await LazyEvtxReader.fromFile(file);
+        const ds = new ChunkDataSource(reader);
+        setDataSource(ds);
+
+        // We still parse the first window eagerly so that filters/sidebar can
+        // display something immediate (optional – small performance hit).
+        const initial = await reader.getWindow({
+          chunkIndex: 0,
+          start: 0,
+          limit: 1000,
+        });
+        setRecords(initial);
+
+        // TODO: update filters to stream, for now they only work on loaded slice.
+
+        // Legacy EvtxParser kept for export functionality.
         const evtxParser = new EvtxParser();
         const info = await evtxParser.parseFile(file);
+        // Retrieve fileId derived during saveFile inside parser
+        const storage = await EvtxStorage.getInstance();
+        const fileId = await storage.deriveFileId(file);
+        setCurrentFileId(fileId);
+
+        const cachedBuckets = await storage.getBucketCounts(fileId);
+        setBucketCounts(cachedBuckets ?? null);
         setFileInfo(info);
         setParser(evtxParser);
-
-        logger.info("File loaded successfully", info);
-        setLoadingMessage("Parsing records...");
-
-        // Parse up to 1000 records initially
-        const result = await evtxParser.parseWithLimit(1000);
-        setRecords(result.records);
-
-        // Output first record structure for debugging
-        if (result.records.length > 0) {
-          logger.info("Sample record structure (logger)", result.records[0]);
-          // eslint-disable-next-line no-console
-          console.log("Sample record structure", result.records[0]);
-        }
-
-        logger.info(`Parsed ${result.records.length} records`, {
-          totalRecords: result.totalRecords,
-          errors: result.errors.length,
-        });
-
-        if (result.errors.length > 0) {
-          logger.warn("Some records had parsing errors", result.errors);
-        }
       } catch (error) {
-        logger.error("Failed to parse file", error);
+        logger.error("Failed to load file via lazy reader", error);
         alert("Failed to parse file. Please check if it's a valid EVTX file.");
       } finally {
         setIsLoading(false);
@@ -233,16 +261,86 @@ function App() {
     [isWasmReady]
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleNodeSelect = useCallback((node: any) => {
-    setSelectedNodeId(node.id);
-    logger.debug("Tree node selected", node);
+  // Handler to compute full-file bucket counts via WASM
+  const handleComputeBuckets = useCallback(async () => {
+    if (!currentFile || !currentFileId) return;
+    try {
+      setIsLoading(true);
+      setLoadingMessage("Computing filter buckets (full file scan)...");
 
-    // In a real app, this would filter records based on the selected log
-    if (node.logPath) {
-      logger.info(`Would load log: ${node.logPath}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const wasmMod: any = await import("./wasm/evtx_wasm.js");
+      const buffer = await currentFile.arrayBuffer();
+      const raw = await wasmMod.compute_buckets(new Uint8Array(buffer));
+
+      // Convert potential Map structures to plain objects
+      // Helper to recursively convert Map → plain object
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mapToObj = (input: unknown): any => {
+        if (input instanceof Map) {
+          const o: Record<string, any> = {};
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (input as Map<any, any>).forEach((v: any, k: any) => {
+            o[String(k)] = mapToObj(v);
+          });
+          return o;
+        }
+        if (Array.isArray(input)) return input.map(mapToObj);
+        return input;
+      };
+
+      const buckets: BucketCounts = mapToObj(raw) as BucketCounts;
+      setBucketCounts(buckets);
+
+      // Persist in IndexedDB
+      const storage = await EvtxStorage.getInstance();
+      await storage.saveBucketCounts(currentFileId, buckets);
+
+      logger.info("Computed and cached bucket counts", {
+        levels: Object.keys(buckets.level).length,
+        providers: Object.keys(buckets.provider).length,
+      });
+    } catch (err) {
+      logger.error("Failed to compute buckets", err);
+      alert("Failed to compute filter buckets – see console for details");
+    } finally {
+      setIsLoading(false);
+      setLoadingMessage("");
     }
-  }, []);
+  }, [currentFile, currentFileId]);
+
+  type TreeNodeData = { id: string; fileId?: string; logPath?: string };
+
+  const handleNodeSelect = useCallback(
+    async (node: TreeNodeData) => {
+      setSelectedNodeId(node.id);
+      logger.debug("Tree node selected", node);
+
+      if (node.fileId) {
+        try {
+          const storage = await (
+            await import("./lib/storage")
+          ).default.getInstance();
+          const { meta, blob } = await storage.getFile(node.fileId);
+          // Convert Blob to File so existing parser flow works
+          const file = new File([blob], meta.fileName, {
+            type: "application/octet-stream",
+          });
+          await handleFileSelect(file);
+        } catch (err) {
+          logger.error("Failed to load cached file", err);
+          alert("Could not load cached log – see console for details");
+        }
+        return;
+      }
+
+      // legacy demo paths
+      if (node.logPath) {
+        logger.info(`Would load log: ${node.logPath}`);
+      }
+    },
+    [handleFileSelect]
+  );
 
   const handleRefresh = useCallback(async () => {
     if (!parser || !fileInfo) return;
@@ -264,6 +362,8 @@ function App() {
   // Helper – apply current filters to full record list
   const applyFilters = useCallback(
     (allRecords: EvtxRecord[], opts: FilterOptions): EvtxRecord[] => {
+      const getProvider = (sys: any): string =>
+        sys.Provider?.Name ?? sys.Provider_attributes?.Name ?? "";
       if (
         !opts.searchTerm &&
         (!opts.level || opts.level.length === 0) &&
@@ -283,10 +383,11 @@ function App() {
             ? true
             : opts.level.includes(sys.Level ?? 4);
 
+        const providerName = getProvider(sys);
         const providerMatch =
           !opts.provider || opts.provider.length === 0
             ? true
-            : opts.provider.includes(sys.Provider?.Name ?? "");
+            : opts.provider.includes(providerName);
 
         const channelMatch =
           !opts.channel || opts.channel.length === 0
@@ -298,7 +399,7 @@ function App() {
             ? true
             : opts.eventId.includes(Number(sys.EventID ?? -1));
 
-        const searchStr = `${sys.Provider?.Name ?? ""} ${sys.Computer ?? ""} ${
+        const searchStr = `${providerName} ${sys.Computer ?? ""} ${
           sys.EventID ?? ""
         }`.toLowerCase();
         const termMatch = term === "" || searchStr.includes(term);
@@ -473,11 +574,6 @@ function App() {
               title="Open"
               onClick={() => document.getElementById("file-input")?.click()}
             />
-            <ToolbarButton
-              icon={<Save20Regular />}
-              title="Save"
-              disabled={records.length === 0}
-            />
             <ToolbarSeparator />
             <ToolbarButton
               icon={<Filter20Regular />}
@@ -499,7 +595,13 @@ function App() {
               disabled={filteredRecords.length === 0}
               onClick={() => handleExport("json")}
             />
-            <ToolbarButton icon={<Settings20Regular />} title="Settings" />
+            <ToolbarSeparator />
+            <Dropdown
+              label="Log"
+              value={logLevel}
+              onChange={handleLogLevelChange}
+              options={logLevelOptions}
+            />
           </Toolbar>
         </Panel>
 
@@ -512,7 +614,11 @@ function App() {
           </Sidebar>
           <ContentArea>
             <RecordsArea>
-              <LogTable data={filteredRecords} />
+              {dataSource ? (
+                <LogTableVirtual dataSource={dataSource} filters={filters} />
+              ) : (
+                <LogTable data={filteredRecords} />
+              )}
             </RecordsArea>
             {showFilters && (
               <FilterPanel $width={filterPanelWidth}>
@@ -520,8 +626,21 @@ function App() {
                 <FilterSidebar
                   records={records}
                   filters={filters}
+                  bucketCounts={bucketCounts}
                   onChange={setFilters}
                 />
+                {!bucketCounts && currentFile && (
+                  <Panel
+                    padding="small"
+                    style={{
+                      borderTop: `1px solid ${theme.colors.border.light}`,
+                    }}
+                  >
+                    <button onClick={handleComputeBuckets}>
+                      Compute full counts
+                    </button>
+                  </Panel>
+                )}
               </FilterPanel>
             )}
           </ContentArea>

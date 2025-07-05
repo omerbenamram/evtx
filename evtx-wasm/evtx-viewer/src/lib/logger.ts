@@ -3,26 +3,26 @@ export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
   WARN = 2,
-  ERROR = 3
+  ERROR = 3,
 }
 
 export interface LogEntry {
   timestamp: Date;
   level: LogLevel;
   message: string;
-  context?: any;
+  context?: unknown;
 }
 
 class Logger {
   private static instance: Logger;
   private logLevel: LogLevel = LogLevel.INFO;
   private logs: LogEntry[] = [];
-  private maxLogs = 1000;
-  private listeners: ((log: LogEntry) => void)[] = [];
+  private readonly maxLogs = 1000;
+  private listeners: Array<(log: LogEntry) => void> = [];
 
   private constructor() {
     // Set log level from localStorage or default
-    const savedLevel = localStorage.getItem('evtx-viewer-log-level');
+    const savedLevel = localStorage.getItem("evtx-viewer-log-level");
     if (savedLevel) {
       this.logLevel = parseInt(savedLevel, 10);
     }
@@ -37,7 +37,7 @@ class Logger {
 
   setLogLevel(level: LogLevel): void {
     this.logLevel = level;
-    localStorage.setItem('evtx-viewer-log-level', level.toString());
+    localStorage.setItem("evtx-viewer-log-level", level.toString());
   }
 
   getLogLevel(): LogLevel {
@@ -55,18 +55,18 @@ class Logger {
   subscribe(listener: (log: LogEntry) => void): () => void {
     this.listeners.push(listener);
     return () => {
-      this.listeners = this.listeners.filter(l => l !== listener);
+      this.listeners = this.listeners.filter((l) => l !== listener);
     };
   }
 
-  private log(level: LogLevel, message: string, context?: any): void {
+  private log(level: LogLevel, message: string, context?: unknown): void {
     if (level < this.logLevel) return;
 
     const entry: LogEntry = {
       timestamp: new Date(),
       level,
       message,
-      context
+      context,
     };
 
     // Add to internal log buffer
@@ -76,34 +76,39 @@ class Logger {
     }
 
     // Notify listeners
-    this.listeners.forEach(listener => listener(entry));
+    this.listeners.forEach((listener) => listener(entry));
 
     // Console output
-    const logMethod = level === LogLevel.ERROR ? 'error' : 
-                     level === LogLevel.WARN ? 'warn' : 
-                     level === LogLevel.INFO ? 'info' : 'log';
-    
+    const logMethod =
+      level === LogLevel.ERROR
+        ? "error"
+        : level === LogLevel.WARN
+        ? "warn"
+        : level === LogLevel.INFO
+        ? "info"
+        : "log";
+
     const prefix = `[${LogLevel[level]}] ${entry.timestamp.toISOString()}`;
-    if (context) {
+    if (context !== undefined) {
       console[logMethod](prefix, message, context);
     } else {
       console[logMethod](prefix, message);
     }
   }
 
-  debug(message: string, context?: any): void {
+  debug(message: string, context?: unknown): void {
     this.log(LogLevel.DEBUG, message, context);
   }
 
-  info(message: string, context?: any): void {
+  info(message: string, context?: unknown): void {
     this.log(LogLevel.INFO, message, context);
   }
 
-  warn(message: string, context?: any): void {
+  warn(message: string, context?: unknown): void {
     this.log(LogLevel.WARN, message, context);
   }
 
-  error(message: string, context?: any): void {
+  error(message: string, context?: unknown): void {
     this.log(LogLevel.ERROR, message, context);
   }
 }
