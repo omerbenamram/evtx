@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import styled, { ThemeProvider } from "styled-components";
 import { GlobalStyles } from "./styles/GlobalStyles";
@@ -12,8 +12,8 @@ import {
   Dropdown,
 } from "./components/Windows";
 import { FileTree } from "./components/FileTree";
-import { LogTable } from "./components/LogTable";
 import { DragDropOverlay } from "./components/DragDropOverlay";
+import { StatusBar as StatusBarView } from "./components/StatusBar";
 import {
   Open20Regular,
   Save20Regular,
@@ -23,20 +23,14 @@ import {
   Info20Regular,
   ArrowExportLtr20Regular,
 } from "@fluentui/react-icons";
-import { EvtxParser } from "./lib/parser";
-import {
-  type EvtxRecord,
-  type EvtxFileInfo,
-  type FilterOptions,
-  type BucketCounts,
-} from "./lib/types";
+// Note: parsing/export handled via useEvtxLog hook; no direct EvtxParser needed here.
+import { type FilterOptions } from "./lib/types";
 import { logger, LogLevel } from "./lib/logger";
-import EvtxStorage from "./lib/storage";
 import init from "./wasm/evtx_wasm.js";
 import { FilterSidebar } from "./components/FilterSidebar";
-import { LazyEvtxReader } from "./lib/lazyReader";
-import { ChunkDataSource } from "./lib/chunkDataSource";
 import { LogTableVirtual } from "./components/LogTableVirtual";
+import { useEvtxLog } from "./hooks/useEvtxLog";
+import { initDuckDB } from "./lib/duckdb";
 
 const AppContainer = styled.div`
   display: flex;
@@ -98,23 +92,7 @@ const FilterDivider = styled.div`
   }
 `;
 
-const StatusBar = styled.div`
-  height: 24px;
-  background: ${theme.colors.background.secondary};
-  border-top: 1px solid ${theme.colors.border.light};
-  display: flex;
-  align-items: center;
-  padding: 0 ${theme.spacing.sm};
-  font-size: ${theme.fontSize.caption};
-  color: ${theme.colors.text.secondary};
-  gap: ${theme.spacing.lg};
-`;
-
-const StatusItem = styled.span`
-  display: flex;
-  align-items: center;
-  gap: ${theme.spacing.xs};
-`;
+// Local StatusBar styled components have been moved to components/StatusBar.tsx
 
 const LoadingOverlay = styled.div`
   position: fixed;
@@ -138,20 +116,28 @@ const LoadingContent = styled.div`
 `;
 
 function App() {
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadingMessage, setLoadingMessage] = useState("");
-  const [records, setRecords] = useState<EvtxRecord[]>([]);
-  const [fileInfo, setFileInfo] = useState<EvtxFileInfo | null>(null);
-  const [parser, setParser] = useState<EvtxParser | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string>("");
   const [isWasmReady, setIsWasmReady] = useState(false);
   const [filters, setFilters] = useState<FilterOptions>({});
   const [showFilters, setShowFilters] = useState(false);
   const [filterPanelWidth, setFilterPanelWidth] = useState(300);
-  const [dataSource, setDataSource] = useState<ChunkDataSource | null>(null);
-  const [bucketCounts, setBucketCounts] = useState<BucketCounts | null>(null);
-  const [currentFile, setCurrentFile] = useState<File | null>(null);
-  const [currentFileId, setCurrentFileId] = useState<string | null>(null);
+  const [fileTreeVersion, setFileTreeVersion] = useState<number>(0);
+
+  // Use central hook for log/session state
+  const {
+    isLoading,
+    loadingMessage,
+    records,
+    matchedCount,
+    fileInfo,
+    parser,
+    dataSource,
+    bucketCounts,
+    totalRecords,
+    currentFileId,
+    ingestProgress,
+    loadFile,
+  } = useEvtxLog(filters);
 
   // --- Logging level state ---
   const [logLevel, setLogLevel] = useState<LogLevel>(logger.getLogLevel());
@@ -176,6 +162,13 @@ function App() {
         await init();
         setIsWasmReady(true);
         logger.info("WASM module initialized successfully");
+
+        // Kick off DuckDB instantiation in the background so that when we
+        // later ingest records, the heavy WASM compile step has already
+        // finished.  We deliberately *don’t* await this.
+        void initDuckDB().catch((err) =>
+          console.warn("DuckDB pre-init failed", err)
+        );
       } catch (error) {
         logger.error("Failed to initialize WASM module", error);
       }
@@ -208,6 +201,7 @@ function App() {
     [filterPanelWidth]
   );
 
+  // Wrapper to gate WASM readiness and reset some App-level state before delegating
   const handleFileSelect = useCallback(
     async (file: File) => {
       if (!isWasmReady) {
@@ -215,99 +209,15 @@ function App() {
         return;
       }
 
-      setIsLoading(true);
-      setLoadingMessage("Loading file...");
-      logger.info(`Loading file: ${file.name}`);
+      // Reset filters in App scope on new file
+      setFilters({});
+      // Bump FileTree refresh so new file appears immediately
+      setFileTreeVersion((v) => v + 1);
 
-      try {
-        setCurrentFile(file);
-        setFilters({}); // reset any active filters
-        // ----------------- NEW LAZY PATH -----------------
-        const reader = await LazyEvtxReader.fromFile(file);
-        const ds = new ChunkDataSource(reader);
-        setDataSource(ds);
-
-        // We still parse the first window eagerly so that filters/sidebar can
-        // display something immediate (optional – small performance hit).
-        const initial = await reader.getWindow({
-          chunkIndex: 0,
-          start: 0,
-          limit: 1000,
-        });
-        setRecords(initial);
-
-        // TODO: update filters to stream, for now they only work on loaded slice.
-
-        // Legacy EvtxParser kept for export functionality.
-        const evtxParser = new EvtxParser();
-        const info = await evtxParser.parseFile(file);
-        // Retrieve fileId derived during saveFile inside parser
-        const storage = await EvtxStorage.getInstance();
-        const fileId = await storage.deriveFileId(file);
-        setCurrentFileId(fileId);
-
-        const cachedBuckets = await storage.getBucketCounts(fileId);
-        setBucketCounts(cachedBuckets ?? null);
-        setFileInfo(info);
-        setParser(evtxParser);
-      } catch (error) {
-        logger.error("Failed to load file via lazy reader", error);
-        alert("Failed to parse file. Please check if it's a valid EVTX file.");
-      } finally {
-        setIsLoading(false);
-        setLoadingMessage("");
-      }
+      await loadFile(file);
     },
-    [isWasmReady]
+    [isWasmReady, loadFile]
   );
-
-  // Handler to compute full-file bucket counts via WASM
-  const handleComputeBuckets = useCallback(async () => {
-    if (!currentFile || !currentFileId) return;
-    try {
-      setIsLoading(true);
-      setLoadingMessage("Computing filter buckets (full file scan)...");
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const wasmMod: any = await import("./wasm/evtx_wasm.js");
-      const buffer = await currentFile.arrayBuffer();
-      const raw = await wasmMod.compute_buckets(new Uint8Array(buffer));
-
-      // Convert potential Map structures to plain objects
-      // Helper to recursively convert Map → plain object
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mapToObj = (input: unknown): any => {
-        if (input instanceof Map) {
-          const o: Record<string, any> = {};
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (input as Map<any, any>).forEach((v: any, k: any) => {
-            o[String(k)] = mapToObj(v);
-          });
-          return o;
-        }
-        if (Array.isArray(input)) return input.map(mapToObj);
-        return input;
-      };
-
-      const buckets: BucketCounts = mapToObj(raw) as BucketCounts;
-      setBucketCounts(buckets);
-
-      // Persist in IndexedDB
-      const storage = await EvtxStorage.getInstance();
-      await storage.saveBucketCounts(currentFileId, buckets);
-
-      logger.info("Computed and cached bucket counts", {
-        levels: Object.keys(buckets.level).length,
-        providers: Object.keys(buckets.provider).length,
-      });
-    } catch (err) {
-      logger.error("Failed to compute buckets", err);
-      alert("Failed to compute filter buckets – see console for details");
-    } finally {
-      setIsLoading(false);
-      setLoadingMessage("");
-    }
-  }, [currentFile, currentFileId]);
 
   type TreeNodeData = { id: string; fileId?: string; logPath?: string };
 
@@ -345,90 +255,29 @@ function App() {
   const handleRefresh = useCallback(async () => {
     if (!parser || !fileInfo) return;
 
-    setIsLoading(true);
-    setLoadingMessage("Refreshing records...");
-
+    // Refresh parsing via parser (Hook state will capture changes if needed)
     try {
       const result = await parser.parseAllRecords();
-      setRecords(result.records);
+      // Currently the hook owns records; we can't set them directly here.
+      // For now we just log and trust DuckDB source; we may expand hook later.
       logger.info("Records refreshed", { count: result.records.length });
     } catch (error) {
       logger.error("Failed to refresh records", error);
-    } finally {
-      setIsLoading(false);
     }
   }, [parser, fileInfo]);
 
-  // Helper – apply current filters to full record list
-  const applyFilters = useCallback(
-    (allRecords: EvtxRecord[], opts: FilterOptions): EvtxRecord[] => {
-      const getProvider = (sys: any): string =>
-        sys.Provider?.Name ?? sys.Provider_attributes?.Name ?? "";
-      if (
-        !opts.searchTerm &&
-        (!opts.level || opts.level.length === 0) &&
-        (!opts.provider || opts.provider.length === 0) &&
-        (!opts.channel || opts.channel.length === 0) &&
-        (!opts.eventId || opts.eventId.length === 0)
-      ) {
-        return allRecords;
-      }
-
-      const term = (opts.searchTerm ?? "").toLowerCase();
-
-      return allRecords.filter((rec) => {
-        const sys = rec.Event?.System ?? {};
-        const levelMatch =
-          !opts.level || opts.level.length === 0
-            ? true
-            : opts.level.includes(sys.Level ?? 4);
-
-        const providerName = getProvider(sys);
-        const providerMatch =
-          !opts.provider || opts.provider.length === 0
-            ? true
-            : opts.provider.includes(providerName);
-
-        const channelMatch =
-          !opts.channel || opts.channel.length === 0
-            ? true
-            : opts.channel.includes(sys.Channel ?? "");
-
-        const eventIdMatch =
-          !opts.eventId || opts.eventId.length === 0
-            ? true
-            : opts.eventId.includes(Number(sys.EventID ?? -1));
-
-        const searchStr = `${providerName} ${sys.Computer ?? ""} ${
-          sys.EventID ?? ""
-        }`.toLowerCase();
-        const termMatch = term === "" || searchStr.includes(term);
-
-        return (
-          levelMatch &&
-          providerMatch &&
-          channelMatch &&
-          eventIdMatch &&
-          termMatch
-        );
-      });
-    },
-    []
-  );
-
-  const filteredRecords = useMemo(
-    () => applyFilters(records, filters),
-    [records, filters, applyFilters]
-  );
+  // (Effects computing matched count, bucket counts, and dataSource moved into useEvtxLog)
 
   const handleExport = useCallback(
     async (format: "json" | "xml") => {
-      if (filteredRecords.length === 0) return;
+      if (matchedCount === 0) return;
 
       try {
+        const { fetchRecords } = await import("./lib/duckdb");
+        const dataArr = await fetchRecords(filters, matchedCount, 0);
         const data =
-          parser?.exportRecords(filteredRecords, format) ||
-          JSON.stringify(filteredRecords, null, 2);
+          parser?.exportRecords(dataArr, format) ||
+          JSON.stringify(dataArr, null, 2);
         const blob = new Blob([data], {
           type: format === "json" ? "application/json" : "application/xml",
         });
@@ -442,9 +291,7 @@ function App() {
         URL.revokeObjectURL(url);
 
         logger.info(
-          `Exported ${
-            filteredRecords.length
-          } records as ${format.toUpperCase()}`
+          `Exported ${matchedCount} records as ${format.toUpperCase()}`
         );
       } catch (error) {
         logger.error(`Failed to export as ${format}`, error);
@@ -455,7 +302,42 @@ function App() {
         );
       }
     },
-    [filteredRecords, parser]
+    [parser, matchedCount, filters]
+  );
+
+  const handleAddEventDataFilter = useCallback(
+    (field: string, value: string) => {
+      setFilters((prev) => {
+        const prevEvent = prev.eventData ?? {};
+        const existing = prevEvent[field] ?? [];
+        if (existing.includes(value)) return prev; // already active
+        return {
+          ...prev,
+          eventData: { ...prevEvent, [field]: [...existing, value] },
+        };
+      });
+      setShowFilters(true); // ensure sidebar visible so user sees active filter
+    },
+    []
+  );
+
+  const handleExcludeEventDataFilter = useCallback(
+    (field: string, value: string) => {
+      setFilters((prev) => {
+        const prevEventEx = prev.eventDataExclude ?? {};
+        const existing = prevEventEx[field] ?? [];
+        if (existing.includes(value)) return prev;
+        return {
+          ...prev,
+          eventDataExclude: {
+            ...prevEventEx,
+            [field]: [...existing, value],
+          },
+        };
+      });
+      setShowFilters(true);
+    },
+    []
   );
 
   const menuItems = [
@@ -522,7 +404,7 @@ function App() {
           id: "view-filter",
           label: showFilters ? "Hide Filters" : "Filter Current Log",
           icon: <Filter20Regular />,
-          disabled: records.length === 0,
+          disabled: records.length === 0 || ingestProgress < 1,
           onClick: () => setShowFilters((prev) => !prev),
         },
         { id: "view-sep-1", label: "sep", separator: true },
@@ -579,7 +461,7 @@ function App() {
               icon={<Filter20Regular />}
               title="Filter"
               isActive={showFilters}
-              disabled={records.length === 0}
+              disabled={records.length === 0 || ingestProgress < 1}
               onClick={() => setShowFilters((prev) => !prev)}
             />
             <ToolbarButton
@@ -592,7 +474,7 @@ function App() {
             <ToolbarButton
               icon={<ArrowExportLtr20Regular />}
               title="Export"
-              disabled={filteredRecords.length === 0}
+              disabled={matchedCount === 0}
               onClick={() => handleExport("json")}
             />
             <ToolbarSeparator />
@@ -610,17 +492,26 @@ function App() {
             <FileTree
               onNodeSelect={handleNodeSelect}
               selectedNodeId={selectedNodeId}
+              activeFileId={currentFileId}
+              ingestProgress={ingestProgress}
+              refreshVersion={fileTreeVersion}
             />
           </Sidebar>
           <ContentArea>
             <RecordsArea>
               {dataSource ? (
-                <LogTableVirtual dataSource={dataSource} filters={filters} />
+                <LogTableVirtual
+                  key={currentFileId ?? "no-file"}
+                  dataSource={dataSource}
+                  filters={filters}
+                  onAddEventDataFilter={handleAddEventDataFilter}
+                  onExcludeEventDataFilter={handleExcludeEventDataFilter}
+                />
               ) : (
-                <LogTable data={filteredRecords} />
+                <div style={{ padding: 16 }}>No data source</div>
               )}
             </RecordsArea>
-            {showFilters && (
+            {showFilters && ingestProgress === 1 && (
               <FilterPanel $width={filterPanelWidth}>
                 <FilterDivider onMouseDown={handleFilterDividerMouseDown} />
                 <FilterSidebar
@@ -629,34 +520,18 @@ function App() {
                   bucketCounts={bucketCounts}
                   onChange={setFilters}
                 />
-                {!bucketCounts && currentFile && (
-                  <Panel
-                    padding="small"
-                    style={{
-                      borderTop: `1px solid ${theme.colors.border.light}`,
-                    }}
-                  >
-                    <button onClick={handleComputeBuckets}>
-                      Compute full counts
-                    </button>
-                  </Panel>
-                )}
               </FilterPanel>
             )}
           </ContentArea>
         </MainContent>
 
-        <StatusBar>
-          <StatusItem>
-            {fileInfo
-              ? `${fileInfo.fileName} - ${filteredRecords.length}/${records.length} events`
-              : "No file loaded"}
-          </StatusItem>
-          <StatusItem>
-            {fileInfo && `Chunks: ${fileInfo.totalChunks}`}
-          </StatusItem>
-          <StatusItem>{isWasmReady ? "Ready" : "Loading WASM..."}</StatusItem>
-        </StatusBar>
+        <StatusBarView
+          fileInfo={fileInfo}
+          matchedCount={matchedCount}
+          totalRecords={totalRecords || records.length}
+          ingestProgress={ingestProgress}
+          isWasmReady={isWasmReady}
+        />
 
         <DragDropOverlay onFileSelect={handleFileSelect} />
 

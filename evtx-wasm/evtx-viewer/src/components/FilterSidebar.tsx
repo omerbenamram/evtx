@@ -5,7 +5,10 @@ import {
   ChevronRight20Regular,
   ChevronDown20Regular,
   Search20Regular,
+  Dismiss16Regular,
 } from "@fluentui/react-icons";
+import { Button } from "./Windows";
+import { logger } from "../lib/logger";
 
 interface FilterSidebarProps {
   records: EvtxRecord[];
@@ -23,6 +26,10 @@ const SidebarContainer = styled.div`
 `;
 
 const Header = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: ${({ theme }) => theme.spacing.sm};
   padding: ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.md};
   border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
   font-weight: 600;
@@ -140,231 +147,206 @@ const OptionLabel = styled.span`
   white-space: nowrap;
 `;
 
-// Helper util
-function increment(map: Map<string | number, number>, key: string | number) {
-  map.set(key, (map.get(key) || 0) + 1);
-}
+const ActiveFiltersBar = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.md};
+  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
+  background: ${({ theme }) => theme.colors.background.tertiary};
+`;
 
-export const FilterSidebar: React.FC<FilterSidebarProps> = ({
-  records,
-  filters,
-  bucketCounts,
-  onChange,
-}) => {
-  // Compute facet counts either from pre-computed buckets or on-the-fly
+const FilterChip = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: ${({ theme }) => theme.colors.background.secondary};
+  border: 1px solid ${({ theme }) => theme.colors.border.medium};
+  border-radius: ${({ theme }) => theme.borderRadius.sm};
+  font-size: ${({ theme }) => theme.fontSize.caption};
+  color: ${({ theme }) => theme.colors.text.primary};
+`;
+
+const ChipRemoveBtn = styled.button`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  line-height: 1;
+`;
+
+// (increment helper removed – facet counts are now sourced exclusively from DuckDB)
+
+export const FilterSidebar: React.FC<FilterSidebarProps> = (props) => {
+  const { filters, bucketCounts, onChange } = props;
+
+  const filtersDisabled = !bucketCounts;
+
+  /* Debug: log whenever filters *prop* changes so we can correlate with
+   * LogTableVirtual behaviour.
+   */
+  React.useEffect(() => {
+    logger.debug("FilterSidebar filters prop changed", { filters });
+  }, [filters]);
+
+  const LEVEL_NAME_MAP: Record<number, string> = {
+    0: "LogAlways",
+    1: "Critical",
+    2: "Error",
+    3: "Warning",
+    4: "Information",
+    5: "Verbose",
+  };
+
+  // Build list of active filters for chip display
+  const activeChips: { key: string; label: string; remove: () => void }[] = [];
+
+  // Search term
+  if (filters.searchTerm && filters.searchTerm.trim() !== "") {
+    activeChips.push({
+      key: `search`,
+      label: `Search: "${filters.searchTerm.trim()}"`,
+      remove: () => onChange({ ...filters, searchTerm: "" }),
+    });
+  }
+
+  // Level
+  if (filters.level && filters.level.length) {
+    filters.level.forEach((lvl) => {
+      const lbl = LEVEL_NAME_MAP[lvl] || String(lvl);
+      activeChips.push({
+        key: `level-${lvl}`,
+        label: `Level: ${lbl}`,
+        remove: () => {
+          const rem = filters.level!.filter((l) => l !== lvl);
+          onChange({ ...filters, level: rem });
+        },
+      });
+    });
+  }
+
+  // Provider
+  if (filters.provider && filters.provider.length) {
+    filters.provider.forEach((p) => {
+      activeChips.push({
+        key: `prov-${p}`,
+        label: `Provider: ${p}`,
+        remove: () => {
+          const rem = filters.provider!.filter((x) => x !== p);
+          onChange({ ...filters, provider: rem });
+        },
+      });
+    });
+  }
+
+  // Channel
+  if (filters.channel && filters.channel.length) {
+    filters.channel.forEach((c) => {
+      activeChips.push({
+        key: `chan-${c}`,
+        label: `Channel: ${c}`,
+        remove: () => {
+          const rem = filters.channel!.filter((x) => x !== c);
+          onChange({ ...filters, channel: rem });
+        },
+      });
+    });
+  }
+
+  // EventId
+  if (filters.eventId && filters.eventId.length) {
+    filters.eventId.forEach((eid) => {
+      activeChips.push({
+        key: `eid-${eid}`,
+        label: `EventID: ${eid}`,
+        remove: () => {
+          const rem = filters.eventId!.filter((x) => x !== eid);
+          onChange({ ...filters, eventId: rem });
+        },
+      });
+    });
+  }
+
+  // EventData
+  if (filters.eventData && Object.keys(filters.eventData).length) {
+    Object.entries(filters.eventData).forEach(([field, vals]) => {
+      vals.forEach((v) => {
+        activeChips.push({
+          key: `ed-${field}-${v}`,
+          label: `${field}: ${v}`,
+          remove: () => {
+            const currentVals = filters.eventData![field] ?? [];
+            const newVals = currentVals.filter((x) => x !== v);
+            const newEventData = { ...filters.eventData };
+            if (newVals.length) newEventData[field] = newVals;
+            else delete newEventData[field];
+            onChange({ ...filters, eventData: newEventData });
+          },
+        });
+      });
+    });
+  }
+
+  // EventData Exclude
+  if (
+    filters.eventDataExclude &&
+    Object.keys(filters.eventDataExclude).length
+  ) {
+    Object.entries(filters.eventDataExclude).forEach(([field, vals]) => {
+      vals.forEach((v) => {
+        activeChips.push({
+          key: `edex-${field}-${v}`,
+          label: `¬${field}: ${v}`,
+          remove: () => {
+            const currentVals = filters.eventDataExclude![field] ?? [];
+            const newVals = currentVals.filter((x) => x !== v);
+            const newEventDataEx = { ...filters.eventDataExclude };
+            if (newVals.length) newEventDataEx[field] = newVals;
+            else delete newEventDataEx[field];
+            onChange({ ...filters, eventDataExclude: newEventDataEx });
+          },
+        });
+      });
+    });
+  }
+
+  // Compute facet counts: only supported when DuckDB has provided bucket counts.
   const facetCounts = useMemo(() => {
-    // Prefer the pre-computed full-file buckets whenever available. They give
-    // accurate counts even when the in-memory `records` slice only covers a
-    // window of the log (which is common when using the virtualised reader).
-    if (bucketCounts) {
-      const toMap = (
-        obj?: Record<string, number>,
-        numericKeys = false
-      ): Map<string | number, number> => {
-        const m = new Map<string | number, number>();
-        if (!obj) return m;
-        Object.entries(obj).forEach(([k, v]) => {
-          const key = numericKeys ? Number(k) : k;
-          m.set(key, v);
-        });
-        return m;
-      };
-
-      // Start maps with all keys from the full-file buckets so they never disappear.
-      const levelMap = toMap(bucketCounts.level, true);
-      const providerMap = toMap(bucketCounts.provider);
-      const channelMap = toMap(bucketCounts.channel);
-      const eventIdMap = toMap(bucketCounts.event_id, true);
-
-      // If there are any in-memory records, use them to compute live counts so
-      // that numbers respond to additional filters.  This still preserves keys
-      // that drop to 0.
-      if (records.length > 0) {
-        const inc = (map: Map<string | number, number>, key: string | number) =>
-          map.set(key, (map.get(key) || 0) + 1);
-
-        const recordMatchesFilters = (
-          rec: EvtxRecord,
-          ignoreFacet?: keyof FilterOptions
-        ) => {
-          const sys = rec.Event.System ?? {};
-
-          if (filters.searchTerm && ignoreFacet !== "searchTerm") {
-            const termLower = filters.searchTerm.toLowerCase();
-            const searchStr = `${sys.Provider?.Name ?? ""} ${
-              sys.Computer ?? ""
-            } ${sys.EventID ?? ""}`.toLowerCase();
-            if (!searchStr.includes(termLower)) return false;
-          }
-
-          if (
-            filters.level &&
-            ignoreFacet !== "level" &&
-            filters.level.length
-          ) {
-            if (!filters.level.includes(sys.Level ?? 4)) return false;
-          }
-
-          if (
-            filters.provider &&
-            ignoreFacet !== "provider" &&
-            filters.provider.length
-          ) {
-            if (!filters.provider.includes(sys.Provider?.Name ?? ""))
-              return false;
-          }
-
-          if (
-            filters.channel &&
-            ignoreFacet !== "channel" &&
-            filters.channel.length
-          ) {
-            if (!filters.channel.includes(sys.Channel ?? "")) return false;
-          }
-
-          if (
-            filters.eventId &&
-            ignoreFacet !== "eventId" &&
-            filters.eventId.length
-          ) {
-            const idNum =
-              typeof sys.EventID === "string"
-                ? parseInt(sys.EventID, 10)
-                : sys.EventID;
-            if (!filters.eventId.includes(Number(idNum))) return false;
-          }
-          return true;
-        };
-
-        records.forEach((rec) => {
-          const sys = rec.Event.System ?? {};
-
-          if (recordMatchesFilters(rec, "level")) {
-            const lvl =
-              sys.Level !== undefined && sys.Level !== null ? sys.Level : 4;
-            inc(levelMap, lvl as number);
-          }
-
-          const pName = sys.Provider?.Name;
-          if (recordMatchesFilters(rec, "provider") && pName) {
-            inc(providerMap, pName);
-          }
-
-          const ch = sys.Channel;
-          if (recordMatchesFilters(rec, "channel") && ch) {
-            inc(channelMap, ch);
-          }
-          if (recordMatchesFilters(rec, "eventId")) {
-            const idNum =
-              typeof sys.EventID === "string"
-                ? parseInt(sys.EventID, 10)
-                : sys.EventID;
-            if (typeof idNum === "number" && !Number.isNaN(idNum)) {
-              inc(eventIdMap, idNum);
-            }
-          }
-        });
-      }
-
+    if (!bucketCounts) {
       return {
-        level: levelMap,
-        provider: providerMap,
-        channel: channelMap,
-        eventId: eventIdMap,
+        level: new Map<number, number>(),
+        provider: new Map<string, number>(),
+        channel: new Map<string, number>(),
+        eventId: new Map<number, number>(),
       } as const;
     }
 
-    // Fallback: compute from current (possibly partial) record list
-    const recordMatchesFilters = (
-      rec: EvtxRecord,
-      ignoreFacet?: keyof FilterOptions
-    ) => {
-      const sys = rec.Event.System ?? {};
-
-      const term = (filters.searchTerm ?? "").toLowerCase();
-
-      if (ignoreFacet !== "level" && filters.level && filters.level.length) {
-        if (!filters.level.includes(sys.Level ?? 4)) return false;
-      }
-
-      if (
-        ignoreFacet !== "provider" &&
-        filters.provider &&
-        filters.provider.length
-      ) {
-        if (!filters.provider.includes(sys.Provider?.Name ?? "")) return false;
-      }
-
-      if (
-        ignoreFacet !== "channel" &&
-        filters.channel &&
-        filters.channel.length
-      ) {
-        if (!filters.channel.includes(sys.Channel ?? "")) return false;
-      }
-
-      if (
-        ignoreFacet !== "eventId" &&
-        filters.eventId &&
-        filters.eventId.length
-      ) {
-        const idNum =
-          typeof sys.EventID === "string"
-            ? parseInt(sys.EventID, 10)
-            : sys.EventID;
-        if (!filters.eventId.includes(Number(idNum))) return false;
-      }
-
-      if (term !== "") {
-        const searchStr = `${sys.Provider?.Name ?? ""} ${sys.Computer ?? ""} ${
-          sys.EventID ?? ""
-        }`.toLowerCase();
-        if (!searchStr.includes(term)) return false;
-      }
-
-      return true;
+    const toMap = (
+      obj?: Record<string, number>,
+      numericKeys = false
+    ): Map<string | number, number> => {
+      const m = new Map<string | number, number>();
+      if (!obj) return m;
+      Object.entries(obj).forEach(([k, v]) => {
+        const key = numericKeys ? Number(k) : k;
+        m.set(key, v);
+      });
+      return m;
     };
 
-    const level = new Map<number, number>();
-    const provider = new Map<string, number>();
-    const channel = new Map<string, number>();
-    const eventId = new Map<number, number>();
-
-    records.forEach((rec) => {
-      const sys = rec.Event.System ?? {};
-
-      // For each facet we compute counts using records that satisfy all other facets.
-
-      if (recordMatchesFilters(rec, "level")) {
-        increment(level, sys.Level ?? 4);
-      }
-
-      if (recordMatchesFilters(rec, "provider")) {
-        if (sys.Provider?.Name) increment(provider, sys.Provider.Name);
-      }
-
-      if (recordMatchesFilters(rec, "channel")) {
-        if (sys.Channel) increment(channel, sys.Channel);
-      }
-
-      if (recordMatchesFilters(rec, "eventId")) {
-        if (sys.EventID !== undefined && sys.EventID !== null) {
-          const idNum =
-            typeof sys.EventID === "string"
-              ? parseInt(sys.EventID, 10)
-              : sys.EventID;
-          if (!Number.isNaN(idNum)) increment(eventId, idNum);
-        }
-      }
-    });
-
+    // Start maps with all keys from the full-file buckets so they never disappear.
     return {
-      level,
-      provider,
-      channel,
-      eventId,
+      level: toMap(bucketCounts.level, true),
+      provider: toMap(bucketCounts.provider),
+      channel: toMap(bucketCounts.channel),
+      eventId: toMap(bucketCounts.event_id, true),
     } as const;
-  }, [records, filters, bucketCounts]);
+  }, [bucketCounts]);
 
   // Collapsed state per section
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -388,12 +370,15 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
   // Handlers for toggling option selections
   const toggleFilterValue = useCallback(
     (facet: keyof FilterOptions, value: string | number) => {
+      logger.debug("toggleFilterValue", { facet, value });
       const current = (filters[facet] as (string | number)[] | undefined) ?? [];
       const exists = current.includes(value);
       const newVals = exists
         ? current.filter((v) => v !== value)
         : [...current, value];
-      onChange({ ...filters, [facet]: newVals });
+      const next = { ...filters, [facet]: newVals } as FilterOptions;
+      logger.debug("FilterSidebar onChange", { next });
+      onChange(next);
     },
     [filters, onChange]
   );
@@ -432,140 +417,186 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
     });
   };
 
-  const LEVEL_NAME_MAP: Record<number, string> = {
-    0: "LogAlways",
-    1: "Critical",
-    2: "Error",
-    3: "Warning",
-    4: "Information",
-    5: "Verbose",
-  };
+  // constant moved above activeChips
+
+  // Determine if any filters are currently active
+  const hasActiveFilters = useMemo(() => {
+    return (
+      (filters.searchTerm && filters.searchTerm.trim() !== "") ||
+      (filters.level && filters.level.length > 0) ||
+      (filters.provider && filters.provider.length > 0) ||
+      (filters.channel && filters.channel.length > 0) ||
+      (filters.eventId && filters.eventId.length > 0) ||
+      (filters.eventData && Object.keys(filters.eventData).length > 0) ||
+      (filters.eventDataExclude &&
+        Object.keys(filters.eventDataExclude).length > 0)
+    );
+  }, [filters]);
 
   return (
     <SidebarContainer>
-      <Header>Filters</Header>
-
-      {/* Search term global */}
-      <SearchContainer>
-        <Search20Regular />
-        <SearchInput
-          placeholder="Search all..."
-          value={filters.searchTerm ?? ""}
-          onChange={(e) => onChange({ ...filters, searchTerm: e.target.value })}
-        />
-      </SearchContainer>
-
-      {/* Level Section */}
-      <Section>
-        <SectionHeader
-          $isOpen={openSections.level}
-          onClick={() => toggleSection("level")}
-        >
-          <SectionIcon>
-            {openSections.level ? (
-              <ChevronDown20Regular />
-            ) : (
-              <ChevronRight20Regular />
-            )}
-          </SectionIcon>
-          Level
-        </SectionHeader>
-        {openSections.level && (
-          <OptionsContainer>
-            {renderOptions(
-              facetCounts.level,
-              "level",
-              (v) => LEVEL_NAME_MAP[v as number] || String(v)
-            )}
-          </OptionsContainer>
+      <Header>
+        <span>Filters</span>
+        {hasActiveFilters && !filtersDisabled && (
+          <Button variant="subtle" size="small" onClick={() => onChange({})}>
+            Clear
+          </Button>
         )}
-      </Section>
+      </Header>
 
-      {/* Provider Section */}
-      <Section>
-        <SectionHeader
-          $isOpen={openSections.provider}
-          onClick={() => toggleSection("provider")}
+      {filtersDisabled ? (
+        <div
+          style={{
+            padding: "16px",
+            fontSize: "0.875rem",
+            color: "var(--text-tertiary, #666)",
+          }}
         >
-          <SectionIcon>
-            {openSections.provider ? (
-              <ChevronDown20Regular />
-            ) : (
-              <ChevronRight20Regular />
-            )}
-          </SectionIcon>
-          Provider
-        </SectionHeader>
-        {openSections.provider && (
-          <>
-            <SearchContainer>
-              <Search20Regular />
-              <SearchInput
-                placeholder="Search provider..."
-                value={searchTerms.provider ?? ""}
-                onChange={(e) => handleSearchChange("provider", e.target.value)}
-              />
-            </SearchContainer>
-            <OptionsContainer>
-              {renderOptions(facetCounts.provider, "provider")}
-            </OptionsContainer>
-          </>
-        )}
-      </Section>
+          Filtering unavailable – database not initialised.
+        </div>
+      ) : (
+        <>
+          {activeChips.length > 0 && (
+            <ActiveFiltersBar>
+              {activeChips.map((chip) => (
+                <FilterChip key={chip.key}>
+                  {chip.label}
+                  <ChipRemoveBtn onClick={chip.remove} title="Remove filter">
+                    <Dismiss16Regular />
+                  </ChipRemoveBtn>
+                </FilterChip>
+              ))}
+            </ActiveFiltersBar>
+          )}
+          {/* Search term global */}
+          <SearchContainer>
+            <Search20Regular />
+            <SearchInput
+              placeholder="Search all..."
+              value={filters.searchTerm ?? ""}
+              onChange={(e) =>
+                onChange({ ...filters, searchTerm: e.target.value })
+              }
+            />
+          </SearchContainer>
 
-      {/* Channel Section */}
-      <Section>
-        <SectionHeader
-          $isOpen={openSections.channel}
-          onClick={() => toggleSection("channel")}
-        >
-          <SectionIcon>
-            {openSections.channel ? (
-              <ChevronDown20Regular />
-            ) : (
-              <ChevronRight20Regular />
+          {/* Level Section */}
+          <Section>
+            <SectionHeader
+              $isOpen={openSections.level}
+              onClick={() => toggleSection("level")}
+            >
+              <SectionIcon>
+                {openSections.level ? (
+                  <ChevronDown20Regular />
+                ) : (
+                  <ChevronRight20Regular />
+                )}
+              </SectionIcon>
+              Level
+            </SectionHeader>
+            {openSections.level && (
+              <OptionsContainer>
+                {renderOptions(
+                  facetCounts.level,
+                  "level",
+                  (v) => LEVEL_NAME_MAP[v as number] || String(v)
+                )}
+              </OptionsContainer>
             )}
-          </SectionIcon>
-          Channel
-        </SectionHeader>
-        {openSections.channel && (
-          <>
-            <SearchContainer>
-              <Search20Regular />
-              <SearchInput
-                placeholder="Search channel..."
-                value={searchTerms.channel ?? ""}
-                onChange={(e) => handleSearchChange("channel", e.target.value)}
-              />
-            </SearchContainer>
-            <OptionsContainer>
-              {renderOptions(facetCounts.channel, "channel")}
-            </OptionsContainer>
-          </>
-        )}
-      </Section>
+          </Section>
 
-      {/* EventID Section */}
-      <Section>
-        <SectionHeader
-          $isOpen={openSections.eventId}
-          onClick={() => toggleSection("eventId")}
-        >
-          <SectionIcon>
-            {openSections.eventId ? (
-              <ChevronDown20Regular />
-            ) : (
-              <ChevronRight20Regular />
+          {/* Provider Section */}
+          <Section>
+            <SectionHeader
+              $isOpen={openSections.provider}
+              onClick={() => toggleSection("provider")}
+            >
+              <SectionIcon>
+                {openSections.provider ? (
+                  <ChevronDown20Regular />
+                ) : (
+                  <ChevronRight20Regular />
+                )}
+              </SectionIcon>
+              Provider
+            </SectionHeader>
+            {openSections.provider && (
+              <>
+                <SearchContainer>
+                  <Search20Regular />
+                  <SearchInput
+                    placeholder="Search provider..."
+                    value={searchTerms.provider ?? ""}
+                    onChange={(e) =>
+                      handleSearchChange("provider", e.target.value)
+                    }
+                  />
+                </SearchContainer>
+                <OptionsContainer>
+                  {renderOptions(facetCounts.provider, "provider")}
+                </OptionsContainer>
+              </>
             )}
-          </SectionIcon>
-          Event ID
-        </SectionHeader>
-        {openSections.eventId && (
-          <OptionsContainer>
-            {renderOptions(facetCounts.eventId, "eventId")}
-          </OptionsContainer>
-        )}
-      </Section>
+          </Section>
+
+          {/* Channel Section */}
+          <Section>
+            <SectionHeader
+              $isOpen={openSections.channel}
+              onClick={() => toggleSection("channel")}
+            >
+              <SectionIcon>
+                {openSections.channel ? (
+                  <ChevronDown20Regular />
+                ) : (
+                  <ChevronRight20Regular />
+                )}
+              </SectionIcon>
+              Channel
+            </SectionHeader>
+            {openSections.channel && (
+              <>
+                <SearchContainer>
+                  <Search20Regular />
+                  <SearchInput
+                    placeholder="Search channel..."
+                    value={searchTerms.channel ?? ""}
+                    onChange={(e) =>
+                      handleSearchChange("channel", e.target.value)
+                    }
+                  />
+                </SearchContainer>
+                <OptionsContainer>
+                  {renderOptions(facetCounts.channel, "channel")}
+                </OptionsContainer>
+              </>
+            )}
+          </Section>
+
+          {/* EventID Section */}
+          <Section>
+            <SectionHeader
+              $isOpen={openSections.eventId}
+              onClick={() => toggleSection("eventId")}
+            >
+              <SectionIcon>
+                {openSections.eventId ? (
+                  <ChevronDown20Regular />
+                ) : (
+                  <ChevronRight20Regular />
+                )}
+              </SectionIcon>
+              Event ID
+            </SectionHeader>
+            {openSections.eventId && (
+              <OptionsContainer>
+                {renderOptions(facetCounts.eventId, "eventId")}
+              </OptionsContainer>
+            )}
+          </Section>
+        </>
+      )}
     </SidebarContainer>
   );
 };

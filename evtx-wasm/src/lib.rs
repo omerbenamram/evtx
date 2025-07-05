@@ -1,3 +1,10 @@
+use arrow2::array::MutableArray;
+use arrow2::{
+    array::{MutablePrimitiveArray, MutableUtf8Array},
+    chunk::Chunk,
+    datatypes::{DataType, Field, Schema},
+    io::ipc::write::StreamWriter,
+};
 use evtx::{EvtxParser, ParserSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -437,6 +444,212 @@ impl EvtxWasmParser {
 
         serde_wasm_bindgen::to_value(&result)
             .map_err(|e| JsError::new(&format!("Failed to serialize result: {}", e)))
+    }
+
+    /// Serialise a single chunk into Arrow IPC format (Stream, single batch)
+    /// Returns an object with the binary IPC bytes and the row count.
+    #[wasm_bindgen]
+    pub fn chunk_arrow_ipc(&self, chunk_index: usize) -> Result<ArrowChunkIPC, JsError> {
+        // Parse requested chunk similar to `parse_chunk_records` but build Arrow arrays.
+        use arrow2::array::Array; // trait for Arc<dyn Array>
+
+        let cursor = Cursor::new(&self.data);
+        let mut parser = EvtxParser::from_read_seek(cursor)
+            .map_err(|e| JsError::new(&format!("Failed to create parser: {}", e)))?;
+
+        // Prepare mutable builders for each column
+        let mut eid_builder = MutablePrimitiveArray::<i32>::new();
+        let mut level_builder = MutablePrimitiveArray::<i32>::new();
+        let mut provider_builder = MutableUtf8Array::<i32>::new();
+        let mut channel_builder = MutableUtf8Array::<i32>::new();
+        let mut raw_builder = MutableUtf8Array::<i32>::new();
+
+        let mut found = false;
+
+        for (idx, chunk) in parser.chunks().enumerate() {
+            if idx != chunk_index {
+                continue;
+            }
+
+            found = true;
+            match chunk {
+                Ok(mut chunk_data) => {
+                    let chunk_settings = ParserSettings::default()
+                        .separate_json_attributes(true)
+                        .indent(false);
+                    match chunk_data.parse(std::sync::Arc::new(chunk_settings)) {
+                        Ok(mut chunk) => {
+                            for record_res in chunk.iter() {
+                                if let Ok(record_data) = record_res {
+                                    match record_data.into_json_value() {
+                                        Ok(json_record) => {
+                                            let rec = json_record.data;
+
+                                            // EventID
+                                            let eid_opt: Option<i32> = rec
+                                                .get("Event")
+                                                .and_then(|v| v.get("System"))
+                                                .and_then(|sys| sys.get("EventID"))
+                                                .and_then(|eid| {
+                                                    if eid.is_string() {
+                                                        eid.as_str()?.parse::<i32>().ok()
+                                                    } else if eid.is_number() {
+                                                        eid.as_i64().map(|v| v as i32)
+                                                    } else if eid.is_object() {
+                                                        eid.get("#text")
+                                                            .and_then(|t| t.as_str())
+                                                            .and_then(|s| s.parse::<i32>().ok())
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            eid_builder.push(eid_opt);
+
+                                            // Level
+                                            let lvl: i32 = rec
+                                                .get("Event")
+                                                .and_then(|v| v.get("System"))
+                                                .and_then(|sys| sys.get("Level"))
+                                                .and_then(|l| l.as_i64())
+                                                .map(|v| v as i32)
+                                                .unwrap_or(4);
+                                            level_builder.push(Some(lvl));
+
+                                            // Provider name
+                                            let provider_name: String = rec
+                                                .get("Event")
+                                                .and_then(|v| v.get("System"))
+                                                .and_then(|sys| {
+                                                    sys.get("Provider")
+                                                        .and_then(|p| p.get("Name"))
+                                                        .or_else(|| {
+                                                            sys.get("Provider_attributes")
+                                                                .and_then(|p| p.get("Name"))
+                                                        })
+                                                })
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_owned();
+                                            provider_builder.push(Some(provider_name.as_str()));
+
+                                            // Channel
+                                            let channel: String = rec
+                                                .get("Event")
+                                                .and_then(|v| v.get("System"))
+                                                .and_then(|sys| sys.get("Channel"))
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_owned();
+                                            channel_builder.push(Some(channel.as_str()));
+
+                                            // Raw JSON
+                                            let raw_str = serde_json::to_string(&rec)
+                                                .unwrap_or_else(|_| "{}".to_string());
+                                            raw_builder.push(Some(raw_str.as_str()));
+                                        }
+                                        Err(_) => continue,
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            return Err(JsError::new(&format!("Chunk parse error: {}", e)));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(JsError::new(&format!("Chunk error: {}", e)));
+                }
+            }
+            break;
+        }
+
+        if !found {
+            return Err(JsError::new(&format!(
+                "Chunk index {} out of range",
+                chunk_index
+            )));
+        }
+
+        // Finalise Arrow arrays
+        let eid_array: Box<dyn Array> = {
+            let mut b = eid_builder;
+            b.as_box()
+        };
+        let level_array: Box<dyn Array> = {
+            let mut b = level_builder;
+            b.as_box()
+        };
+        let provider_array: Box<dyn Array> = {
+            let mut b = provider_builder;
+            b.as_box()
+        };
+        let channel_array: Box<dyn Array> = {
+            let mut b = channel_builder;
+            b.as_box()
+        };
+        let raw_array: Box<dyn Array> = {
+            let mut b = raw_builder;
+            b.as_box()
+        };
+
+        // Construct a Chunk holding boxed arrays as required by StreamWriter::write
+        let batch: Chunk<Box<dyn Array>> = Chunk::new(vec![
+            eid_array,
+            level_array,
+            provider_array,
+            channel_array,
+            raw_array,
+        ]);
+
+        let schema = Schema::from(vec![
+            Field::new("EventID", DataType::Int32, true),
+            Field::new("Level", DataType::Int32, true),
+            Field::new("Provider", DataType::Utf8, false),
+            Field::new("Channel", DataType::Utf8, false),
+            Field::new("Raw", DataType::Utf8, false),
+        ]);
+
+        use arrow2::io::ipc::write::WriteOptions;
+        let mut buf = Vec::new();
+        {
+            let write_opts = WriteOptions { compression: None };
+            let mut writer = StreamWriter::new(&mut buf, write_opts);
+            writer
+                .start(&schema, None)
+                .map_err(|e| JsError::new(&format!("IPC writer start failed: {}", e)))?;
+            writer
+                .write(&batch, None)
+                .map_err(|e| JsError::new(&format!("IPC write failed: {}", e)))?;
+            writer
+                .finish()
+                .map_err(|e| JsError::new(&format!("IPC writer finish failed: {}", e)))?;
+        }
+
+        let row_count = batch.len();
+        Ok(ArrowChunkIPC {
+            bytes: buf,
+            rows: row_count,
+        })
+    }
+}
+
+#[wasm_bindgen]
+pub struct ArrowChunkIPC {
+    bytes: Vec<u8>,
+    rows: usize,
+}
+
+#[wasm_bindgen]
+impl ArrowChunkIPC {
+    #[wasm_bindgen(getter)]
+    pub fn ipc(&self) -> js_sys::Uint8Array {
+        js_sys::Uint8Array::from(&self.bytes[..])
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn rows(&self) -> usize {
+        self.rows
     }
 }
 

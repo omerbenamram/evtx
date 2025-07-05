@@ -89,11 +89,17 @@ async function fetchRecentNodes(): Promise<EventLogNode[]> {
 interface FileTreeProps {
   onNodeSelect?: (node: EventLogNode) => void;
   selectedNodeId?: string;
+  activeFileId?: string | null; // file currently ingesting
+  ingestProgress?: number; // 0..1
+  refreshVersion?: number; // internal, bump to force recent list update
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({
   onNodeSelect,
   selectedNodeId,
+  activeFileId,
+  ingestProgress = 1,
+  refreshVersion = 0,
 }) => {
   const [treeData, setTreeData] = useState<EventLogNode[]>(baseStructure);
 
@@ -103,7 +109,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
       const recent = await fetchRecentNodes();
       setTreeData([...recent, ...baseStructure]);
     })();
-  }, []);
+  }, [refreshVersion]);
 
   // refresh helper (e.g., after load) – exposed via context could be nicer
   const refreshRecent = useCallback(async () => {
@@ -112,14 +118,27 @@ export const FileTree: React.FC<FileTreeProps> = ({
   }, []);
 
   const convertToTreeNodes = (nodes: EventLogNode[]): TreeNode[] => {
-    return nodes.map((node) => ({
-      id: node.id,
-      label: node.label,
-      icon: node.icon,
-      expandedIcon: node.expandedIcon,
-      children: node.children ? convertToTreeNodes(node.children) : undefined,
-      data: node,
-    }));
+    return nodes.map((node) => {
+      const showPct =
+        node.fileId &&
+        activeFileId &&
+        node.fileId === activeFileId &&
+        ingestProgress < 1;
+      const pctRaw = ingestProgress * 100;
+      const pctDisplay = pctRaw < 0.01 ? 0.01 : Math.round(pctRaw * 100) / 100; // two decimals
+      const labelWithPct = showPct
+        ? `${node.label} (${pctDisplay.toFixed(2)}%)`
+        : node.label;
+
+      return {
+        id: node.id,
+        label: labelWithPct,
+        icon: node.icon,
+        expandedIcon: node.expandedIcon,
+        children: node.children ? convertToTreeNodes(node.children) : undefined,
+        data: node,
+      };
+    });
   };
 
   const handleSelect = (treeNode: TreeNode) => {

@@ -1,20 +1,13 @@
-import React, {
-  useCallback,
-  useMemo,
-  useState,
-  useRef,
-  useEffect,
-} from "react";
+import React, { useCallback, useMemo, useState, useRef } from "react";
 import styled from "styled-components";
 
 import type { EvtxRecord, FilterOptions } from "../lib/types";
-import { ChunkDataSource } from "../lib/chunkDataSource";
+import { DuckDbDataSource } from "../lib/duckDbDataSource";
 import { EventDetailsPane } from "./EventDetailsPane";
 import { computeSliceRows, useChunkVirtualizer } from "../lib/virtualHelpers";
 import { LogRow } from "./LogRow";
 import { useRowNavigation } from "./useRowNavigation";
 import { logger } from "../lib/logger";
-import { Spinner } from "./Windows";
 import type { VirtualItem } from "@tanstack/react-virtual";
 
 // ------------------------------------------------------------------
@@ -190,70 +183,14 @@ function generateRows({
   return rows;
 }
 
-// Helper to determine if a record matches the current filters.  Mirrors logic
-// from `applyFilters` in App.tsx so behaviour is consistent across both table
-// implementations.
-const recordMatchesFilters = (
-  rec: EvtxRecord,
-  opts: FilterOptions
-): boolean => {
-  if (!opts) return true;
-
-  if (
-    !opts.searchTerm &&
-    (!opts.level || opts.level.length === 0) &&
-    (!opts.provider || opts.provider.length === 0) &&
-    (!opts.channel || opts.channel.length === 0) &&
-    (!opts.eventId || opts.eventId.length === 0)
-  ) {
-    return true;
-  }
-
-  const sys = rec.Event?.System ?? {};
-
-  const levelMatch =
-    !opts.level || opts.level.length === 0
-      ? true
-      : opts.level.includes(sys.Level ?? 4);
-
-  interface SysProv {
-    Provider?: { Name?: string };
-    Provider_attributes?: { Name?: string };
-  }
-
-  const getProvider = (sys: SysProv): string =>
-    sys.Provider?.Name ?? sys.Provider_attributes?.Name ?? "";
-  const providerName = getProvider(sys);
-  const providerMatch =
-    !opts.provider || opts.provider.length === 0
-      ? true
-      : opts.provider.includes(providerName);
-
-  const channelMatch =
-    !opts.channel || opts.channel.length === 0
-      ? true
-      : opts.channel.includes(sys.Channel ?? "");
-
-  const eventIdMatch =
-    !opts.eventId || opts.eventId.length === 0
-      ? true
-      : opts.eventId.includes(Number(sys.EventID ?? -1));
-
-  const termLower = (opts.searchTerm ?? "").toLowerCase();
-  const searchStr = `${providerName} ${sys.Computer ?? ""} ${
-    sys.EventID ?? ""
-  }`.toLowerCase();
-  const termMatch = termLower === "" || searchStr.includes(termLower);
-
-  return (
-    levelMatch && providerMatch && channelMatch && eventIdMatch && termMatch
-  );
-};
-
 interface LogTableVirtualProps {
-  dataSource: ChunkDataSource;
+  dataSource: DuckDbDataSource;
   filters: FilterOptions;
   onRowSelect?: (rec: EvtxRecord) => void;
+  /** Callback to add a new EventData field filter */
+  onAddEventDataFilter?: (field: string, value: string) => void;
+  /** Callback to exclude value */
+  onExcludeEventDataFilter?: (field: string, value: string) => void;
 }
 
 // ---------- styled basics (slimmed down from original LogTable) ----------
@@ -321,14 +258,61 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
   dataSource,
   filters,
   onRowSelect,
+  onAddEventDataFilter,
+  onExcludeEventDataFilter,
 }) => {
   const ROW_HEIGHT = 30; // single source of truth for row height
   const MAX_ROWS_PER_SLICE = 5000; // increased to load a few thousand rows at once
   const SLICE_BUFFER_ROWS = 2000; // expanded buffer size so more rows stay mounted
 
-  // --- virtualisation handled by dedicated hook --------------------------
+  // Predicate based on current filters (same rules as sidebar counts)
   const filterFn = useCallback<(rec: EvtxRecord) => boolean>(
-    (rec) => recordMatchesFilters(rec, filters),
+    (rec) => {
+      const opts = filters;
+      if (!opts) return true;
+      const sys = rec.Event?.System ?? {};
+
+      if (
+        opts.level &&
+        opts.level.length &&
+        !opts.level.includes(sys.Level ?? 4)
+      )
+        return false;
+      if (opts.provider && opts.provider.length) {
+        const prov = sys.Provider?.Name ?? sys.Provider_attributes?.Name ?? "";
+        if (!opts.provider.includes(prov)) return false;
+      }
+      if (
+        opts.channel &&
+        opts.channel.length &&
+        !opts.channel.includes(sys.Channel ?? "")
+      )
+        return false;
+      if (
+        opts.eventId &&
+        opts.eventId.length &&
+        !opts.eventId.includes(Number(sys.EventID ?? -1))
+      )
+        return false;
+
+      const ev = (rec.Event?.EventData ?? {}) as Record<string, unknown>;
+      if (opts.eventData) {
+        for (const [k, allowed] of Object.entries(opts.eventData)) {
+          if (allowed.length === 0) continue;
+          const val = String(ev[k] ?? "");
+          if (!allowed.includes(val)) return false;
+        }
+      }
+      if (opts.eventDataExclude) {
+        for (const [k, blocked] of Object.entries(opts.eventDataExclude)) {
+          if (blocked.length === 0) continue;
+          const val = String(ev[k] ?? "");
+          if (blocked.includes(val)) return false;
+        }
+      }
+      // searchTerm ignored for table performance; DuckDB handles counts only
+      return true;
+    },
     [filters]
   );
 
@@ -379,42 +363,42 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
     }
   }, [tableContainerRef]);
 
-  // Row navigation (keyboard & click)
+  /* ------------------------------------------------------------------
+   * Row selection handling
+   * ------------------------------------------------------------------
+   * Besides tracking the numeric row index for highlighting / keyboard
+   * navigation, we also keep a reference to the *actual* EvtxRecord that
+   * was selected.  This guarantees the EventDetailsPane can stay mounted
+   * across filter changes because the record object itself does not change
+   * when our virtualisation layers re-compute indices or re-order rows.
+   */
+
+  const [selectedRecord, setSelectedRecord] = useState<EvtxRecord | null>(null);
+
+  // Wrap the optional onRowSelect prop so we can update our own state first
+  const handleRowSelect = useCallback(
+    (rec: EvtxRecord) => {
+      setSelectedRecord(rec);
+      if (onRowSelect) onRowSelect(rec);
+    },
+    [onRowSelect]
+  );
+
   const { selectedRow, handleKeyDown, handleRowClick } = useRowNavigation({
     totalRows,
     getRowRecord,
-    onRowSelect,
+    onRowSelect: handleRowSelect,
     scrollContainerRef: tableContainerRef,
     rowHeight: ROW_HEIGHT,
   });
 
+  // We intentionally keep the selected record even if it no longer appears
+  // in the filtered result set so the details pane remains visible while the
+  // user tweaks filters.  It will be cleared automatically once the user
+  // selects a different row or when a new file is loaded.
+
   // Height of the details pane (resizable via divider)
   const [detailsHeight, setDetailsHeight] = useState<number>(200);
-
-  // Show a transient loading overlay when filters change – helps users see
-  // that the virtualised table is working on their request.
-  const [filtering, setFiltering] = useState(false);
-  const prevFilters = useRef<FilterOptions>(filters);
-  useEffect(() => {
-    const prev = JSON.stringify(prevFilters.current);
-    const curr = JSON.stringify(filters);
-    if (prev !== curr) {
-      setFiltering(true);
-      prevFilters.current = filters;
-    }
-  }, [filters]);
-
-  // Once the virtualizer reports totalRows stabilised, hide overlay.
-  const prevRowsRef = useRef<number>(totalRows);
-  useEffect(() => {
-    if (filtering && prevRowsRef.current !== totalRows) {
-      prevRowsRef.current = totalRows;
-      // small delay so the overlay isn't too flickery
-      const t = setTimeout(() => setFiltering(false), 200);
-      return () => clearTimeout(t);
-    }
-    prevRowsRef.current = totalRows;
-  }, [totalRows, filtering]);
 
   // outer container ref (for mouse move calculations during resize)
   const outerRef = useRef<HTMLDivElement>(null);
@@ -484,34 +468,16 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
         </div>
       </TableContainer>
 
-      {selectedRow !== null && getRowRecord(selectedRow) && (
+      {selectedRecord && (
         <>
           <Divider onMouseDown={handleDividerMouseDown} />
           <EventDetailsPane
-            record={getRowRecord(selectedRow)!}
+            record={selectedRecord}
             height={detailsHeight}
+            onAddFilter={onAddEventDataFilter}
+            onExcludeFilter={onExcludeEventDataFilter}
           />
         </>
-      )}
-
-      {filtering && (
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(255,255,255,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "none",
-            zIndex: 2000,
-          }}
-        >
-          <Spinner size={32} />
-        </div>
       )}
     </Container>
   );

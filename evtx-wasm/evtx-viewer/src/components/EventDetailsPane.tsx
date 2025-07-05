@@ -1,5 +1,5 @@
 import React from "react";
-import styled from "styled-components";
+import styled, { css } from "styled-components";
 import type { EvtxRecord, EvtxEventData, EvtxSystemData } from "../lib/types";
 
 const DetailsPane = styled.div<{ $height: number }>`
@@ -44,9 +44,47 @@ const DetailContent = styled.div`
   word-break: break-word;
 `;
 
+const IconBtn = styled.button<{ $variant: "include" | "exclude" }>`
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid ${({ theme }) => theme.colors.border.light};
+  border-radius: 3px;
+  background: ${({ theme }) => theme.colors.background.secondary};
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  color: ${({ theme }) => theme.colors.text.secondary};
+  &:hover {
+    background: ${({ theme }) => theme.colors.background.hover};
+  }
+  &:active {
+    background: ${({ theme }) => theme.colors.background.active};
+  }
+  ${(props) =>
+    props.$variant === "include" &&
+    css`
+      /* could style differently if needed */
+    `}
+  ${(props) =>
+    props.$variant === "exclude" &&
+    css`
+      /* maybe color accent */
+    `}
+`;
+
 interface Props {
   record: EvtxRecord;
   height: number;
+  /** When provided, clicking the “Include” button besides an EventData row
+   * will invoke this callback so the parent can add a filter for that field.
+   */
+  onAddFilter?: (field: string, value: string) => void;
+  /** Optional: add exclusion filter */
+  onExcludeFilter?: (field: string, value: string) => void;
 }
 
 // Utility helpers copied from the original table
@@ -97,9 +135,15 @@ const getTimeCreated = (sys: EvtxSystemData): string =>
 const getUserId = (sys: EvtxSystemData): string =>
   sys.Security?.UserID || sys.Security_attributes?.UserID || "-";
 
-const renderEventData = (eventData: unknown): React.ReactNode => {
+const renderEventData = (
+  eventData: unknown,
+  onAdd?: (k: string, v: string) => void,
+  onExclude?: (k: string, v: string) => void
+): React.ReactNode => {
   if (!eventData) return "No event data";
   const eventObj = eventData as Record<string, unknown>;
+
+  // Handle EventData/Data array style
   if (eventObj["Data"]) {
     const rawData = eventObj["Data"] as unknown;
     const dataArray = Array.isArray(rawData) ? rawData : [rawData];
@@ -109,18 +153,74 @@ const renderEventData = (eventData: unknown): React.ReactNode => {
         (item["#attributes"] as Record<string, unknown> | undefined)?.Name ??
         `Data${idx}`;
       const value = item["#text"] ?? "-";
+      const valueStr = String(value);
       return (
         <DetailRow key={idx}>
           <DetailLabel>{String(name)}:</DetailLabel>
-          <DetailValue>{String(value)}</DetailValue>
+          <DetailValue style={{ marginRight: 4 }}>{valueStr}</DetailValue>
+          {onAdd && (
+            <>
+              <IconBtn
+                $variant="include"
+                title="Include"
+                onClick={() => onAdd(String(name), valueStr)}
+              >
+                +
+              </IconBtn>
+              {onExclude && (
+                <IconBtn
+                  $variant="exclude"
+                  title="Exclude"
+                  onClick={() => onExclude(String(name), valueStr)}
+                >
+                  –
+                </IconBtn>
+              )}
+            </>
+          )}
         </DetailRow>
       );
     });
   }
-  return JSON.stringify(eventData, null, 2);
+
+  // Generic key/value pairs
+  const kvRows = Object.entries(eventObj).map(([k, v]) => {
+    const valStr = typeof v === "object" ? JSON.stringify(v) : String(v);
+    return (
+      <DetailRow key={k}>
+        <DetailLabel>{k}:</DetailLabel>
+        <DetailValue style={{ marginRight: 8 }}>{valStr}</DetailValue>
+        {onAdd && (
+          <IconBtn
+            $variant="include"
+            title="Include"
+            onClick={() => onAdd(k, valStr)}
+          >
+            +
+          </IconBtn>
+        )}
+        {onExclude && (
+          <IconBtn
+            $variant="exclude"
+            title="Exclude"
+            onClick={() => onExclude(k, valStr)}
+          >
+            –
+          </IconBtn>
+        )}
+      </DetailRow>
+    );
+  });
+
+  return kvRows.length > 0 ? kvRows : JSON.stringify(eventData, null, 2);
 };
 
-export const EventDetailsPane: React.FC<Props> = ({ record, height }) => {
+export const EventDetailsPane: React.FC<Props> = ({
+  record,
+  height,
+  onAddFilter,
+  onExcludeFilter,
+}) => {
   const sys = getSystemData(record);
   return (
     <DetailsPane $height={height}>
@@ -160,7 +260,11 @@ export const EventDetailsPane: React.FC<Props> = ({ record, height }) => {
         <DetailSection>
           <DetailTitle>Event Data</DetailTitle>
           <DetailContent>
-            {renderEventData(record.Event.EventData as EvtxEventData)}
+            {renderEventData(
+              record.Event.EventData as EvtxEventData,
+              onAddFilter,
+              onExcludeFilter
+            )}
           </DetailContent>
         </DetailSection>
       )}

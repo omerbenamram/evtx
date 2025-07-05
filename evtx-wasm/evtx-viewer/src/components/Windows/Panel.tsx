@@ -10,6 +10,13 @@ export interface PanelProps {
   style?: React.CSSProperties;
 }
 
+// Transient prop names (prefixed with $) so styled-components filters them
+interface StyledProps {
+  $elevation: "flat" | "raised" | "elevated";
+  $padding: "none" | "small" | "medium" | "large";
+  $fullHeight?: boolean;
+}
+
 const elevationStyles = {
   flat: css`
     box-shadow: none;
@@ -40,22 +47,40 @@ const paddingStyles = {
   `,
 };
 
-const StyledPanel = styled.div<PanelProps>`
+const StyledPanel = styled.div.withConfig({
+  shouldForwardProp: (prop) =>
+    !["$elevation", "$padding", "$fullHeight"].includes(prop as string),
+})<StyledProps>`
   background-color: ${({ theme }) => theme.colors.background.secondary};
   border-radius: ${({ theme }) => theme.borderRadius.md};
   position: relative;
 
-  ${({ elevation = "raised" }) => elevationStyles[elevation]}
-  ${({ padding = "medium" }) => paddingStyles[padding]}
-  ${({ fullHeight }) =>
-    fullHeight &&
+  ${({ $elevation }) => elevationStyles[$elevation]}
+  ${({ $padding }) => paddingStyles[$padding]}
+  ${({ $fullHeight }) =>
+    $fullHeight &&
     css`
       height: 100%;
     `}
 `;
 
-export const Panel: React.FC<PanelProps> = ({ children, ...props }) => {
-  return <StyledPanel {...props}>{children}</StyledPanel>;
+export const Panel: React.FC<PanelProps> = ({
+  children,
+  elevation = "raised",
+  padding = "medium",
+  fullHeight,
+  ...rest
+}) => {
+  return (
+    <StyledPanel
+      $elevation={elevation}
+      $padding={padding}
+      $fullHeight={fullHeight}
+      {...rest}
+    >
+      {children}
+    </StyledPanel>
+  );
 };
 
 // Panel Header component

@@ -124,4 +124,23 @@ export class LazyEvtxReader {
       chunkRecordCounts,
     };
   }
+
+  /** Retrieve Arrow IPC buffer + row count for a chunk. */
+  async getArrowIPCChunk(
+    chunkIndex: number
+  ): Promise<{ buffer: Uint8Array; rows: number }> {
+    if (!this.parser) {
+      throw new Error("Parser not initialised – call fromFile() first");
+    }
+    // Invoke the WASM-exported method directly on the parser instance so that
+    // the implicit `this` binding is preserved (required under strict mode).
+    const rawRes: unknown = (
+      this.parser as unknown as {
+        chunk_arrow_ipc: (idx: number) => unknown;
+      }
+    ).chunk_arrow_ipc(chunkIndex);
+
+    const res = rawRes as { ipc: Uint8Array; rows: number };
+    return { buffer: res.ipc, rows: res.rows };
+  }
 }
