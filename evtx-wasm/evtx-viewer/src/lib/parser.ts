@@ -1,4 +1,5 @@
 // EVTX Parser interface - wraps the WASM module
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import type { EvtxFileInfo, ParseResult, EvtxRecord } from "./types";
 import EvtxStorage from "./storage";
 
@@ -58,9 +59,38 @@ export class EvtxParser implements IEvtxParser {
             return { Event: { System: {} } } as unknown as EvtxRecord;
           }
         }
+
         // Convert Map → object recursively if needed
-        const transformed = mapToObject(r);
-        return transformed as EvtxRecord;
+        const transformed = mapToObject(r) as EvtxRecord;
+
+        // ---------------------------------------------------------------
+        // Normalise Provider name so downstream code can simply access
+        // `sys.Provider?.Name` without worrying about the nested
+        // `#attributes` object that the Rust → WASM JSON sometimes emits.
+        // ---------------------------------------------------------------
+        try {
+          // Many records have shape:
+          //   Provider: { "#attributes": { Name: "Foo", Guid: "..." } }
+          // Copy over the embedded Name to a flat field if missing.
+          const sys: any = transformed?.Event?.System ?? {};
+          if (sys.Provider && typeof sys.Provider === "object") {
+            const prov: any = sys.Provider;
+            const attrs: any = prov["#attributes"];
+            if (attrs && attrs.Name && prov.Name === undefined) {
+              prov.Name = attrs.Name;
+            }
+
+            // Expose the attributes object under a predictable property so
+            // that existing fallbacks `Provider_attributes?.Name` still work.
+            if (attrs && sys.Provider_attributes === undefined) {
+              sys.Provider_attributes = attrs;
+            }
+          }
+        } catch {
+          /* ignore – best-effort normalisation */
+        }
+
+        return transformed;
       }
     );
 

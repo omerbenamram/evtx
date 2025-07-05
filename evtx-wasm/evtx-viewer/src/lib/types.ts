@@ -107,6 +107,20 @@ export interface FilterOptions {
   };
   provider?: string[];
   channel?: string[];
+  /**
+   * Filters applied to specific EventData fields.  The map key is the field
+   * name (e.g. "SubjectUserSid") and the value is a list of accepted values
+   * for that field.  All active EventData field filters are AND-ed together
+   * in the query, matching any record where the field’s value equals one of
+   * the provided strings.
+   */
+  eventData?: Record<string, string[]>;
+
+  /**
+   * Exclusion filters for EventData.  Records whose field value matches any
+   * of the listed values will be filtered out.
+   */
+  eventDataExclude?: Record<string, string[]>;
 }
 
 // Pre-computed facet buckets across the entire log file

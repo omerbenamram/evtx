@@ -1,28 +1,7 @@
-/**
- * React hook that encapsulates chunk-based virtualisation logic.
- * ------------------------------------------------------------------
- * It takes a `ChunkDataSource` (which lazily fetches the parsed records
- * for each EVTX chunk) and returns everything the consumer needs to
- * render a virtualised table:
- *   • `containerRef` – attach to the scrollable element
- *   • `virtualizer`  – instance returned from `@tanstack/react-virtual`
- *   • `chunkRows`    – Map<chunkIdx, EvtxRecord[]> of all loaded chunks
- *   • `prefix`       – prefix-sum array: global row offset at *start* of
- *                      each chunk.  Use it to convert <chunk,row> ⇄ global
- *   • `totalRows`    – current total number of rows (upper-bound until all
- *                      chunks are loaded)
- *   • `ensureChunk`  – helper that triggers an async load of a chunk.  The
- *                      hook automatically calls this for the currently
- *                      visible chunks but the caller *may* pre-fetch.
- *
- * The hook purposefully hides *all* internal data-fetching/state from the
- * consumer.  The caller is only responsible for rendering – never for
- * figuring out which chunks to load or how big they are.
- */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer, Virtualizer } from "@tanstack/react-virtual";
 import type { EvtxRecord } from "./types";
-import { ChunkDataSource } from "./chunkDataSource";
+import { DuckDbDataSource } from "./duckDbDataSource";
 import { logger } from "./logger";
 
 export interface ChunkVirtualizer {
@@ -44,7 +23,7 @@ export interface ChunkVirtualizer {
 }
 
 interface UseChunkVirtualizerOpts {
-  dataSource: ChunkDataSource;
+  dataSource: DuckDbDataSource;
   /** Fixed pixel height of *one* rendered row. */
   rowHeight: number;
   /** Estimated #records per chunk *before* we actually load it. */

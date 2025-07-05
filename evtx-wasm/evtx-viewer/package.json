@@ -11,10 +11,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.29.1-dev132.0",
     "@fluentui/react-icons": "^2.0.305",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.13.12",
     "@types/styled-components": "^5.1.34",
+    "apache-arrow": "^21.0.0",
     "idb": "^7.1.1",
     "lucide-react": "^0.525.0",
     "react": "^19.1.0",
