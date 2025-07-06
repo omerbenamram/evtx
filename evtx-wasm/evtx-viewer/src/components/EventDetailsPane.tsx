@@ -1,6 +1,9 @@
 import React from "react";
 import styled, { css } from "styled-components";
 import type { EvtxRecord, EvtxEventData, EvtxSystemData } from "../lib/types";
+import { Table20Regular as ColumnIcon } from "@fluentui/react-icons";
+import { useFilters } from "../hooks/useFilters";
+import { useColumns } from "../hooks/useColumns";
 
 const DetailsPane = styled.div<{ $height: number }>`
   height: ${({ $height }) => `${$height}px`};
@@ -58,6 +61,7 @@ const IconBtn = styled.button<{ $variant: "include" | "exclude" }>`
   line-height: 1;
   cursor: pointer;
   color: ${({ theme }) => theme.colors.text.secondary};
+  position: relative; /* needed for tooltip positioning */
   &:hover {
     background: ${({ theme }) => theme.colors.background.hover};
   }
@@ -74,17 +78,29 @@ const IconBtn = styled.button<{ $variant: "include" | "exclude" }>`
     css`
       /* maybe color accent */
     `}
+
+  /* Instant tooltip using ::after */
+  &[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    top: -28px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: ${({ theme }) => theme.colors.background.secondary};
+    color: ${({ theme }) => theme.colors.text.primary};
+    border: 1px solid ${({ theme }) => theme.colors.border.medium};
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: ${({ theme }) => theme.fontSize.caption};
+    white-space: nowrap;
+    z-index: 100;
+    pointer-events: none;
+  }
 `;
 
 interface Props {
   record: EvtxRecord;
   height: number;
-  /** When provided, clicking the “Include” button besides an EventData row
-   * will invoke this callback so the parent can add a filter for that field.
-   */
-  onAddFilter?: (field: string, value: string) => void;
-  /** Optional: add exclusion filter */
-  onExcludeFilter?: (field: string, value: string) => void;
 }
 
 // Utility helpers copied from the original table
@@ -137,8 +153,9 @@ const getUserId = (sys: EvtxSystemData): string =>
 
 const renderEventData = (
   eventData: unknown,
-  onAdd?: (k: string, v: string) => void,
-  onExclude?: (k: string, v: string) => void
+  onAdd: (k: string, v: string) => void,
+  onExclude: (k: string, v: string) => void,
+  onColumn: (k: string) => void
 ): React.ReactNode => {
   if (!eventData) return "No event data";
   const eventObj = eventData as Record<string, unknown>;
@@ -158,26 +175,35 @@ const renderEventData = (
         <DetailRow key={idx}>
           <DetailLabel>{String(name)}:</DetailLabel>
           <DetailValue style={{ marginRight: 4 }}>{valueStr}</DetailValue>
-          {onAdd && (
+          {
             <>
               <IconBtn
                 $variant="include"
-                title="Include"
+                data-tooltip="Include value"
                 onClick={() => onAdd(String(name), valueStr)}
               >
                 +
               </IconBtn>
-              {onExclude && (
+              {
                 <IconBtn
                   $variant="exclude"
-                  title="Exclude"
+                  data-tooltip="Exclude value"
                   onClick={() => onExclude(String(name), valueStr)}
                 >
                   –
                 </IconBtn>
-              )}
+              }
+              {
+                <IconBtn
+                  $variant="include"
+                  data-tooltip="Add as column"
+                  onClick={() => onColumn(String(name))}
+                >
+                  <ColumnIcon style={{ width: 14, height: 14 }} />
+                </IconBtn>
+              }
             </>
-          )}
+          }
         </DetailRow>
       );
     });
@@ -190,24 +216,33 @@ const renderEventData = (
       <DetailRow key={k}>
         <DetailLabel>{k}:</DetailLabel>
         <DetailValue style={{ marginRight: 8 }}>{valStr}</DetailValue>
-        {onAdd && (
+        {
           <IconBtn
             $variant="include"
-            title="Include"
+            data-tooltip="Include value"
             onClick={() => onAdd(k, valStr)}
           >
             +
           </IconBtn>
-        )}
-        {onExclude && (
+        }
+        {
           <IconBtn
             $variant="exclude"
-            title="Exclude"
+            data-tooltip="Exclude value"
             onClick={() => onExclude(k, valStr)}
           >
             –
           </IconBtn>
-        )}
+        }
+        {
+          <IconBtn
+            $variant="include"
+            data-tooltip="Add as column"
+            onClick={() => onColumn(k)}
+          >
+            <ColumnIcon style={{ width: 14, height: 14 }} />
+          </IconBtn>
+        }
       </DetailRow>
     );
   });
@@ -215,12 +250,57 @@ const renderEventData = (
   return kvRows.length > 0 ? kvRows : JSON.stringify(eventData, null, 2);
 };
 
-export const EventDetailsPane: React.FC<Props> = ({
-  record,
-  height,
-  onAddFilter,
-  onExcludeFilter,
-}) => {
+export const EventDetailsPane: React.FC<Props> = ({ record, height }) => {
+  const { setFilters } = useFilters();
+  const { addColumn } = useColumns();
+
+  const handleInclude = React.useCallback(
+    (field: string, value: string) => {
+      setFilters((prev) => {
+        const prevField = prev.eventData?.[field] ?? [];
+        if (prevField.includes(value)) return prev;
+        return {
+          ...prev,
+          eventData: {
+            ...(prev.eventData ?? {}),
+            [field]: [...prevField, value],
+          },
+        };
+      });
+    },
+    [setFilters]
+  );
+
+  const handleExclude = React.useCallback(
+    (field: string, value: string) => {
+      setFilters((prev) => {
+        const prevField = prev.eventDataExclude?.[field] ?? [];
+        if (prevField.includes(value)) return prev;
+        return {
+          ...prev,
+          eventDataExclude: {
+            ...(prev.eventDataExclude ?? {}),
+            [field]: [...prevField, value],
+          },
+        };
+      });
+    },
+    [setFilters]
+  );
+
+  const handleAddColumn = React.useCallback(
+    (field: string) => {
+      addColumn({
+        id: `eventData.${field}`,
+        header: field,
+        sqlExpr: `json_extract_string(Raw, '$.Event.EventData.${field}')`,
+        accessor: (row) => String(row[`eventData.${field}`] ?? "-"),
+        width: 200,
+      });
+    },
+    [addColumn]
+  );
+
   const sys = getSystemData(record);
   return (
     <DetailsPane $height={height}>
@@ -262,8 +342,9 @@ export const EventDetailsPane: React.FC<Props> = ({
           <DetailContent>
             {renderEventData(
               record.Event.EventData as EvtxEventData,
-              onAddFilter,
-              onExcludeFilter
+              handleInclude,
+              handleExclude,
+              handleAddColumn
             )}
           </DetailContent>
         </DetailSection>

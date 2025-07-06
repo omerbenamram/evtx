@@ -27,3 +27,7 @@ export {
   type ContextMenuProps,
   type ContextMenuItem,
 } from "./ContextMenu";
+export { SidebarHeader } from "./SidebarHeader";
+export { SearchContainer, SearchInput } from "./SearchBox";
+export { ScrollableList } from "./ScrollableList";
+export { SelectableRow } from "./SelectableRow";
