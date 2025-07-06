@@ -1,8 +1,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import styled, { ThemeProvider } from "styled-components";
+import styled, { useTheme } from "styled-components";
+import { useThemeMode } from "./styles/ThemeModeProvider";
 import { GlobalStyles } from "./styles/GlobalStyles";
-import { theme } from "./styles/theme";
 import {
   MenuBar,
   Panel,
@@ -36,7 +36,7 @@ const AppContainer = styled.div`
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: ${theme.colors.background.primary};
+  background: ${({ theme }) => theme.colors.background.primary};
 `;
 
 const MainContent = styled.div`
@@ -49,7 +49,7 @@ const Sidebar = styled.aside`
   width: 280px;
   min-width: 200px;
   max-width: 400px;
-  border-right: 1px solid ${theme.colors.border.light};
+  border-right: 1px solid ${({ theme }) => theme.colors.border.light};
   display: flex;
   flex-direction: column;
 `;
@@ -84,11 +84,11 @@ const FilterDivider = styled.div`
   bottom: 0;
   width: 3px;
   cursor: col-resize;
-  background: ${theme.colors.border.light};
+  background: ${({ theme }) => theme.colors.border.light};
   transition: background 0.2s ease;
 
   &:hover {
-    background: ${theme.colors.accent.primary};
+    background: ${({ theme }) => theme.colors.accent.primary};
   }
 `;
 
@@ -108,10 +108,10 @@ const LoadingOverlay = styled.div`
 `;
 
 const LoadingContent = styled.div`
-  background: ${theme.colors.background.secondary};
-  padding: ${theme.spacing.xl};
-  border-radius: ${theme.borderRadius.md};
-  box-shadow: ${theme.shadows.elevation};
+  background: ${({ theme }) => theme.colors.background.secondary};
+  padding: ${({ theme }) => theme.spacing.xl};
+  border-radius: ${({ theme }) => theme.borderRadius.md};
+  box-shadow: ${({ theme }) => theme.shadows.elevation};
   text-align: center;
 `;
 
@@ -340,6 +340,8 @@ function App() {
     []
   );
 
+  const { mode: themeMode, toggle: toggleTheme } = useThemeMode();
+
   const menuItems = [
     {
       id: "file",
@@ -415,6 +417,14 @@ function App() {
           shortcut: "F5",
           onClick: handleRefresh,
         },
+        {
+          id: "view-dark-mode",
+          label:
+            themeMode === "dark"
+              ? "Switch to Light Mode"
+              : "Switch to Dark Mode",
+          onClick: toggleTheme,
+        },
       ],
     },
     {
@@ -435,8 +445,10 @@ function App() {
     },
   ];
 
+  const currentTheme = useTheme();
+
   return (
-    <ThemeProvider theme={theme}>
+    <>
       <GlobalStyles />
       <AppContainer>
         <MenuBar items={menuItems} />
@@ -445,7 +457,7 @@ function App() {
           elevation="flat"
           padding="none"
           style={{
-            background: theme.colors.background.tertiary,
+            background: currentTheme.colors.background.tertiary,
             border: "none",
             borderRadius: 0,
           }}
@@ -544,7 +556,7 @@ function App() {
           </LoadingOverlay>
         )}
       </AppContainer>
-    </ThemeProvider>
+    </>
   );
 }
 

@@ -1,24 +1,23 @@
 import React from "react";
 import styled from "styled-components";
 import { type EvtxFileInfo } from "../lib/types";
-import { theme } from "../styles/theme";
 
 const Bar = styled.div`
   height: 24px;
-  background: ${theme.colors.background.secondary};
-  border-top: 1px solid ${theme.colors.border.light};
+  background: ${({ theme }) => theme.colors.background.secondary};
+  border-top: 1px solid ${({ theme }) => theme.colors.border.light};
   display: flex;
   align-items: center;
-  padding: 0 ${theme.spacing.sm};
-  font-size: ${theme.fontSize.caption};
-  color: ${theme.colors.text.secondary};
-  gap: ${theme.spacing.lg};
+  padding: 0 ${({ theme }) => theme.spacing.sm};
+  font-size: ${({ theme }) => theme.fontSize.caption};
+  color: ${({ theme }) => theme.colors.text.secondary};
+  gap: ${({ theme }) => theme.spacing.lg};
 `;
 
 const Item = styled.span`
   display: flex;
   align-items: center;
-  gap: ${theme.spacing.xs};
+  gap: ${({ theme }) => theme.spacing.xs};
 `;
 
 interface StatusBarProps {

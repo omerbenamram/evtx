@@ -8,20 +8,19 @@ import {
   Document20Regular,
   Delete20Regular,
 } from "@fluentui/react-icons";
-import { theme } from "../styles/theme";
 
 const TreeContainer = styled.div`
   height: 100%;
   overflow-y: auto;
-  background: ${theme.colors.background.secondary};
+  background: ${({ theme }) => theme.colors.background.secondary};
   user-select: none;
 `;
 
 const TreeHeader = styled.div`
-  padding: ${theme.spacing.sm} ${theme.spacing.md};
+  padding: ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.md};
   font-weight: 600;
-  border-bottom: 1px solid ${theme.colors.border.light};
-  background: ${theme.colors.background.tertiary};
+  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
+  background: ${({ theme }) => theme.colors.background.tertiary};
 `;
 
 interface EventLogNode {
