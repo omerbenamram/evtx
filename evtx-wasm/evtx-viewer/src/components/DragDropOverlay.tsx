@@ -1,7 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import styled, { keyframes } from "styled-components";
 import { CloudArrowUp48Regular } from "@fluentui/react-icons";
-import { theme } from "../styles/theme";
 
 const fadeIn = keyframes`
   from {
@@ -40,47 +39,43 @@ const DropZone = styled.div<{ $isDragOver: boolean }>`
   width: 400px;
   height: 300px;
   border: 3px dashed
-    ${(props) =>
-      props.$isDragOver
-        ? theme.colors.accent.primary
-        : theme.colors.border.medium};
-  border-radius: ${theme.borderRadius.lg};
+    ${({ $isDragOver, theme }) =>
+      $isDragOver ? theme.colors.accent.primary : theme.colors.border.medium};
+  border-radius: ${({ theme }) => theme.borderRadius.lg};
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: ${theme.spacing.lg};
-  background: ${(props) =>
-    props.$isDragOver
+  gap: ${({ theme }) => theme.spacing.lg};
+  background: ${({ $isDragOver, theme }) =>
+    $isDragOver
       ? theme.colors.selection.background
       : theme.colors.background.secondary};
-  transition: all ${theme.transitions.normal};
+  transition: all ${({ theme }) => theme.transitions.normal};
   animation: ${scaleIn} 200ms ease-out;
 
   &:hover {
-    border-color: ${theme.colors.accent.primary};
-    background: ${theme.colors.selection.background};
+    border-color: ${({ theme }) => theme.colors.accent.primary};
+    background: ${({ theme }) => theme.colors.selection.background};
   }
 `;
 
 const IconWrapper = styled.div<{ $isDragOver: boolean }>`
-  color: ${(props) =>
-    props.$isDragOver
-      ? theme.colors.accent.primary
-      : theme.colors.text.secondary};
-  transition: all ${theme.transitions.normal};
-  transform: ${(props) => (props.$isDragOver ? "scale(1.1)" : "scale(1)")};
+  color: ${({ $isDragOver, theme }) =>
+    $isDragOver ? theme.colors.accent.primary : theme.colors.text.secondary};
+  transition: all ${({ theme }) => theme.transitions.normal};
+  transform: ${({ $isDragOver }) => ($isDragOver ? "scale(1.1)" : "scale(1)")};
 `;
 
 const Title = styled.h2`
-  font-size: ${theme.fontSize.title};
-  color: ${theme.colors.text.primary};
+  font-size: ${({ theme }) => theme.fontSize.title};
+  color: ${({ theme }) => theme.colors.text.primary};
   margin: 0;
 `;
 
 const Subtitle = styled.p`
-  font-size: ${theme.fontSize.body};
-  color: ${theme.colors.text.secondary};
+  font-size: ${({ theme }) => theme.fontSize.body};
+  color: ${({ theme }) => theme.colors.text.secondary};
   margin: 0;
 `;
 

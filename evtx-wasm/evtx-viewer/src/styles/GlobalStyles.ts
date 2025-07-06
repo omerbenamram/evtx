@@ -1,5 +1,4 @@
-import { createGlobalStyle } from 'styled-components';
-import { theme } from './theme';
+import { createGlobalStyle } from "styled-components";
 
 export const GlobalStyles = createGlobalStyle`
   * {
@@ -14,10 +13,10 @@ export const GlobalStyles = createGlobalStyle`
   }
 
   body {
-    font-family: ${theme.fonts.body};
-    font-size: ${theme.fontSize.body};
-    color: ${theme.colors.text.primary};
-    background-color: ${theme.colors.background.primary};
+    font-family: ${({ theme }) => theme.fonts.body};
+    font-size: ${({ theme }) => theme.fontSize.body};
+    color: ${({ theme }) => theme.colors.text.primary};
+    background-color: ${({ theme }) => theme.colors.background.primary};
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -35,29 +34,29 @@ export const GlobalStyles = createGlobalStyle`
   }
 
   ::-webkit-scrollbar-track {
-    background: ${theme.colors.background.primary};
-    border: 1px solid ${theme.colors.border.light};
+    background: ${({ theme }) => theme.colors.background.primary};
+    border: 1px solid ${({ theme }) => theme.colors.border.light};
   }
 
   ::-webkit-scrollbar-thumb {
-    background: ${theme.colors.border.medium};
-    border-radius: ${theme.borderRadius.sm};
-    border: 1px solid ${theme.colors.border.light};
+    background: ${({ theme }) => theme.colors.border.medium};
+    border-radius: ${({ theme }) => theme.borderRadius.sm};
+    border: 1px solid ${({ theme }) => theme.colors.border.light};
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: ${theme.colors.border.dark};
+    background: ${({ theme }) => theme.colors.border.dark};
   }
 
   /* Selection */
   ::selection {
-    background-color: ${theme.colors.selection.background};
-    color: ${theme.colors.text.primary};
+    background-color: ${({ theme }) => theme.colors.selection.background};
+    color: ${({ theme }) => theme.colors.text.primary};
   }
 
   /* Focus styles */
   :focus-visible {
-    outline: 2px solid ${theme.colors.accent.primary};
+    outline: 2px solid ${({ theme }) => theme.colors.accent.primary};
     outline-offset: 2px;
   }
 
@@ -74,9 +73,9 @@ export const GlobalStyles = createGlobalStyle`
 
   /* Links */
   a {
-    color: ${theme.colors.text.link};
+    color: ${({ theme }) => theme.colors.text.link};
     text-decoration: none;
-    
+
     &:hover {
       text-decoration: underline;
     }
@@ -84,32 +83,33 @@ export const GlobalStyles = createGlobalStyle`
 
   /* Code */
   code, pre {
-    font-family: ${theme.fonts.mono};
-    font-size: ${theme.fontSize.caption};
+    font-family: ${({ theme }) => theme.fonts.mono};
+    font-size: ${({ theme }) => theme.fontSize.caption};
   }
 
   /* Tooltips */
   [data-tooltip] {
     position: relative;
-    
+
     &::after {
       content: attr(data-tooltip);
       position: absolute;
       bottom: 100%;
       left: 50%;
       transform: translateX(-50%);
-      background-color: ${theme.colors.text.primary};
-      color: ${theme.colors.text.white};
-      padding: ${theme.spacing.xs} ${theme.spacing.sm};
-      border-radius: ${theme.borderRadius.sm};
-      font-size: ${theme.fontSize.caption};
+      background-color: ${({ theme }) => theme.colors.text.primary};
+      color: ${({ theme }) => theme.colors.text.white};
+      padding: ${({ theme }) => theme.spacing.xs} ${({ theme }) =>
+  theme.spacing.sm};
+      border-radius: ${({ theme }) => theme.borderRadius.sm};
+      font-size: ${({ theme }) => theme.fontSize.caption};
       white-space: nowrap;
       opacity: 0;
       visibility: hidden;
-      transition: opacity ${theme.transitions.fast};
-      margin-bottom: ${theme.spacing.xs};
+      transition: opacity ${({ theme }) => theme.transitions.fast};
+      margin-bottom: ${({ theme }) => theme.spacing.xs};
     }
-    
+
     &:hover::after {
       opacity: 1;
       visibility: visible;
