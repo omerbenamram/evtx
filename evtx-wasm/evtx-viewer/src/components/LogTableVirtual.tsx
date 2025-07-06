@@ -1,14 +1,20 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import React, { useCallback, useMemo, useState, useRef } from "react";
 import styled from "styled-components";
 
-import type { EvtxRecord, FilterOptions } from "../lib/types";
+import type { EvtxRecord, FilterOptions, TableColumn } from "../lib/types";
 import { DuckDbDataSource } from "../lib/duckDbDataSource";
 import { EventDetailsPane } from "./EventDetailsPane";
 import { computeSliceRows, useChunkVirtualizer } from "../lib/virtualHelpers";
 import { LogRow } from "./LogRow";
 import { useRowNavigation } from "./useRowNavigation";
 import { logger } from "../lib/logger";
+import { ContextMenu, type ContextMenuItem } from "./Windows";
+import { getColumnFacetCounts } from "../lib/duckdb";
+import { useFilters } from "../hooks/useFilters";
+import { useColumns } from "../hooks/useColumns";
 import type { VirtualItem } from "@tanstack/react-virtual";
+import { Filter20Regular } from "@fluentui/react-icons";
 
 // ------------------------------------------------------------------
 // Helper to build the <tr/> list for the current viewport.  Extracted out of
@@ -17,7 +23,7 @@ import type { VirtualItem } from "@tanstack/react-virtual";
 
 interface GenerateRowsArgs {
   vItems: VirtualItem[];
-  chunkRows: Map<number, EvtxRecord[]>;
+  chunkRows: Map<number, any[]>; // generic rows
   columnsCount: number;
   tableContainerRef: React.MutableRefObject<HTMLDivElement | null>;
   prefix: number[];
@@ -27,6 +33,7 @@ interface GenerateRowsArgs {
   SLICE_BUFFER_ROWS: number;
   MAX_ROWS_PER_SLICE: number;
   virtualizerTotal: number;
+  columns: TableColumn[];
 }
 
 function generateRows({
@@ -41,6 +48,7 @@ function generateRows({
   SLICE_BUFFER_ROWS,
   MAX_ROWS_PER_SLICE,
   virtualizerTotal,
+  columns,
 }: GenerateRowsArgs): React.ReactNode[] {
   const rows: React.ReactNode[] = [];
   if (vItems.length === 0) return rows;
@@ -141,6 +149,7 @@ function generateRows({
           isEven={isEven}
           isSelected={isSelected}
           onRowClick={handleRowClick}
+          columns={columns}
         />
       );
     });
@@ -185,12 +194,7 @@ function generateRows({
 
 interface LogTableVirtualProps {
   dataSource: DuckDbDataSource;
-  filters: FilterOptions;
   onRowSelect?: (rec: EvtxRecord) => void;
-  /** Callback to add a new EventData field filter */
-  onAddEventDataFilter?: (field: string, value: string) => void;
-  /** Callback to exclude value */
-  onExcludeEventDataFilter?: (field: string, value: string) => void;
 }
 
 // ---------- styled basics (slimmed down from original LogTable) ----------
@@ -240,6 +244,21 @@ const TH = styled.th`
   }
 `;
 
+const THInner = styled.div<{ $filtered?: boolean }>`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  ::after {
+    content: "";
+  }
+  svg {
+    opacity: ${({ $filtered }) => ($filtered ? 1 : 0.4)};
+    color: ${({ theme, $filtered }) =>
+      $filtered ? theme.colors.accent.primary : theme.colors.text.secondary};
+  }
+`;
+
 // Add styled divider for resizing like original
 const Divider = styled.div`
   height: 2px;
@@ -256,65 +275,14 @@ const Divider = styled.div`
 
 export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
   dataSource,
-  filters,
   onRowSelect,
-  onAddEventDataFilter,
-  onExcludeEventDataFilter,
 }) => {
+  const { filters: currentFilters, setFilters } = useFilters();
+  const { columns } = useColumns();
+
   const ROW_HEIGHT = 30; // single source of truth for row height
   const MAX_ROWS_PER_SLICE = 5000; // increased to load a few thousand rows at once
   const SLICE_BUFFER_ROWS = 2000; // expanded buffer size so more rows stay mounted
-
-  // Predicate based on current filters (same rules as sidebar counts)
-  const filterFn = useCallback<(rec: EvtxRecord) => boolean>(
-    (rec) => {
-      const opts = filters;
-      if (!opts) return true;
-      const sys = rec.Event?.System ?? {};
-
-      if (
-        opts.level &&
-        opts.level.length &&
-        !opts.level.includes(sys.Level ?? 4)
-      )
-        return false;
-      if (opts.provider && opts.provider.length) {
-        const prov = sys.Provider?.Name ?? sys.Provider_attributes?.Name ?? "";
-        if (!opts.provider.includes(prov)) return false;
-      }
-      if (
-        opts.channel &&
-        opts.channel.length &&
-        !opts.channel.includes(sys.Channel ?? "")
-      )
-        return false;
-      if (
-        opts.eventId &&
-        opts.eventId.length &&
-        !opts.eventId.includes(Number(sys.EventID ?? -1))
-      )
-        return false;
-
-      const ev = (rec.Event?.EventData ?? {}) as Record<string, unknown>;
-      if (opts.eventData) {
-        for (const [k, allowed] of Object.entries(opts.eventData)) {
-          if (allowed.length === 0) continue;
-          const val = String(ev[k] ?? "");
-          if (!allowed.includes(val)) return false;
-        }
-      }
-      if (opts.eventDataExclude) {
-        for (const [k, blocked] of Object.entries(opts.eventDataExclude)) {
-          if (blocked.length === 0) continue;
-          const val = String(ev[k] ?? "");
-          if (blocked.includes(val)) return false;
-        }
-      }
-      // searchTerm ignored for table performance; DuckDB handles counts only
-      return true;
-    },
-    [filters]
-  );
 
   const {
     containerRef: tableContainerRef,
@@ -325,34 +293,28 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
   } = useChunkVirtualizer({
     dataSource,
     rowHeight: ROW_HEIGHT,
-    filterFn,
   });
 
   const getRowRecord = useCallback(
     (globalIdx: number): EvtxRecord | null => {
-      // locate owning chunk via prefix (chunkCount is small → linear OK)
       let c = 0;
       while (c + 1 < prefix.length && prefix[c + 1] <= globalIdx) c++;
       const rows = chunkRows.get(c);
-      return rows ? rows[globalIdx - prefix[c]] : null;
+      if (!rows) return null;
+      const row: any = rows[globalIdx - prefix[c]];
+      if (!row) return null;
+      const raw = row["Raw"] as string | undefined;
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
     },
     [chunkRows, prefix]
   );
 
-  const columns = useMemo(
-    () => [
-      { header: "Level", width: 140 },
-      { header: "Date & Time", width: 200 },
-      { header: "Source", width: 200 },
-      { header: "Event ID", width: 80 },
-      { header: "Task", width: 100 },
-      { header: "User", width: 140 },
-      { header: "Computer", width: 180 },
-      { header: "OpCode", width: 80 },
-      { header: "Keywords", width: 160 },
-    ],
-    []
-  );
+  const columnsMemo = useMemo(() => columns, [columns]);
 
   // Optional: expose scroll position for debugging / analytics
   const handleScroll = useCallback(() => {
@@ -428,6 +390,42 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
     [detailsHeight]
   );
 
+  // ---------------------------------------------
+  // Header filter pop-over state
+  // ---------------------------------------------
+  const [filterMenu, setFilterMenu] = useState<{
+    col: TableColumn;
+    pos: { x: number; y: number };
+    items: { v: string; c: number }[];
+  } | null>(null);
+
+  const openFilterMenu = async (col: TableColumn, e: React.MouseEvent) => {
+    e.preventDefault();
+    const counts = await getColumnFacetCounts(col, currentFilters);
+    setFilterMenu({
+      col,
+      pos: { x: e.clientX, y: e.clientY },
+      items: counts.map(({ v, c }) => ({ v: String(v ?? "-"), c })),
+    });
+  };
+
+  const toggleValue = (val: string) => {
+    setFilters((prev) => {
+      const cur = prev.columnEquals?.[filterMenu!.col.id] ?? [];
+      const exists = cur.includes(val);
+      const nextVals = exists
+        ? cur.filter((x: string) => x !== val)
+        : [...cur, val];
+      return {
+        ...prev,
+        columnEquals: {
+          ...(prev.columnEquals ?? {}),
+          [filterMenu!.col.id]: nextVals,
+        },
+      } as FilterOptions;
+    });
+  };
+
   return (
     <Container
       ref={outerRef}
@@ -442,9 +440,26 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
           <Table>
             <THead>
               <tr>
-                {columns.map((col) => (
-                  <TH key={col.header} style={{ width: col.width }}>
-                    {col.header}
+                {columnsMemo.map((col) => (
+                  <TH
+                    key={col.id}
+                    style={{ width: col.width, position: "relative" }}
+                    onContextMenu={(e) => openFilterMenu(col, e)}
+                  >
+                    {(() => {
+                      const isFiltered = Boolean(
+                        currentFilters.columnEquals?.[col.id]?.length
+                      );
+                      return (
+                        <THInner
+                          $filtered={isFiltered}
+                          onClick={(ev) => openFilterMenu(col, ev as any)}
+                        >
+                          {col.header}
+                          <Filter20Regular />
+                        </THInner>
+                      );
+                    })()}
                   </TH>
                 ))}
               </tr>
@@ -453,7 +468,7 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
               {generateRows({
                 vItems: virtualizer.getVirtualItems(),
                 chunkRows,
-                columnsCount: columns.length,
+                columnsCount: columnsMemo.length,
                 tableContainerRef,
                 prefix,
                 selectedRow,
@@ -462,6 +477,7 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
                 SLICE_BUFFER_ROWS,
                 MAX_ROWS_PER_SLICE,
                 virtualizerTotal: virtualizer.getTotalSize(),
+                columns: columnsMemo,
               })}
             </TBody>
           </Table>
@@ -471,14 +487,49 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
       {selectedRecord && (
         <>
           <Divider onMouseDown={handleDividerMouseDown} />
-          <EventDetailsPane
-            record={selectedRecord}
-            height={detailsHeight}
-            onAddFilter={onAddEventDataFilter}
-            onExcludeFilter={onExcludeEventDataFilter}
-          />
+          <EventDetailsPane record={selectedRecord} height={detailsHeight} />
         </>
       )}
+      {filterMenu &&
+        (() => {
+          const current =
+            currentFilters.columnEquals?.[filterMenu.col.id] ?? [];
+          const menuItems: ContextMenuItem[] = [
+            {
+              id: "select-all",
+              label: "(Select All)",
+              onClick: () => {
+                setFilters(
+                  (prev) =>
+                    ({
+                      ...prev,
+                      columnEquals: {
+                        ...(prev.columnEquals ?? {}),
+                        [filterMenu.col.id]: [],
+                      },
+                    } as FilterOptions)
+                );
+              },
+            },
+          ];
+          filterMenu.items.forEach(({ v, c }) => {
+            menuItems.push({
+              id: v,
+              label: `${v} (${c})`,
+              icon: (
+                <input type="checkbox" readOnly checked={current.includes(v)} />
+              ),
+              onClick: () => toggleValue(v),
+            });
+          });
+          return (
+            <ContextMenu
+              items={menuItems}
+              position={filterMenu.pos}
+              onClose={() => setFilterMenu(null)}
+            />
+          );
+        })()}
     </Container>
   );
 };

@@ -1,8 +1,9 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // DuckDbDataSource.ts – virtual-table backend that pages rows directly from
 // DuckDB based on current filters.
 
-import type { EvtxRecord, FilterOptions } from "./types";
-import { countRecords, fetchRecords } from "./duckdb";
+import type { FilterOptions, ColumnSpec } from "./types";
+import { countRecords, fetchTabular } from "./duckdb";
 
 /**
  * Page-oriented data source for use with `useChunkVirtualizer`.  It splits the
@@ -11,11 +12,13 @@ import { countRecords, fetchRecords } from "./duckdb";
  */
 export class DuckDbDataSource {
   private readonly filters: FilterOptions;
+  private readonly columns: ColumnSpec[];
   private readonly PAGE = 4000; // match old chunk size
   private totalRecords: number | null = null;
 
-  constructor(filters: FilterOptions) {
+  constructor(filters: FilterOptions, columns: ColumnSpec[]) {
     this.filters = filters;
+    this.columns = columns;
   }
 
   /** Prepare row count so virtualiser knows total height */
@@ -56,8 +59,9 @@ export class DuckDbDataSource {
   }
 
   /** Fetch one page */
-  async getChunk(idx: number): Promise<EvtxRecord[]> {
+  async getChunk(idx: number): Promise<any[]> {
+    // Changed EvtxRecord[] to any[] as EvtxRecord is no longer imported
     const offset = idx * this.PAGE;
-    return fetchRecords(this.filters, this.PAGE, offset);
+    return fetchTabular(this.columns, this.filters, this.PAGE, offset);
   }
 }

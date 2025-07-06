@@ -1,7 +1,7 @@
 ---
-alwaysApply: true
+description: when working on wasm bindings, or importing wasm bindings in TS.
+alwaysApply: false
 ---
-
 # WASM Bindings & Regeneration Guide
 
 This project uses `wasm-pack` to compile the Rust crate under

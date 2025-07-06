@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer, Virtualizer } from "@tanstack/react-virtual";
-import type { EvtxRecord } from "./types";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+// Generic virtual helpers now work with any row shape.
 import { DuckDbDataSource } from "./duckDbDataSource";
 import { logger } from "./logger";
 
@@ -11,7 +12,7 @@ export interface ChunkVirtualizer {
    *  need `getVirtualItems()` and `getTotalSize()`. */
   virtualizer: Virtualizer<HTMLDivElement, Element>;
   /** Map of *loaded* chunks ⇒ their record arrays */
-  chunkRows: Map<number, EvtxRecord[]>;
+  chunkRows: Map<number, any[]>;
   /** prefix[i] === global row offset at *start* of chunk i */
   prefix: number[];
   /** Upper-bound on total number of rows (becomes exact once all chunks
@@ -31,7 +32,7 @@ interface UseChunkVirtualizerOpts {
   /** Overscan #chunks for the tanstack virtualizer. */
   overscanChunks?: number;
   /** Optional predicate – only rows that return true will be kept. */
-  filterFn?: (rec: EvtxRecord) => boolean;
+  filterFn?: (rec: any) => boolean;
 }
 
 export function useChunkVirtualizer({
@@ -43,7 +44,7 @@ export function useChunkVirtualizer({
 }: UseChunkVirtualizerOpts): ChunkVirtualizer {
   // --- bookkeeping --------------------------------------------------------
   const [chunkCount, setChunkCount] = useState(0);
-  const [chunkRows, setChunkRows] = useState<Map<number, EvtxRecord[]>>(
+  const [chunkRows, setChunkRows] = useState<Map<number, any[]>>(
     () => new Map()
   );
   const loadingChunks = useRef<Set<number>>(new Set());
@@ -126,7 +127,7 @@ export function useChunkVirtualizer({
     // the data source (which we should).  Otherwise chunks will update lazily
     // the next time they load.
     (async () => {
-      const newMap = new Map<number, EvtxRecord[]>();
+      const newMap = new Map<number, any[]>();
       for (const idx of chunkRows.keys()) {
         const original = await dataSource.getChunk(idx);
         newMap.set(idx, original.filter(filterFn));

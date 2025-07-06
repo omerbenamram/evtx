@@ -90,10 +90,16 @@ export interface ParseResult {
 export interface TableColumn {
   id: string;
   header: string;
-  accessor: (record: EvtxRecord) => unknown;
+  /** DuckDB select expression.  Must alias to the same `id` */
+  sqlExpr: string;
+  /** Optional value formatter – receives the raw value returned from SQL */
+  accessor?: (row: Record<string, unknown>) => unknown;
   width?: number;
   sortable?: boolean;
 }
+
+/** Alias kept for clarity – identical to TableColumn */
+export type ColumnSpec = TableColumn;
 
 export type ExportFormat = "json" | "xml";
 
@@ -121,6 +127,9 @@ export interface FilterOptions {
    * of the listed values will be filtered out.
    */
   eventDataExclude?: Record<string, string[]>;
+
+  /** Generic equality filters keyed by column id (id refers to TableColumn.id). */
+  columnEquals?: Record<string, string[]>;
 }
 
 // Pre-computed facet buckets across the entire log file

@@ -155,6 +155,20 @@ export function buildWhere(filters: FilterOptions): string {
   }
 
   // TODO: timeRange filter if needed
+
+  // Generic column equality filters
+  if (filters.columnEquals) {
+    for (const [colId, values] of Object.entries(filters.columnEquals)) {
+      if (!values || values.length === 0) continue;
+      const colSpec = activeColumns.find((c) => c.id === colId);
+      if (!colSpec) continue;
+      const valueList = values
+        .map((v) => `'${escapeSqlString(String(v))}'`)
+        .join(",");
+      clauses.push(`${colSpec.sqlExpr} IN (${valueList})`);
+    }
+  }
+
   return clauses.length ? clauses.join(" AND ") : "";
 }
 
@@ -272,6 +286,84 @@ export async function countRecords(filters: FilterOptions): Promise<number> {
   const row = res.toArray()[0] as { cnt: number | bigint } | undefined;
   if (!row) return 0;
   return typeof row.cnt === "bigint" ? Number(row.cnt) : (row.cnt as number);
+}
+
+// ---------------------------------------------------------------------------
+// Generic tabular fetch based on dynamic column specs
+// ---------------------------------------------------------------------------
+
+import type { ColumnSpec } from "./types";
+
+// -----------------------------------------------------------
+// Active column registry – set by UI layer so buildWhere can
+// translate column IDs to SQL expressions without threading
+// `columns` param everywhere.
+// -----------------------------------------------------------
+
+let activeColumns: ColumnSpec[] = [];
+
+export function setActiveColumns(cols: ColumnSpec[]): void {
+  activeColumns = cols;
+}
+
+/**
+ * Fetch rows as plain objects according to the provided columns list.
+ * Each ColumnSpec.sqlExpr MUST already alias to its id (for example
+ *   `Level AS level`).  For convenience we still add the alias automatically
+ * if not present.
+ */
+export async function fetchTabular(
+  columns: ColumnSpec[],
+  filters: FilterOptions,
+  limit = 100,
+  offset = 0
+): Promise<Record<string, unknown>[]> {
+  const c = await initDuckDB();
+
+  const selectFragments = columns.map((col) => {
+    // Simple heuristic – if the sqlExpr already contains an " AS " use as-is
+    if (/\sas\s/i.test(col.sqlExpr)) return col.sqlExpr;
+    return `${col.sqlExpr} AS "${col.id}"`;
+  });
+
+  // Always include Raw so we can reconstruct full event if needed
+  if (!columns.some((c) => c.id === "Raw")) {
+    selectFragments.push("Raw");
+  }
+
+  const where = buildWhere(filters);
+  const whereSql = where ? `WHERE ${where}` : "";
+
+  const query = `SELECT ${selectFragments.join(
+    ", "
+  )} FROM logs ${whereSql} LIMIT ${limit} OFFSET ${offset}`;
+  const res = await c.query(query);
+  return res.toArray() as Record<string, unknown>[];
+}
+
+// ---------------------------------------------------------------------------
+// Facet counts for arbitrary column (for header filter popover)
+// ---------------------------------------------------------------------------
+
+export async function getColumnFacetCounts(
+  col: ColumnSpec,
+  filters: FilterOptions,
+  limit = 250
+): Promise<{ v: unknown; c: number }[]> {
+  const c = await initDuckDB();
+
+  // Exclude current equality filter on this column when computing counts so
+  // user can multi-select.
+  const adjusted: FilterOptions = {
+    ...filters,
+    columnEquals: { ...filters.columnEquals, [col.id]: [] },
+  };
+
+  const where = buildWhere(adjusted);
+  const whereSql = where ? `WHERE ${where}` : "";
+  const sql = `SELECT ${col.sqlExpr} AS v, count(*) c FROM logs ${whereSql} GROUP BY v ORDER BY c DESC LIMIT ${limit}`;
+  const res = await c.query(sql);
+  return res.toArray() as { v: unknown; c: number }[];
 }
 
 // (end of duckdb helpers)

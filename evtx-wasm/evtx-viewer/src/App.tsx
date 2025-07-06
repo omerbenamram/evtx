@@ -24,13 +24,16 @@ import {
   ArrowExportLtr20Regular,
 } from "@fluentui/react-icons";
 // Note: parsing/export handled via useEvtxLog hook; no direct EvtxParser needed here.
-import { type FilterOptions } from "./lib/types";
+import { useFilters } from "./hooks/useFilters";
+import { useColumns } from "./hooks/useColumns";
 import { logger, LogLevel } from "./lib/logger";
 import init from "./wasm/evtx_wasm.js";
 import { FilterSidebar } from "./components/FilterSidebar";
 import { LogTableVirtual } from "./components/LogTableVirtual";
 import { useEvtxLog } from "./hooks/useEvtxLog";
 import { initDuckDB } from "./lib/duckdb";
+import { ColumnManager } from "./components/ColumnManager";
+import { Table20Regular as TableIcon } from "@fluentui/react-icons";
 
 const AppContainer = styled.div`
   display: flex;
@@ -77,6 +80,30 @@ const FilterPanel = styled.aside<{ $width: number }>`
   position: relative;
 `;
 
+const ColumnPanel = styled.aside<{ $width: number }>`
+  width: ${({ $width }) => $width}px;
+  min-width: 220px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+`;
+
+const ColumnDivider = styled.div`
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  cursor: col-resize;
+  background: ${({ theme }) => theme.colors.border.light};
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: ${({ theme }) => theme.colors.accent.primary};
+  }
+`;
+
 const FilterDivider = styled.div`
   position: absolute;
   left: 0;
@@ -118,12 +145,15 @@ const LoadingContent = styled.div`
 function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string>("");
   const [isWasmReady, setIsWasmReady] = useState(false);
-  const [filters, setFilters] = useState<FilterOptions>({});
+  const [isDuckDbReady, setIsDuckDbReady] = useState(false);
+  const { filters, clearFilters } = useFilters();
   const [showFilters, setShowFilters] = useState(false);
+  // Table column state – start with defaults
+  const { columns, setColumns } = useColumns();
+  const [showColumnMgr, setShowColumnMgr] = useState(false);
   const [filterPanelWidth, setFilterPanelWidth] = useState(300);
   const [fileTreeVersion, setFileTreeVersion] = useState<number>(0);
 
-  // Use central hook for log/session state
   const {
     isLoading,
     loadingMessage,
@@ -132,12 +162,10 @@ function App() {
     fileInfo,
     parser,
     dataSource,
-    bucketCounts,
-    totalRecords,
     currentFileId,
     ingestProgress,
     loadFile,
-  } = useEvtxLog(filters);
+  } = useEvtxLog();
 
   // --- Logging level state ---
   const [logLevel, setLogLevel] = useState<LogLevel>(logger.getLogLevel());
@@ -156,24 +184,27 @@ function App() {
 
   // Initialize WASM module
   useEffect(() => {
-    const initWasm = async () => {
+    const initEngines = async () => {
       try {
-        logger.info("Initializing WASM module...");
+        logger.info("Initializing EVTX parser WASM module...");
         await init();
         setIsWasmReady(true);
-        logger.info("WASM module initialized successfully");
+        logger.info("EVTX parser WASM module initialized");
 
-        // Kick off DuckDB instantiation in the background so that when we
-        // later ingest records, the heavy WASM compile step has already
-        // finished.  We deliberately *don’t* await this.
-        void initDuckDB().catch((err) =>
-          console.warn("DuckDB pre-init failed", err)
-        );
+        // Now initialise DuckDB WASM.  This step can take several seconds on
+        // first load because the browser has to download & compile the DB
+        // assets.  We await it so that downstream code relying on the DB can
+        // safely proceed and so we can surface meaningful UI feedback.
+        logger.info("Initializing DuckDB WASM engine...");
+        await initDuckDB();
+        setIsDuckDbReady(true);
+        logger.info("DuckDB WASM engine ready");
       } catch (error) {
-        logger.error("Failed to initialize WASM module", error);
+        logger.error("Failed to initialise WASM engines", error);
       }
     };
-    initWasm();
+
+    void initEngines();
   }, []);
 
   // Handle dragging of the filter panel divider
@@ -210,13 +241,15 @@ function App() {
       }
 
       // Reset filters in App scope on new file
-      setFilters({});
-      // Bump FileTree refresh so new file appears immediately
-      setFileTreeVersion((v) => v + 1);
+      clearFilters();
 
+      // Ingest the file (this will persist it to IndexedDB via parser)
       await loadFile(file);
+
+      // Refresh FileTree *after* the file is saved so it appears immediately
+      setFileTreeVersion((v) => v + 1);
     },
-    [isWasmReady, loadFile]
+    [isWasmReady, loadFile, clearFilters]
   );
 
   type TreeNodeData = { id: string; fileId?: string; logPath?: string };
@@ -305,41 +338,6 @@ function App() {
     [parser, matchedCount, filters]
   );
 
-  const handleAddEventDataFilter = useCallback(
-    (field: string, value: string) => {
-      setFilters((prev) => {
-        const prevEvent = prev.eventData ?? {};
-        const existing = prevEvent[field] ?? [];
-        if (existing.includes(value)) return prev; // already active
-        return {
-          ...prev,
-          eventData: { ...prevEvent, [field]: [...existing, value] },
-        };
-      });
-      setShowFilters(true); // ensure sidebar visible so user sees active filter
-    },
-    []
-  );
-
-  const handleExcludeEventDataFilter = useCallback(
-    (field: string, value: string) => {
-      setFilters((prev) => {
-        const prevEventEx = prev.eventDataExclude ?? {};
-        const existing = prevEventEx[field] ?? [];
-        if (existing.includes(value)) return prev;
-        return {
-          ...prev,
-          eventDataExclude: {
-            ...prevEventEx,
-            [field]: [...existing, value],
-          },
-        };
-      });
-      setShowFilters(true);
-    },
-    []
-  );
-
   const { mode: themeMode, toggle: toggleTheme } = useThemeMode();
 
   const menuItems = [
@@ -409,6 +407,13 @@ function App() {
           disabled: records.length === 0 || ingestProgress < 1,
           onClick: () => setShowFilters((prev) => !prev),
         },
+        {
+          id: "view-columns",
+          label: showColumnMgr ? "Hide Columns" : "Manage Columns",
+          icon: <TableIcon />,
+          disabled: !dataSource,
+          onClick: () => setShowColumnMgr((p) => !p),
+        },
         { id: "view-sep-1", label: "sep", separator: true },
         {
           id: "view-refresh",
@@ -477,6 +482,14 @@ function App() {
               onClick={() => setShowFilters((prev) => !prev)}
             />
             <ToolbarButton
+              icon={<TableIcon />}
+              title="Columns"
+              isActive={showColumnMgr}
+              disabled={!dataSource}
+              onClick={() => setShowColumnMgr((p) => !p)}
+            />
+            <ToolbarSeparator />
+            <ToolbarButton
               icon={<ArrowClockwise20Regular />}
               title="Refresh"
               onClick={handleRefresh}
@@ -515,9 +528,6 @@ function App() {
                 <LogTableVirtual
                   key={currentFileId ?? "no-file"}
                   dataSource={dataSource}
-                  filters={filters}
-                  onAddEventDataFilter={handleAddEventDataFilter}
-                  onExcludeEventDataFilter={handleExcludeEventDataFilter}
                 />
               ) : (
                 <div style={{ padding: 16 }}>No data source</div>
@@ -526,35 +536,46 @@ function App() {
             {showFilters && ingestProgress === 1 && (
               <FilterPanel $width={filterPanelWidth}>
                 <FilterDivider onMouseDown={handleFilterDividerMouseDown} />
-                <FilterSidebar
-                  records={records}
-                  filters={filters}
-                  bucketCounts={bucketCounts}
-                  onChange={setFilters}
-                />
+                <FilterSidebar />
               </FilterPanel>
+            )}
+
+            {showColumnMgr && (
+              <ColumnPanel $width={260}>
+                <ColumnDivider onMouseDown={(e) => e.preventDefault()} />
+                <ColumnManager
+                  allColumns={columns /* TODO: extend list */}
+                  active={columns}
+                  onChange={setColumns}
+                  onClose={() => setShowColumnMgr(false)}
+                />
+              </ColumnPanel>
             )}
           </ContentArea>
         </MainContent>
 
         <StatusBarView
-          fileInfo={fileInfo}
-          matchedCount={matchedCount}
-          totalRecords={totalRecords || records.length}
-          ingestProgress={ingestProgress}
           isWasmReady={isWasmReady}
+          isDuckDbReady={isDuckDbReady}
         />
 
         <DragDropOverlay onFileSelect={handleFileSelect} />
 
-        {isLoading && (
+        {/* Global loading overlay – show either during file ingest or while core WASM/DB engines are loading. */}
+        {(isLoading || !isDuckDbReady) && (
           <LoadingOverlay>
             <LoadingContent>
               <h3>Loading...</h3>
-              <p>{loadingMessage}</p>
+              <p>
+                {isLoading
+                  ? loadingMessage
+                  : "Downloading & compiling WASM assets..."}
+              </p>
             </LoadingContent>
           </LoadingOverlay>
         )}
+
+        {/* standalone overlay removed – ColumnPanel handles sidebar */}
       </AppContainer>
     </>
   );
