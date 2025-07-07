@@ -48,7 +48,7 @@ const baseStructure: EventLogNode[] = [
         id: "sample-security",
         label: "security.evtx (sample)",
         icon: <Document20Regular />,
-        logPath: "/samples/security.evtx",
+        logPath: "samples/security.evtx",
         description: "Built-in Windows Security log sample",
       },
     ],

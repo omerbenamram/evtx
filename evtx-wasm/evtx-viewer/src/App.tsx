@@ -280,8 +280,10 @@ function App() {
       // Handle built-in sample logs (lazy-loaded from /samples)
       if (node.logPath) {
         try {
-          logger.info(`Fetching built-in sample log: ${node.logPath}`);
-          const res = await fetch(node.logPath);
+          const base = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+          const sampleUrl = `${base}/${node.logPath}`;
+          logger.info(`Fetching built-in sample log: ${sampleUrl}`);
+          const res = await fetch(sampleUrl);
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
           const blob = await res.blob();
