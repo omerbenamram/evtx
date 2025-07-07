@@ -11,6 +11,7 @@ import {
   DismissCircle20Regular as DismissCircle,
   ErrorCircle20Regular as ErrorBadge,
 } from "@fluentui/react-icons";
+import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
 // Shared cells & utilities
@@ -83,8 +84,13 @@ export const getDefaultColumns = (): TableColumn[] => [
   {
     id: "time",
     header: "Date & Time",
-    sqlExpr:
-      "json_extract_string(Raw, '$.Event.System.TimeCreated.SystemTime')",
+    // Our Evtx JSON encoder stores the timestamp under `Event.System.TimeCreated_attributes.SystemTime`
+    // while others flatten it to Event.System.TimeCreated.SystemTime.
+    // Use COALESCE so the column works for both shapes.
+    sqlExpr: `coalesce(
+      json_extract_string(Raw, '$.Event.System.TimeCreated_attributes.SystemTime'),
+      json_extract_string(Raw, '$.Event.System.TimeCreated.SystemTime')
+    )`,
     accessor: (row) => {
       const sysTime = row["time"] as string | undefined;
       return formatDateTime(sysTime);
