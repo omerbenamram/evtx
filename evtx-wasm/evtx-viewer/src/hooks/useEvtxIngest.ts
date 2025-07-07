@@ -68,6 +68,8 @@ export function useEvtxIngest(): UseEvtxIngestReturn {
         dispatch(updateEvtxMeta({ currentFileId: fileId }));
 
         setFileInfo(info);
+        // Propagate file info to global state so components like StatusBar can show it
+        dispatch(updateEvtxMeta({ fileInfo: info }));
         setParser(evtxParser);
 
         ingestAbortRef.current?.abort();
