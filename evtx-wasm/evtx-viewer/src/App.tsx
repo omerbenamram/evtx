@@ -277,9 +277,24 @@ function App() {
         return;
       }
 
-      // legacy demo paths
+      // Handle built-in sample logs (lazy-loaded from /samples)
       if (node.logPath) {
-        logger.info(`Would load log: ${node.logPath}`);
+        try {
+          logger.info(`Fetching built-in sample log: ${node.logPath}`);
+          const res = await fetch(node.logPath);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+          const blob = await res.blob();
+          const fileName = node.logPath.split("/").pop() ?? "sample.evtx";
+          const file = new File([blob], fileName, {
+            type: "application/octet-stream",
+          });
+
+          await handleFileSelect(file);
+        } catch (err) {
+          logger.error("Failed to load bundled sample", err);
+          alert("Could not load bundled sample log. See console for details.");
+        }
       }
     },
     [handleFileSelect]

@@ -55,6 +55,10 @@ echo "🚀 Starting Vite dev server... (press Ctrl+C to stop)"
 pushd "$VIEWER_DIR" >/dev/null
 
 # Ensure JS/TS deps are installed (cheap if already up-to-date)
+# Make sample available
+mkdir -p "$VIEWER_DIR/public/samples"
+ln -sf "$(pwd)/samples/security.evtx" "$VIEWER_DIR/public/samples/security.evtx"
+
 bun install
 
 # Forward any leftover CLI args to the dev server (e.g. --open, --host)
