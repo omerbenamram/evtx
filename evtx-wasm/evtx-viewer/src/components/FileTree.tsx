@@ -34,8 +34,26 @@ interface EventLogNode {
   fileId?: string; // For cached recent logs
 }
 
-// Removed the placeholder “Event Viewer (Local)” hierarchy – it did not provide any functionality.
-const baseStructure: EventLogNode[] = [];
+// Built-in sample log(s) shipped with the viewer. They are served from the
+// /samples/ path and are *not* downloaded until the user explicitly selects
+// them.
+const baseStructure: EventLogNode[] = [
+  {
+    id: "examples",
+    label: "Example Logs",
+    icon: <Folder20Regular />,
+    expandedIcon: <FolderOpen20Filled />,
+    children: [
+      {
+        id: "sample-security",
+        label: "security.evtx (sample)",
+        icon: <Document20Regular />,
+        logPath: "/samples/security.evtx",
+        description: "Built-in Windows Security log sample",
+      },
+    ],
+  },
+];
 
 async function fetchRecentNodes(): Promise<EventLogNode[]> {
   const storage = await EvtxStorage.getInstance();

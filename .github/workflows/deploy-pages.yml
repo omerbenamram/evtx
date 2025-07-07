@@ -56,6 +56,12 @@ jobs:
         working-directory: evtx-wasm/evtx-viewer
         run: bun install --frozen-lockfile
 
+      # Copy built-in sample to public folder before build
+      - name: Add sample EVTX to viewer public folder
+        run: |
+          mkdir -p evtx-wasm/evtx-viewer/public/samples
+          cp samples/security.evtx evtx-wasm/evtx-viewer/public/samples/
+
       - name: Build viewer
         working-directory: evtx-wasm/evtx-viewer
         run: bun run build

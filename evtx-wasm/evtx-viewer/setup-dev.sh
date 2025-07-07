@@ -3,6 +3,10 @@
 # Create symlink to WASM files for development
 mkdir -p public/pkg
 
+# Symlink sample EVTX so dev server can serve it at /samples/
+mkdir -p public/samples
+ln -sf "$(cd ../../samples && pwd)/security.evtx" "$(pwd)/public/samples/security.evtx"
+
 # Get absolute paths
 PARENT_PKG_DIR="$(cd ../public/pkg && pwd)"
 CURRENT_PKG_DIR="$(pwd)/public/pkg"
