@@ -49,6 +49,8 @@
 
 ## Web-based Viewer (EVTX Web)
 
+![EVTX Web Screenshot](/evtx_web_ui.png)
+
 Prefer a zero-install option?  A fully-featured EVTX explorer runs right in your browser, powered by the same Rust core compiled to WebAssembly.
 
 👉 **Try it now:** <https://omerbenamram.github.io/evtx/>
