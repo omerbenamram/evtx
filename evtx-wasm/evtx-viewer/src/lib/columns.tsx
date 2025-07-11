@@ -1,5 +1,4 @@
 // Column definitions and helpers for LogTableVirtual
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // NOTE: This file is .tsx because the column accessors return JSX elements.
 
 import React from "react";
@@ -11,7 +10,6 @@ import {
   DismissCircle20Regular as DismissCircle,
   ErrorCircle20Regular as ErrorBadge,
 } from "@fluentui/react-icons";
-import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
 // Shared cells & utilities
@@ -87,6 +85,7 @@ export const getDefaultColumns = (): TableColumn[] => [
     // Our Evtx JSON encoder stores the timestamp under `Event.System.TimeCreated_attributes.SystemTime`
     // while others flatten it to Event.System.TimeCreated.SystemTime.
     // Use COALESCE so the column works for both shapes.
+    // Keep as raw string; casting happens in queries that need TIMESTAMP/TIMESTAMPTZ
     sqlExpr: `coalesce(
       json_extract_string(Raw, '$.Event.System.TimeCreated_attributes.SystemTime'),
       json_extract_string(Raw, '$.Event.System.TimeCreated.SystemTime')

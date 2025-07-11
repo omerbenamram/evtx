@@ -162,6 +162,27 @@ export function buildWhere(filters: FilterOptions): string {
       if (!values || values.length === 0) continue;
       const colSpec = activeColumns.find((c) => c.id === colId);
       if (!colSpec) continue;
+      // Special case – time column equality matches on truncated timestamp
+      if (colId === "time" && lastTimeFacetUnit) {
+        const intervalLitMap: Record<string, string> = {
+          minute: "INTERVAL '1 minute'",
+          hour: "INTERVAL '1 hour'",
+          day: "INTERVAL '1 day'",
+          week: "INTERVAL '1 week'",
+          month: "INTERVAL '1 month'",
+        } as const;
+
+        const intervalLit =
+          intervalLitMap[lastTimeFacetUnit] ?? "INTERVAL '1 hour'";
+
+        const valueList = values
+          .map((v) => `'${escapeSqlString(String(v))}'`)
+          .join(",");
+        clauses.push(
+          `time_bucket(${intervalLit}, CAST(${colSpec.sqlExpr} AS TIMESTAMPTZ)) IN (TIMESTAMP ${valueList})`
+        );
+        continue;
+      }
       const valueList = values
         .map((v) => `'${escapeSqlString(String(v))}'`)
         .join(",");
@@ -345,13 +366,108 @@ export async function fetchTabular(
 // Facet counts for arbitrary column (for header filter popover)
 // ---------------------------------------------------------------------------
 
-export async function getColumnFacetCounts(
+let lastTimeFacetUnit: "minute" | "hour" | "day" | "week" | "month" | null =
+  null;
+
+/**
+ * Adaptive time-bucket facet helper.
+ *
+ * Groups the timestamp column into a sensible resolution (minute/hour/day…)
+ * based on the span of the data *after* filters are applied.  The heavy
+ * lifting happens entirely in DuckDB via a CTE chain using `date_bin`.
+ */
+async function getTimeFacetBuckets(
   col: ColumnSpec,
   filters: FilterOptions,
   limit = 250
 ): Promise<{ v: unknown; c: number }[]> {
   const c = await initDuckDB();
 
+  // Ensure timestamps are typed (timezone-aware).
+  const tsExpr = `CAST(${col.sqlExpr} AS TIMESTAMPTZ)`;
+
+  // Remove equality filter on this column if present.
+  const adjusted: FilterOptions = {
+    ...filters,
+    columnEquals: { ...filters.columnEquals, [col.id]: [] },
+  };
+
+  const where = buildWhere(adjusted);
+  const whereSql = where ? `WHERE ${where}` : "";
+
+  // Single-shot query: decide bucket width and aggregate in one SQL call.
+  const singleSql = `
+WITH stats AS (
+  SELECT
+    min(${tsExpr}) AS min_t,
+    max(${tsExpr}) AS max_t,
+    datediff('millisecond', min(${tsExpr}), max(${tsExpr})) AS span_ms
+  FROM logs
+  ${whereSql}
+),
+params AS (
+  SELECT
+    CASE
+      WHEN span_ms <= 7200000                    THEN INTERVAL '1 minute'
+      WHEN span_ms <= 172800000                  THEN INTERVAL '1 hour'
+      WHEN span_ms <= 7776000000                 THEN INTERVAL '1 day'
+      WHEN span_ms <= 31536000000                THEN INTERVAL '1 week'
+      ELSE                                           INTERVAL '1 month'
+    END AS bucket_width,
+    CASE
+      WHEN span_ms <= 7200000                    THEN 'minute'
+      WHEN span_ms <= 172800000                  THEN 'hour'
+      WHEN span_ms <= 7776000000                 THEN 'day'
+      WHEN span_ms <= 31536000000                THEN 'week'
+      ELSE                                           'month'
+    END AS bucket_unit
+  FROM stats
+),
+buckets AS (
+  SELECT
+    strftime(time_bucket(p.bucket_width, ${tsExpr}), '%Y-%m-%d %H:%M') AS v,
+    count(*)                                                           AS c,
+    p.bucket_unit                                                      AS bucket_unit
+  FROM logs
+  CROSS JOIN params p
+  ${whereSql}
+  GROUP BY v, p.bucket_unit
+  ORDER BY v
+  LIMIT ${limit}
+)
+SELECT v, c, bucket_unit FROM buckets;`;
+
+  const res = await c.query(singleSql);
+  const rows = res.toArray() as {
+    v: unknown;
+    c: number;
+    bucket_unit: string;
+  }[];
+
+  if (rows.length > 0) {
+    const unitStr = rows[0].bucket_unit as
+      | "minute"
+      | "hour"
+      | "day"
+      | "week"
+      | "month";
+    lastTimeFacetUnit = unitStr;
+  }
+
+  // Strip bucket_unit before returning.
+  return rows.map(({ v, c }) => ({ v, c }));
+}
+
+export async function getColumnFacetCounts(
+  col: ColumnSpec,
+  filters: FilterOptions,
+  limit = 250
+): Promise<{ v: unknown; c: number }[]> {
+  if (col.id === "time") {
+    return getTimeFacetBuckets(col, filters, limit);
+  }
+
+  const c = await initDuckDB();
   // Exclude current equality filter on this column when computing counts so
   // user can multi-select.
   const adjusted: FilterOptions = {
