@@ -16,6 +16,7 @@ import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
 import type { VirtualItem } from "@tanstack/react-virtual";
 import { Filter20Regular } from "@fluentui/react-icons";
+import { formatTimeValue } from "./FilterSidebar/facetUtils";
 
 // ------------------------------------------------------------------
 // Helper to build the <tr/> list for the current viewport.  Extracted out of
@@ -406,7 +407,7 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
     setFilterMenu({
       col,
       pos: { x: e.clientX, y: e.clientY },
-      items: counts.map(({ v, c }) => ({ v: String(v ?? "-"), c })),
+      items: counts.map(({ v, c }) => ({ v: v as any, c })),
     });
   };
 
@@ -513,10 +514,12 @@ export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
               },
             },
           ];
+          const isTimeCol = filterMenu.col.id === "time";
           filterMenu.items.forEach(({ v, c }) => {
+            const labelVal = isTimeCol ? formatTimeValue(v) : String(v ?? "-");
             menuItems.push({
               id: v,
-              label: `${v} (${c})`,
+              label: `${labelVal} (${c})`,
               icon: (
                 <input type="checkbox" readOnly checked={current.includes(v)} />
               ),
