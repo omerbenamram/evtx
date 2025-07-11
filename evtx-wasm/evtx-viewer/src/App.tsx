@@ -5,6 +5,7 @@ import { useThemeMode } from "./styles/ThemeModeProvider";
 import { GlobalStyles } from "./styles/GlobalStyles";
 import {
   MenuBar,
+  ProgressBar,
   Panel,
   Toolbar,
   ToolbarButton,
@@ -153,6 +154,7 @@ function App() {
   const [showColumnMgr, setShowColumnMgr] = useState(false);
   const [filterPanelWidth, setFilterPanelWidth] = useState(300);
   const [fileTreeVersion, setFileTreeVersion] = useState<number>(0);
+  const [assetProgress, setAssetProgress] = useState(0);
 
   const {
     isLoading,
@@ -187,7 +189,9 @@ function App() {
     const initEngines = async () => {
       try {
         logger.info("Initializing EVTX parser WASM module...");
+        setAssetProgress(0.1);
         await init();
+        setAssetProgress(0.4);
         setIsWasmReady(true);
         logger.info("EVTX parser WASM module initialized");
 
@@ -196,7 +200,9 @@ function App() {
         // assets.  We await it so that downstream code relying on the DB can
         // safely proceed and so we can surface meaningful UI feedback.
         logger.info("Initializing DuckDB WASM engine...");
+        setAssetProgress(0.5);
         await initDuckDB();
+        setAssetProgress(1);
         setIsDuckDbReady(true);
         logger.info("DuckDB WASM engine ready");
       } catch (error) {
@@ -469,6 +475,15 @@ function App() {
 
   const currentTheme = useTheme();
 
+  // Determine which progress value to display in the global loading overlay.
+  // While the core engines are still loading we show assetProgress.
+  // Once they are ready but a file is being ingested we show ingestProgress.
+  const overlayProgress = !isDuckDbReady
+    ? assetProgress
+    : isLoading
+    ? ingestProgress
+    : undefined;
+
   return (
     <>
       <GlobalStyles />
@@ -583,6 +598,7 @@ function App() {
           <LoadingOverlay>
             <LoadingContent>
               <h3>Loading...</h3>
+              <ProgressBar value={overlayProgress} />
               <p>
                 {isLoading
                   ? loadingMessage

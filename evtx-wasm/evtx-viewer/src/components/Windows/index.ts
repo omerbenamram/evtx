@@ -31,3 +31,4 @@ export { SidebarHeader } from "./SidebarHeader";
 export { SearchContainer, SearchInput } from "./SearchBox";
 export { ScrollableList } from "./ScrollableList";
 export { SelectableRow } from "./SelectableRow";
+export { ProgressBar, type ProgressBarProps } from "./ProgressBar";

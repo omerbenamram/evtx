@@ -11,6 +11,11 @@ const LEVEL_NAME_MAP: Record<number, string> = {
   5: "Verbose",
 };
 
+// Columns that should not be shown as facet buckets.  Currently only the
+// timestamp column is excluded because the values are effectively unique and
+// therefore not useful for equality-based faceting.
+export const EXCLUDE_FROM_FACETS = new Set(["time"]);
+
 /**
  * Build the complete list of facet configurations given the current active
  * table columns.
@@ -47,7 +52,10 @@ export function buildFacetConfigs(columns: ColumnSpec[]): FacetConfig[] {
   ];
 
   const dynamicCols: FacetConfig[] = columns
-    .filter((c) => !builtins.some((b) => b.id === c.id))
+    .filter(
+      (c) =>
+        !builtins.some((b) => b.id === c.id) && !EXCLUDE_FROM_FACETS.has(c.id)
+    )
     .map((c) => ({ id: c.id, label: c.header }));
 
   return [...builtins, ...dynamicCols];

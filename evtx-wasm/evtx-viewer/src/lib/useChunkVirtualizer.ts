@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer, Virtualizer } from "@tanstack/react-virtual";
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// Generic virtual helpers now work with any row shape.
 import { DuckDbDataSource } from "./duckDbDataSource";
 import { logger } from "./logger";
 
@@ -42,7 +41,7 @@ export function useChunkVirtualizer({
   overscanChunks = 2,
   filterFn,
 }: UseChunkVirtualizerOpts): ChunkVirtualizer {
-  // --- bookkeeping --------------------------------------------------------
+  // --- bookkeeping ------------------------------------------------------
   const [chunkCount, setChunkCount] = useState(0);
   const [chunkRows, setChunkRows] = useState<Map<number, any[]>>(
     () => new Map()
@@ -52,8 +51,6 @@ export function useChunkVirtualizer({
   // Exact per-chunk record counts discovered during init (may be empty until
   // dataSource.init() resolves).
   const [chunkRecordCounts, setChunkRecordCounts] = useState<number[]>([]);
-
-  // No dynamic global estimate; we rely on header counts until real chunk is loaded.
 
   // Initialise chunk count *once*
   useEffect(() => {
@@ -76,7 +73,7 @@ export function useChunkVirtualizer({
     };
   }, [dataSource]);
 
-  // --- virtualiser --------------------------------------------------------
+  // --- virtualiser ------------------------------------------------------
   const containerRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: chunkCount,
@@ -139,7 +136,7 @@ export function useChunkVirtualizer({
     })();
   }, [filterFn, dataSource, rowHeight, virtualizer]);
 
-  // --- chunk loader helper -----------------------------------------------
+  // --- chunk loader helper ---------------------------------------------
   const ensureChunk = useCallback(
     (idx: number) => {
       if (chunkRows.has(idx) || loadingChunks.current.has(idx)) return;
@@ -208,7 +205,7 @@ export function useChunkVirtualizer({
     ]
   );
 
-  // --- prefix / total rows ------------------------------------------------
+  // --- prefix / total rows ---------------------------------------------
   const prefix = useMemo(() => {
     const arr: number[] = new Array(chunkCount);
     let offset = 0;
@@ -259,7 +256,7 @@ export function useChunkVirtualizer({
     v.forEach((vi) => ensureChunk(vi.index));
   }, [virtualizer.getVirtualItems(), ensureChunk]);
 
-  // -----------------------------------------------------------------------
+  // ---------------------------------------------------------------------
   return {
     containerRef,
     virtualizer,
@@ -268,76 +265,4 @@ export function useChunkVirtualizer({
     totalRows,
     ensureChunk,
   };
-}
-
-export interface SliceConfig {
-  viewportStart: number;
-  viewportHeight: number;
-  chunkTop: number;
-  chunkHeight: number;
-  rowHeight: number;
-  bufferRows: number;
-  maxRows: number;
-  recordCount: number;
-}
-
-/**
- * Compute the [startRow, endRow] (inclusive) within a chunk that intersect the
- * viewport plus buffer. Returns `null` if the chunk is entirely outside the
- * buffered viewport.
- */
-export function computeSliceRows(cfg: SliceConfig): [number, number] | null {
-  const {
-    viewportStart,
-    viewportHeight,
-    chunkTop,
-    chunkHeight,
-    rowHeight,
-    bufferRows,
-    maxRows,
-    recordCount,
-  } = cfg;
-
-  const bufferPx = bufferRows * rowHeight;
-  const viewportEnd = viewportStart + viewportHeight;
-
-  const chunkBottom = chunkTop + chunkHeight;
-
-  // Entire chunk outside buffered viewport
-  if (
-    viewportEnd + bufferPx <= chunkTop ||
-    viewportStart - bufferPx >= chunkBottom
-  ) {
-    return null;
-  }
-
-  // Intersection bounds in pixels within chunk
-  const intersectTopPx =
-    Math.max(viewportStart - bufferPx, chunkTop) - chunkTop;
-  const intersectBottomPx =
-    Math.min(viewportEnd + bufferPx, chunkBottom) - chunkTop;
-
-  // No intersection if bottom is above top
-  if (intersectBottomPx <= 0 || intersectTopPx >= chunkHeight) {
-    return null;
-  }
-
-  let startRow = Math.floor(intersectTopPx / rowHeight);
-  let endRow = Math.ceil(intersectBottomPx / rowHeight) - 1; // inclusive
-
-  // Clamp to valid record indices
-  startRow = Math.min(Math.max(0, startRow), recordCount - 1);
-  endRow = Math.min(recordCount - 1, Math.max(startRow, endRow));
-
-  // Enforce max rows window
-  if (endRow - startRow + 1 > maxRows) {
-    endRow = startRow + maxRows - 1;
-  }
-
-  // If after clamping we ended with an empty range, skip rendering
-  if (startRow > endRow) {
-    return null;
-  }
-
-  return [startRow, endRow];
 }

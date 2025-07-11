@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getColumnFacetCounts } from "../../lib/duckdb";
+import { EXCLUDE_FROM_FACETS } from "./facetUtils";
 import {
   useColumnsState,
   useFiltersState,
@@ -18,6 +19,8 @@ export function useFacetCounts(): Record<string, Map<string, number>> {
   const { progress: ingestProgress } = useIngestState();
   const [counts, setCounts] = useState<Record<string, Map<string, number>>>({});
 
+  // Exclusion list comes from facetUtils so the set stays centralised.
+
   useEffect(() => {
     if (ingestProgress < 1) return;
 
@@ -32,8 +35,12 @@ export function useFacetCounts(): Record<string, Map<string, number>> {
         specs.push({ id: "channel", header: "Channel", sqlExpr: "Channel" });
       }
 
+      const facetableSpecs = specs.filter(
+        (spec) => !EXCLUDE_FROM_FACETS.has(spec.id)
+      );
+
       await Promise.all(
-        specs.map(async (spec) => {
+        facetableSpecs.map(async (spec) => {
           try {
             const res = await getColumnFacetCounts(spec, filters, 200);
             const m = new Map<string, number>();
