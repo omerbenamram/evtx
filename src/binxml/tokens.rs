@@ -247,11 +247,33 @@ pub fn read_substitution_descriptor(
     })
 }
 
+enum HeuristicsBehaviour {
+    ProhibitHeuristics { original_cursor_position: u64 },
+    AllowHeuristics,
+}
+
+#[inline]
 pub fn read_open_start_element(
     cursor: &mut Cursor<&[u8]>,
     chunk: Option<&EvtxChunk>,
     has_attributes: bool,
     is_substitution: bool,
+) -> Result<BinXMLOpenStartElement> {
+    read_open_start_element_with_heuristics(
+        cursor,
+        chunk,
+        has_attributes,
+        is_substitution,
+        HeuristicsBehaviour::AllowHeuristics,
+    )
+}
+
+fn read_open_start_element_with_heuristics(
+    cursor: &mut Cursor<&[u8]>,
+    chunk: Option<&EvtxChunk>,
+    has_attributes: bool,
+    is_substitution: bool,
+    heuristics_behaviour: HeuristicsBehaviour,
 ) -> Result<BinXMLOpenStartElement> {
     trace!(
         "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, is_substitution={}>",
@@ -284,14 +306,47 @@ pub fn read_open_start_element(
                 "Detected a case where `dependency_identifier` should not have been read. \
                  Trying to read again without it."
             );
-            cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
-                WrappedIoError::io_error_with_message(
-                    e,
-                    "failed to skip when recovering from `dependency_identifier` hueristic",
-                    cursor,
-                )
-            })?;
-            return read_open_start_element(cursor, chunk, has_attributes, true);
+
+            match heuristics_behaviour {
+                HeuristicsBehaviour::AllowHeuristics => {
+                    let original_position = cursor.position();
+                    cursor.seek(SeekFrom::Current(-6)).map_err(|e| {
+                        WrappedIoError::io_error_with_message(
+                            e,
+                            "failed to skip when recovering from `dependency_identifier` heuristic",
+                            cursor,
+                        )
+                    })?;
+                    return read_open_start_element_with_heuristics(
+                        cursor,
+                        chunk,
+                        has_attributes,
+                        true,
+                        HeuristicsBehaviour::ProhibitHeuristics {
+                            original_cursor_position: original_position,
+                        },
+                    );
+                }
+                HeuristicsBehaviour::ProhibitHeuristics {
+                    original_cursor_position,
+                } => {
+                    // we are already in the recursive descent call, so the heuristic
+                    // attempt has failed. We restore the cursor position ...
+                    cursor.seek(SeekFrom::Start(original_cursor_position)).map_err(|e| {
+                        WrappedIoError::io_error_with_message(
+                            e,
+                            "failed to restore original cursor position during `dependency_identifier` heuristic",
+                            cursor,
+                        )
+                    })?;
+
+                    // and inform about the failure.
+                    return Err(DeserializationError::InvalidToken {
+                        value: 0,
+                        offset: cursor.position(),
+                    });
+                }
+            }
         }
     }
 
