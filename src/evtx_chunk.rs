@@ -163,6 +163,7 @@ pub struct EvtxChunk<'chunk> {
     pub template_table: TemplateCache<'chunk>,
 
     pub settings: Arc<ParserSettings>,
+    pub arena: bumpalo::Bump,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -188,42 +189,47 @@ impl<'chunk> EvtxChunk<'chunk> {
             string_cache,
             template_table,
             settings,
+            arena: bumpalo::Bump::new(),
         })
     }
 
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    pub fn iter(&mut self) -> IterChunkRecords {
+    pub fn iter(&'chunk mut self) -> IterChunkRecords<'chunk> {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
-            chunk: self,
+            chunk_ptr: self as *mut EvtxChunk<'chunk>,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
+            _marker: std::marker::PhantomData,
         }
     }
 }
 
 /// An iterator over a chunk, yielding records tied to the iterator borrow lifetime.
-pub struct IterChunkRecords<'a> {
-    chunk: &'a EvtxChunk<'a>,
+pub struct IterChunkRecords<'chunk> {
+    chunk_ptr: *mut EvtxChunk<'chunk>,
     offset_from_chunk_start: u64,
     exhausted: bool,
     settings: Arc<ParserSettings>,
+    _marker: std::marker::PhantomData<&'chunk mut EvtxChunk<'chunk>>,
 }
 
-impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
+impl<'chunk> Iterator for IterChunkRecords<'chunk> {
+    type Item = std::result::Result<EvtxRecord<'chunk>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        // SAFETY: chunk_ptr was created from a valid mutable reference in iter() and points to a live EvtxChunk for the lifetime 'chunk.
+        let chunk: &mut EvtxChunk<'chunk> = unsafe { &mut *self.chunk_ptr };
+
         if self.exhausted
-            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
+            || self.offset_from_chunk_start >= u64::from(chunk.header.free_space_offset)
         {
             return None;
         }
 
-        let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
-
+        let mut cursor = Cursor::new(&chunk.data[self.offset_from_chunk_start as usize..]);
         let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
             Ok(record_header) => record_header,
             Err(err) => {
@@ -234,29 +240,37 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         info!("Record id - {}", record_header.event_record_id);
         debug!("Record header - {:?}", record_header);
-
         let binxml_data_size = record_header.record_data_size();
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
 
+        // Move iterator state forward before borrowing chunk immutably
+        let current_offset = self.offset_from_chunk_start;
+        let body_start_offset = current_offset + cursor.position();
+        self.offset_from_chunk_start = current_offset + u64::from(record_header.data_size);
+        if chunk.header.last_event_record_id == record_header.event_record_id {
+            self.exhausted = true;
+        }
+
+        // Reset arena BEFORE taking immutable borrows
+        chunk.arena.reset();
+
         // Build deserializer borrowing the chunk immutably
+        let chunk_immut: &'chunk EvtxChunk<'chunk> = unsafe { &*self.chunk_ptr };
         let deserializer = BinXmlDeserializer::init(
-            self.chunk.data,
-            self.offset_from_chunk_start + cursor.position(),
-            Some(self.chunk),
+            chunk_immut.data,
+            body_start_offset,
+            Some(chunk_immut),
             false,
             self.settings.get_ansi_codec(),
         );
 
-        // Allocate tokens using a local bump arena, then copy into a Vec owned by the record
-        let local_bump = bumpalo::Bump::new();
-        let mut tokens_bv = bumpalo::collections::Vec::with_capacity_in(64, &local_bump);
+        let mut tokens_bv: bumpalo::collections::Vec<'chunk, crate::model::deserialized::BinXMLDeserializedTokens<'chunk>> =
+            bumpalo::collections::Vec::with_capacity_in(64, &chunk_immut.arena);
 
-        let iter = match deserializer
-            .iter_tokens(Some(binxml_data_size))
-            .map_err(|e| EvtxError::FailedToParseRecord {
-                record_id: record_header.event_record_id,
-                source: Box::new(EvtxError::DeserializationError(e)),
-            }) {
+        let iter = match deserializer.iter_tokens(Some(binxml_data_size)).map_err(|e| EvtxError::FailedToParseRecord {
+            record_id: record_header.event_record_id,
+            source: Box::new(EvtxError::DeserializationError(e)),
+        }) {
             Ok(iter) => iter,
             Err(err) => return Some(Err(err)),
         };
@@ -268,27 +282,18 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             }) {
                 Ok(token) => tokens_bv.push(token),
                 Err(err) => {
-                    self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(err));
                 }
             }
         }
 
-        // Copy bump-allocated tokens into a Vec owned by the record
-        let tokens_vec: Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>> =
-            tokens_bv.to_vec();
-
-        self.offset_from_chunk_start += u64::from(record_header.data_size);
-
-        if self.chunk.header.last_event_record_id == record_header.event_record_id {
-            self.exhausted = true;
-        }
+        let tokens_slice: &'chunk [crate::model::deserialized::BinXMLDeserializedTokens<'chunk>] = tokens_bv.into_bump_slice();
 
         Some(Ok(EvtxRecord {
-            chunk: self.chunk,
+            chunk: chunk_immut,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            tokens: tokens_vec,
+            tokens: tokens_slice,
             record_data_size: binxml_data_size,
             settings: Arc::clone(&self.settings),
         }))

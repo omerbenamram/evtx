@@ -19,7 +19,7 @@ pub struct EvtxRecord<'a> {
     pub chunk: &'a EvtxChunk<'a>,
     pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
-    pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
+    pub tokens: &'a [BinXMLDeserializedTokens<'a>],
     pub record_data_size: u32,
     pub settings: Arc<ParserSettings>,
 }
@@ -69,7 +69,7 @@ impl EvtxRecord<'_> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
         let event_record_id = self.event_record_id;
-        parse_tokens(&self.tokens, self.chunk, output_builder).map_err(|e| {
+        parse_tokens(self.tokens, self.chunk, output_builder).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),
