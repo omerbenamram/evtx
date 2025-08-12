@@ -23,24 +23,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     clang \
     llvm \
-    # perf userland (record/script) for Linux
-    linux-perf \
     # Convenience/tools used in Makefile and scripts
-    hyperfine \
     perl \
     gawk \
-    # Debugging/analysis
+    # Debugging/analysis (gdb/strace)
     gdb \
-    lldb \
     strace \
     # Developer ergonomics
     ripgrep \
     jq \
   && rm -rf /var/lib/apt/lists/*
 
+# Try to install perf if available in this Debian release. Do not fail if missing.
+RUN apt-get update && ( \
+      apt-get install -y --no-install-recommends linux-perf \
+   || apt-get install -y --no-install-recommends linux-perf-6.1 \
+   || echo "linux-perf not available; perf-based profiling will require host install" ) \
+   && rm -rf /var/lib/apt/lists/*
+
+# Try to install lldb best-effort; skip if not present in this suite
+RUN apt-get update && ( \
+      apt-get install -y --no-install-recommends lldb \
+   || apt-get install -y --no-install-recommends lldb-16 \
+   || apt-get install -y --no-install-recommends lldb-15 \
+   || apt-get install -y --no-install-recommends lldb-14 \
+   || echo "lldb not available in this base image" ) \
+   && rm -rf /var/lib/apt/lists/*
+
 # Rust developer components and cargo tools
 RUN rustup component add clippy rustfmt && \
-    cargo install inferno flamegraph
+    cargo install inferno flamegraph hyperfine
 
 WORKDIR /workspace
 
