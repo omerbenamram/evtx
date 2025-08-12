@@ -32,6 +32,10 @@ mod utils;
 mod json_output;
 mod xml_output;
 
+// New: arena support
+mod arena;
+pub use arena::ArenaVec;
+
 pub type ChunkOffset = u32;
 pub type FileOffset = u64;
 

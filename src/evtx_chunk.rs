@@ -161,6 +161,7 @@ pub struct EvtxChunk<'chunk> {
     pub header: &'chunk EvtxChunkHeader,
     pub string_cache: StringCache,
     pub template_table: TemplateCache<'chunk>,
+    pub arena: bumpalo::Bump,
 
     pub settings: Arc<ParserSettings>,
 }
@@ -187,6 +188,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             data,
             string_cache,
             template_table,
+            arena: bumpalo::Bump::new(),
             settings,
         })
     }
@@ -195,6 +197,8 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords {
+        // Reset arena at start of chunk iteration
+        self.arena.reset();
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
@@ -271,7 +275,12 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.settings.get_ansi_codec(),
         );
 
-        let mut tokens = vec![];
+        // Use the per-chunk arena. It is reset at the beginning of iter().
+        let arena = &self.chunk.arena;
+
+        // Reserve a bump-allocated vector for tokens
+        let mut tokens_bv = bumpalo::collections::Vec::with_capacity_in(64, arena);
+
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
             .map_err(|e| EvtxError::FailedToParseRecord {
@@ -287,13 +296,16 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 source: Box::new(EvtxError::DeserializationError(e)),
                 record_id: record_header.event_record_id,
             }) {
-                Ok(token) => tokens.push(token),
+                Ok(token) => tokens_bv.push(token),
                 Err(err) => {
                     self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(err));
                 }
             }
         }
+
+        // Copy bump-allocated tokens into a `Vec` owned by the record to keep lifetimes simple
+        let tokens_vec: Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>> = tokens_bv.to_vec();
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
@@ -305,7 +317,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             chunk: self.chunk,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            tokens,
+            tokens: tokens_vec,
             settings: Arc::clone(&self.settings),
         }))
     }

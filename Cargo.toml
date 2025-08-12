@@ -25,6 +25,8 @@ winstructs = "0.3.0"
 hashbrown = { version = "^0.15", features = ["inline-more"] }
 # Optional for multithreading.
 rayon = { version = "1", optional = true }
+# Bump allocator for per-thread arenas
+bumpalo = { version = "3", features = ["collections"] }
 
 # `evtx_dump` dependencies
 anyhow = { version = "1", optional = true }

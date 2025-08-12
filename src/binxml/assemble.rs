@@ -21,7 +21,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
     chunk: &'a EvtxChunk<'a>,
     visitor: &mut T,
 ) -> Result<()> {
-    let expanded_tokens = expand_templates(tokens, chunk)?;
+    let expanded_tokens = expand_templates(&tokens, chunk)?;
     let record_model = create_record_model(expanded_tokens, chunk)?;
 
     visitor.visit_start_of_stream()?;
@@ -115,7 +115,7 @@ pub fn create_record_model<'a>(
                 model.push(XmlModel::EntityRef(expand_string_ref(&entity.name, chunk)?))
             }
             Cow::Owned(BinXMLDeserializedTokens::PITarget(ref name))
-            | Cow::Borrowed(&BinXMLDeserializedTokens::PITarget(ref name)) => {
+            |             Cow::Borrowed(&BinXMLDeserializedTokens::PITarget(ref name)) => {
                 let mut builder = XmlPIBuilder::new();
                 if current_pi.is_some() {
                     warn!("PITarget without following PIData, previous target will be ignored.")
@@ -306,7 +306,7 @@ fn expand_template<'a>(
         // We expect to find all the templates in the template cache.
         for token in template_def.tokens.iter() {
             if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-                expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
+                                 expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
             } else {
                 _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }
@@ -374,14 +374,14 @@ fn _expand_templates<'a>(
 }
 
 pub fn expand_templates<'a>(
-    token_tree: Vec<BinXMLDeserializedTokens<'a>>,
+    token_tree: &'a [BinXMLDeserializedTokens<'a>],
     chunk: &'a EvtxChunk<'a>,
 ) -> Result<Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>> {
     // We can assume the new tree will be at least as big as the old one.
     let mut stack = Vec::with_capacity(token_tree.len());
 
-    for token in token_tree {
-        _expand_templates(Cow::Owned(token), chunk, &mut stack)?
+    for token in token_tree.iter() {
+        _expand_templates(Cow::Borrowed(token), chunk, &mut stack)?
     }
 
     Ok(stack)
