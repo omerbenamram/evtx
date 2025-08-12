@@ -161,7 +161,6 @@ pub struct EvtxChunk<'chunk> {
     pub header: &'chunk EvtxChunkHeader,
     pub string_cache: StringCache,
     pub template_table: TemplateCache<'chunk>,
-    pub arena: bumpalo::Bump,
 
     pub settings: Arc<ParserSettings>,
 }
@@ -188,7 +187,6 @@ impl<'chunk> EvtxChunk<'chunk> {
             data,
             string_cache,
             template_table,
-            arena: bumpalo::Bump::new(),
             settings,
         })
     }
@@ -197,8 +195,6 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords {
-        // Reset arena at start of chunk iteration
-        self.arena.reset();
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
@@ -275,11 +271,9 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.settings.get_ansi_codec(),
         );
 
-        // Use the per-chunk arena. It is reset at the beginning of iter().
-        let arena = &self.chunk.arena;
-
         // Reserve a bump-allocated vector for tokens
-        let mut tokens_bv = bumpalo::collections::Vec::with_capacity_in(64, arena);
+        let local_bump = bumpalo::Bump::new();
+        let mut tokens_bv = bumpalo::collections::Vec::with_capacity_in(64, &local_bump);
 
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
