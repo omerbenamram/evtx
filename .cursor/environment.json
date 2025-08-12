@@ -1,6 +1,4 @@
 {
-  "build": {
-    "context": "./",
-    "dockerfile": "Dockerfile"
-  }
+  "snapshot": "snapshot-20250812-fae0e5f6-719e-4968-9a3b-aaf9e781609f",
+  "terminals": []
 }
