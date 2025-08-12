@@ -49,6 +49,7 @@ pub trait BinXmlOutput {
 
 pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
+    scratch: String,
 }
 
 impl<W: Write> XmlOutput<W> {
@@ -59,7 +60,7 @@ impl<W: Write> XmlOutput<W> {
             Writer::new(target)
         };
 
-        XmlOutput { writer }
+        XmlOutput { writer, scratch: String::with_capacity(64) }
     }
 
     pub fn into_writer(self) -> W {
@@ -158,9 +159,36 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars");
-        let cow: Cow<str> = value.as_cow_str();
-        let event = BytesText::new(&cow);
-        self.writer.write_event(Event::Text(event))?;
+        // Fast paths to minimize allocations:
+        // - Borrowed string slices go directly
+        // - Small owned strings reuse the scratch buffer
+        // - Numerics/others were already optimized in as_cow_str via itoa/ryu
+        match value {
+            Cow::Borrowed(BinXmlValue::StringType(s)) => {
+                let event = BytesText::new(s.as_ref());
+                self.writer.write_event(Event::Text(event))?;
+            }
+            Cow::Borrowed(BinXmlValue::AnsiStringType(s)) => {
+                let v = s.as_ref();
+                let event = BytesText::new(v);
+                self.writer.write_event(Event::Text(event))?;
+            }
+            _ => {
+                let cow: Cow<str> = value.as_cow_str();
+                // If small, copy into reusable scratch to reduce transient allocations
+                if cow.len() <= 128 {
+                    let s = &mut self.scratch;
+                    s.clear();
+                    s.reserve(cow.len());
+                    s.push_str(&cow);
+                    let event = BytesText::new(s.as_str());
+                    self.writer.write_event(Event::Text(event))?;
+                } else {
+                    let event = BytesText::new(&cow);
+                    self.writer.write_event(Event::Text(event))?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -171,10 +199,16 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         })
     }
 
-    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
-        let xml_ref = "&".to_string() + entity.as_str() + ";";
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> SerializationResult<()> {
+        let name = entity.as_str();
+        let s = &mut self.scratch;
+        s.clear();
+        s.reserve(2 + name.len());
+        s.push('&');
+        s.push_str(name);
+        s.push(';');
         // xml_ref is already escaped
-        let event = Event::Text(BytesText::from_escaped(&xml_ref));
+        let event = Event::Text(BytesText::from_escaped(s.as_str()));
         self.writer.write_event(event)?;
 
         Ok(())
@@ -192,8 +226,12 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()> {
         // PITARGET - Emit the text "<?", the text (as specified by the Name rule in 2.2.12), and then the space character " ".
         // Emit the text (as specified by the NullTerminatedUnicodeString rule in 2.2.12), and then the text "?>".
-        let concat = pi.name.as_str().to_owned() + pi.data.as_ref(); // only `String` supports concatenation.
-        let event = Event::PI(BytesPI::new(concat.as_str()));
+        let s = &mut self.scratch;
+        s.clear();
+        s.reserve(pi.name.as_str().len() + pi.data.as_ref().len());
+        s.push_str(pi.name.as_str());
+        s.push_str(pi.data.as_ref());
+        let event = Event::PI(BytesPI::new(s.as_str()));
         self.writer.write_event(event)?;
 
         Ok(())
