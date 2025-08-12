@@ -36,11 +36,33 @@ impl JsonOutput {
         for key in self.stack.iter() {
             // Current path does not exist yet, we need to create it.
             if v_temp.get(key).is_none() {
+                // Can happen if we have
+                // <Event>
+                //    <System>
+                //       <...>
+                // since system has no attributes it has null and not an empty map.
                 if v_temp.is_null() {
                     let mut map = Map::with_capacity(1);
                     map.insert(key.clone(), Value::Object(Map::new()));
                     *v_temp = Value::Object(map);
                 } else if !v_temp.is_object() {
+                    // This branch could only happen while `separate-json-attributes` was on,
+                    // and a very non-standard xml structure is going on (character nodes between XML nodes)
+                    //
+                    // Example:
+                    // ```
+                    //  <URLCacheFlushInfo></URLCacheFlushInfo>&amp;quot&amp;<URLCacheResponseInfo></URLCacheResponseInfo>
+                    // ```
+                    // We shift the characters in to be consistent with regular json parser.
+                    // The resulting JSON looks like:
+                    // ```
+                    // ...
+                    //  "URLCacheResponseInfo": "\"",
+                    //  "URLCacheResponseInfo_attributes": {
+                    //      ...
+                    //   }
+                    // ...
+                    // ```
                     let mut map = Map::with_capacity(1);
                     map.insert(key.clone(), v_temp.clone());
                     *v_temp = Value::Object(map);
@@ -113,8 +135,26 @@ impl JsonOutput {
             }
         })?;
 
+        // We do a linear probe in case XML contains duplicate keys like so:
+        //    <HTTPResponseHeadersInfo>
+        //        <Header>HTTP/1.1 200 OK</Header>
+        //        <Header>x-ms-version: 2009-09-19</Header>
+        //        <Header>x-ms-lease-status: unlocked</Header>
+        //        <Header>x-ms-blob-type: BlockBlob</Header>
+        //    </HTTPResponseHeadersInfo>
+        //
+        // Insertions should look like:
+        //
+        //    {"Header": Object({})}
+        //    {"Header": String("HTTP/1.1 200 OK")}
+        //    {"Header": String("x-ms-version: 2009-09-19"), "Header_1": String("HTTP/1.1 200 OK")}
+        //   ....
+        //
         if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+            // Value should move to next slot, key should remain free to allow for next value.
+
             // If old value is a placeholder, we don't yet move it, to avoid creating empty placeholers.
+            // A placeholder can be either a `Null` or an empty Map.
             if old_value.is_null() {
                 return Ok(());
             }
@@ -125,7 +165,10 @@ impl JsonOutput {
             }
 
             let mut free_slot = 1;
+
+            // If it is a concrete value, we look for another slot.
             while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                // Value is an empty object - we can override it's value.
                 free_slot += 1
             }
             container.insert(format!("{}_{}", name, free_slot), old_value);
@@ -157,18 +200,23 @@ impl JsonOutput {
         // If we have attributes, create a map as usual.
         if !attributes.is_empty() {
             if self.separate_json_attributes {
+                // If we are separating the attributes we want
+                // to insert the object for the attributes
+                // into the parent.
                 let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
                     SerializationError::JsonStructureError {
                     message:
-                        "This is a bug - expected current value to exist, and to be an object type.
-                        Check that the value is not `Value::null`"
+                        "This is a bug - expected current value to exist, and to be an object type.\n                        Check that the value is not `Value::null`"
                             .to_string(),
                 }
                 })?;
+                // We do a linear probe in case XML contains duplicate keys
                 if let Some(old_attribute) = value.insert(format!("{}_attributes", name), Value::Null) {
                     if let Some(old_value) = value.insert(name.to_string(), Value::Null) {
                         let mut free_slot = 1;
+                        // If it is a concrete value, we look for another slot.
                         while value.get(&format!("{}_{}", name, free_slot)).is_some() || value.get(&format!("{}_{}_attributes", name, free_slot)).is_some() {
+                            // Value is an empty object - we can override it's value.
                             free_slot += 1
                         }
                         if let Some(old_value_object) = old_value.as_object() {
@@ -186,6 +234,8 @@ impl JsonOutput {
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
 
+                // If the element's main value is empty, we want to remove it because we
+                // do not want the value to represent an empty object.
                 if value[name].is_null() || value[name] == Value::Object(Map::new()) {
                     value.remove(name);
                 }
@@ -198,11 +248,14 @@ impl JsonOutput {
                                 .to_string(),
                     }
                 })?;
+                // We do a linear probe in case XML contains duplicate keys
                 if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
                     if let Some(map) = old_value.as_object() {
                         if !map.is_empty() {
                             let mut free_slot = 1;
+                            // If it is a concrete value, we look for another slot.
                             while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                                // Value is an empty object - we can override it's value.
                                 free_slot += 1
                             }
                             container.insert(format!("{}_{}", name, free_slot), old_value);
@@ -215,15 +268,16 @@ impl JsonOutput {
                 container.insert(name.to_string(), Value::Object(value));
             }
         } else {
+            // If the object does not have attributes, replace it with a null placeholder,
+            // so it will be printed as a key-value pair
             let value =
                 self.get_current_parent()
                     .as_object_mut()
                     .ok_or(SerializationError::JsonStructureError {
                     message:
-                        "This is a bug - expected current value to exist, and to be an object type.
-                         Check that the value is not `Value::null`"
+                        "This is a bug - expected current value to exist, and to be an object type.\n                         Check that the value is not `Value::null`"
                             .to_string(),
-                })?;
+            })?;
 
             value.insert(name.to_string(), Value::Null);
         }
