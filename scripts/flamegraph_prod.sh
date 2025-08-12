@@ -42,9 +42,11 @@ else
   echo "FlameGraph already present"
 fi
 
-# folded-prod (verbatim Linux branch)
-rm -rf "${OUT_DIR}"
+# Clean output directory robustly even if root-owned
+sudo rm -rf "${OUT_DIR}" >/dev/null 2>&1 || true
 mkdir -p "${OUT_DIR}"
+
+# folded-prod (verbatim Linux branch)
 if [ "${OS}" = "Darwin" ]; then
   # macOS: sample the running process and collapse
   ( "${BIN}" -t 1 -o "${FORMAT}" ${NO_INDENT_ARGS} "${FLAME_FILE}" >/dev/null 2>&1 & echo $! > "${OUT_DIR}/pid" )
@@ -56,7 +58,12 @@ else
   # Linux: record with perf and collapse
   sudo perf record -F "${FREQ}" -g -- "${BIN}" -t 1 -o "${FORMAT}" ${NO_INDENT_ARGS} "${FLAME_FILE}" >/dev/null
   sudo perf script > "${OUT_DIR}/perf.script"
-  inferno-collapse-perf < "${OUT_DIR}/perf.script" > "${OUT_DIR}/stacks.folded"
+  COLLAPSE_BIN="$(which inferno-collapse-perf)"
+  if [ -z "${COLLAPSE_BIN}" ]; then
+    echo "inferno-collapse-perf not found in PATH" >&2
+    exit 2
+  fi
+  sudo "${COLLAPSE_BIN}" < "${OUT_DIR}/perf.script" > "${OUT_DIR}/stacks.folded"
 fi
 echo "Collapsed stacks written to ${OUT_DIR}/stacks.folded"
 
