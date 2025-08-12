@@ -20,6 +20,7 @@ pub struct EvtxRecord<'a> {
     pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
+    pub record_data_size: u32,
     pub settings: Arc<ParserSettings>,
 }
 
@@ -68,7 +69,7 @@ impl EvtxRecord<'_> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
         let event_record_id = self.event_record_id;
-        parse_tokens(self.tokens, self.chunk, output_builder).map_err(|e| {
+        parse_tokens(&self.tokens, self.chunk, output_builder).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),
@@ -114,7 +115,8 @@ impl EvtxRecord<'_> {
 
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
-        let mut output_builder = XmlOutput::with_writer(Vec::new(), &self.settings);
+        let capacity_hint = (self.record_data_size as usize).saturating_mul(2);
+        let mut output_builder = XmlOutput::with_writer(Vec::with_capacity(capacity_hint), &self.settings);
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;

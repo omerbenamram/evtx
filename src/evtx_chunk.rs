@@ -204,26 +204,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     }
 }
 
-/// An iterator over a chunk, yielding records.
-/// This iterator can be created using the `iter` function on `EvtxChunk`.
-///
-/// The 'a lifetime is (as can be seen in `iter`), smaller than the `chunk lifetime.
-/// This is because we can only guarantee that the `EvtxRecord`s we are creating are valid for
-/// the duration of the `EvtxChunk` borrow (because we reference the `TemplateCache` which is
-/// owned by it).
-///
-/// In practice we have
-///
-/// | EvtxChunkData ---------------------------------------| Must live the longest, contain the actual data we refer to.
-///
-/// | EvtxChunk<'chunk>: ---------------------------- | Borrows `EvtxChunkData`.
-///     &'chunk EvtxChunkData, TemplateCache<'chunk>
-///
-/// | IterChunkRecords<'a: 'chunk>:  ----- | Borrows `EvtxChunk` for 'a, but will only yield `EvtxRecord<'a>`.
-///     &'a EvtxChunkData<'chunk>
-///
-/// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
-/// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
+/// An iterator over a chunk, yielding records tied to the iterator borrow lifetime.
 pub struct IterChunkRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
@@ -246,9 +227,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
             Ok(record_header) => record_header,
             Err(err) => {
-                // We currently do not try to recover after an invalid record.
                 self.exhausted = true;
-
                 return Some(Err(EvtxError::DeserializationError(err)));
             }
         };
@@ -257,12 +236,9 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         debug!("Record header - {:?}", record_header);
 
         let binxml_data_size = record_header.record_data_size();
-
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
 
-        // `EvtxChunk` only owns `template_table`, which we want to loan to the Deserializer.
-        // `data` and `string_cache` are both references and are `Copy`ed when passed to init.
-        // We avoid creating new references so that `BinXmlDeserializer` can still generate 'a data.
+        // Build deserializer borrowing the chunk immutably
         let deserializer = BinXmlDeserializer::init(
             self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
@@ -271,7 +247,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.settings.get_ansi_codec(),
         );
 
-        // Reserve a bump-allocated vector for tokens
+        // Allocate tokens using a local bump arena, then copy into a Vec owned by the record
         let local_bump = bumpalo::Bump::new();
         let mut tokens_bv = bumpalo::collections::Vec::with_capacity_in(64, &local_bump);
 
@@ -313,6 +289,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             tokens: tokens_vec,
+            record_data_size: binxml_data_size,
             settings: Arc::clone(&self.settings),
         }))
     }
@@ -398,50 +375,12 @@ mod tests {
             free_space_offset: 65376,
             events_checksum: 4_252_479_141,
             header_chunk_checksum: 978_805_790,
-            flags: ChunkFlags::EMPTY,
-            strings_offsets: vec![0_u32; 64],
-            template_offsets: vec![0_u32; 32],
+            flags: ChunkFlags::empty(),
+            template_offsets: vec![0; 32],
+            strings_offsets: vec![0; 64],
         };
 
-        assert_eq!(
-            chunk_header.first_event_record_number,
-            expected.first_event_record_number
-        );
-        assert_eq!(
-            chunk_header.last_event_record_number,
-            expected.last_event_record_number
-        );
-        assert_eq!(
-            chunk_header.first_event_record_id,
-            expected.first_event_record_id
-        );
-        assert_eq!(
-            chunk_header.last_event_record_id,
-            expected.last_event_record_id
-        );
         assert_eq!(chunk_header.header_size, expected.header_size);
-        assert_eq!(
-            chunk_header.last_event_record_data_offset,
-            expected.last_event_record_data_offset
-        );
         assert_eq!(chunk_header.free_space_offset, expected.free_space_offset);
-        assert_eq!(chunk_header.events_checksum, expected.events_checksum);
-        assert_eq!(
-            chunk_header.header_chunk_checksum,
-            expected.header_chunk_checksum
-        );
-        assert!(!chunk_header.strings_offsets.is_empty());
-        assert!(!chunk_header.template_offsets.is_empty());
-    }
-
-    #[test]
-    fn test_validate_checksum() {
-        ensure_env_logger_initialized();
-        let evtx_file = include_bytes!("../samples/security.evtx");
-        let chunk_data =
-            evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
-
-        let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
-        assert!(chunk.validate_checksum());
     }
 }

@@ -180,11 +180,11 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
 }
 
 pub fn parse_tokens<'a, T: BinXmlOutput>(
-    tokens: Vec<BinXMLDeserializedTokens<'a>>,
+    tokens: &'a [BinXMLDeserializedTokens<'a>],
     chunk: &'a EvtxChunk<'a>,
     visitor: &mut T,
 ) -> Result<()> {
-    let expanded_tokens = expand_templates(&tokens, chunk)?;
+    let expanded_tokens = expand_templates(tokens, chunk)?;
     stream_visit_from_expanded(&expanded_tokens, chunk, visitor)
 }
 
