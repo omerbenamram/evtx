@@ -10,6 +10,7 @@ use log::trace;
 use std::char::decode_utf16;
 use std::error::Error as StdErr;
 use std::io::{self, Error, ErrorKind};
+use encoding_rs::UTF_16LE;
 
 #[derive(Debug, Error)]
 pub enum FailedToReadString {
@@ -53,14 +54,54 @@ pub fn read_len_prefixed_utf16_string<T: ReadSeek>(
 pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<Option<String>> {
     match size {
         0 => Ok(None),
-        _ => read_utf16_string(stream, Some(size as usize / 2)).map(|mut s| {
-            // Efficiently remove trailing whitespace (for example, spaces) by modifying in place.
-            let trimmed_len = s.trim_end().len();
-            if trimmed_len < s.len() {
-                s.truncate(trimmed_len);
+        _ => {
+            let size_usize = size as usize;
+            let mut raw = vec![0u8; size_usize];
+            stream.read_exact(&mut raw)?;
+            #[cfg(feature = "fast-utf16")]
+            {
+                let (decoded, had_errors) = UTF_16LE.decode_without_bom_handling(&raw);
+                if had_errors {
+                    // Fall back to the existing scalar path if we encountered errors
+                    let mut cursor = io::Cursor::new(raw);
+                    let mut buffer = Vec::with_capacity(size_usize / 2);
+                    while (cursor.position() as usize) + 1 < size_usize {
+                        let next_char = cursor.read_u16::<LittleEndian>()?;
+                        if next_char == 0 { break; }
+                        buffer.push(next_char);
+                    }
+                    let s: String = decode_utf16(buffer.into_iter().take_while(|&b| b != 0x00))
+                        .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
+                        .collect::<io::Result<String>>()?;
+                    let trimmed_len = s.trim_end().len();
+                    let mut s = s;
+                    if trimmed_len < s.len() { s.truncate(trimmed_len); }
+                    Ok(Some(s))
+                } else {
+                    let mut s = decoded.into_owned();
+                    let trimmed_len = s.trim_end().len();
+                    if trimmed_len < s.len() { s.truncate(trimmed_len); }
+                    Ok(Some(s))
+                }
             }
-            Some(s)
-        }),
+            #[cfg(not(feature = "fast-utf16"))]
+            {
+                // Original scalar path for compatibility
+                let mut cursor = io::Cursor::new(raw);
+                let mut buffer = Vec::with_capacity(size_usize / 2);
+                while (cursor.position() as usize) + 1 < size_usize {
+                    let next_char = cursor.read_u16::<LittleEndian>()?;
+                    if next_char == 0 { break; }
+                    buffer.push(next_char);
+                }
+                let mut s: String = decode_utf16(buffer.into_iter().take_while(|&b| b != 0x00))
+                    .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
+                    .collect::<io::Result<String>>()?;
+                let trimmed_len = s.trim_end().len();
+                if trimmed_len < s.len() { s.truncate(trimmed_len); }
+                Ok(Some(s))
+            }
+        },
     }
 }
 /// Reads an ansi encoded string from the given stream using `ansi_codec`.
