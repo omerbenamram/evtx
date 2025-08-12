@@ -6,12 +6,16 @@ use crate::ParserSettings;
 use log::trace;
 use std::io::Write;
 
-use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
 use quick_xml::Writer;
 
 use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;
+
+fn is_xml_plain_text(s: &str) -> bool {
+    // Fast check: no &, <, > means writer doesn't need to escape
+    !s.as_bytes().iter().any(|&b| b == b'&' || b == b'<' || b == b'>')
+}
 
 pub trait BinXmlOutput {
     /// Called once when EOF is reached.
@@ -222,13 +226,14 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         trace!("visit_chars");
         match value {
             Cow::Borrowed(BinXmlValue::StringType(s)) => {
-                let event = BytesText::new(s.as_ref());
-                self.writer.write_event(Event::Text(event))?;
+                let v = s.as_ref();
+                let event = Event::Text(BytesText::new(v));
+                self.writer.write_event(event)?;
             }
             Cow::Borrowed(BinXmlValue::AnsiStringType(s)) => {
                 let v = s.as_ref();
-                let event = BytesText::new(v);
-                self.writer.write_event(Event::Text(event))?;
+                let event = Event::Text(BytesText::new(v));
+                self.writer.write_event(event)?;
             }
             // Numeric and bool fast path: content has no XML special chars, so treat as escaped
             Cow::Borrowed(BinXmlValue::Int8Type(n)) => {
@@ -291,11 +296,11 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
                     s.clear();
                     s.reserve(cow.len());
                     s.push_str(&cow);
-                    let event = BytesText::new(s.as_str());
-                    self.writer.write_event(Event::Text(event))?;
+                    let event = Event::Text(BytesText::new(s.as_str()));
+                    self.writer.write_event(event)?;
                 } else {
-                    let event = BytesText::new(&cow);
-                    self.writer.write_event(Event::Text(event))?;
+                    let event = Event::Text(BytesText::new(&*cow));
+                    self.writer.write_event(event)?;
                 }
             }
         }
