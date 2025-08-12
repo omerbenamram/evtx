@@ -220,41 +220,51 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
     type Item = std::result::Result<EvtxRecord<'chunk>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        // SAFETY: chunk_ptr was created from a valid mutable reference in iter() and points to a live EvtxChunk for the lifetime 'chunk.
-        let chunk: &mut EvtxChunk<'chunk> = unsafe { &mut *self.chunk_ptr };
+        // First step: take a scoped mutable borrow to advance state and reset arena safely.
+        let (body_start_offset, binxml_data_size, event_record_id, record_timestamp) = {
+            // SAFETY: chunk_ptr was created from a valid mutable reference in iter()
+            // and points to a live EvtxChunk for the lifetime 'chunk. We restrict the
+            // mutable borrow to this block to avoid aliasing with the immutable borrow below.
+            let chunk: &mut EvtxChunk<'chunk> = unsafe { &mut *self.chunk_ptr };
 
-        if self.exhausted
-            || self.offset_from_chunk_start >= u64::from(chunk.header.free_space_offset)
-        {
-            return None;
-        }
-
-        let mut cursor = Cursor::new(&chunk.data[self.offset_from_chunk_start as usize..]);
-        let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
-            Ok(record_header) => record_header,
-            Err(err) => {
-                self.exhausted = true;
-                return Some(Err(EvtxError::DeserializationError(err)));
+            if self.exhausted
+                || self.offset_from_chunk_start >= u64::from(chunk.header.free_space_offset)
+            {
+                return None;
             }
+
+            let mut cursor = Cursor::new(&chunk.data[self.offset_from_chunk_start as usize..]);
+            let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
+                Ok(record_header) => record_header,
+                Err(err) => {
+                    self.exhausted = true;
+                    return Some(Err(EvtxError::DeserializationError(err)));
+                }
+            };
+
+            info!("Record id - {}", record_header.event_record_id);
+            debug!("Record header - {:?}", record_header);
+            let binxml_data_size = record_header.record_data_size();
+            let data_size = record_header.data_size;
+            let event_record_id = record_header.event_record_id;
+            let record_timestamp = record_header.timestamp;
+            trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+
+            // Move iterator state forward
+            let current_offset = self.offset_from_chunk_start;
+            let body_start_offset = current_offset + cursor.position();
+            self.offset_from_chunk_start = current_offset + u64::from(data_size);
+            if chunk.header.last_event_record_id == event_record_id {
+                self.exhausted = true;
+            }
+
+            // Reset arena BEFORE taking immutable borrows
+            chunk.arena.reset();
+
+            (body_start_offset, binxml_data_size, event_record_id, record_timestamp)
         };
 
-        info!("Record id - {}", record_header.event_record_id);
-        debug!("Record header - {:?}", record_header);
-        let binxml_data_size = record_header.record_data_size();
-        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
-
-        // Move iterator state forward before borrowing chunk immutably
-        let current_offset = self.offset_from_chunk_start;
-        let body_start_offset = current_offset + cursor.position();
-        self.offset_from_chunk_start = current_offset + u64::from(record_header.data_size);
-        if chunk.header.last_event_record_id == record_header.event_record_id {
-            self.exhausted = true;
-        }
-
-        // Reset arena BEFORE taking immutable borrows
-        chunk.arena.reset();
-
-        // Build deserializer borrowing the chunk immutably
+        // Build deserializer borrowing the chunk immutably (no aliasing with the scoped &mut above)
         let chunk_immut: &'chunk EvtxChunk<'chunk> = unsafe { &*self.chunk_ptr };
         let deserializer = BinXmlDeserializer::init(
             chunk_immut.data,
@@ -273,7 +283,7 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
             bumpalo::collections::Vec::with_capacity_in(token_capacity_hint, &chunk_immut.arena);
 
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)).map_err(|e| EvtxError::FailedToParseRecord {
-            record_id: record_header.event_record_id,
+            record_id: event_record_id,
             source: Box::new(EvtxError::DeserializationError(e)),
         }) {
             Ok(iter) => iter,
@@ -283,7 +293,7 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
         for token in iter {
             match token.map_err(|e| EvtxError::FailedToParseRecord {
                 source: Box::new(EvtxError::DeserializationError(e)),
-                record_id: record_header.event_record_id,
+                record_id: event_record_id,
             }) {
                 Ok(token) => tokens_bv.push(token),
                 Err(err) => {
@@ -296,8 +306,8 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
 
         Some(Ok(EvtxRecord {
             chunk: chunk_immut,
-            event_record_id: record_header.event_record_id,
-            timestamp: record_header.timestamp,
+            event_record_id,
+            timestamp: record_timestamp,
             tokens: tokens_slice,
             record_data_size: binxml_data_size,
             settings: Arc::clone(&self.settings),
