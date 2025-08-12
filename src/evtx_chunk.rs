@@ -264,8 +264,13 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
             self.settings.get_ansi_codec(),
         );
 
+        // Heuristic: average token size is small; pre-reserve proportional to record data size to reduce growth
+        let token_capacity_hint: usize = {
+            let approx = (binxml_data_size as usize) / 6; // rough estimate of bytes per token
+            if approx < 64 { 64 } else if approx > 65536 { 65536 } else { approx }
+        };
         let mut tokens_bv: bumpalo::collections::Vec<'chunk, crate::model::deserialized::BinXMLDeserializedTokens<'chunk>> =
-            bumpalo::collections::Vec::with_capacity_in(64, &chunk_immut.arena);
+            bumpalo::collections::Vec::with_capacity_in(token_capacity_hint, &chunk_immut.arena);
 
         let iter = match deserializer.iter_tokens(Some(binxml_data_size)).map_err(|e| EvtxError::FailedToParseRecord {
             record_id: record_header.event_record_id,

@@ -79,18 +79,69 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element);
 
-        let mut event_builder = BytesStart::new(element.name.as_ref().as_str());
+        let name = element.name.as_ref().as_str();
 
-        for attr in element.attributes.iter() {
-            let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
+        // Prebuild attributes with exact capacity to avoid RawVec growth during emission
+        if element.attributes.is_empty() {
+            let event_builder = BytesStart::new(name);
+            self.writer.write_event(Event::Start(event_builder))?;
+            return Ok(());
+        }
 
-            if value_cow.len() > 0 {
-                let name_as_str = attr.name.as_str();
-                let attr = Attribute::from((name_as_str, value_cow.as_ref()));
-                event_builder.push_attribute(attr);
+        // Pass 1: for attributes whose values cannot be borrowed as &str directly, precompute owned strings
+        let mut owned_values_by_idx: Vec<Option<String>> = vec![None; element.attributes.len()];
+        for (i, attr) in element.attributes.iter().enumerate() {
+            let needs_owned = match attr.value.as_ref() {
+                BinXmlValue::StringType(_) | BinXmlValue::AnsiStringType(_) |
+                BinXmlValue::HexInt32Type(_) | BinXmlValue::HexInt64Type(_) |
+                BinXmlValue::NullType => false,
+                _ => true,
+            };
+            if needs_owned {
+                let s = attr.value.as_ref().as_cow_str().into_owned();
+                if !s.is_empty() {
+                    owned_values_by_idx[i] = Some(s);
+                }
             }
         }
 
+        // Pass 2: build attributes using borrowed slices where possible, otherwise from owned storage
+        let mut attrs: Vec<Attribute> = Vec::with_capacity(element.attributes.len());
+        for (i, attr) in element.attributes.iter().enumerate() {
+            let name_as_str = attr.name.as_str();
+            if let Some(ref s) = owned_values_by_idx[i] {
+                // Non-borrowable value; use the owned string we materialized in pass 1
+                attrs.push(Attribute::from((name_as_str, s.as_str())));
+                continue;
+            }
+
+            // Borrowable: reference directly from the source without creating temporaries
+            match attr.value.as_ref() {
+                BinXmlValue::StringType(s) => {
+                    if !s.is_empty() { attrs.push(Attribute::from((name_as_str, s.as_str()))); }
+                }
+                BinXmlValue::AnsiStringType(s) => {
+                    let v = s.as_ref();
+                    if !v.is_empty() { attrs.push(Attribute::from((name_as_str, v))); }
+                }
+                BinXmlValue::HexInt32Type(s) => {
+                    let v = s.as_ref();
+                    if !v.is_empty() { attrs.push(Attribute::from((name_as_str, v))); }
+                }
+                BinXmlValue::HexInt64Type(s) => {
+                    let v = s.as_ref();
+                    if !v.is_empty() { attrs.push(Attribute::from((name_as_str, v))); }
+                }
+                BinXmlValue::NullType => {
+                    // Skip empty
+                }
+                _ => {
+                    // Should have been handled in owned_values_by_idx; skip if empty
+                }
+            }
+        }
+
+        let event_builder = BytesStart::new(name).with_attributes(attrs);
         self.writer.write_event(Event::Start(event_builder))?;
 
         Ok(())

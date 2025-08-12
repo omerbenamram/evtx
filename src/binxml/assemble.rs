@@ -423,6 +423,38 @@ fn expand_token_substitution<'a>(
     Ok(())
 }
 
+// Bumpalo-backed variant to avoid heap bridging during template expansion.
+fn expand_token_substitution_bv<'a>(
+    template: &mut BinXmlTemplateRef<'a>,
+    substitution_descriptor: &TemplateSubstitutionDescriptor,
+    chunk: &'a EvtxChunk<'a>,
+    stack: &mut bumpalo::collections::Vec<'a, Cow<'a, BinXMLDeserializedTokens<'a>>>,
+) -> Result<()> {
+    if substitution_descriptor.ignore {
+        return Ok(());
+    }
+
+    let value = template
+        .substitution_array
+        .get_mut(substitution_descriptor.substitution_index as usize);
+
+    if let Some(value) = value {
+        let value = mem::replace(
+            value,
+            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
+        );
+        _expand_templates_bv(Cow::Owned(value), chunk, stack)?;
+    } else {
+        _expand_templates_bv(
+            Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::NullType)),
+            chunk,
+            stack,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn expand_template<'a>(
     mut template: BinXmlTemplateRef<'a>,
     chunk: &'a EvtxChunk<'a>,
@@ -459,6 +491,46 @@ fn expand_template<'a>(
                 expand_token_substitution(&mut template, &substitution_descriptor, chunk, stack)?;
             } else {
                 _expand_templates(Cow::Owned(token), chunk, stack)?;
+            }
+        }
+    };
+
+    Ok(())
+}
+
+// Bumpalo-backed variant to avoid heap bridging during template expansion.
+fn expand_template_bv<'a>(
+    mut template: BinXmlTemplateRef<'a>,
+    chunk: &'a EvtxChunk<'a>,
+    stack: &mut bumpalo::collections::Vec<'a, Cow<'a, BinXMLDeserializedTokens<'a>>>,
+) -> Result<()> {
+    if let Some(template_def) = chunk
+        .template_table
+        .get_template(template.template_def_offset)
+    {
+        for token in template_def.tokens.iter() {
+            if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
+                expand_token_substitution_bv(&mut template, substitution_descriptor, chunk, stack)?;
+            } else {
+                _expand_templates_bv(Cow::Borrowed(token), chunk, stack)?;
+            }
+        }
+    } else {
+        debug!(
+            "Template in offset {} was not found in cache",
+            template.template_def_offset
+        );
+
+        let mut cursor = Cursor::new(chunk.data);
+        let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
+        let template_def =
+            read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
+
+        for token in template_def.tokens {
+            if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
+                expand_token_substitution_bv(&mut template, &substitution_descriptor, chunk, stack)?;
+            } else {
+                _expand_templates_bv(Cow::Owned(token), chunk, stack)?;
             }
         }
     };
@@ -511,18 +583,12 @@ fn _expand_templates_bv<'a>(
             }
         }
         Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
-            let mut tmp: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = Vec::new();
-            expand_template(template, chunk, &mut tmp)?;
-            for t in tmp.into_iter() {
-                stack.push(t);
-            }
+            // Avoid heap bridging by expanding directly into the bumpalo-backed stack
+            expand_template_bv(template, chunk, stack)?;
         }
         Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(template)) => {
-            let mut tmp: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = Vec::new();
-            expand_template(template.clone(), chunk, &mut tmp)?;
-            for t in tmp.into_iter() {
-                stack.push(t);
-            }
+            // Avoid heap bridging by expanding directly into the bumpalo-backed stack
+            expand_template_bv(template.clone(), chunk, stack)?;
         }
         _ => stack.push(token),
     }
