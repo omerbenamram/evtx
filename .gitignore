@@ -14,3 +14,17 @@ evtx-wasm/evtx-viewer/public/pkg
 # Samples are being copied by build scripts before deploying
 **/public/samples/
 profil*/
+
+# Local binaries and benchmark outputs
+binaries/
+benchmarks/
+
+# perf/inferno outputs
+perf.data
+perf.data.*
+profile/
+**/perf.script
+**/stacks.folded
+**/flamegraph.svg
+**/top_leaf.txt
+**/top_titles.txt
