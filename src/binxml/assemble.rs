@@ -69,9 +69,9 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
             }
             Cow::Owned(BinXMLDeserializedTokens::Value(value)) => {
                 if let Some(builder) = current_element.as_mut() {
-                    builder.attribute_value(Cow::Owned(value.clone()))?;
+                    builder.attribute_value(Cow::Borrowed(value))?;
                 } else {
-                    visitor.visit_characters(Cow::Owned(value.clone()))?;
+                    visitor.visit_characters(Cow::Borrowed(value))?;
                 }
             }
 
