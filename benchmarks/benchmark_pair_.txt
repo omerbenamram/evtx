@@ -1,0 +1,1 @@
+Benchmark 1:  -o xml -t 1 samples/security_big_sample.evtx > /dev/null

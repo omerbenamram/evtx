@@ -84,14 +84,14 @@ folded-prod: build install-flamegraph
 	@rm -rf $(OUT_DIR)
 	@mkdir -p $(OUT_DIR)
 ifeq ($(OS),Darwin)
-  ( $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null 2>&1 & echo $$! > $(OUT_DIR)/pid )
+	( $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null 2>&1 & echo $$! > $(OUT_DIR)/pid )
 		# Start sampling immediately; -mayDie tolerates process exit during sampling
 		sample $$(cat $(OUT_DIR)/pid) $(DURATION) -mayDie | tee $(OUT_DIR)/sample.txt >/dev/null 2>&1 || true
 		@if kill -0 $$(cat $(OUT_DIR)/pid) >/dev/null 2>&1; then kill -INT $$(cat $(OUT_DIR)/pid) >/dev/null 2>&1 || true; fi
 		@wait $$(cat $(OUT_DIR)/pid) 2>/dev/null || true
 		awk -f "$(FLAMEGRAPH_DIR)/stackcollapse-sample.awk" "$(OUT_DIR)/sample.txt" > "$(OUT_DIR)/stacks.folded"
 else
-  sudo perf record -F $(FREQ) -g -- $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null
+	sudo perf record -F $(FREQ) -g -- $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null
 	perf script > $(OUT_DIR)/perf.script
 	inferno-collapse-perf < $(OUT_DIR)/perf.script > $(OUT_DIR)/stacks.folded
 endif
