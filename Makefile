@@ -16,8 +16,12 @@ FREQ ?= 997
 FORMAT ?= jsonl
 FLAME_FILE ?= $(INPUT)
 
+# Tools
+CARGO ?= cargo
+CARGO_BIN_DIR ?= ./target/release
+
 # Paths
-BINARY := ./target/release/evtx_dump
+BINARY := $(CARGO_BIN_DIR)/evtx_dump
 NO_INDENT_ARGS := --no-indent --dont-show-record-number
 
 # FlameGraph scripts (more robust for macOS `sample` output)
@@ -30,11 +34,17 @@ all: flamegraph-prod
 
 deps:
 	# Tools used: inferno (collapse + flamegraph) and cargo flamegraph (optional)
-	@which inferno-flamegraph >/dev/null 2>&1 || cargo install inferno
-	@which cargo-flamegraph >/dev/null 2>&1 || cargo install flamegraph
+	@which inferno-flamegraph >/dev/null 2>&1 || $(CARGO) install inferno
+	@which cargo-flamegraph >/dev/null 2>&1 || $(CARGO) install flamegraph
 
 build:
-	cargo build --release --features $(FEATURES)
+	$(CARGO) build --release --features $(FEATURES)
+	@mkdir -p $(CARGO_BIN_DIR)
+	@# Keep default CARGO_BIN_DIR unless not provided; try to deduce
+	@ if [ "$(CARGO_BIN_DIR)" = "./target/release" ]; then \
+	  BIN_DIR=$$($(CARGO) locate-project --message-format plain 2>/dev/null | xargs dirname)/target/release; \
+	  if [ -d "$$BIN_DIR" ]; then echo "Using BIN_DIR=$$BIN_DIR"; fi; \
+	fi
 
 run: build
 	$(BINARY) $(RUN_ARGS)
@@ -53,7 +63,7 @@ ifeq ($(OS),Darwin)
 else
 	# Linux: record with perf and collapse
 	sudo perf record -F $(FREQ) -g -- $(BINARY) $(RUN_ARGS) >/dev/null
-	perf script > $(OUT_DIR)/perf.script
+	sudo perf script > $(OUT_DIR)/perf.script
 	inferno-collapse-perf < $(OUT_DIR)/perf.script > $(OUT_DIR)/stacks.folded
 endif
 	@echo "Collapsed stacks written to $(OUT_DIR)/stacks.folded"
@@ -92,9 +102,9 @@ ifeq ($(OS),Darwin)
 		@wait $$(cat $(OUT_DIR)/pid) 2>/dev/null || true
 		awk -f "$(FLAMEGRAPH_DIR)/stackcollapse-sample.awk" "$(OUT_DIR)/sample.txt" > "$(OUT_DIR)/stacks.folded"
 else
-			sudo perf record -F $(FREQ) -g -- $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null
-		sudo perf script > $(OUT_DIR)/perf.script
-		inferno-collapse-perf < $(OUT_DIR)/perf.script > $(OUT_DIR)/stacks.folded
+	sudo perf record -F $(FREQ) -g -- $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null
+	sudo perf script > $(OUT_DIR)/perf.script
+	inferno-collapse-perf < $(OUT_DIR)/perf.script > $(OUT_DIR)/stacks.folded
 endif
 	@echo "Collapsed stacks written to $(OUT_DIR)/stacks.folded"
 
@@ -121,27 +131,27 @@ flamegraph-prod: folded-prod
 bench-refs:
 	@bash -eu -o pipefail -c '\
 	  REPO="$$PWD"; \
-	  CLEAN_REF="$${CLEAN_REF:?set CLEAN_REF=<git-ref-for-clean>}"; \
-	  MOD_REF="$${MOD_REF:?set MOD_REF=<git-ref-for-mod>}"; \
+	  CLEAN_REF="$$${CLEAN_REF:?set CLEAN_REF=<git-ref-for-clean>}"; \
+	  MOD_REF="$$${MOD_REF:?set MOD_REF=<git-ref-for-mod>}"; \
 	  TS=$$(date -u +%Y%m%dT%H%M%SZ); \
 	  mkdir -p "$$REPO/binaries" "$$REPO/benchmarks" "$$REPO/tmp/worktrees"; \
-	  # Clean worktree build
+	  # Clean worktree build \
 	  CWT="$$REPO/tmp/worktrees/clean-$${CLEAN_REF//\//-}-$${TS}"; \
 	  git worktree add --force --detach "$$CWT" "$$CLEAN_REF" >/dev/null; \
-	  ( cd "$$CWT" && cargo build --release >/dev/null ); \
+	  ( cd "$$CWT" && $(CARGO) build --release >/dev/null ); \
 	  CLEAN_HASH=$$(git -C "$$CWT" rev-parse --short HEAD); \
 	  CLEAN_BIN="$$REPO/binaries/evtx_dump_$${CLEAN_HASH}_$${TS}_clean"; \
 	  cp "$$CWT/target/release/evtx_dump" "$$CLEAN_BIN"; \
-	  # Mod worktree build
+	  # Mod worktree build \
 	  MWT="$$REPO/tmp/worktrees/mod-$${MOD_REF//\//-}-$${TS}"; \
 	  git worktree add --force --detach "$$MWT" "$$MOD_REF" >/dev/null; \
-	  ( cd "$$MWT" && cargo build --release >/dev/null ); \
+	  ( cd "$$MWT" && $(CARGO) build --release >/dev/null ); \
 	  MOD_HASH=$$(git -C "$$MWT" rev-parse --short HEAD); \
 	  MOD_BIN="$$REPO/binaries/evtx_dump_$${MOD_HASH}_$${TS}_mod"; \
 	  cp "$$MWT/target/release/evtx_dump" "$$MOD_BIN"; \
-	  # Benchmark pair
-	  "$${REPO}/scripts/run_benchmark_pair.sh" "$$CLEAN_BIN" "$$MOD_BIN" "$$REPO/samples/security_big_sample.evtx"; \
-	  # Cleanup worktrees
+	  # Benchmark pair \
+	  "$$${REPO}/scripts/run_benchmark_pair.sh" "$$CLEAN_BIN" "$$MOD_BIN" "$$REPO/samples/security_big_sample.evtx"; \
+	  # Cleanup worktrees \
 	  git worktree remove --force "$$CWT" >/dev/null; \
 	  git worktree remove --force "$$MWT" >/dev/null; \
 	  git worktree prune >/dev/null; \

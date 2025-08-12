@@ -10,7 +10,7 @@ use log::trace;
 use std::char::decode_utf16;
 use std::error::Error as StdErr;
 use std::io::{self, Error, ErrorKind};
-use encoding_rs::UTF_16LE;
+use encoding_rs::UTF_16LE; // Using allocation-enabled API; decoder path set below
 
 #[derive(Debug, Error)]
 pub enum FailedToReadString {
@@ -61,7 +61,7 @@ pub fn read_utf16_by_size<T: ReadSeek>(stream: &mut T, size: u64) -> io::Result<
             #[cfg(feature = "fast-utf16")]
             {
                 let (decoded, had_errors) = UTF_16LE.decode_without_bom_handling(&raw);
-                if had_errors {
+                if had_errors { 
                     // Fall back to the existing scalar path if we encountered errors
                     let mut cursor = io::Cursor::new(raw);
                     let mut buffer = Vec::with_capacity(size_usize / 2);
