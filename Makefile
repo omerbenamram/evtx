@@ -73,7 +73,7 @@ clean:
 # Clean profile dir, run with -t 1 and selected FORMAT/FLAME_FILE, and output flamegraph
 install-flamegraph:
 	@mkdir -p scripts
-	@if [ ! -d "$(FLAMEGRAPH_DIR)" ]; then \
+	@if [ ! -f "$(FLAMEGRAPH_DIR)/stackcollapse.pl" ]; then \
 	  echo "Cloning FlameGraph scripts..."; \
 	  git clone "$(FLAMEGRAPH_REPO_URL)" "$(FLAMEGRAPH_DIR)" >/dev/null; \
 	else \
@@ -92,8 +92,8 @@ ifeq ($(OS),Darwin)
 		awk -f "$(FLAMEGRAPH_DIR)/stackcollapse-sample.awk" "$(OUT_DIR)/sample.txt" > "$(OUT_DIR)/stacks.folded"
 else
 	sudo perf record -F $(FREQ) -g -- $(BINARY) -t 1 -o $(FORMAT) $(NO_INDENT_ARGS) $(FLAME_FILE) >/dev/null
-	perf script > $(OUT_DIR)/perf.script
-	inferno-collapse-perf < $(OUT_DIR)/perf.script > $(OUT_DIR)/stacks.folded
+	sudo perf script > $(OUT_DIR)/perf.script
+	$(shell which inferno-collapse-perf) < $(OUT_DIR)/perf.script > $(OUT_DIR)/stacks.folded
 endif
 	@echo "Collapsed stacks written to $(OUT_DIR)/stacks.folded"
 
