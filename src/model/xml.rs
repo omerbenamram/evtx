@@ -19,16 +19,16 @@ pub enum XmlModel<'a> {
 #[derive(Debug)]
 pub(crate) struct XmlElementBuilder<'a> {
     name: Option<Cow<'a, BinXmlName>>,
-    attributes: Vec<XmlAttribute<'a>>,
+    attributes: bumpalo::collections::Vec<'a, XmlAttribute<'a>>,
     current_attribute_name: Option<Cow<'a, BinXmlName>>,
     current_attribute_value: Option<Cow<'a, BinXmlValue<'a>>>,
 }
 
 impl<'a> XmlElementBuilder<'a> {
-    pub fn new() -> Self {
+    pub fn new_in(arena: &'a bumpalo::Bump) -> Self {
         XmlElementBuilder {
             name: None,
-            attributes: Vec::new(),
+            attributes: bumpalo::collections::Vec::new_in(arena),
             current_attribute_name: None,
             current_attribute_value: None,
         }
@@ -76,7 +76,7 @@ impl<'a> XmlElementBuilder<'a> {
             name: self.name.ok_or(EvtxError::FailedToCreateRecordModel(
                 "Element name should be set",
             ))?,
-            attributes: self.attributes,
+            attributes: self.attributes.into_bump_slice(),
         })
     }
 }
@@ -118,7 +118,7 @@ pub struct XmlAttribute<'a> {
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct XmlElement<'a> {
     pub name: Cow<'a, BinXmlName>,
-    pub attributes: Vec<XmlAttribute<'a>>,
+    pub attributes: &'a [XmlAttribute<'a>],
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]

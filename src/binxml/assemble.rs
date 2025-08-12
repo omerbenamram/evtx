@@ -44,7 +44,7 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
 
             Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(elem))
             | Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
-                let mut builder = XmlElementBuilder::new();
+                let mut builder = XmlElementBuilder::new_in(&chunk.arena);
                 builder.name(expand_string_ref(&elem.name, chunk)?);
                 current_element = Some(builder);
             }
@@ -323,7 +323,7 @@ pub fn create_record_model<'a>(
                     "BinXMLDeserializedTokens::OpenStartElement(elem) - {:?}",
                     elem.name
                 );
-                let mut builder = XmlElementBuilder::new();
+                let mut builder = XmlElementBuilder::new_in(&chunk.arena);
                 builder.name(expand_string_ref(&elem.name, chunk)?);
                 current_element = Some(builder);
             }
@@ -502,16 +502,53 @@ fn _expand_templates<'a>(
     Ok(())
 }
 
+fn _expand_templates_bv<'a>(
+    token: Cow<'a, BinXMLDeserializedTokens<'a>>,
+    chunk: &'a EvtxChunk<'a>,
+    stack: &mut bumpalo::collections::Vec<'a, Cow<'a, BinXMLDeserializedTokens<'a>>>,
+) -> Result<()> {
+    match token {
+        Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens))) => {
+            for token in tokens.into_iter() {
+                _expand_templates_bv(Cow::Owned(token), chunk, stack)?;
+            }
+        }
+        Cow::Borrowed(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens))) => {
+            for token in tokens.iter() {
+                _expand_templates_bv(Cow::Borrowed(token), chunk, stack)?;
+            }
+        }
+        Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
+            // Convert to temporary Vec stack path for reuse
+            let mut tmp: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = Vec::new();
+            expand_template(template, chunk, &mut tmp)?;
+            for t in tmp.into_iter() {
+                stack.push(t);
+            }
+        }
+        Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(template)) => {
+            let mut tmp: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = Vec::new();
+            expand_template(template.clone(), chunk, &mut tmp)?;
+            for t in tmp.into_iter() {
+                stack.push(t);
+            }
+        }
+        _ => stack.push(token),
+    }
+    Ok(())
+}
+
 pub fn expand_templates<'a>(
     token_tree: &'a [BinXMLDeserializedTokens<'a>],
     chunk: &'a EvtxChunk<'a>,
 ) -> Result<Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>> {
     // We can assume the new tree will be at least as big as the old one.
-    let mut stack = Vec::with_capacity(token_tree.len());
+    let mut stack_bv = bumpalo::collections::Vec::with_capacity_in(token_tree.len(), &chunk.arena);
 
     for token in token_tree.iter() {
-        _expand_templates(Cow::Borrowed(token), chunk, &mut stack)?
+        _expand_templates_bv(Cow::Borrowed(token), chunk, &mut stack_bv)?
     }
 
-    Ok(stack)
+    // Convert bump vec to owned Vec for compatibility with current call sites
+    Ok(stack_bv.to_vec())
 }
