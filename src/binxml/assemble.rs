@@ -185,7 +185,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
     visitor: &mut T,
 ) -> Result<()> {
     let expanded_tokens = expand_templates(tokens, chunk)?;
-    stream_visit_from_expanded(&expanded_tokens, chunk, visitor)
+    stream_visit_from_expanded(expanded_tokens, chunk, visitor)
 }
 
 pub fn create_record_model<'a>(
@@ -471,34 +471,26 @@ fn _expand_templates<'a>(
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>,
 ) -> Result<()> {
+    // unchanged
     match token {
-        // Owned values can be consumed when flatting, and passed on as owned.
         Cow::Owned(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens))) => {
             for token in tokens.into_iter() {
                 _expand_templates(Cow::Owned(token), chunk, stack)?;
             }
         }
-
         Cow::Borrowed(BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens))) => {
             for token in tokens.iter() {
                 _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }
         }
-        // Actual template handling.
         Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
             expand_template(template, chunk, stack)?;
         }
         Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(template)) => {
-            // This can happen if a template has a token which is:
-            // 1. Another template.
-            // 2. Is not a substitution (because they are `Owned` values).
-            // We never actually see this in practice, so we don't mind paying for `clone` here.
             expand_template(template.clone(), chunk, stack)?;
         }
-
         _ => stack.push(token),
     }
-
     Ok(())
 }
 
@@ -519,7 +511,6 @@ fn _expand_templates_bv<'a>(
             }
         }
         Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(template)) => {
-            // Convert to temporary Vec stack path for reuse
             let mut tmp: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> = Vec::new();
             expand_template(template, chunk, &mut tmp)?;
             for t in tmp.into_iter() {
@@ -541,14 +532,10 @@ fn _expand_templates_bv<'a>(
 pub fn expand_templates<'a>(
     token_tree: &'a [BinXMLDeserializedTokens<'a>],
     chunk: &'a EvtxChunk<'a>,
-) -> Result<Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>> {
-    // We can assume the new tree will be at least as big as the old one.
+) -> Result<&'a [Cow<'a, BinXMLDeserializedTokens<'a>>]> {
     let mut stack_bv = bumpalo::collections::Vec::with_capacity_in(token_tree.len(), &chunk.arena);
-
     for token in token_tree.iter() {
         _expand_templates_bv(Cow::Borrowed(token), chunk, &mut stack_bv)?
     }
-
-    // Convert bump vec to owned Vec for compatibility with current call sites
-    Ok(stack_bv.to_vec())
+    Ok(stack_bv.into_bump_slice())
 }
