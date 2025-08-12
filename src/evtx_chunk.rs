@@ -13,7 +13,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::{checksum_ieee, ParserSettings};
+use crate::{ParserSettings, checksum_ieee};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
@@ -298,8 +298,9 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             }
         }
 
-        // Copy bump-allocated tokens into a `Vec` owned by the record to keep lifetimes simple
-        let tokens_vec: Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>> = tokens_bv.to_vec();
+        // Copy bump-allocated tokens into a Vec owned by the record
+        let tokens_vec: Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>> =
+            tokens_bv.to_vec();
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 

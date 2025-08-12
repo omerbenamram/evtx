@@ -4,7 +4,7 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{
     BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
 };
-use crate::model::xml::{XmlElementBuilder, XmlModel, XmlPIBuilder};
+use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
 use log::{debug, trace, warn};
 use std::borrow::{BorrowMut, Cow};
@@ -16,47 +16,176 @@ use crate::binxml::name::{BinXmlName, BinXmlNameRef};
 use crate::binxml::tokens::read_template_definition;
 use std::io::{Cursor, Seek, SeekFrom};
 
+fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
+    expanded: &[Cow<'a, BinXMLDeserializedTokens<'a>>],
+    chunk: &'a EvtxChunk<'a>,
+    visitor: &mut T,
+) -> Result<()> {
+    visitor.visit_start_of_stream()?;
+
+    // Minimal stack of open elements to match close
+    let mut element_stack: Vec<XmlElement> = Vec::new();
+
+    let mut current_element: Option<XmlElementBuilder> = None;
+    let mut current_pi: Option<XmlPIBuilder> = None;
+
+    for token in expanded.iter() {
+        match token {
+            Cow::Borrowed(BinXMLDeserializedTokens::Substitution(_))
+            | Cow::Owned(BinXMLDeserializedTokens::Substitution(_)) => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Call `expand_templates` before calling this function",
+                ));
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::FragmentHeader(_))
+            | Cow::Owned(BinXMLDeserializedTokens::FragmentHeader(_)) => {}
+            Cow::Borrowed(BinXMLDeserializedTokens::AttributeList)
+            | Cow::Owned(BinXMLDeserializedTokens::AttributeList) => {}
+
+            Cow::Borrowed(BinXMLDeserializedTokens::OpenStartElement(elem))
+            | Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
+                let mut builder = XmlElementBuilder::new();
+                builder.name(expand_string_ref(&elem.name, chunk)?);
+                current_element = Some(builder);
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::Attribute(attr))
+            | Cow::Owned(BinXMLDeserializedTokens::Attribute(attr)) => {
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_name(expand_string_ref(&attr.name, chunk)?);
+                } else {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "attribute - Bad parser state",
+                    ));
+                }
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::Value(value)) => {
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_value(Cow::Borrowed(value))?;
+                } else {
+                    visitor.visit_characters(Cow::Borrowed(value))?;
+                }
+            }
+            Cow::Owned(BinXMLDeserializedTokens::Value(value)) => {
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_value(Cow::Owned(value.clone()))?;
+                } else {
+                    visitor.visit_characters(Cow::Owned(value.clone()))?;
+                }
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::CloseStartElement)
+            | Cow::Owned(BinXMLDeserializedTokens::CloseStartElement) => {
+                let element = current_element
+                    .take()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "close start - Bad parser state",
+                    ))?
+                    .finish()?;
+                visitor.visit_open_start_element(&element)?;
+                element_stack.push(element);
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::CloseEmptyElement)
+            | Cow::Owned(BinXMLDeserializedTokens::CloseEmptyElement) => {
+                let element = current_element
+                    .take()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "close empty - Bad parser state",
+                    ))?
+                    .finish()?;
+                visitor.visit_open_start_element(&element)?;
+                visitor.visit_close_element(&element)?;
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::CloseElement)
+            | Cow::Owned(BinXMLDeserializedTokens::CloseElement) => {
+                let element = element_stack
+                    .pop()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "close element - Bad parser state",
+                    ))?;
+                visitor.visit_close_element(&element)?;
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::EntityRef(entity))
+            | Cow::Owned(BinXMLDeserializedTokens::EntityRef(entity)) => {
+                match expand_string_ref(&entity.name, chunk)? {
+                    Cow::Borrowed(s) => visitor.visit_entity_reference(s)?,
+                    Cow::Owned(s) => {
+                        let tmp = s;
+                        visitor.visit_entity_reference(&tmp)?;
+                    }
+                }
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::PITarget(name))
+            | Cow::Owned(BinXMLDeserializedTokens::PITarget(name)) => {
+                let mut b = XmlPIBuilder::new();
+                b.name(expand_string_ref(&name.name, chunk)?);
+                current_pi = Some(b);
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::PIData(data)) => {
+                let mut b = current_pi
+                    .take()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "PI Data without PI target - Bad parser state",
+                    ))?;
+                b.data(Cow::Borrowed(data));
+                if let XmlModel::PI(pi) = b.finish() {
+                    visitor.visit_processing_instruction(&pi)?;
+                }
+            }
+            Cow::Owned(BinXMLDeserializedTokens::PIData(data)) => {
+                let mut b = current_pi
+                    .take()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "PI Data without PI target - Bad parser state",
+                    ))?;
+                b.data(Cow::Owned(data.clone()));
+                if let XmlModel::PI(pi) = b.finish() {
+                    visitor.visit_processing_instruction(&pi)?;
+                }
+            }
+
+            Cow::Borrowed(BinXMLDeserializedTokens::StartOfStream)
+            | Cow::Owned(BinXMLDeserializedTokens::StartOfStream) => {}
+            Cow::Borrowed(BinXMLDeserializedTokens::EndOfStream)
+            | Cow::Owned(BinXMLDeserializedTokens::EndOfStream) => {}
+
+            Cow::Borrowed(BinXMLDeserializedTokens::TemplateInstance(_))
+            | Cow::Owned(BinXMLDeserializedTokens::TemplateInstance(_)) => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Call `expand_templates` before calling this function",
+                ));
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::CDATASection)
+            | Cow::Owned(BinXMLDeserializedTokens::CDATASection) => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Unimplemented - CDATA",
+                ));
+            }
+            Cow::Borrowed(BinXMLDeserializedTokens::CharRef)
+            | Cow::Owned(BinXMLDeserializedTokens::CharRef) => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Unimplemented - CharacterReference",
+                ));
+            }
+        }
+    }
+
+    visitor.visit_end_of_stream()?;
+    Ok(())
+}
+
 pub fn parse_tokens<'a, T: BinXmlOutput>(
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
     chunk: &'a EvtxChunk<'a>,
     visitor: &mut T,
 ) -> Result<()> {
     let expanded_tokens = expand_templates(&tokens, chunk)?;
-    let record_model = create_record_model(expanded_tokens, chunk)?;
-
-    visitor.visit_start_of_stream()?;
-
-    let mut stack = vec![];
-
-    for owned_token in record_model {
-        match owned_token {
-            XmlModel::OpenElement(open_element) => {
-                stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().ok_or({
-                    EvtxError::FailedToCreateRecordModel(
-                        "Invalid parser state - expected stack to be non-empty",
-                    )
-                })?)?;
-            }
-            XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or({
-                    EvtxError::FailedToCreateRecordModel(
-                        "Invalid parser state - expected stack to be non-empty",
-                    )
-                })?;
-                visitor.visit_close_element(&close_element)?
-            }
-            XmlModel::Value(s) => visitor.visit_characters(s)?,
-            XmlModel::EndOfStream => {}
-            XmlModel::StartOfStream => {}
-            XmlModel::PI(pi) => visitor.visit_processing_instruction(&pi)?,
-            XmlModel::EntityRef(entity) => visitor.visit_entity_reference(&entity)?,
-        };
-    }
-
-    visitor.visit_end_of_stream()?;
-
-    Ok(())
+    stream_visit_from_expanded(&expanded_tokens, chunk, visitor)
 }
 
 pub fn create_record_model<'a>(
@@ -115,7 +244,7 @@ pub fn create_record_model<'a>(
                 model.push(XmlModel::EntityRef(expand_string_ref(&entity.name, chunk)?))
             }
             Cow::Owned(BinXMLDeserializedTokens::PITarget(ref name))
-            |             Cow::Borrowed(&BinXMLDeserializedTokens::PITarget(ref name)) => {
+            | Cow::Borrowed(&BinXMLDeserializedTokens::PITarget(ref name)) => {
                 let mut builder = XmlPIBuilder::new();
                 if current_pi.is_some() {
                     warn!("PITarget without following PIData, previous target will be ignored.")
@@ -306,7 +435,7 @@ fn expand_template<'a>(
         // We expect to find all the templates in the template cache.
         for token in template_def.tokens.iter() {
             if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-                                 expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
+                expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
             } else {
                 _expand_templates(Cow::Borrowed(token), chunk, stack)?;
             }
