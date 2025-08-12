@@ -159,10 +159,6 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars");
-        // Fast paths to minimize allocations:
-        // - Borrowed string slices go directly
-        // - Small owned strings reuse the scratch buffer
-        // - Numerics/others were already optimized in as_cow_str via itoa/ryu
         match value {
             Cow::Borrowed(BinXmlValue::StringType(s)) => {
                 let event = BytesText::new(s.as_ref());
@@ -173,9 +169,62 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
                 let event = BytesText::new(v);
                 self.writer.write_event(Event::Text(event))?;
             }
+            // Numeric and bool fast path: content has no XML special chars, so treat as escaped
+            Cow::Borrowed(BinXmlValue::Int8Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as i64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt8Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as u64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::Int16Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as i64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt16Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as u64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::Int32Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as i64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt32Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as u64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::Int64Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt64Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::BoolType(b)) => {
+                let s = if *b { "true" } else { "false" };
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
             _ => {
                 let cow: Cow<str> = value.as_cow_str();
-                // If small, copy into reusable scratch to reduce transient allocations
                 if cow.len() <= 128 {
                     let s = &mut self.scratch;
                     s.clear();
