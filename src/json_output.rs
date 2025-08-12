@@ -519,6 +519,8 @@ impl BinXmlOutput for JsonOutput {
     }
 }
 
+
+
 #[cfg(test)]
 mod tests {
     use crate::binxml::name::BinXmlName;
