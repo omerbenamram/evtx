@@ -131,4 +131,5 @@ impl EvtxRecord<'_> {
             data,
         })
     }
+
 }

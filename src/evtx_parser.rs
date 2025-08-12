@@ -489,6 +489,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<serde_json::Value>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json_value()))
     }
+
 }
 
 pub struct IterChunks<'c, T: ReadSeek> {
