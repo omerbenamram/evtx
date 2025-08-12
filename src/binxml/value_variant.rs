@@ -542,17 +542,49 @@ impl BinXmlValue<'_> {
             BinXmlValue::NullType => Cow::Borrowed(""),
             BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::AnsiStringType(s) => Cow::Borrowed(s.as_ref()),
-            BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::Int16Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::UInt16Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::Int32Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::UInt32Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::Int64Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::UInt64Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::Real32Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::Real64Type(num) => Cow::Owned(num.to_string()),
-            BinXmlValue::BoolType(num) => Cow::Owned(num.to_string()),
+            BinXmlValue::Int8Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num as i64).to_owned())
+            }
+            BinXmlValue::UInt8Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num as u64).to_owned())
+            }
+            BinXmlValue::Int16Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num as i64).to_owned())
+            }
+            BinXmlValue::UInt16Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num as u64).to_owned())
+            }
+            BinXmlValue::Int32Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num as i64).to_owned())
+            }
+            BinXmlValue::UInt32Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num as u64).to_owned())
+            }
+            BinXmlValue::Int64Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num).to_owned())
+            }
+            BinXmlValue::UInt64Type(num) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*num).to_owned())
+            }
+            BinXmlValue::Real32Type(num) => {
+                let mut buf = ryu::Buffer::new();
+                Cow::Owned(buf.format(*num as f32).to_owned())
+            }
+            BinXmlValue::Real64Type(num) => {
+                let mut buf = ryu::Buffer::new();
+                Cow::Owned(buf.format(*num).to_owned())
+            }
+            BinXmlValue::BoolType(num) => {
+                if *num { Cow::Borrowed("true") } else { Cow::Borrowed("false") }
+            }
             BinXmlValue::BinaryType(bytes) => {
                 Cow::Owned(bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut acc, &b| {
                     write!(acc, "{:02X}", b).unwrap();
@@ -560,7 +592,10 @@ impl BinXmlValue<'_> {
                 }))
             }
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
-            BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
+            BinXmlValue::SizeTType(sz) => {
+                let mut buf = itoa::Buffer::new();
+                Cow::Owned(buf.format(*sz as u64).to_owned())
+            }
             BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.format(DATETIME_FORMAT).to_string()),
             BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.format(DATETIME_FORMAT).to_string()),
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),

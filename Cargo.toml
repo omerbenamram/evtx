@@ -23,6 +23,7 @@ thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
 hashbrown = { version = "^0.15", features = ["inline-more"] }
+ahash = "0.8"
 # Optional for multithreading.
 rayon = { version = "1", optional = true }
 # Bump allocator for per-thread arenas
@@ -37,6 +38,9 @@ indoc = { version = "2", optional = true }
 
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"]}
+
+itoa = "1"
+ryu = "1"
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.

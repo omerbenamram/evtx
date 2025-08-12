@@ -56,14 +56,14 @@ if [ "${OS}" = "Darwin" ]; then
   awk -f "${FLAMEGRAPH_DIR}/stackcollapse-sample.awk" "${OUT_DIR}/sample.txt" > "${OUT_DIR}/stacks.folded"
 else
   # Linux: record with perf and collapse
-  sudo perf record -F "${FREQ}" -g -- "${BIN}" -t 1 -o "${FORMAT}" ${NO_INDENT_ARGS} "${FLAME_FILE}" >/dev/null
-  sudo perf script > "${OUT_DIR}/perf.script"
+  perf record -F "${FREQ}" -g -- "${BIN}" -t 1 -o "${FORMAT}" ${NO_INDENT_ARGS} "${FLAME_FILE}" >/dev/null
+  perf script > "${OUT_DIR}/perf.script"
   COLLAPSE_BIN="$(which inferno-collapse-perf)"
   if [ -z "${COLLAPSE_BIN}" ]; then
     echo "inferno-collapse-perf not found in PATH" >&2
     exit 2
   fi
-  sudo "${COLLAPSE_BIN}" < "${OUT_DIR}/perf.script" > "${OUT_DIR}/stacks.folded"
+  "${COLLAPSE_BIN}" < "${OUT_DIR}/perf.script" > "${OUT_DIR}/stacks.folded"
 fi
 echo "Collapsed stacks written to ${OUT_DIR}/stacks.folded"
 
