@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 
-# Dev/profiling image for building and profiling evtx_dump
-# - Rust 1.88 (matches docs) on Debian bookworm (slim)
-# - perf (Linux profiling), LLVM (PGO: llvm-profdata), hyperfine, perl/awk
-# - cargo tools: inferno + cargo-flamegraph
+# Cursor dev image: installs developer tools only, without copying repo code
+# - Rust 1.88 on Debian bookworm (slim)
+# - Tools: build-essential, pkg-config, clang/llvm (inc. llvm-profdata), perf, hyperfine
+# - Debugging: gdb, lldb, strace; Dev UX: ripgrep, jq, curl, git, bash
+# - Cargo tools: clippy, rustfmt, inferno, cargo-flamegraph
 
 FROM rust:1.88-slim-bookworm
 
@@ -28,25 +29,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     hyperfine \
     perl \
     gawk \
+    # Debugging/analysis
+    gdb \
+    lldb \
+    strace \
+    # Developer ergonomics
+    ripgrep \
+    jq \
   && rm -rf /var/lib/apt/lists/*
 
-# Pre-install cargo tools used by Makefile targets
-RUN cargo install inferno flamegraph
+# Rust developer components and cargo tools
+RUN rustup component add clippy rustfmt && \
+    cargo install inferno flamegraph
 
-WORKDIR /work
+WORKDIR /workspace
 
-# Copy manifests first to leverage Docker build cache
-COPY Cargo.toml Cargo.lock ./
+# Do not copy source code. Cursor will clone the repository after the image is built.
 
-# Copy source and helper files
-COPY src ./src
-COPY Makefile ./Makefile
-COPY OPTIMIZATION.md ./OPTIMIZATION.md
-COPY scripts ./scripts
-COPY samples ./samples
-
-# Warm up build cache and produce a release binary with fast allocator
-RUN cargo build --release --bin evtx_dump --features fast-alloc
-
-# Default to an interactive shell with a quick hint
-CMD ["bash", "-lc", "echo 'Ready. Examples: make flamegraph-prod FLAME_FILE=\"samples/security_big_sample.evtx\" FORMAT=xml DURATION=30' && exec bash"]
+# Default to an interactive shell
+CMD ["bash"]
