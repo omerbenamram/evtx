@@ -50,6 +50,7 @@ pub trait BinXmlOutput {
 pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
     scratch: String,
+    attr_scratch: Vec<String>,
 }
 
 impl<W: Write> XmlOutput<W> {
@@ -60,7 +61,7 @@ impl<W: Write> XmlOutput<W> {
             Writer::new(target)
         };
 
-        XmlOutput { writer, scratch: String::with_capacity(64) }
+        XmlOutput { writer, scratch: String::with_capacity(64), attr_scratch: Vec::new() }
     }
 
     pub fn into_writer(self) -> W {
@@ -82,68 +83,128 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
         let name = element.name.as_ref().as_str();
 
-        // Prebuild attributes with exact capacity to avoid RawVec growth during emission
+        // Fast path: no attributes
         if element.attributes.is_empty() {
             let event_builder = BytesStart::new(name);
             self.writer.write_event(Event::Start(event_builder))?;
             return Ok(());
         }
 
-        // Pass 1: for attributes whose values cannot be borrowed as &str directly, precompute owned strings
-        let mut owned_values_by_idx: Vec<Option<String>> = vec![None; element.attributes.len()];
-        for (i, attr) in element.attributes.iter().enumerate() {
-            let needs_owned = match attr.value.as_ref() {
-                BinXmlValue::StringType(_) | BinXmlValue::AnsiStringType(_) |
-                BinXmlValue::HexInt32Type(_) | BinXmlValue::HexInt64Type(_) |
-                BinXmlValue::NullType => false,
-                _ => true,
-            };
-            if needs_owned {
-                let s = attr.value.as_ref().as_cow_str().into_owned();
-                if !s.is_empty() {
-                    owned_values_by_idx[i] = Some(s);
-                }
-            }
-        }
+        // Build attributes incrementally to avoid intermediate Vec<Attribute> and reduce allocations
+        let mut start = BytesStart::new(name);
+        self.attr_scratch.clear();
+        self.attr_scratch.reserve(element.attributes.len());
 
-        // Pass 2: build attributes using borrowed slices where possible, otherwise from owned storage
-        let mut attrs: Vec<Attribute> = Vec::with_capacity(element.attributes.len());
-        for (i, attr) in element.attributes.iter().enumerate() {
-            let name_as_str = attr.name.as_str();
-            if let Some(ref s) = owned_values_by_idx[i] {
-                // Non-borrowable value; use the owned string we materialized in pass 1
-                attrs.push(Attribute::from((name_as_str, s.as_str())));
-                continue;
-            }
-
-            // Borrowable: reference directly from the source without creating temporaries
+        for attr in element.attributes.iter() {
+            let key = attr.name.as_str();
             match attr.value.as_ref() {
+                BinXmlValue::NullType => {
+                    // Skip
+                }
                 BinXmlValue::StringType(s) => {
-                    if !s.is_empty() { attrs.push(Attribute::from((name_as_str, s.as_str()))); }
+                    if !s.is_empty() { start.push_attribute((key, s.as_str())); }
                 }
                 BinXmlValue::AnsiStringType(s) => {
                     let v = s.as_ref();
-                    if !v.is_empty() { attrs.push(Attribute::from((name_as_str, v))); }
+                    if !v.is_empty() { start.push_attribute((key, v)); }
                 }
                 BinXmlValue::HexInt32Type(s) => {
                     let v = s.as_ref();
-                    if !v.is_empty() { attrs.push(Attribute::from((name_as_str, v))); }
+                    if !v.is_empty() { start.push_attribute((key, v)); }
                 }
                 BinXmlValue::HexInt64Type(s) => {
                     let v = s.as_ref();
-                    if !v.is_empty() { attrs.push(Attribute::from((name_as_str, v))); }
+                    if !v.is_empty() { start.push_attribute((key, v)); }
                 }
-                BinXmlValue::NullType => {
-                    // Skip empty
+                BinXmlValue::Int8Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as i64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt8Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as u64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Int16Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as i64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt16Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as u64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Int32Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as i64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt32Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as u64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Int64Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt64Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Real32Type(n) => {
+                    let mut buf = ryu::Buffer::new();
+                    let s = buf.format(*n as f32).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Real64Type(n) => {
+                    let mut buf = ryu::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::BoolType(b) => {
+                    let v = if *b { "true" } else { "false" };
+                    start.push_attribute((key, v));
                 }
                 _ => {
-                    // Should have been handled in owned_values_by_idx; skip if empty
+                    // Fallback: materialize via as_cow_str into scratch and borrow
+                    let owned = attr.value.as_ref().as_cow_str().into_owned();
+                    if !owned.is_empty() {
+                        self.attr_scratch.push(owned);
+                        let v = self.attr_scratch.last().unwrap();
+                        start.push_attribute((key, v.as_str()));
+                    }
                 }
             }
         }
 
-        let event_builder = BytesStart::new(name).with_attributes(attrs);
-        self.writer.write_event(Event::Start(event_builder))?;
+        self.writer.write_event(Event::Start(start))?;
+        // Clear scratch for next element
+        self.attr_scratch.clear();
 
         Ok(())
     }
