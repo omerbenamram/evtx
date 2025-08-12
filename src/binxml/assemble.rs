@@ -185,7 +185,7 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
     visitor: &mut T,
 ) -> Result<()> {
     let expanded_tokens = expand_templates(tokens, chunk)?;
-    stream_visit_from_expanded(expanded_tokens, chunk, visitor)
+    stream_visit_from_expanded(&expanded_tokens, chunk, visitor)
 }
 
 pub fn create_record_model<'a>(
@@ -598,10 +598,11 @@ fn _expand_templates_bv<'a>(
 pub fn expand_templates<'a>(
     token_tree: &'a [BinXMLDeserializedTokens<'a>],
     chunk: &'a EvtxChunk<'a>,
-) -> Result<&'a [Cow<'a, BinXMLDeserializedTokens<'a>>]> {
-    let mut stack_bv = bumpalo::collections::Vec::with_capacity_in(token_tree.len(), &chunk.arena);
+) -> Result<Vec<Cow<'a, BinXMLDeserializedTokens<'a>>>> {
+    let mut stack: Vec<Cow<'a, BinXMLDeserializedTokens<'a>>> =
+        Vec::with_capacity(token_tree.len());
     for token in token_tree.iter() {
-        _expand_templates_bv(Cow::Borrowed(token), chunk, &mut stack_bv)?
+        _expand_templates(Cow::Borrowed(token), chunk, &mut stack)?
     }
-    Ok(stack_bv.into_bump_slice())
+    Ok(stack)
 }
