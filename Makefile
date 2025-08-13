@@ -18,6 +18,7 @@ FLAME_FILE ?= $(INPUT)
 
 # Paths
 BINARY ?= ./target/release/evtx_dump
+BIN ?= $(BINARY)
 NO_INDENT_ARGS := --no-indent --dont-show-record-number
 
 # FlameGraph scripts (more robust for macOS `sample` output)
@@ -34,8 +35,12 @@ deps:
 	@which cargo-flamegraph >/dev/null 2>&1 || cargo install flamegraph
 
 build:
-ifeq ($(origin BIN), undefined)
+ifneq ($(origin BIN),command line)
+ifneq ($(origin BIN),environment)
 	cargo build --release --features $(FEATURES)
+else
+	@echo "Using provided BIN=$(BIN), skipping cargo build"
+endif
 else
 	@echo "Using provided BIN=$(BIN), skipping cargo build"
 endif
