@@ -179,6 +179,10 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
     Ok(())
 }
 
+// NOTE: A one-pass streaming expander is planned here to eliminate expanded token buffers.
+// It will expand templates and immediately visit events without building an intermediate Vec.
+// For now, we keep the existing expand_templates + stream_visit_from_expanded path.
+
 pub fn parse_tokens<'a, T: BinXmlOutput>(
     tokens: &'a [BinXMLDeserializedTokens<'a>],
     chunk: &'a EvtxChunk<'a>,
