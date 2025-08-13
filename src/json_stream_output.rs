@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use std::io::{Result as IoResult, Write};
 
 use hashbrown::HashMap as FastMap;
+use quick_xml::events::BytesText;
 
 struct JsonWriter<W: Write> {
     writer: W,
@@ -278,9 +279,23 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         Err(SerializationError::Unimplemented { message: format!("`{}`: visit_cdata_section", file!()) })
     }
 
-    fn visit_entity_reference(&mut self, _entity: &crate::binxml::name::BinXmlName) -> SerializationResult<()> {
-        // Entity references should be expanded earlier; treat as unimplemented for now
-        Err(SerializationError::Unimplemented { message: format!("`{}`: visit_entity_reference", file!()) })
+    fn visit_entity_reference(&mut self, entity: &crate::binxml::name::BinXmlName) -> SerializationResult<()> {
+        // Expand entity into characters and delegate to visit_characters
+        let entity_ref = {
+            let mut s = String::with_capacity(entity.as_str().len() + 2);
+            s.push('&');
+            s.push_str(entity.as_str());
+            s.push(';');
+            s
+        };
+        let xml_event = BytesText::from_escaped(&entity_ref);
+        match xml_event.unescape() {
+            Ok(escaped) => {
+                let as_string = escaped.to_string();
+                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))
+            }
+            Err(_) => Err(SerializationError::JsonStructureError { message: format!("Unterminated XML Entity {}", entity_ref) }),
+        }
     }
 
     fn visit_character_reference(&mut self, _char_ref: Cow<'_, str>) -> SerializationResult<()> {

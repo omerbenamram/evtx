@@ -24,7 +24,7 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
     visitor.visit_start_of_stream()?;
 
     // Minimal stack of open elements to match close
-    let mut element_stack: Vec<XmlElement> = Vec::new();
+    let mut element_stack: Vec<XmlElement> = Vec::with_capacity(expanded.len().min(32));
 
     let mut current_element: Option<XmlElementBuilder> = None;
     let mut current_pi: Option<XmlPIBuilder> = None;
@@ -755,7 +755,7 @@ pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
     visitor: &mut T,
 ) -> Result<()> {
     visitor.visit_start_of_stream()?;
-    let mut element_stack: Vec<XmlElement<'a>> = Vec::new();
+    let mut element_stack: Vec<XmlElement<'a>> = Vec::with_capacity(tokens.len().min(32));
     let mut current_element: Option<XmlElementBuilder<'a>> = None;
     let mut current_pi: Option<XmlPIBuilder<'a>> = None;
     for t in tokens.iter() {
