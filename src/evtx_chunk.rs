@@ -266,10 +266,10 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
 
         // Heuristic: average token size is small; pre-reserve proportional to record data size to reduce growth
         let token_capacity_hint: usize = {
-            // Based on observed average ~5 bytes/token in Security logs; bias upward a bit
-            let approx = (binxml_data_size as usize) / 5;
-            let approx = approx.saturating_add(32); // small headroom for attributes/text splits
-            if approx < 96 { 96 } else if approx > 131072 { 131072 } else { approx }
+            // Bias more aggressively to avoid reallocation: assume ~3 bytes/token, add larger headroom
+            let approx = (binxml_data_size as usize) / 3;
+            let approx = approx.saturating_add(256);
+            if approx < 256 { 256 } else if approx > 262144 { 262144 } else { approx }
         };
         let mut tokens_bv: bumpalo::collections::Vec<'chunk, crate::model::deserialized::BinXMLDeserializedTokens<'chunk>> =
             bumpalo::collections::Vec::with_capacity_in(token_capacity_hint, &chunk_immut.arena);
