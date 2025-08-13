@@ -113,6 +113,22 @@ impl EvtxRecord<'_> {
         })
     }
 
+    /// Consumes the record and streams JSON directly into a buffer using the streaming visitor.
+    pub fn into_json_stream(self) -> Result<SerializedEvtxRecord<String>> {
+        let capacity_hint = (self.record_data_size as usize).saturating_mul(2);
+        let buf = Vec::with_capacity(capacity_hint);
+        let mut output_builder = crate::JsonStreamOutput::with_writer(buf, &self.settings);
+
+        let event_record_id = self.event_record_id;
+        let timestamp = self.timestamp;
+        self.into_output(&mut output_builder)?;
+
+        let data = String::from_utf8(output_builder.into_writer())
+            .map_err(crate::err::SerializationError::from)?;
+
+        Ok(SerializedEvtxRecord { event_record_id, timestamp, data })
+    }
+
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
         let capacity_hint = (self.record_data_size as usize).saturating_mul(2);
