@@ -111,32 +111,5 @@ flamegraph-prod: folded-prod
 
 # --- Reproducible benchmarking between two git refs (no stashing) ---
 bench-refs:
-	@bash -eu -o pipefail -c '\
-	  REPO="$$PWD"; \
-	  CLEAN_REF="$${CLEAN_REF:?set CLEAN_REF=<git-ref-for-clean>}"; \
-	  MOD_REF="$${MOD_REF:?set MOD_REF=<git-ref-for-mod>}"; \
-	  TS=$$(date -u +%Y%m%dT%H%M%SZ); \
-	  mkdir -p "$$REPO/binaries" "$$REPO/benchmarks" "$$REPO/tmp/worktrees"; \
-	  # Clean worktree build
-	  CWT="$$REPO/tmp/worktrees/clean-$${CLEAN_REF//\//-}-$${TS}"; \
-	  git worktree add --force --detach "$$CWT" "$$CLEAN_REF" >/dev/null; \
-	  ( cd "$$CWT" && cargo build --release >/dev/null ); \
-	  CLEAN_HASH=$$(git -C "$$CWT" rev-parse --short HEAD); \
-	  CLEAN_BIN="$$REPO/binaries/evtx_dump_$${CLEAN_HASH}_$${TS}_clean"; \
-	  cp "$$CWT/target/release/evtx_dump" "$$CLEAN_BIN"; \
-	  # Mod worktree build
-	  MWT="$$REPO/tmp/worktrees/mod-$${MOD_REF//\//-}-$${TS}"; \
-	  git worktree add --force --detach "$$MWT" "$$MOD_REF" >/dev/null; \
-	  ( cd "$$MWT" && cargo build --release >/dev/null ); \
-	  MOD_HASH=$$(git -C "$$MWT" rev-parse --short HEAD); \
-	  MOD_BIN="$$REPO/binaries/evtx_dump_$${MOD_HASH}_$${TS}_mod"; \
-	  cp "$$MWT/target/release/evtx_dump" "$$MOD_BIN"; \
-	  # Benchmark pair
-	  "$${REPO}/scripts/run_benchmark_pair.sh" "$$CLEAN_BIN" "$$MOD_BIN" "$$REPO/samples/security_big_sample.evtx"; \
-	  # Cleanup worktrees
-	  git worktree remove --force "$$CWT" >/dev/null; \
-	  git worktree remove --force "$$MWT" >/dev/null; \
-	  git worktree prune >/dev/null; \
-	  echo "Clean: $$CLEAN_BIN"; echo "Mod  : $$MOD_BIN"; \
-	'
+	@./scripts/bench_refs.sh "$${CLEAN_REF:?set CLEAN_REF=<git-ref-for-clean>}" "$${MOD_REF:?set MOD_REF=<git-ref-for-mod>}"
 
