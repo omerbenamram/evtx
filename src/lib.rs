@@ -31,6 +31,8 @@ mod utils;
 
 mod json_output;
 mod xml_output;
+mod json_stream_output;
+pub use json_stream_output::JsonStreamOutput;
 
 // New: arena support
 mod arena;

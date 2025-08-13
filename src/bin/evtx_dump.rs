@@ -184,7 +184,7 @@ impl EvtxDump {
                 }
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json() {
+                for record in parser.records_json_stream() {
                     self.dump_record(record)?
                 }
             }
