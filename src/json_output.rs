@@ -81,6 +81,36 @@ impl JsonOutput {
         max_idx
     }
 
+    fn next_duplicate_index_from_keys(&mut self, keys: &[String], base: &str) -> usize {
+        let dup_map = self.parent_dup_map();
+        if let Some(next) = dup_map.get(base) {
+            return *next;
+        }
+        let mut max_idx = 1usize;
+        let pref = format!("{}_", base);
+        for k in keys {
+            if let Some(rest) = k.strip_prefix(&pref) {
+                if let Some((num_part, attr_rest)) = rest.split_once("_") {
+                    if attr_rest == "attributes" {
+                        if let Ok(n) = num_part.parse::<usize>() {
+                            if n >= max_idx {
+                                max_idx = n + 1;
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if let Ok(n) = rest.parse::<usize>() {
+                    if n >= max_idx {
+                        max_idx = n + 1;
+                    }
+                }
+            }
+        }
+        dup_map.insert(base.to_owned(), max_idx);
+        max_idx
+    }
+
     /// Advance the counter for `base` under current parent after using it.
     fn advance_duplicate_index(&mut self, base: &str) {
         let dup_map = self.parent_dup_map();
@@ -184,13 +214,13 @@ impl JsonOutput {
     ) -> SerializationResult<()> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
-        // Ensure counters alignment for the new node as a future parent
         if self.dup_counters_stack.len() < self.stack.len() {
             self.dup_counters_stack
                 .push(FastMap::with_hasher(ahash::RandomState::new()));
         }
 
-        let container_ptr: *mut Map<String, Value> = {
+        // Stage A: insert placeholder and capture old value + current keys
+        let (old_value, keys): (Option<Value>, Vec<String>) = {
             let parent = self.get_current_parent();
             let parent_obj = parent.as_object_mut().ok_or_else(|| {
                 SerializationError::JsonStructureError {
@@ -200,14 +230,12 @@ impl JsonOutput {
                             .to_string(),
                 }
             })?;
-            parent_obj as *mut _
+            let old_value = parent_obj.insert(name.to_string(), Value::Null);
+            let keys = parent_obj.keys().cloned().collect();
+            (old_value, keys)
         };
 
-        // SAFETY: container_ptr is derived from a unique &mut borrow above, and we do not mutate `self`
-        // through any other path while `container` is in use below. We only use it within this function scope.
-        let container = unsafe { &mut *container_ptr };
-
-        if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+        if let Some(old_value) = old_value {
             if old_value.is_null() {
                 return Ok(());
             }
@@ -217,15 +245,23 @@ impl JsonOutput {
                 }
             }
 
-            // Compute next index while temporarily creating an immutable view
-            let next_idx = {
-                let next = self.next_duplicate_index_for(container, name);
-                next
-            };
-            let dup_key = format!("{}_{}", name, next_idx);
-            container.insert(dup_key, old_value);
+            let next_idx = self.next_duplicate_index_from_keys(&keys, name);
+
+            // Stage B: move old value to suffixed key
+            {
+                let parent = self.get_current_parent();
+                let parent_obj = parent.as_object_mut().ok_or_else(|| {
+                    SerializationError::JsonStructureError {
+                        message: "Expected parent to be an object".to_string(),
+                    }
+                })?;
+                let dup_key = format!("{}_{}", name, next_idx);
+                parent_obj.insert(dup_key, old_value);
+            }
+
+            // After map borrows are dropped, advance counter
             self.advance_duplicate_index(name);
-        };
+        }
 
         Ok(())
     }
@@ -237,18 +273,15 @@ impl JsonOutput {
     ) -> SerializationResult<()> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
-        // Ensure counters alignment for the new node as a future parent
         if self.dup_counters_stack.len() < self.stack.len() {
             self.dup_counters_stack
                 .push(FastMap::with_hasher(ahash::RandomState::new()));
         }
 
         let mut attributes = Map::with_capacity(element.attributes.len());
-
         for attribute in element.attributes.iter() {
             let value = attribute.value.clone().into_owned();
             let value: Value = value.into();
-
             if !value.is_null() {
                 let name: &str = attribute.name.as_str();
                 attributes.insert(name.to_owned(), value);
@@ -257,80 +290,124 @@ impl JsonOutput {
 
         if !attributes.is_empty() {
             if self.separate_json_attributes {
-                let parent_ptr: *mut Map<String, Value> = {
-                    let p = self.get_current_parent();
-                    let p = p.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError { message:
-                        "This is a bug - expected current value to exist, and to be an object type.\n                        Check that the value is not `Value::null`".to_string(),}
+                // Stage A: insert placeholders for attributes and name, capture old values and keys
+                let (old_attr, old_val, keys): (Option<Value>, Option<Value>, Vec<String>) = {
+                    let attr_key = format!("{}_attributes", name);
+                    let parent = self.get_current_parent();
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
+                        SerializationError::JsonStructureError {
+                            message:
+                                "This is a bug - expected current value to exist, and to be an object type.\n                        Check that the value is not `Value::null`"
+                                    .to_string(),
+                        }
                     })?;
-                    p as *mut _
-                };
-                // SAFETY: same reasoning as above, we keep exclusive access to the parent map
-                let value = unsafe { &mut *parent_ptr };
-                if let Some(old_attribute) = value.insert(format!("{}_attributes", name), Value::Null) {
-                    if let Some(old_value) = value.insert(name.to_string(), Value::Null) {
-                        let next_idx = self.next_duplicate_index_for(value, name);
-                        let value_key = format!("{}_{}", name, next_idx);
-                        let attr_key = format!("{}_{}_attributes", name, next_idx);
-                        if let Some(old_value_object) = old_value.as_object() {
-                            if !old_value_object.is_empty(){
-                                value.insert(value_key, old_value);
-                            }
-                        };
-                        if let Some(old_attribute_object) = old_attribute.as_object() {
-                            if !old_attribute_object.is_empty() {
-                                value.insert(attr_key, old_attribute);
-                            };
-                        };
-                        self.advance_duplicate_index(name);
-                    };
+                    let old_attr = parent_obj.insert(attr_key, Value::Null);
+                    let old_val = parent_obj.insert(name.to_string(), Value::Null);
+                    let keys = parent_obj.keys().cloned().collect();
+                    (old_attr, old_val, keys)
                 };
 
-                value.insert(format!("{}_attributes", name), Value::Object(attributes));
+                let next_idx = self.next_duplicate_index_from_keys(&keys, name);
 
-                if value[name].is_null() || value[name] == Value::Object(Map::new()) {
-                    value.remove(name);
+                // Stage B: move old values to suffixed keys if non-empty objects
+                {
+                    let parent = self.get_current_parent();
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
+                        SerializationError::JsonStructureError {
+                            message: "Expected parent to be an object".to_string(),
+                        }
+                    })?;
+
+                    if let Some(v) = old_val {
+                        if v.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
+                            let value_key = format!("{}_{}", name, next_idx);
+                            parent_obj.insert(value_key, v);
+                        }
+                    }
+                    if let Some(a) = old_attr {
+                        if a.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
+                            let attr_dup_key = format!("{}_{}_attributes", name, next_idx);
+                            parent_obj.insert(attr_dup_key, a);
+                        }
+                    }
+                }
+
+                // Advance counter now that moves are complete
+                self.advance_duplicate_index(name);
+
+                // Stage C: set current attributes object and clean empty value placeholder
+                {
+                    let attr_key = format!("{}_attributes", name);
+                    let parent = self.get_current_parent();
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
+                        SerializationError::JsonStructureError {
+                            message: "Expected parent to be an object".to_string(),
+                        }
+                    })?;
+                    parent_obj.insert(attr_key, Value::Object(attributes));
+                    if parent_obj
+                        .get(name)
+                        .map(|v| v.is_null() || v.as_object().map(|m| m.is_empty()).unwrap_or(false))
+                        .unwrap_or(false)
+                    {
+                        parent_obj.remove(name);
+                    }
                 }
             } else {
-                let container_ptr: *mut Map<String, Value> = {
-                    let p = self.get_current_parent();
-                    let p = p.as_object_mut().ok_or_else(|| {
+                // Stage A: insert placeholder for name, capture old value and keys
+                let (old_val, keys): (Option<Value>, Vec<String>) = {
+                    let parent = self.get_current_parent();
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
                         SerializationError::JsonStructureError { message:
                             "This is a bug - expected parent container to exist, and to be an object type.\
                                 Check that the referencing parent is not `Value::null`".to_string(),}
                     })?;
-                    p as *mut _
-                };
-                // SAFETY: same reasoning as above
-                let container = unsafe { &mut *container_ptr };
-                if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
-                    if let Some(map) = old_value.as_object() {
-                        if !map.is_empty() {
-                            let next_idx = self.next_duplicate_index_for(container, name);
-                            let dup_key = format!("{}_{}", name, next_idx);
-                            container.insert(dup_key, old_value);
-                            self.advance_duplicate_index(name);
-                        }
-                    }
+                    let old_val = parent_obj.insert(name.to_string(), Value::Null);
+                    let keys = parent_obj.keys().cloned().collect();
+                    (old_val, keys)
                 };
 
-                let mut value = Map::with_capacity(1);
-                value.insert("#attributes".to_owned(), Value::Object(attributes));
-                container.insert(name.to_string(), Value::Object(value));
+                let next_idx = self.next_duplicate_index_from_keys(&keys, name);
+
+                // Stage B: move old value if non-empty object and set new attributes object
+                {
+                    let parent = self.get_current_parent();
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
+                        SerializationError::JsonStructureError { message:
+                            "Expected parent to be an object".to_string(), }
+                    })?;
+
+                    let mut needs_advance = false;
+                    if let Some(old_value) = old_val {
+                        if let Some(map) = old_value.as_object() {
+                            if !map.is_empty() {
+                                let dup_key = format!("{}_{}", name, next_idx);
+                                parent_obj.insert(dup_key, old_value);
+                                needs_advance = true;
+                            }
+                        }
+                    }
+
+                    let mut value = Map::with_capacity(1);
+                    value.insert("#attributes".to_owned(), Value::Object(attributes));
+                    parent_obj.insert(name.to_string(), Value::Object(value));
+
+                    drop(parent_obj);
+                    drop(parent);
+
+                    if needs_advance {
+                        self.advance_duplicate_index(name);
+                    }
+                }
             }
         } else {
-            let parent_ptr: *mut Map<String, Value> = {
-                let p = self.get_current_parent();
-                let p = p.as_object_mut().ok_or(SerializationError::JsonStructureError {
-                    message:
-                        "This is a bug - expected current value to exist, and to be an object type.\n                         Check that the value is not `Value::null`"
-                            .to_string(),
-                })?;
-                p as *mut _
-            };
-            // SAFETY: exclusive borrow maintained in scope
-            let value = unsafe { &mut *parent_ptr };
-            value.insert(name.to_string(), Value::Null);
+            let parent = self.get_current_parent();
+            let parent_obj = parent.as_object_mut().ok_or(SerializationError::JsonStructureError {
+                message:
+                    "This is a bug - expected current value to exist, and to be an object type.\n                         Check that the value is not `Value::null`"
+                        .to_string(),
+            })?;
+            parent_obj.insert(name.to_string(), Value::Null);
         }
 
         Ok(())
