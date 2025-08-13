@@ -1,20 +1,23 @@
+use crate::ParserSettings;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlElement};
-use crate::ParserSettings;
 
 use log::trace;
 use std::io::Write;
 
-use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
 use quick_xml::Writer;
+use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
 
 use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;
 
+#[allow(dead_code)]
 fn is_xml_plain_text(s: &str) -> bool {
     // Fast check: no &, <, > means writer doesn't need to escape
-    !s.as_bytes().iter().any(|&b| b == b'&' || b == b'<' || b == b'>')
+    !s.as_bytes()
+        .iter()
+        .any(|&b| b == b'&' || b == b'<' || b == b'>')
 }
 
 pub trait BinXmlOutput {
@@ -65,7 +68,11 @@ impl<W: Write> XmlOutput<W> {
             Writer::new(target)
         };
 
-        XmlOutput { writer, scratch: String::with_capacity(64), attr_scratch: Vec::new() }
+        XmlOutput {
+            writer,
+            scratch: String::with_capacity(64),
+            attr_scratch: Vec::new(),
+        }
     }
 
     pub fn into_writer(self) -> W {
@@ -106,19 +113,27 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
                     // Skip
                 }
                 BinXmlValue::StringType(s) => {
-                    if !s.is_empty() { start.push_attribute((key, s.as_str())); }
+                    if !s.is_empty() {
+                        start.push_attribute((key, s.as_str()));
+                    }
                 }
                 BinXmlValue::AnsiStringType(s) => {
                     let v = s.as_ref();
-                    if !v.is_empty() { start.push_attribute((key, v)); }
+                    if !v.is_empty() {
+                        start.push_attribute((key, v));
+                    }
                 }
                 BinXmlValue::HexInt32Type(s) => {
                     let v = s.as_ref();
-                    if !v.is_empty() { start.push_attribute((key, v)); }
+                    if !v.is_empty() {
+                        start.push_attribute((key, v));
+                    }
                 }
                 BinXmlValue::HexInt64Type(s) => {
                     let v = s.as_ref();
-                    if !v.is_empty() { start.push_attribute((key, v)); }
+                    if !v.is_empty() {
+                        start.push_attribute((key, v));
+                    }
                 }
                 BinXmlValue::Int8Type(n) => {
                     let mut buf = itoa::Buffer::new();
@@ -178,7 +193,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
                 }
                 BinXmlValue::Real32Type(n) => {
                     let mut buf = ryu::Buffer::new();
-                    let s = buf.format(*n as f32).to_owned();
+                    let s = buf.format(*n).to_owned();
                     self.attr_scratch.push(s);
                     let v = self.attr_scratch.last().unwrap();
                     start.push_attribute((key, v.as_str()));
@@ -299,7 +314,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
                     let event = Event::Text(BytesText::new(s.as_str()));
                     self.writer.write_event(event)?;
                 } else {
-                    let event = Event::Text(BytesText::new(&*cow));
+                    let event = Event::Text(BytesText::new(&cow));
                     self.writer.write_event(event)?;
                 }
             }

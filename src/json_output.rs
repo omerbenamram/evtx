@@ -1,13 +1,13 @@
 use crate::err::{SerializationError, SerializationResult};
 
+use crate::ParserSettings;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
-use crate::ParserSettings;
 
 use core::borrow::BorrowMut;
 use log::trace;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::borrow::Cow;
 
 use crate::binxml::name::BinXmlName;
@@ -21,7 +21,7 @@ pub struct JsonOutput {
     stack: Vec<String>,
     separate_json_attributes: bool,
     // Per-parent map of duplicate counters for child keys to avoid repeated linear scans
-    dup_counters_stack: Vec<FastMap<String, usize, ahash::RandomState>>, 
+    dup_counters_stack: Vec<FastMap<String, usize, ahash::RandomState>>,
 }
 
 impl JsonOutput {
@@ -48,6 +48,7 @@ impl JsonOutput {
     }
 
     /// Compute or fetch the next duplicate index for `base` under current parent, scanning at most once.
+    #[allow(dead_code)]
     fn next_duplicate_index_for(&mut self, container: &Map<String, Value>, base: &str) -> usize {
         let dup_map = self.parent_dup_map();
         if let Some(next) = dup_map.get(base) {
@@ -66,14 +67,18 @@ impl JsonOutput {
                     // Might be base_N_attributes -> consider N
                     if attr_rest == "attributes" {
                         if let Ok(n) = num_part.parse::<usize>() {
-                            if n >= max_idx { max_idx = n + 1; }
+                            if n >= max_idx {
+                                max_idx = n + 1;
+                            }
                         }
                         continue;
                     }
                 }
                 // Otherwise keys like base_N
                 if let Ok(n) = rest.parse::<usize>() {
-                    if n >= max_idx { max_idx = n + 1; }
+                    if n >= max_idx {
+                        max_idx = n + 1;
+                    }
                 }
             }
         }
@@ -223,12 +228,9 @@ impl JsonOutput {
         let (old_value, keys): (Option<Value>, Vec<String>) = {
             let parent = self.get_current_parent();
             let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                SerializationError::JsonStructureError {
-                    message:
-                        "This is a bug - expected parent container to exist, and to be an object type.\
-                         Check that the referencing parent is not `Value::null`"
-                            .to_string(),
-                }
+                SerializationError::JsonStructureError { message:
+                "This is a bug - expected parent container to exist, and to be an object type.\
+                          Check that the referencing parent is not `Value::null`".to_string(), }
             })?;
             let old_value = parent_obj.insert(name.to_string(), Value::Null);
             let keys = parent_obj.keys().cloned().collect();
@@ -294,13 +296,8 @@ impl JsonOutput {
                 let (old_attr, old_val, keys): (Option<Value>, Option<Value>, Vec<String>) = {
                     let attr_key = format!("{}_attributes", name);
                     let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError {
-                            message:
-                                "This is a bug - expected current value to exist, and to be an object type.\n                        Check that the value is not `Value::null`"
-                                    .to_string(),
-                        }
-                    })?;
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| SerializationError::JsonStructureError { message:
+                        "This is a bug - expected current value to exist, and to be an object type.\n                        Check that the value is not `Value::null`".to_string(), })?;
                     let old_attr = parent_obj.insert(attr_key, Value::Null);
                     let old_val = parent_obj.insert(name.to_string(), Value::Null);
                     let keys = parent_obj.keys().cloned().collect();
@@ -347,7 +344,9 @@ impl JsonOutput {
                     parent_obj.insert(attr_key, Value::Object(attributes));
                     if parent_obj
                         .get(name)
-                        .map(|v| v.is_null() || v.as_object().map(|m| m.is_empty()).unwrap_or(false))
+                        .map(|v| {
+                            v.is_null() || v.as_object().map(|m| m.is_empty()).unwrap_or(false)
+                        })
                         .unwrap_or(false)
                     {
                         parent_obj.remove(name);
@@ -357,11 +356,9 @@ impl JsonOutput {
                 // Stage A: insert placeholder for name, capture old value and keys
                 let (old_val, keys): (Option<Value>, Vec<String>) = {
                     let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError { message:
-                            "This is a bug - expected parent container to exist, and to be an object type.\
-                                Check that the referencing parent is not `Value::null`".to_string(),}
-                    })?;
+                    let parent_obj = parent.as_object_mut().ok_or_else(|| SerializationError::JsonStructureError { message:
+                        "This is a bug - expected parent container to exist, and to be an object type.\
+                                Check that the referencing parent is not `Value::null`".to_string(),})?;
                     let old_val = parent_obj.insert(name.to_string(), Value::Null);
                     let keys = parent_obj.keys().cloned().collect();
                     (old_val, keys)
@@ -373,8 +370,9 @@ impl JsonOutput {
                 {
                     let parent = self.get_current_parent();
                     let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError { message:
-                            "Expected parent to be an object".to_string(), }
+                        SerializationError::JsonStructureError {
+                            message: "Expected parent to be an object".to_string(),
+                        }
                     })?;
 
                     let mut needs_advance = false;
@@ -392,8 +390,8 @@ impl JsonOutput {
                     value.insert("#attributes".to_owned(), Value::Object(attributes));
                     parent_obj.insert(name.to_string(), Value::Object(value));
 
-                    drop(parent_obj);
-                    drop(parent);
+                    let _ = parent_obj;
+                    let _ = parent;
 
                     if needs_advance {
                         self.advance_duplicate_index(name);
@@ -402,11 +400,8 @@ impl JsonOutput {
             }
         } else {
             let parent = self.get_current_parent();
-            let parent_obj = parent.as_object_mut().ok_or(SerializationError::JsonStructureError {
-                message:
-                    "This is a bug - expected current value to exist, and to be an object type.\n                         Check that the value is not `Value::null`"
-                        .to_string(),
-            })?;
+            let parent_obj = parent.as_object_mut().ok_or(SerializationError::JsonStructureError { message:
+                "This is a bug - expected current value to exist, and to be an object type.\n                         Check that the value is not `Value::null`".to_string(), })?;
             parent_obj.insert(name.to_string(), Value::Null);
         }
 
@@ -516,11 +511,10 @@ impl BinXmlOutput for JsonOutput {
                         Some(Value::Array(arr)) => arr.push(value_to_json(value)),
                         current_value => {
                             return Err(SerializationError::JsonStructureError {
-                            message: format!(
-                                "expected current value to be a String or an Array, found {:?}, new value is {:?}",
-                                current_value, value
-                            ),
-                        });
+                                message: format!(
+                                    "expected current value to be a String or an Array, found {current_value:?}, new value is {value:?}"
+                                ),
+                            });
                         }
                     }
                 }
@@ -535,8 +529,7 @@ impl BinXmlOutput for JsonOutput {
             current_value => {
                 return Err(SerializationError::JsonStructureError {
                     message: format!(
-                        "expected current value to be a String or an Array, found {:?}, new value is {:?}",
-                        current_value, value
+                        "expected current value to be a String or an Array, found {current_value:?}, new value is {value:?}"
                     ),
                 });
             }
@@ -596,8 +589,6 @@ impl BinXmlOutput for JsonOutput {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use crate::binxml::name::BinXmlName;
@@ -605,8 +596,8 @@ mod tests {
     use crate::model::xml::{XmlAttribute, XmlElement};
     use crate::{BinXmlOutput, JsonOutput, ParserSettings};
     use pretty_assertions::assert_eq;
-    use quick_xml::events::{BytesStart, Event};
     use quick_xml::Reader;
+    use quick_xml::events::{BytesStart, Event};
     use std::borrow::Cow;
 
     fn bytes_to_string(bytes: &[u8]) -> String {
