@@ -132,13 +132,18 @@ impl EvtxRecord<'_> {
         let data = String::from_utf8(output_builder.into_writer())
             .map_err(crate::err::SerializationError::from)?;
 
-        Ok(SerializedEvtxRecord { event_record_id, timestamp, data })
+        Ok(SerializedEvtxRecord {
+            event_record_id,
+            timestamp,
+            data,
+        })
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
         let capacity_hint = (self.record_data_size as usize).saturating_mul(2);
-        let mut output_builder = XmlOutput::with_writer(Vec::with_capacity(capacity_hint), &self.settings);
+        let mut output_builder =
+            XmlOutput::with_writer(Vec::with_capacity(capacity_hint), &self.settings);
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
@@ -153,5 +158,4 @@ impl EvtxRecord<'_> {
             data,
         })
     }
-
 }
