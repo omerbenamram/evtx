@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 
@@ -6,6 +7,7 @@ use log::error;
 use std::borrow::Cow;
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[allow(dead_code)]
 pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
@@ -59,7 +61,7 @@ impl<'a> XmlElementBuilder<'a> {
             Some(_) => {
                 return Err(EvtxError::FailedToCreateRecordModel(
                     "invalid state, there should not be a value",
-                ))
+                ));
             }
         }
 

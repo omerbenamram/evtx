@@ -1,23 +1,27 @@
-use crate::err::{SerializationError, SerializationResult};
+use crate::ParserSettings;
 use crate::binxml::value_variant::BinXmlValue;
+use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
-use crate::ParserSettings;
 
-use serde_json::Value;
 use std::borrow::Cow;
 use std::io::{Result as IoResult, Write};
 
 use hashbrown::HashMap as FastMap;
+use quick_xml::events::BytesText;
 
 struct JsonWriter<W: Write> {
     writer: W,
 }
 
 impl<W: Write> JsonWriter<W> {
-    fn new(writer: W) -> Self { Self { writer } }
+    fn new(writer: W) -> Self {
+        Self { writer }
+    }
 
-    fn write_str(&mut self, s: &str) -> IoResult<()> { self.writer.write_all(s.as_bytes()) }
+    fn write_str(&mut self, s: &str) -> IoResult<()> {
+        self.writer.write_all(s.as_bytes())
+    }
 
     fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
         self.writer.write_all(b"\"")?;
@@ -30,9 +34,13 @@ impl<W: Write> JsonWriter<W> {
                 b'\t' => self.writer.write_all(b"\\t")?,
                 0x00..=0x1F => {
                     // \u00XX control escapes
-                    let esc = [b'\\', b'u', b'0', b'0',
+                    let esc = [
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
                         b"0123456789ABCDEF"[(b >> 4) as usize],
-                        b"0123456789ABCDEF"[(b & 0x0F) as usize]
+                        b"0123456789ABCDEF"[(b & 0x0F) as usize],
                     ];
                     self.writer.write_all(&esc)?;
                 }
@@ -72,13 +80,17 @@ impl<W: Write> JsonStreamOutput<W> {
     }
 
     fn current_mut(&mut self) -> &mut ObjectContext {
-        if self.stack.is_empty() { self.stack.push(ObjectContext::default()); }
+        if self.stack.is_empty() {
+            self.stack.push(ObjectContext::default());
+        }
         self.stack.last_mut().unwrap()
     }
 
     fn next_duplicate_index_for(&mut self, base: &str) -> usize {
         let ctx = self.current_mut();
-        if let Some(next) = ctx.dup_counters.get(base) { return *next; }
+        if let Some(next) = ctx.dup_counters.get(base) {
+            return *next;
+        }
         ctx.dup_counters.insert(base.to_owned(), 1);
         1
     }
@@ -91,12 +103,7 @@ impl<W: Write> JsonStreamOutput<W> {
 
     fn write_comma_if_needed(&mut self) -> SerializationResult<()> {
         // Avoid holding two mutable borrows: first check, then write
-        let needs_comma = {
-            let ctx = self.current_mut();
-            let needs = ctx.has_any_field;
-            // mark will be set after writing
-            needs
-        };
+        let needs_comma = self.current_mut().has_any_field;
         if needs_comma { self.writer.write_str(",")?; }
         {
             let ctx = self.current_mut();
@@ -106,7 +113,6 @@ impl<W: Write> JsonStreamOutput<W> {
     }
 
     fn write_binxml_scalar(&mut self, v: &BinXmlValue) -> SerializationResult<()> {
-        use std::fmt::Write as _;
         match v {
             BinXmlValue::NullType => self.writer.write_str("null")?,
             BinXmlValue::StringType(s) => self.writer.write_quoted_str(s)?,
@@ -119,14 +125,18 @@ impl<W: Write> JsonStreamOutput<W> {
             BinXmlValue::UInt32Type(n) => self.writer.write_str(&n.to_string())?,
             BinXmlValue::Int64Type(n) => self.writer.write_str(&n.to_string())?,
             BinXmlValue::UInt64Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Real32Type(n) => self.writer.write_str(&format!("{}", n))?,
-            BinXmlValue::Real64Type(n) => self.writer.write_str(&format!("{}", n))?,
-            BinXmlValue::BoolType(b) => self.writer.write_str(if *b {"true"} else {"false"})?,
+            BinXmlValue::Real32Type(n) => self.writer.write_str(&format!("{n}"))?,
+            BinXmlValue::Real64Type(n) => self.writer.write_str(&format!("{n}"))?,
+            BinXmlValue::BoolType(b) => self.writer.write_str(if *b { "true" } else { "false" })?,
             BinXmlValue::GuidType(g) => self.writer.write_quoted_str(&g.to_string())?,
             BinXmlValue::SizeTType(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => self.writer.write_quoted_str(&dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())?,
+            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => self
+                .writer
+                .write_quoted_str(&dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())?,
             BinXmlValue::SidType(sid) => self.writer.write_quoted_str(&sid.to_string())?,
-            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => self.writer.write_quoted_str(s)?,
+            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => {
+                self.writer.write_quoted_str(s)?
+            }
             // Binary and arrays: fallback to string or null for now (rare in hot path)
             BinXmlValue::BinaryType(_)
             | BinXmlValue::EvtHandle
@@ -180,12 +190,7 @@ impl<W: Write> JsonStreamOutput<W> {
         Ok(())
     }
 
-    fn value_to_json(value: Cow<BinXmlValue>) -> Value {
-        match value {
-            Cow::Owned(BinXmlValue::StringType(s)) => Value::String(s),
-            other => other.into_owned().into(),
-        }
-    }
+    // streaming path does not need a Value materializer
 }
 
 impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
@@ -212,7 +217,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         let mut key = name.to_string();
         let next = self.next_duplicate_index_for(name);
         if next > 1 {
-            key = format!("{}_{}", name, next);
+            key = format!("{name}_{next}");
             self.advance_duplicate_index(name);
         }
 
@@ -232,7 +237,9 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     if !first { /* nothing yet */ }
                     // Only write non-null
                     if !matches!(*attr.value, BinXmlValue::NullType) {
-                        if !first { self.writer.write_str(",")?; }
+                        if !first {
+                            self.writer.write_str(",")?;
+                        }
                         first = false;
                         self.writer.write_quoted_str(attr.name.as_str())?;
                         self.writer.write_str(":")?;
@@ -246,7 +253,9 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 let mut first = true;
                 for attr in element.attributes.iter() {
                     if !matches!(*attr.value, BinXmlValue::NullType) {
-                        if !first { self.writer.write_str(",")?; }
+                        if !first {
+                            self.writer.write_str(",")?;
+                        }
                         first = false;
                         self.writer.write_quoted_str(attr.name.as_str())?;
                         self.writer.write_str(":")?;
@@ -275,19 +284,42 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
     }
 
     fn visit_cdata_section(&mut self) -> SerializationResult<()> {
-        Err(SerializationError::Unimplemented { message: format!("`{}`: visit_cdata_section", file!()) })
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_cdata_section", file!()),
+        })
     }
 
-    fn visit_entity_reference(&mut self, _entity: &crate::binxml::name::BinXmlName) -> SerializationResult<()> {
-        // Entity references should be expanded earlier; treat as unimplemented for now
-        Err(SerializationError::Unimplemented { message: format!("`{}`: visit_entity_reference", file!()) })
+    fn visit_entity_reference(
+        &mut self,
+        entity: &crate::binxml::name::BinXmlName,
+    ) -> SerializationResult<()> {
+        // Expand entity into characters and delegate to visit_characters
+        let entity_ref = {
+            let mut s = String::with_capacity(entity.as_str().len() + 2);
+            s.push('&');
+            s.push_str(entity.as_str());
+            s.push(';');
+            s
+        };
+        let xml_event = BytesText::from_escaped(&entity_ref);
+        match xml_event.unescape() {
+            Ok(escaped) => {
+                let as_string = escaped.to_string();
+                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))
+            }
+            Err(_) => Err(SerializationError::JsonStructureError { message: format!("Unterminated XML Entity {entity_ref}") }),
+        }
     }
 
     fn visit_character_reference(&mut self, _char_ref: Cow<'_, str>) -> SerializationResult<()> {
-        Err(SerializationError::Unimplemented { message: format!("`{}`: visit_character_reference", file!()) })
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_character_reference", file!()),
+        })
     }
 
     fn visit_processing_instruction(&mut self, _pi: &BinXmlPI) -> SerializationResult<()> {
-        Err(SerializationError::Unimplemented { message: format!("`{}`: visit_processing_instruction_data", file!()) })
+        Err(SerializationError::Unimplemented {
+            message: format!("`{}`: visit_processing_instruction_data", file!()),
+        })
     }
 }
