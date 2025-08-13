@@ -122,7 +122,7 @@ impl EvtxRecord<'_> {
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
-        parse_tokens_streaming(self.tokens, self.chunk, &mut output_builder).map_err(|e| {
+        parse_tokens_streaming(&self.tokens, self.chunk, &mut output_builder).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),
