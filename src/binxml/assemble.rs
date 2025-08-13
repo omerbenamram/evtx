@@ -809,8 +809,7 @@ pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
 ) -> Result<()> {
     visitor.visit_start_of_stream()?;
     let tokens_slice: &'a [BinXMLDeserializedTokens<'a>] = tokens;
-    let mut element_stack: Vec<XmlElement<'a>> =
-        Vec::with_capacity(tokens_slice.len().min(32));
+    let mut element_stack: Vec<XmlElement<'a>> = Vec::with_capacity(tokens_slice.len().min(32));
     let mut current_element: Option<XmlElementBuilder<'a>> = None;
     let mut current_pi: Option<XmlPIBuilder<'a>> = None;
     for t in tokens_slice.iter() {
