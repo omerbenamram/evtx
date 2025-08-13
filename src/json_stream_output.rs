@@ -20,16 +20,26 @@ impl<W: Write> JsonWriter<W> {
     fn write_str(&mut self, s: &str) -> IoResult<()> { self.writer.write_all(s.as_bytes()) }
 
     fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
-        // Minimal JSON string escaping; delegate to serde_json for correctness
-        let mut buf = Vec::new();
-        serde_json::to_writer(&mut buf, &Value::String(s.to_string())).unwrap();
-        self.writer.write_all(&buf)
-    }
-
-    fn write_value(&mut self, v: &Value) -> IoResult<()> {
-        let mut buf = Vec::new();
-        serde_json::to_writer(&mut buf, v).unwrap();
-        self.writer.write_all(&buf)
+        self.writer.write_all(b"\"")?;
+        for b in s.bytes() {
+            match b {
+                b'"' => self.writer.write_all(b"\\\"")?,
+                b'\\' => self.writer.write_all(b"\\\\")?,
+                b'\n' => self.writer.write_all(b"\\n")?,
+                b'\r' => self.writer.write_all(b"\\r")?,
+                b'\t' => self.writer.write_all(b"\\t")?,
+                0x00..=0x1F => {
+                    // \u00XX control escapes
+                    let esc = [b'\\', b'u', b'0', b'0',
+                        b"0123456789ABCDEF"[(b >> 4) as usize],
+                        b"0123456789ABCDEF"[(b & 0x0F) as usize]
+                    ];
+                    self.writer.write_all(&esc)?;
+                }
+                _ => self.writer.write_all(&[b])?,
+            }
+        }
+        self.writer.write_all(b"\"")
     }
 }
 
@@ -91,6 +101,61 @@ impl<W: Write> JsonStreamOutput<W> {
         {
             let ctx = self.current_mut();
             ctx.has_any_field = true;
+        }
+        Ok(())
+    }
+
+    fn write_binxml_scalar(&mut self, v: &BinXmlValue) -> SerializationResult<()> {
+        use std::fmt::Write as _;
+        match v {
+            BinXmlValue::NullType => self.writer.write_str("null")?,
+            BinXmlValue::StringType(s) => self.writer.write_quoted_str(s)?,
+            BinXmlValue::AnsiStringType(s) => self.writer.write_quoted_str(s)?,
+            BinXmlValue::Int8Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt8Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Int16Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt16Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Int32Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt32Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Int64Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt64Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Real32Type(n) => self.writer.write_str(&format!("{}", n))?,
+            BinXmlValue::Real64Type(n) => self.writer.write_str(&format!("{}", n))?,
+            BinXmlValue::BoolType(b) => self.writer.write_str(if *b {"true"} else {"false"})?,
+            BinXmlValue::GuidType(g) => self.writer.write_quoted_str(&g.to_string())?,
+            BinXmlValue::SizeTType(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => self.writer.write_quoted_str(&dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())?,
+            BinXmlValue::SidType(sid) => self.writer.write_quoted_str(&sid.to_string())?,
+            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => self.writer.write_quoted_str(s)?,
+            // Binary and arrays: fallback to string or null for now (rare in hot path)
+            BinXmlValue::BinaryType(_)
+            | BinXmlValue::EvtHandle
+            | BinXmlValue::BinXmlType(_)
+            | BinXmlValue::EvtXml
+            | BinXmlValue::StringArrayType(_)
+            | BinXmlValue::AnsiStringArrayType
+            | BinXmlValue::Int8ArrayType(_)
+            | BinXmlValue::UInt8ArrayType(_)
+            | BinXmlValue::Int16ArrayType(_)
+            | BinXmlValue::UInt16ArrayType(_)
+            | BinXmlValue::Int32ArrayType(_)
+            | BinXmlValue::UInt32ArrayType(_)
+            | BinXmlValue::Int64ArrayType(_)
+            | BinXmlValue::UInt64ArrayType(_)
+            | BinXmlValue::Real32ArrayType(_)
+            | BinXmlValue::Real64ArrayType(_)
+            | BinXmlValue::BoolArrayType(_)
+            | BinXmlValue::BinaryArrayType
+            | BinXmlValue::GuidArrayType(_)
+            | BinXmlValue::SizeTArrayType
+            | BinXmlValue::FileTimeArrayType(_)
+            | BinXmlValue::SysTimeArrayType(_)
+            | BinXmlValue::SidArrayType(_)
+            | BinXmlValue::HexInt32ArrayType(_)
+            | BinXmlValue::HexInt64ArrayType(_)
+            | BinXmlValue::EvtArrayHandle
+            | BinXmlValue::BinXmlArrayType
+            | BinXmlValue::EvtXmlArrayType => self.writer.write_str("null")?,
         }
         Ok(())
     }
@@ -164,14 +229,14 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.writer.write_str("{")?;
                 let mut first = true;
                 for attr in element.attributes.iter() {
-                    if let Some(v) = Some(attr.value.clone().into_owned().into()) {
-                        if !matches!(v, Value::Null) {
-                            if !first { self.writer.write_str(",")?; }
-                            first = false;
-                            self.writer.write_quoted_str(attr.name.as_str())?;
-                            self.writer.write_str(":")?;
-                            self.writer.write_value(&v)?;
-                        }
+                    if !first { /* nothing yet */ }
+                    // Only write non-null
+                    if !matches!(*attr.value, BinXmlValue::NullType) {
+                        if !first { self.writer.write_str(",")?; }
+                        first = false;
+                        self.writer.write_quoted_str(attr.name.as_str())?;
+                        self.writer.write_str(":")?;
+                        self.write_binxml_scalar(&attr.value)?;
                     }
                 }
                 self.writer.write_str("}")?;
@@ -180,13 +245,12 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.writer.write_str("{")?;
                 let mut first = true;
                 for attr in element.attributes.iter() {
-                    let v: Value = attr.value.clone().into_owned().into();
-                    if !matches!(v, Value::Null) {
+                    if !matches!(*attr.value, BinXmlValue::NullType) {
                         if !first { self.writer.write_str(",")?; }
                         first = false;
                         self.writer.write_quoted_str(attr.name.as_str())?;
                         self.writer.write_str(":")?;
-                        self.writer.write_value(&v)?;
+                        self.write_binxml_scalar(&attr.value)?;
                     }
                 }
                 self.writer.write_str("}")?;
@@ -203,8 +267,10 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         // Serialize as #text field within the current object
         self.write_key("#text")?;
-        let v = Self::value_to_json(value);
-        self.writer.write_value(&v)?;
+        match value {
+            Cow::Borrowed(v) => self.write_binxml_scalar(v)?,
+            Cow::Owned(v) => self.write_binxml_scalar(&v)?,
+        }
         Ok(())
     }
 
