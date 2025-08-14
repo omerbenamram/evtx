@@ -10,6 +10,7 @@ use std::io::{Result as IoResult, Write};
 use hashbrown::HashMap as FastMap;
 // Entry not needed after simplifying duplicate counter access
 use quick_xml::events::BytesText;
+use smallvec::SmallVec;
 // itoa/ryu used via fully-qualified paths in helpers; avoid importing single components
 
 #[inline]
@@ -44,7 +45,7 @@ enum FlatScalar {
 #[derive(Clone)]
 enum TextValue {
     Scalar(FlatScalar),
-    Array(Vec<FlatScalar>),
+    Array(SmallVec<[FlatScalar; 4]>),
 }
 
 struct JsonWriter<W: Write> {
@@ -157,7 +158,7 @@ struct ObjectContext {
     // True when this context represents a synthetic child for aggregated <Data> (we don't emit output on close)
     is_aggregated_data_child: bool,
     // Collects character content for this element until close; allows upgrading to arrays and merging
-    pending_text: Option<Vec<TextValue>>,
+    pending_text: Option<SmallVec<[TextValue; 2]>>,
     // For parents: hold the last unflushed scalar-only child per base key to enable last-one-wins
     suspended_scalars: Option<FastMap<String, Vec<TextValue>, ahash::RandomState>>,
     // For parents: next duplicate index for each base when flushing old suspended entries
@@ -726,76 +727,109 @@ impl<W: Write> JsonStreamOutput<W> {
                 values
                     .iter()
                     .map(|s| FlatScalar::Quoted(s.clone()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::Int8ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::I64(*n as i64)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::I64(*n as i64))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::UInt8ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::U64(*n as u64)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::U64(*n as u64))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::Int16ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::I64(*n as i64)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::I64(*n as i64))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::UInt16ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::U64(*n as u64)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::U64(*n as u64))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::Int32ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::I64(*n as i64)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::I64(*n as i64))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::UInt32ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::U64(*n as u64)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::U64(*n as u64))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::Int64ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::I64(*n)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::I64(*n))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::UInt64ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::U64(*n)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::U64(*n))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::Real32ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::F32(*n as f32)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::F32(*n as f32))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::Real64ArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|n| FlatScalar::F64(*n)).collect(),
+                values
+                    .iter()
+                    .map(|n| FlatScalar::F64(*n))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::BoolArrayType(values) => Some(TextValue::Array(
-                values.iter().map(|b| FlatScalar::Bool(*b)).collect(),
+                values
+                    .iter()
+                    .map(|b| FlatScalar::Bool(*b))
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::GuidArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
                     .map(|g| FlatScalar::Quoted(g.to_string()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::FileTimeArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
                     .map(|dt| FlatScalar::Quoted(dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::SysTimeArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
                     .map(|dt| FlatScalar::Quoted(dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::SidArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
                     .map(|sid| FlatScalar::Quoted(sid.to_string()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::HexInt32ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
                     .map(|s| FlatScalar::Quoted(s.as_ref().to_string()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             BinXmlValue::HexInt64ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
                     .map(|s| FlatScalar::Quoted(s.as_ref().to_string()))
-                    .collect(),
+                    .collect::<SmallVec<[FlatScalar; 4]>>(),
             )),
             _ => None,
         }
@@ -1445,7 +1479,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     .suspended_scalars
                     .as_mut()
                     .unwrap()
-                    .insert(base_key, items);
+                    .insert(base_key, items.into_vec());
                 // Mark parent comma state updated already handled by write_key_in
                 self.stack.pop();
                 return Ok(());
@@ -1550,7 +1584,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         };
         if let Some(tv) = tv {
             if self.stack[idx].pending_text.is_none() {
-                self.stack[idx].pending_text = Some(Vec::new());
+                self.stack[idx].pending_text = Some(SmallVec::new());
             }
             self.stack[idx].pending_text.as_mut().unwrap().push(tv);
             self.stack[idx].wrote_scalar = true;

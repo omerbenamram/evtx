@@ -41,6 +41,7 @@ serde_json = { version = "1", features = ["preserve_order"]}
 
 itoa = "1"
 ryu = "1"
+smallvec = "1"
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
