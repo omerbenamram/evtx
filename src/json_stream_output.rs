@@ -10,6 +10,26 @@ use std::io::{Result as IoResult, Write};
 use hashbrown::HashMap as FastMap;
 use hashbrown::hash_map::Entry;
 use quick_xml::events::BytesText;
+// itoa/ryu used via fully-qualified paths in helpers; avoid importing single components
+
+#[inline]
+fn decimal_len(mut n: usize) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    let mut len = 0;
+    while n > 0 {
+        n /= 10;
+        len += 1;
+    }
+    len
+}
+
+#[inline]
+fn append_usize(s: &mut String, n: usize) {
+    let mut buf = itoa::Buffer::new();
+    s.push_str(buf.format(n));
+}
 
 #[derive(Clone)]
 enum FlatScalar {
@@ -39,29 +59,69 @@ impl<W: Write> JsonWriter<W> {
 
     fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
         self.writer.write_all(b"\"")?;
-        for b in s.bytes() {
-            match b {
-                b'"' => self.writer.write_all(b"\\\"")?,
-                b'\\' => self.writer.write_all(b"\\\\")?,
-                b'\n' => self.writer.write_all(b"\\n")?,
-                b'\r' => self.writer.write_all(b"\\r")?,
-                b'\t' => self.writer.write_all(b"\\t")?,
-                0x00..=0x1F => {
-                    // \u00XX control escapes
-                    let esc = [
-                        b'\\',
-                        b'u',
-                        b'0',
-                        b'0',
-                        b"0123456789ABCDEF"[(b >> 4) as usize],
-                        b"0123456789ABCDEF"[(b & 0x0F) as usize],
-                    ];
-                    self.writer.write_all(&esc)?;
+        let bytes = s.as_bytes();
+        let mut run_start = 0usize;
+        let len = bytes.len();
+        let hex = b"0123456789ABCDEF";
+        let mut i = 0usize;
+        while i < len {
+            let b = bytes[i];
+            let needs_escape = matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t') || (b <= 0x1F);
+            if needs_escape {
+                if run_start < i {
+                    self.writer.write_all(&bytes[run_start..i])?;
                 }
-                _ => self.writer.write_all(&[b])?,
+                match b {
+                    b'"' => self.writer.write_all(b"\\\"")?,
+                    b'\\' => self.writer.write_all(b"\\\\")?,
+                    b'\n' => self.writer.write_all(b"\\n")?,
+                    b'\r' => self.writer.write_all(b"\\r")?,
+                    b'\t' => self.writer.write_all(b"\\t")?,
+                    0x00..=0x1F => {
+                        let esc = [
+                            b'\\',
+                            b'u',
+                            b'0',
+                            b'0',
+                            hex[(b >> 4) as usize],
+                            hex[(b & 0x0F) as usize],
+                        ];
+                        self.writer.write_all(&esc)?;
+                    }
+                    _ => {}
+                }
+                run_start = i + 1;
             }
+            i += 1;
+        }
+        if run_start < len {
+            self.writer.write_all(&bytes[run_start..len])?;
         }
         self.writer.write_all(b"\"")
+    }
+
+    #[inline]
+    fn write_i64(&mut self, n: i64) -> IoResult<()> {
+        let mut buf = itoa::Buffer::new();
+        self.write_str(buf.format(n))
+    }
+
+    #[inline]
+    fn write_u64(&mut self, n: u64) -> IoResult<()> {
+        let mut buf = itoa::Buffer::new();
+        self.write_str(buf.format(n))
+    }
+
+    #[inline]
+    fn write_f32(&mut self, n: f32) -> IoResult<()> {
+        let mut buf = ryu::Buffer::new();
+        self.write_str(buf.format(n))
+    }
+
+    #[inline]
+    fn write_f64(&mut self, n: f64) -> IoResult<()> {
+        let mut buf = ryu::Buffer::new();
+        self.write_str(buf.format(n))
     }
 }
 
@@ -108,6 +168,8 @@ pub struct JsonStreamOutput<W: Write> {
     stack: Vec<ObjectContext>,
     // separate_json_attributes option
     separate_json_attributes: bool,
+    // Reused hasher to avoid repeated RandomState::new costs
+    hasher: ahash::RandomState,
 }
 
 impl<W: Write> JsonStreamOutput<W> {
@@ -116,6 +178,7 @@ impl<W: Write> JsonStreamOutput<W> {
             writer: JsonWriter::new(writer),
             stack: Vec::new(),
             separate_json_attributes: settings.should_separate_json_attributes(),
+            hasher: ahash::RandomState::new(),
         }
     }
 
@@ -127,7 +190,7 @@ impl<W: Write> JsonStreamOutput<W> {
         if self.stack.is_empty() {
             self.stack.push(ObjectContext {
                 has_any_field: false,
-                dup_counters: FastMap::with_hasher(ahash::RandomState::new()),
+                dup_counters: FastMap::with_hasher(self.hasher.clone()),
                 pending_key: None,
                 object_opened: true,
                 wrote_scalar: false,
@@ -198,9 +261,9 @@ impl<W: Write> JsonStreamOutput<W> {
 
         // If parent has suspended attributes for this base, emit them inline now as #attributes
         let base = if let Some(pos) = pending_key.rfind('_') {
-            let (prefix, rest) = pending_key.split_at(pos);
-            if rest.len() > 1 && rest[1..].chars().all(|c| c.is_ascii_digit()) {
-                prefix.to_string()
+            let rest = &pending_key[pos + 1..];
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                pending_key[..pos].to_string()
             } else {
                 pending_key.clone()
             }
@@ -252,7 +315,12 @@ impl<W: Write> JsonStreamOutput<W> {
             Entry::Occupied(mut e) => {
                 let idx = *e.get();
                 *e.get_mut() = idx + 1;
-                format!("{}_{}", base, idx)
+                // Build "base_idx" efficiently
+                let mut s = String::with_capacity(base.len() + 1 + decimal_len(idx));
+                s.push_str(base);
+                s.push('_');
+                append_usize(&mut s, idx);
+                s
             }
             Entry::Vacant(e) => {
                 // First occurrence: record that the next duplicate should be _2
@@ -266,7 +334,7 @@ impl<W: Write> JsonStreamOutput<W> {
         &mut self,
         parent_idx: usize,
         base: &str,
-        current_key: &str,
+        _current_key: &str,
     ) -> SerializationResult<()> {
         // Non-streaming keeps only the last unsuffixed node for repeated names.
         // To emulate this, when a new child for the same base arrives, we emit the previous suspended under base_{N},
@@ -276,7 +344,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 // Figure out N using a dedicated per-base counter starting at 1
                 if self.stack[parent_idx].next_dup_index.is_none() {
                     self.stack[parent_idx].next_dup_index =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 let n = {
                     let ctrs = self.stack[parent_idx].next_dup_index.as_mut().unwrap();
@@ -285,7 +353,10 @@ impl<W: Write> JsonStreamOutput<W> {
                     *entry += 1;
                     v
                 };
-                let dup_key = format!("{}_{}", base, n);
+                let mut dup_key = String::with_capacity(base.len() + 1 + decimal_len(n));
+                dup_key.push_str(base);
+                dup_key.push('_');
+                append_usize(&mut dup_key, n);
                 self.flush_text_into_parent(parent_idx, &dup_key, items)?;
             }
         }
@@ -293,95 +364,29 @@ impl<W: Write> JsonStreamOutput<W> {
     }
 
     fn flush_all_suspended_into_object(&mut self, idx: usize) -> SerializationResult<()> {
-        // Merge suspended scalars and attributes per base key, emitting a single child per base.
-        let mut bases: FastMap<
-            String,
-            (Option<Vec<TextValue>>, Option<Vec<(String, FlatScalar)>>),
-            ahash::RandomState,
-        > = FastMap::with_hasher(ahash::RandomState::new());
+        // Take suspended maps out to avoid borrow conflicts during writes
+        let mut vals: FastMap<String, Vec<TextValue>, ahash::RandomState> = self.stack[idx]
+            .suspended_scalars
+            .take()
+            .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
+        let mut attrs: FastMap<String, Vec<(String, FlatScalar)>, ahash::RandomState> = self.stack
+            [idx]
+            .suspended_attrs
+            .take()
+            .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
 
-        if let Some(map) = self.stack[idx].suspended_scalars.as_mut() {
-            for (k, v) in map.drain() {
-                bases.entry(k).or_insert((None, None)).0 = Some(v);
+        // Phase A: flush values, merging attrs if present per base
+        for (base, v) in vals.drain() {
+            if let Some(a) = attrs.remove(&base) {
+                self.write_child_object_with_attrs_and_text(idx, &base, &a, &v)?;
+            } else {
+                self.flush_text_into_parent(idx, &base, v)?;
             }
         }
-        if let Some(attrs_map) = self.stack[idx].suspended_attrs.as_mut() {
-            for (k, v) in attrs_map.drain() {
-                bases.entry(k).or_insert((None, None)).1 = Some(v);
-            }
-        }
 
-        for (base, (maybe_vals, maybe_attrs)) in bases.into_iter() {
-            match (maybe_vals, maybe_attrs) {
-                (Some(vals), Some(attrs)) => {
-                    // Emit object with #attributes and #text
-                    self.write_key_in(idx, &base)?;
-                    self.writer.write_str("{")?;
-                    // #attributes
-                    self.writer.write_quoted_str("#attributes")?;
-                    self.writer.write_str(":{")?;
-                    let mut first = true;
-                    for (name, val) in attrs.iter() {
-                        if !first {
-                            self.writer.write_str(",")?;
-                        }
-                        first = false;
-                        self.writer.write_quoted_str(name)?;
-                        self.writer.write_str(":")?;
-                        self.write_flat_scalar(val)?;
-                    }
-                    self.writer.write_str("}")?;
-                    // separator before #text
-                    self.writer.write_str(",")?;
-                    self.writer.write_quoted_str("#text")?;
-                    self.writer.write_str(":")?;
-                    if Self::contains_array(&vals) {
-                        self.write_text_items_as_array(&vals)?;
-                    } else {
-                        match &vals[0] {
-                            TextValue::Scalar(s) => self.write_flat_scalar(s)?,
-                            TextValue::Array(inner) => {
-                                self.write_text_items_as_array(&[TextValue::Array(inner.clone())])?
-                            }
-                        }
-                    }
-                    self.writer.write_str("}")?;
-                }
-                (Some(vals), None) => {
-                    // Emit direct value (no object) to mirror non-streaming for text-only elements
-                    self.write_key_in(idx, &base)?;
-                    if Self::contains_array(&vals) {
-                        self.write_text_items_as_array(&vals)?;
-                    } else {
-                        match &vals[0] {
-                            TextValue::Scalar(s) => self.write_flat_scalar(s)?,
-                            TextValue::Array(inner) => {
-                                self.write_text_items_as_array(&[TextValue::Array(inner.clone())])?
-                            }
-                        }
-                    }
-                }
-                (None, Some(attrs)) => {
-                    // Emit object with #attributes only
-                    self.write_key_in(idx, &base)?;
-                    self.writer.write_str("{")?;
-                    self.writer.write_quoted_str("#attributes")?;
-                    self.writer.write_str(":{")?;
-                    let mut first = true;
-                    for (name, val) in attrs.iter() {
-                        if !first {
-                            self.writer.write_str(",")?;
-                        }
-                        first = false;
-                        self.writer.write_quoted_str(name)?;
-                        self.writer.write_str(":")?;
-                        self.write_flat_scalar(val)?;
-                    }
-                    self.writer.write_str("}")?;
-                    self.writer.write_str("}")?;
-                }
-                _ => {}
-            }
+        // Phase B: flush any remaining attributes-only entries
+        for (base, a) in attrs.into_iter() {
+            self.write_child_object_with_attrs_only(idx, &base, &a)?;
         }
         Ok(())
     }
@@ -391,19 +396,19 @@ impl<W: Write> JsonStreamOutput<W> {
             BinXmlValue::NullType => self.writer.write_str("null")?,
             BinXmlValue::StringType(s) => self.writer.write_quoted_str(s)?,
             BinXmlValue::AnsiStringType(s) => self.writer.write_quoted_str(s)?,
-            BinXmlValue::Int8Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt8Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Int16Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt16Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Int32Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt32Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Int64Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt64Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Real32Type(n) => self.writer.write_str(&format!("{n}"))?,
-            BinXmlValue::Real64Type(n) => self.writer.write_str(&format!("{n}"))?,
+            BinXmlValue::Int8Type(n) => self.writer.write_i64(*n as i64)?,
+            BinXmlValue::UInt8Type(n) => self.writer.write_u64(*n as u64)?,
+            BinXmlValue::Int16Type(n) => self.writer.write_i64(*n as i64)?,
+            BinXmlValue::UInt16Type(n) => self.writer.write_u64(*n as u64)?,
+            BinXmlValue::Int32Type(n) => self.writer.write_i64(*n as i64)?,
+            BinXmlValue::UInt32Type(n) => self.writer.write_u64(*n as u64)?,
+            BinXmlValue::Int64Type(n) => self.writer.write_i64(*n)?,
+            BinXmlValue::UInt64Type(n) => self.writer.write_u64(*n)?,
+            BinXmlValue::Real32Type(n) => self.writer.write_f32(*n as f32)?,
+            BinXmlValue::Real64Type(n) => self.writer.write_f64(*n)?,
             BinXmlValue::BoolType(b) => self.writer.write_str(if *b { "true" } else { "false" })?,
             BinXmlValue::GuidType(g) => self.writer.write_quoted_str(&g.to_string())?,
-            BinXmlValue::SizeTType(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::SizeTType(n) => self.writer.write_u64(*n as u64)?,
             BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => self
                 .writer
                 .write_quoted_str(&dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())?,
@@ -432,7 +437,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_i64(*n as i64)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -444,7 +449,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_u64(*n as u64)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -456,7 +461,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_i64(*n as i64)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -468,7 +473,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_u64(*n as u64)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -480,7 +485,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_i64(*n as i64)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -492,7 +497,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_u64(*n as u64)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -504,7 +509,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_i64(*n)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -516,7 +521,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&n.to_string())?;
+                    self.writer.write_u64(*n)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -528,7 +533,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&format!("{n}"))?;
+                    self.writer.write_f32(*n as f32)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -540,7 +545,7 @@ impl<W: Write> JsonStreamOutput<W> {
                         self.writer.write_str(",")?;
                     }
                     first = false;
-                    self.writer.write_str(&format!("{n}"))?;
+                    self.writer.write_f64(*n)?;
                 }
                 self.writer.write_str("]")?;
             }
@@ -662,19 +667,52 @@ impl<W: Write> JsonStreamOutput<W> {
         match value {
             BinXmlValue::StringType(s) => Some(FlatScalar::Quoted(s.clone())),
             BinXmlValue::AnsiStringType(s) => Some(FlatScalar::Quoted(s.as_ref().to_string())),
-            BinXmlValue::Int8Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::UInt8Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::Int16Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::UInt16Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::Int32Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::UInt32Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::Int64Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::UInt64Type(n) => Some(FlatScalar::RawNumber(n.to_string())),
-            BinXmlValue::Real32Type(n) => Some(FlatScalar::RawNumber(format!("{n}"))),
-            BinXmlValue::Real64Type(n) => Some(FlatScalar::RawNumber(format!("{n}"))),
+            BinXmlValue::Int8Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as i64).to_owned()))
+            }
+            BinXmlValue::UInt8Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
+            }
+            BinXmlValue::Int16Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as i64).to_owned()))
+            }
+            BinXmlValue::UInt16Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
+            }
+            BinXmlValue::Int32Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as i64).to_owned()))
+            }
+            BinXmlValue::UInt32Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
+            }
+            BinXmlValue::Int64Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n).to_owned()))
+            }
+            BinXmlValue::UInt64Type(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n).to_owned()))
+            }
+            BinXmlValue::Real32Type(n) => {
+                let mut b = ryu::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as f32).to_owned()))
+            }
+            BinXmlValue::Real64Type(n) => {
+                let mut b = ryu::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n).to_owned()))
+            }
             BinXmlValue::BoolType(b) => Some(FlatScalar::Bool(*b)),
             BinXmlValue::GuidType(g) => Some(FlatScalar::Quoted(g.to_string())),
-            BinXmlValue::SizeTType(n) => Some(FlatScalar::RawNumber(n.to_string())),
+            BinXmlValue::SizeTType(n) => {
+                let mut b = itoa::Buffer::new();
+                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
+            }
             BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => Some(
                 FlatScalar::Quoted(dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
             ),
@@ -718,61 +756,91 @@ impl<W: Write> JsonStreamOutput<W> {
             BinXmlValue::Int8ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as i64).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::UInt8ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as u64).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::Int16ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as i64).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::UInt16ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as u64).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::Int32ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as i64).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::UInt32ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as u64).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::Int64ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::UInt64ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(n.to_string()))
+                    .map(|n| {
+                        let mut b = itoa::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::Real32ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(format!("{n}")))
+                    .map(|n| {
+                        let mut b = ryu::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n as f32).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::Real64ArrayType(values) => Some(TextValue::Array(
                 values
                     .iter()
-                    .map(|n| FlatScalar::RawNumber(format!("{n}")))
+                    .map(|n| {
+                        let mut b = ryu::Buffer::new();
+                        FlatScalar::RawNumber(b.format(*n).to_owned())
+                    })
                     .collect(),
             )),
             BinXmlValue::BoolArrayType(values) => Some(TextValue::Array(
@@ -897,7 +965,17 @@ impl<W: Write> JsonStreamOutput<W> {
             self.write_text_items_as_array(&items)?;
         } else {
             // Multiple scalar chunks in a single element without attributes -> concatenate into a single string
-            let mut concatenated = String::new();
+            let mut total_len: usize = 0;
+            for item in items.iter() {
+                if let TextValue::Scalar(s) = item {
+                    match s {
+                        FlatScalar::Quoted(q) => total_len += q.len(),
+                        FlatScalar::RawNumber(n) => total_len += n.len(),
+                        FlatScalar::Bool(b) => total_len += if *b { 4 } else { 5 },
+                    }
+                }
+            }
+            let mut concatenated = String::with_capacity(total_len);
             for item in items {
                 if let TextValue::Scalar(s) = item {
                     match s {
@@ -1003,8 +1081,7 @@ impl<W: Write> JsonStreamOutput<W> {
         }
 
         if self.stack[parent_idx].next_dup_index.is_none() {
-            self.stack[parent_idx].next_dup_index =
-                Some(FastMap::with_hasher(ahash::RandomState::new()));
+            self.stack[parent_idx].next_dup_index = Some(FastMap::with_hasher(self.hasher.clone()));
         }
         let n = {
             let ctrs = self.stack[parent_idx].next_dup_index.as_mut().unwrap();
@@ -1013,7 +1090,11 @@ impl<W: Write> JsonStreamOutput<W> {
             *entry += 1;
             v
         };
-        let dup_key = format!("{}_{}", base, n);
+        // Build duplicate key efficiently: base + '_' + n
+        let mut dup_key = String::with_capacity(base.len() + 1 + decimal_len(n));
+        dup_key.push_str(base);
+        dup_key.push('_');
+        append_usize(&mut dup_key, n);
 
         match (prev_vals, prev_attrs) {
             (Some(vals), Some(attrs)) => {
@@ -1033,7 +1114,7 @@ impl<W: Write> JsonStreamOutput<W> {
     fn push_deferred_element(&mut self, key: String, separated_attr_emitted: bool) {
         self.stack.push(ObjectContext {
             has_any_field: false,
-            dup_counters: FastMap::with_hasher(ahash::RandomState::new()),
+            dup_counters: FastMap::with_hasher(self.hasher.clone()),
             pending_key: Some(key),
             object_opened: false,
             wrote_scalar: false,
@@ -1058,7 +1139,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         self.writer.write_str("{")?;
         self.stack.push(ObjectContext {
             has_any_field: false,
-            dup_counters: FastMap::with_hasher(ahash::RandomState::new()),
+            dup_counters: FastMap::with_hasher(self.hasher.clone()),
             pending_key: None,
             object_opened: true,
             wrote_scalar: false,
@@ -1093,7 +1174,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             // Emit in insertion order is not guaranteed in FastMap; but tests assert JSON structure, not key order.
             let items: Vec<(String, Vec<TextValue>)> = root_map.drain().collect();
             for (base, vals) in items {
-                self.write_key_in(0, &base)?;
+                // flush_text_into_parent writes the key itself, so avoid double key write here
                 self.flush_text_into_parent(0, &base, vals)?;
             }
         }
@@ -1106,21 +1187,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         self.ensure_current_container_open()?;
 
         let base = element.name.as_str();
-        if std::env::var("EVTX_DEBUG_ELEMENTS").is_ok() {
-            eprintln!(
-                "[stream] open element name={} attrs={} stack_len={}",
-                base,
-                element.attributes.len(),
-                self.stack.len()
-            );
-        }
-        if std::env::var("EVTX_DEBUG_EVENTDATA").is_ok() && base == "EventData" {
-            eprintln!(
-                "[stream] open EventData attrs={} stack_len={}",
-                element.attributes.len(),
-                self.stack.len()
-            );
-        }
+        // debug logging removed in release
 
         // Special-case: <Data Name="X">text</Data>
         if base == "Data" {
@@ -1138,11 +1205,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 let parent_idx = self.current_index();
                 if self.stack[parent_idx].suspended_scalars.is_none() {
                     self.stack[parent_idx].suspended_scalars =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 if self.stack[parent_idx].suspended_attrs.is_none() {
                     self.stack[parent_idx].suspended_attrs =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 self.flush_prev_for_base_into_suffixed_child(parent_idx, &k)?;
 
@@ -1167,7 +1234,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 // Push synthetic child
                 self.stack.push(ObjectContext {
                     has_any_field: false,
-                    dup_counters: FastMap::with_hasher(ahash::RandomState::new()),
+                    dup_counters: FastMap::with_hasher(self.hasher.clone()),
                     pending_key: None,
                     object_opened: false,
                     wrote_scalar: false,
@@ -1209,22 +1276,39 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 // For separate_json_attributes, expected numbering for duplicates starts at _1 for the second occurrence.
                 // Our general allocator returns base, base_2, base_3, ... so we remap attribute suffix by subtracting 1.
                 let attr_key = if let Some(pos) = key.rfind('_') {
-                    let (prefix, rest) = key.split_at(pos);
-                    if rest.len() > 1 && rest[1..].chars().all(|c| c.is_ascii_digit()) {
-                        if let Ok(n) = rest[1..].parse::<usize>() {
+                    let rest = &key[pos + 1..];
+                    if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                        if let Ok(n) = rest.parse::<usize>() {
                             if n > 1 {
-                                format!("{}_{}_attributes", prefix, n - 1)
+                                let mut s = String::with_capacity(key.len() + 12);
+                                s.push_str(&key[..pos]);
+                                s.push('_');
+                                append_usize(&mut s, n - 1);
+                                s.push_str("_attributes");
+                                s
                             } else {
-                                format!("{}_attributes", prefix)
+                                let mut s = String::with_capacity(key.len() + 11);
+                                s.push_str(&key[..pos]);
+                                s.push_str("_attributes");
+                                s
                             }
                         } else {
-                            format!("{}_attributes", key)
+                            let mut s = String::with_capacity(key.len() + 11);
+                            s.push_str(&key);
+                            s.push_str("_attributes");
+                            s
                         }
                     } else {
-                        format!("{}_attributes", key)
+                        let mut s = String::with_capacity(key.len() + 11);
+                        s.push_str(&key);
+                        s.push_str("_attributes");
+                        s
                     }
                 } else {
-                    format!("{}_attributes", key)
+                    let mut s = String::with_capacity(key.len() + 11);
+                    s.push_str(&key);
+                    s.push_str("_attributes");
+                    s
                 };
                 self.write_key_in(parent_idx, &attr_key)?;
                 self.writer.write_str("{")?;
@@ -1268,7 +1352,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 }
                 if self.stack[parent_idx].suspended_attrs.is_none() {
                     self.stack[parent_idx].suspended_attrs =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 self.stack[parent_idx]
                     .suspended_attrs
@@ -1292,11 +1376,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 // Ensure maps exist before suspension
                 if self.stack[parent_idx].suspended_scalars.is_none() {
                     self.stack[parent_idx].suspended_scalars =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 if self.stack[parent_idx].suspended_attrs.is_none() {
                     self.stack[parent_idx].suspended_attrs =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 // Flush any prior suspended (scalars and/or attrs) for this base
                 self.flush_prev_for_base_into_suffixed_child(parent_idx, base)?;
@@ -1330,15 +1414,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             return Ok(());
         }
 
-        if std::env::var("EVTX_DEBUG_ELEMENTS").is_ok() {
-            eprintln!(
-                "[stream] close element name={} opened={} wrote_scalar={} separated_attr={}",
-                element.name.as_str(),
-                self.stack[idx].object_opened,
-                self.stack[idx].wrote_scalar,
-                self.stack[idx].separated_attr_emitted
-            );
-        }
+        // debug logging removed in release
 
         if self.stack[idx].object_opened {
             // Flush any pending #text and suspended children into the current object before closing it
@@ -1356,7 +1432,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                             }
                             self.writer.write_quoted_str("Data")?;
                             self.writer.write_str(":")?;
-                            let mut concatenated = String::new();
+                            let mut total_len = 0usize;
+                            for v in values.iter() {
+                                total_len += v.len();
+                            }
+                            let mut concatenated = String::with_capacity(total_len);
                             for v in values.iter() {
                                 concatenated.push_str(v);
                             }
@@ -1402,9 +1482,9 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 // If attributes for this base are suspended, we must merge them later. So always suspend text here.
                 // Determine base from the pending key (strip numeric suffix if present)
                 let base_key = if let Some(pos) = key.rfind('_') {
-                    let (prefix, rest) = key.split_at(pos);
-                    if rest.len() > 1 && rest[1..].chars().all(|c| c.is_ascii_digit()) {
-                        prefix.to_string()
+                    let rest = &key[pos + 1..];
+                    if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                        key[..pos].to_string()
                     } else {
                         key.clone()
                     }
@@ -1412,16 +1492,10 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     key.clone()
                 };
 
-                let has_attrs_pending = self.stack[parent_idx]
-                    .suspended_attrs
-                    .as_ref()
-                    .map(|m| m.contains_key(&base_key))
-                    .unwrap_or(false);
-
                 // Always suspend text under base to allow last-one-wins and potential merge with attributes
                 if self.stack[parent_idx].suspended_scalars.is_none() {
                     self.stack[parent_idx].suspended_scalars =
-                        Some(FastMap::with_hasher(ahash::RandomState::new()));
+                        Some(FastMap::with_hasher(self.hasher.clone()));
                 }
                 self.stack[parent_idx]
                     .suspended_scalars
@@ -1452,14 +1526,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 }
                 let key_cloned = self.stack[idx].pending_key.clone();
                 if let (Some(parent_idx), Some(key)) = (parent_idx, key_cloned) {
-                    if std::env::var("EVTX_DEBUG_EVENTDATA").is_ok()
-                        && element.name.as_str() == "EventData"
-                    {
-                        eprintln!(
-                            "[stream] close EventData -> writing null (parent_idx={})",
-                            parent_idx
-                        );
-                    }
+                    // debug logging removed in release
                     // If this is an EventData/UserData with aggregated values collected, emit them
                     if self.stack[idx].element_is_eventdata {
                         if let Some(values) = self.stack[idx].aggregated_data_values.take() {
@@ -1492,15 +1559,6 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         self.writer.write_str("null")?;
                     }
                 }
-            } else if std::env::var("EVTX_DEBUG_EVENTDATA").is_ok()
-                && element.name.as_str() == "EventData"
-            {
-                eprintln!(
-                    "[stream] close EventData -> skipping (opened={}, wrote_scalar={}, separated_attr={})",
-                    self.stack[idx].object_opened,
-                    self.stack[idx].wrote_scalar,
-                    self.stack[idx].separated_attr_emitted
-                );
             }
             self.stack.pop();
         }
