@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::io::{Result as IoResult, Write};
 
 use hashbrown::HashMap as FastMap;
-use hashbrown::hash_map::Entry;
+// Entry not needed after simplifying duplicate counter access
 use quick_xml::events::BytesText;
 // itoa/ryu used via fully-qualified paths in helpers; avoid importing single components
 
@@ -33,8 +33,11 @@ fn append_usize(s: &mut String, n: usize) {
 
 #[derive(Clone)]
 enum FlatScalar {
-    RawNumber(String),
     Quoted(String),
+    I64(i64),
+    U64(u64),
+    F32(f32),
+    F64(f64),
     Bool(bool),
 }
 
@@ -148,6 +151,9 @@ struct ObjectContext {
     element_is_eventdata: bool,
     // If set, accumulates <Data>...</Data> text values under this container
     aggregated_data_values: Option<Vec<String>>,
+    // When separate_json_attributes=true, we also build a single concatenated string to avoid
+    // array allocations and repeated joins at close time
+    aggregated_data_concat: Option<String>,
     // True when this context represents a synthetic child for aggregated <Data> (we don't emit output on close)
     is_aggregated_data_child: bool,
     // Collects character content for this element until close; allows upgrading to arrays and merging
@@ -197,6 +203,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 separated_attr_emitted: false,
                 element_is_eventdata: false,
                 aggregated_data_values: None,
+                aggregated_data_concat: None,
                 is_aggregated_data_child: false,
                 pending_text: None,
                 suspended_scalars: None,
@@ -311,22 +318,19 @@ impl<W: Write> JsonStreamOutput<W> {
         // Use parent's duplicate counters to allocate a unique key.
         self.ensure_root();
         let parent = self.stack.last_mut().unwrap();
-        match parent.dup_counters.entry(base.to_owned()) {
-            Entry::Occupied(mut e) => {
-                let idx = *e.get();
-                *e.get_mut() = idx + 1;
-                // Build "base_idx" efficiently
-                let mut s = String::with_capacity(base.len() + 1 + decimal_len(idx));
-                s.push_str(base);
-                s.push('_');
-                append_usize(&mut s, idx);
-                s
-            }
-            Entry::Vacant(e) => {
-                // First occurrence: record that the next duplicate should be _2
-                e.insert(2);
-                base.to_owned()
-            }
+        if let Some(idx_ref) = parent.dup_counters.get_mut(base) {
+            let idx = *idx_ref;
+            *idx_ref = idx + 1;
+            // Build "base_idx" efficiently
+            let mut s = String::with_capacity(base.len() + 1 + decimal_len(idx));
+            s.push_str(base);
+            s.push('_');
+            append_usize(&mut s, idx);
+            s
+        } else {
+            // First occurrence: record that the next duplicate should be _2
+            parent.dup_counters.insert(base.to_owned(), 2);
+            base.to_owned()
         }
     }
 
@@ -348,10 +352,14 @@ impl<W: Write> JsonStreamOutput<W> {
                 }
                 let n = {
                     let ctrs = self.stack[parent_idx].next_dup_index.as_mut().unwrap();
-                    let entry = ctrs.entry(base.to_owned()).or_insert(1);
-                    let v = *entry;
-                    *entry += 1;
-                    v
+                    if let Some(entry) = ctrs.get_mut(base) {
+                        let v = *entry;
+                        *entry += 1;
+                        v
+                    } else {
+                        ctrs.insert(base.to_owned(), 2);
+                        1
+                    }
                 };
                 let mut dup_key = String::with_capacity(base.len() + 1 + decimal_len(n));
                 dup_key.push_str(base);
@@ -667,52 +675,19 @@ impl<W: Write> JsonStreamOutput<W> {
         match value {
             BinXmlValue::StringType(s) => Some(FlatScalar::Quoted(s.clone())),
             BinXmlValue::AnsiStringType(s) => Some(FlatScalar::Quoted(s.as_ref().to_string())),
-            BinXmlValue::Int8Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as i64).to_owned()))
-            }
-            BinXmlValue::UInt8Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
-            }
-            BinXmlValue::Int16Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as i64).to_owned()))
-            }
-            BinXmlValue::UInt16Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
-            }
-            BinXmlValue::Int32Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as i64).to_owned()))
-            }
-            BinXmlValue::UInt32Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
-            }
-            BinXmlValue::Int64Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n).to_owned()))
-            }
-            BinXmlValue::UInt64Type(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n).to_owned()))
-            }
-            BinXmlValue::Real32Type(n) => {
-                let mut b = ryu::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as f32).to_owned()))
-            }
-            BinXmlValue::Real64Type(n) => {
-                let mut b = ryu::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n).to_owned()))
-            }
+            BinXmlValue::Int8Type(n) => Some(FlatScalar::I64(*n as i64)),
+            BinXmlValue::UInt8Type(n) => Some(FlatScalar::U64(*n as u64)),
+            BinXmlValue::Int16Type(n) => Some(FlatScalar::I64(*n as i64)),
+            BinXmlValue::UInt16Type(n) => Some(FlatScalar::U64(*n as u64)),
+            BinXmlValue::Int32Type(n) => Some(FlatScalar::I64(*n as i64)),
+            BinXmlValue::UInt32Type(n) => Some(FlatScalar::U64(*n as u64)),
+            BinXmlValue::Int64Type(n) => Some(FlatScalar::I64(*n)),
+            BinXmlValue::UInt64Type(n) => Some(FlatScalar::U64(*n)),
+            BinXmlValue::Real32Type(n) => Some(FlatScalar::F32(*n as f32)),
+            BinXmlValue::Real64Type(n) => Some(FlatScalar::F64(*n)),
             BinXmlValue::BoolType(b) => Some(FlatScalar::Bool(*b)),
             BinXmlValue::GuidType(g) => Some(FlatScalar::Quoted(g.to_string())),
-            BinXmlValue::SizeTType(n) => {
-                let mut b = itoa::Buffer::new();
-                Some(FlatScalar::RawNumber(b.format(*n as u64).to_owned()))
-            }
+            BinXmlValue::SizeTType(n) => Some(FlatScalar::U64(*n as u64)),
             BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => Some(
                 FlatScalar::Quoted(dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
             ),
@@ -754,94 +729,34 @@ impl<W: Write> JsonStreamOutput<W> {
                     .collect(),
             )),
             BinXmlValue::Int8ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as i64).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::I64(*n as i64)).collect(),
             )),
             BinXmlValue::UInt8ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as u64).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::U64(*n as u64)).collect(),
             )),
             BinXmlValue::Int16ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as i64).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::I64(*n as i64)).collect(),
             )),
             BinXmlValue::UInt16ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as u64).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::U64(*n as u64)).collect(),
             )),
             BinXmlValue::Int32ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as i64).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::I64(*n as i64)).collect(),
             )),
             BinXmlValue::UInt32ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as u64).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::U64(*n as u64)).collect(),
             )),
             BinXmlValue::Int64ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::I64(*n)).collect(),
             )),
             BinXmlValue::UInt64ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = itoa::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::U64(*n)).collect(),
             )),
             BinXmlValue::Real32ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = ryu::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n as f32).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::F32(*n as f32)).collect(),
             )),
             BinXmlValue::Real64ArrayType(values) => Some(TextValue::Array(
-                values
-                    .iter()
-                    .map(|n| {
-                        let mut b = ryu::Buffer::new();
-                        FlatScalar::RawNumber(b.format(*n).to_owned())
-                    })
-                    .collect(),
+                values.iter().map(|n| FlatScalar::F64(*n)).collect(),
             )),
             BinXmlValue::BoolArrayType(values) => Some(TextValue::Array(
                 values.iter().map(|b| FlatScalar::Bool(*b)).collect(),
@@ -888,8 +803,11 @@ impl<W: Write> JsonStreamOutput<W> {
 
     fn write_flat_scalar(&mut self, s: &FlatScalar) -> SerializationResult<()> {
         match s {
-            FlatScalar::RawNumber(n) => self.writer.write_str(n)?,
             FlatScalar::Quoted(q) => self.writer.write_quoted_str(q)?,
+            FlatScalar::I64(n) => self.writer.write_i64(*n)?,
+            FlatScalar::U64(n) => self.writer.write_u64(*n)?,
+            FlatScalar::F32(n) => self.writer.write_f32(*n)?,
+            FlatScalar::F64(n) => self.writer.write_f64(*n)?,
             FlatScalar::Bool(b) => self.writer.write_str(if *b { "true" } else { "false" })?,
         }
         Ok(())
@@ -970,7 +888,8 @@ impl<W: Write> JsonStreamOutput<W> {
                 if let TextValue::Scalar(s) = item {
                     match s {
                         FlatScalar::Quoted(q) => total_len += q.len(),
-                        FlatScalar::RawNumber(n) => total_len += n.len(),
+                        FlatScalar::I64(_) | FlatScalar::U64(_) => total_len += 20, // worst-case
+                        FlatScalar::F32(_) | FlatScalar::F64(_) => total_len += 24, // worst-case
                         FlatScalar::Bool(b) => total_len += if *b { 4 } else { 5 },
                     }
                 }
@@ -980,7 +899,22 @@ impl<W: Write> JsonStreamOutput<W> {
                 if let TextValue::Scalar(s) = item {
                     match s {
                         FlatScalar::Quoted(q) => concatenated.push_str(&q),
-                        FlatScalar::RawNumber(n) => concatenated.push_str(&n),
+                        FlatScalar::I64(n) => {
+                            let mut b = itoa::Buffer::new();
+                            concatenated.push_str(b.format(n));
+                        }
+                        FlatScalar::U64(n) => {
+                            let mut b = itoa::Buffer::new();
+                            concatenated.push_str(b.format(n));
+                        }
+                        FlatScalar::F32(n) => {
+                            let mut b = ryu::Buffer::new();
+                            concatenated.push_str(b.format(n));
+                        }
+                        FlatScalar::F64(n) => {
+                            let mut b = ryu::Buffer::new();
+                            concatenated.push_str(b.format(n));
+                        }
                         FlatScalar::Bool(b) => {
                             concatenated.push_str(if b { "true" } else { "false" })
                         }
@@ -1121,6 +1055,7 @@ impl<W: Write> JsonStreamOutput<W> {
             separated_attr_emitted,
             element_is_eventdata: false,
             aggregated_data_values: None,
+            aggregated_data_concat: None,
             is_aggregated_data_child: false,
             pending_text: None,
             suspended_scalars: None,
@@ -1146,6 +1081,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             separated_attr_emitted: false,
             element_is_eventdata: false,
             aggregated_data_values: None,
+            aggregated_data_concat: None,
             is_aggregated_data_child: false,
             pending_text: None,
             suspended_scalars: None,
@@ -1241,6 +1177,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     separated_attr_emitted: false,
                     element_is_eventdata: false,
                     aggregated_data_values: None,
+                    aggregated_data_concat: None,
                     is_aggregated_data_child: true,
                     pending_text: None,
                     suspended_scalars: None,
@@ -1432,14 +1369,21 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                             }
                             self.writer.write_quoted_str("Data")?;
                             self.writer.write_str(":")?;
-                            let mut total_len = 0usize;
-                            for v in values.iter() {
-                                total_len += v.len();
-                            }
-                            let mut concatenated = String::with_capacity(total_len);
-                            for v in values.iter() {
-                                concatenated.push_str(v);
-                            }
+                            // If we had built a concatenated buffer on the fly, prefer it; otherwise join now
+                            let concatenated =
+                                if let Some(buf) = self.stack[idx].aggregated_data_concat.take() {
+                                    buf
+                                } else {
+                                    let mut total_len = 0usize;
+                                    for v in values.iter() {
+                                        total_len += v.len();
+                                    }
+                                    let mut buf = String::with_capacity(total_len);
+                                    for v in values.iter() {
+                                        buf.push_str(v);
+                                    }
+                                    buf
+                                };
                             self.writer.write_quoted_str(&concatenated)?;
                         } else {
                             if self.stack[idx].has_any_field {
@@ -1586,7 +1530,14 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         Cow::Borrowed(v) => v.as_cow_str().into_owned(),
                         Cow::Owned(v) => v.as_cow_str().into_owned(),
                     };
-                    values.push(s);
+                    // Maintain both: vector (for non-separate mode) and concatenated (for separate mode)
+                    values.push(s.clone());
+                    if self.separate_json_attributes {
+                        let buf = self.stack[parent_idx]
+                            .aggregated_data_concat
+                            .get_or_insert_with(|| String::with_capacity(s.len()));
+                        buf.push_str(&s);
+                    }
                     // mark parent as having scalar content
                     self.stack[parent_idx].wrote_scalar = true;
                 }
