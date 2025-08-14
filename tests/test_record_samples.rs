@@ -37,6 +37,19 @@ fn test_event_json_sample() {
 
     let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    // Streaming path should be semantically identical
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+    let first_record_stream = parser_stream
+        .records_json_stream()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&first_record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -55,6 +68,18 @@ fn test_event_json_sample_with_event_data() {
 
     let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+    let first_record_stream = parser_stream
+        .records_json_stream()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&first_record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -90,6 +115,18 @@ fn test_event_json_sample_with_event_data_with_attributes_and_text() {
 
     let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+    let first_record_stream = parser_stream
+        .records_json_stream()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&first_record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -199,6 +236,18 @@ fn test_event_json_with_size_t() {
 
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+    let record_stream = parser_stream
+        .records_json_stream()
+        .filter_map(|record| record.ok())
+        .find(|record| record.event_record_id == 196)
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -219,6 +268,18 @@ fn test_event_json_with_multiple_nodes_same_name() {
 
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(ParserSettings::new().num_threads(1));
+    let record_stream = parser_stream
+        .records_json_stream()
+        .filter_map(|record| record.ok())
+        .find(|record| record.event_record_id == 28)
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -241,6 +302,23 @@ fn test_event_json_sample_with_separate_json_attributes() {
 
     let value: Value = serde_json::from_str(&first_record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    // Streaming path with separate_json_attributes
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+    let first_record_stream = parser_stream
+        .records_json_stream()
+        .next()
+        .expect("to have records")
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&first_record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -291,6 +369,22 @@ fn test_event_json_with_multiple_nodes_same_name_separate() {
 
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+    let record_stream = parser_stream
+        .records_json_stream()
+        .filter_map(|record| record.ok())
+        .find(|record| record.event_record_id == 28)
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -313,6 +407,22 @@ fn test_event_json_multiple_empty_data_nodes_not_ignored() {
 
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+    let record_stream = parser_stream
+        .records_json_stream()
+        .filter_map(|record| record.ok())
+        .next()
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }
 
 #[test]
@@ -335,4 +445,20 @@ fn test_event_json_missing_string_cache_entry() {
 
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
+
+    let mut parser_stream = EvtxParser::from_buffer(evtx_file.to_vec())
+        .unwrap()
+        .with_configuration(
+            ParserSettings::new()
+                .num_threads(1)
+                .separate_json_attributes(true),
+        );
+    let record_stream = parser_stream
+        .records_json_stream()
+        .filter_map(|record| record.ok())
+        .next()
+        .expect("record to parse correctly");
+    let value_stream: Value =
+        serde_json::from_str(&record_stream.data).expect("to parse correctly");
+    assert_eq!(value_stream, value);
 }

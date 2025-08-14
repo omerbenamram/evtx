@@ -634,7 +634,14 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
         BinXMLDeserializedTokens::FragmentHeader(_) | BinXMLDeserializedTokens::AttributeList => {}
         BinXMLDeserializedTokens::OpenStartElement(elem) => {
             let mut builder = XmlElementBuilder::new_in(&chunk.arena);
-            builder.name(expand_string_ref(&elem.name, chunk)?);
+            let name_cow = expand_string_ref(&elem.name, chunk)?;
+            if std::env::var("EVTX_DEBUG_TOKEN_EVENTDATA").is_ok() {
+                let n = name_cow.as_str();
+                if n == "EventData" || n == "UserData" || n == "Event" || n == "System" {
+                    eprintln!("[token] OpenStartElement {}", n);
+                }
+            }
+            builder.name(name_cow);
             *current_element = Some(builder);
         }
         BinXMLDeserializedTokens::Attribute(attr) => {
@@ -650,7 +657,22 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
             if let Some(b) = current_element.as_mut() {
                 b.attribute_value(Cow::Borrowed(value))?;
             } else {
-                visitor.visit_characters(Cow::Borrowed(value))?;
+                match value {
+                    BinXmlValue::BinXmlType(tokens) => {
+                        // Inline-expand nested BinXml fragment directly into the visitor
+                        for t in tokens.iter() {
+                            stream_expand_token(
+                                t,
+                                chunk,
+                                visitor,
+                                element_stack,
+                                current_element,
+                                current_pi,
+                            )?;
+                        }
+                    }
+                    _ => visitor.visit_characters(Cow::Borrowed(value))?,
+                }
             }
         }
         BinXMLDeserializedTokens::CloseStartElement => {
@@ -660,6 +682,12 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                     "close start - Bad parser state",
                 ))?
                 .finish()?;
+            if std::env::var("EVTX_DEBUG_TOKEN_EVENTDATA").is_ok() {
+                let n = element.name.as_str();
+                if n == "EventData" || n == "UserData" || n == "Event" || n == "System" {
+                    eprintln!("[token] CloseStartElement {}", n);
+                }
+            }
             visitor.visit_open_start_element(&element)?;
             element_stack.push(element);
         }
@@ -670,6 +698,12 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                     "close empty - Bad parser state",
                 ))?
                 .finish()?;
+            if std::env::var("EVTX_DEBUG_TOKEN_EVENTDATA").is_ok() {
+                let n = element.name.as_str();
+                if n == "EventData" || n == "UserData" || n == "Event" || n == "System" {
+                    eprintln!("[token] CloseEmptyElement {}", n);
+                }
+            }
             visitor.visit_open_start_element(&element)?;
             visitor.visit_close_element(&element)?;
         }
@@ -679,6 +713,12 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 .ok_or(EvtxError::FailedToCreateRecordModel(
                     "close element - Bad parser state",
                 ))?;
+            if std::env::var("EVTX_DEBUG_TOKEN_EVENTDATA").is_ok() {
+                let n = element.name.as_str();
+                if n == "EventData" || n == "UserData" || n == "Event" || n == "System" {
+                    eprintln!("[token] CloseElement {}", n);
+                }
+            }
             visitor.visit_close_element(&element)?;
         }
         BinXMLDeserializedTokens::EntityRef(entity) => {

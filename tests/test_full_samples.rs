@@ -68,6 +68,25 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
         "Failed to parse all records as JSON"
     );
     assert_eq!(actual_err_count, err_count, "XML: Expected errors");
+
+    // Streaming JSON path should match counts as well
+    let mut actual_ok_count = 0;
+    let mut actual_err_count = 0;
+    for r in parser.records_json_stream() {
+        if r.is_ok() {
+            actual_ok_count += 1;
+            if log::log_enabled!(Level::Debug) {
+                println!("{}", r.unwrap().data);
+            }
+        } else {
+            actual_err_count += 1;
+        }
+    }
+    assert_eq!(
+        actual_ok_count, ok_count,
+        "Failed to parse all records as streaming JSON"
+    );
+    assert_eq!(actual_err_count, err_count, "XML: Expected errors");
 }
 
 #[test]
