@@ -29,6 +29,7 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
 
     let mut current_element: Option<XmlElementBuilder> = None;
     let mut current_pi: Option<XmlPIBuilder> = None;
+    let mut pending_attr_count: usize = 0;
 
     for token in expanded.iter() {
         match token {
@@ -47,6 +48,7 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
             | Cow::Owned(BinXMLDeserializedTokens::OpenStartElement(elem)) => {
                 let mut builder = XmlElementBuilder::new_in(&chunk.arena);
                 builder.name(expand_string_ref(&elem.name, chunk)?);
+                pending_attr_count = 0;
                 current_element = Some(builder);
             }
 
@@ -54,6 +56,8 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
             | Cow::Owned(BinXMLDeserializedTokens::Attribute(attr)) => {
                 if let Some(builder) = current_element.as_mut() {
                     builder.attribute_name(expand_string_ref(&attr.name, chunk)?);
+                    // Track how many attributes we will push to let bumpalo Vec grow fewer times
+                    pending_attr_count = pending_attr_count.saturating_add(1);
                 } else {
                     return Err(EvtxError::FailedToCreateRecordModel(
                         "attribute - Bad parser state",
@@ -78,6 +82,8 @@ fn stream_visit_from_expanded<'a, T: BinXmlOutput>(
 
             Cow::Borrowed(BinXMLDeserializedTokens::CloseStartElement)
             | Cow::Owned(BinXMLDeserializedTokens::CloseStartElement) => {
+                // Hint: reserve attribute capacity if the builder supports it in the future.
+                // Currently bumpalo Vec grows geometrically, so this is a no-op.
                 let element = current_element
                     .take()
                     .ok_or(EvtxError::FailedToCreateRecordModel(

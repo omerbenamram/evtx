@@ -57,12 +57,22 @@ impl<W: Write> JsonWriter<W> {
         Self { writer }
     }
 
+    #[inline]
+    fn flush(&mut self) -> IoResult<()> {
+        self.writer.flush()
+    }
+
+    #[inline]
+    fn write_bytes(&mut self, bytes: &[u8]) -> IoResult<()> {
+        self.writer.write_all(bytes)
+    }
+
     fn write_str(&mut self, s: &str) -> IoResult<()> {
-        self.writer.write_all(s.as_bytes())
+        self.write_bytes(s.as_bytes())
     }
 
     fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
-        self.writer.write_all(b"\"")?;
+        self.write_bytes(b"\"")?;
         let bytes = s.as_bytes();
         let mut run_start = 0usize;
         let len = bytes.len();
@@ -73,14 +83,14 @@ impl<W: Write> JsonWriter<W> {
             let needs_escape = matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t') || (b <= 0x1F);
             if needs_escape {
                 if run_start < i {
-                    self.writer.write_all(&bytes[run_start..i])?;
+                    self.write_bytes(&bytes[run_start..i])?;
                 }
                 match b {
-                    b'"' => self.writer.write_all(b"\\\"")?,
-                    b'\\' => self.writer.write_all(b"\\\\")?,
-                    b'\n' => self.writer.write_all(b"\\n")?,
-                    b'\r' => self.writer.write_all(b"\\r")?,
-                    b'\t' => self.writer.write_all(b"\\t")?,
+                    b'"' => self.write_bytes(b"\\\"")?,
+                    b'\\' => self.write_bytes(b"\\\\")?,
+                    b'\n' => self.write_bytes(b"\\n")?,
+                    b'\r' => self.write_bytes(b"\\r")?,
+                    b'\t' => self.write_bytes(b"\\t")?,
                     0x00..=0x1F => {
                         let esc = [
                             b'\\',
@@ -90,7 +100,7 @@ impl<W: Write> JsonWriter<W> {
                             hex[(b >> 4) as usize],
                             hex[(b & 0x0F) as usize],
                         ];
-                        self.writer.write_all(&esc)?;
+                        self.write_bytes(&esc)?;
                     }
                     _ => {}
                 }
@@ -99,9 +109,9 @@ impl<W: Write> JsonWriter<W> {
             i += 1;
         }
         if run_start < len {
-            self.writer.write_all(&bytes[run_start..len])?;
+            self.write_bytes(&bytes[run_start..len])?;
         }
-        self.writer.write_all(b"\"")
+        self.write_bytes(b"\"")
     }
 
     #[inline]
@@ -164,9 +174,10 @@ struct ObjectContext {
     // For parents: next duplicate index for each base when flushing old suspended entries
     next_dup_index: Option<FastMap<String, usize, ahash::RandomState>>,
     // For children: if attributes exist and separate_json_attributes=false, hold attributes until we flush
-    pending_attributes: Option<Vec<(String, FlatScalar)>>,
+    pending_attributes: Option<SmallVec<[(String, FlatScalar); 4]>>,
     // For parents: hold the last unflushed attributes-only child per base key
-    suspended_attrs: Option<FastMap<String, Vec<(String, FlatScalar)>, ahash::RandomState>>,
+    suspended_attrs:
+        Option<FastMap<String, SmallVec<[(String, FlatScalar); 4]>, ahash::RandomState>>,
 }
 
 pub struct JsonStreamOutput<W: Write> {
@@ -189,7 +200,8 @@ impl<W: Write> JsonStreamOutput<W> {
         }
     }
 
-    pub fn into_writer(self) -> W {
+    pub fn into_writer(mut self) -> W {
+        let _ = self.writer.flush();
         self.writer.writer
     }
 
@@ -378,11 +390,11 @@ impl<W: Write> JsonStreamOutput<W> {
             .suspended_scalars
             .take()
             .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
-        let mut attrs: FastMap<String, Vec<(String, FlatScalar)>, ahash::RandomState> = self.stack
-            [idx]
-            .suspended_attrs
-            .take()
-            .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
+        let mut attrs: FastMap<String, SmallVec<[(String, FlatScalar); 4]>, ahash::RandomState> =
+            self.stack[idx]
+                .suspended_attrs
+                .take()
+                .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
 
         // Phase A: flush values, merging attrs if present per base
         for (base, v) in vals.drain() {
@@ -1037,7 +1049,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 prev_vals = Some(vals);
             }
         }
-        let mut prev_attrs: Option<Vec<(String, FlatScalar)>> = None;
+        let mut prev_attrs: Option<SmallVec<[(String, FlatScalar); 4]>> = None;
         if let Some(attrs_map) = self.stack[parent_idx].suspended_attrs.as_mut() {
             if let Some(attrs) = attrs_map.remove(base) {
                 prev_attrs = Some(attrs);
@@ -1149,6 +1161,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             }
         }
         self.writer.write_str("}")?;
+        let _ = self.writer.flush();
         Ok(())
     }
 
@@ -1192,14 +1205,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             // - separate_json_attributes=true: collect text across siblings on parent; emit once at parent close as a single concatenated string
             // - separate_json_attributes=false: open an object and emit { "#text": [...] }
             if self.separate_json_attributes {
-                // Create a synthetic child that funnels text into parent's aggregated_data_values
-                // Ensure parent container has aggregation enabled
+                // Create a synthetic child that funnels text into parent's aggregated_data
+                // Ensure parent container exists and is marked as EventData-like
                 let parent_idx = self.current_index();
                 if !self.stack[parent_idx].element_is_eventdata {
                     self.stack[parent_idx].element_is_eventdata = true;
-                }
-                if self.stack[parent_idx].aggregated_data_values.is_none() {
-                    self.stack[parent_idx].aggregated_data_values = Some(Vec::new());
                 }
                 // Push synthetic child
                 self.stack.push(ObjectContext {
@@ -1302,7 +1312,12 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 if is_eventdata_like {
                     let idx = self.current_index();
                     self.stack[idx].element_is_eventdata = true;
-                    self.stack[idx].aggregated_data_values = Some(Vec::new());
+                    if !self.separate_json_attributes {
+                        self.stack[idx].aggregated_data_values = Some(Vec::new());
+                    } else {
+                        // Avoid allocating the vector in separate mode; concatenated buffer is built on demand in visit_characters
+                        self.stack[idx].aggregated_data_values = None;
+                    }
                 }
             } else {
                 // Do not emit immediately. Suspend attributes under parent to enable last-one-wins unsuffixed.
@@ -1311,8 +1326,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.flush_prev_for_base_into_suffixed_child(parent_idx, base)?;
 
                 // Record current attributes as suspended for this base
-                let mut attrs_vec: Vec<(String, FlatScalar)> =
-                    Vec::with_capacity(element.attributes.len());
+                let mut attrs_vec: SmallVec<[(String, FlatScalar); 4]> = SmallVec::new();
                 for attr in element.attributes.iter() {
                     if !matches!(*attr.value, BinXmlValue::NullType) {
                         // Convert to flat scalar for stable JSON rendering
@@ -1335,7 +1349,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 if is_eventdata_like {
                     let idx = self.current_index();
                     self.stack[idx].element_is_eventdata = true;
-                    self.stack[idx].aggregated_data_values = Some(Vec::new());
+                    if !self.separate_json_attributes {
+                        self.stack[idx].aggregated_data_values = Some(Vec::new());
+                    } else {
+                        self.stack[idx].aggregated_data_values = None;
+                    }
                 }
             }
         } else {
@@ -1361,7 +1379,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             if is_eventdata_like {
                 let idx = self.current_index();
                 self.stack[idx].element_is_eventdata = true;
-                self.stack[idx].aggregated_data_values = Some(Vec::new());
+                if !self.separate_json_attributes {
+                    self.stack[idx].aggregated_data_values = Some(Vec::new());
+                } else {
+                    self.stack[idx].aggregated_data_values = None;
+                }
             }
         }
 
@@ -1394,51 +1416,37 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
 
             // If this is EventData/UserData and we aggregated Data values, emit them before closing
             if self.stack[idx].element_is_eventdata {
-                if let Some(values) = self.stack[idx].aggregated_data_values.take() {
-                    if !values.is_empty() {
-                        if self.separate_json_attributes {
-                            // Concatenate into single string under unsuffixed Data
+                if self.separate_json_attributes {
+                    if let Some(buf) = self.stack[idx].aggregated_data_concat.take() {
+                        if !buf.is_empty() {
                             if self.stack[idx].has_any_field {
                                 self.writer.write_str(",")?;
                             }
                             self.writer.write_quoted_str("Data")?;
                             self.writer.write_str(":")?;
-                            // If we had built a concatenated buffer on the fly, prefer it; otherwise join now
-                            let concatenated =
-                                if let Some(buf) = self.stack[idx].aggregated_data_concat.take() {
-                                    buf
-                                } else {
-                                    let mut total_len = 0usize;
-                                    for v in values.iter() {
-                                        total_len += v.len();
-                                    }
-                                    let mut buf = String::with_capacity(total_len);
-                                    for v in values.iter() {
-                                        buf.push_str(v);
-                                    }
-                                    buf
-                                };
-                            self.writer.write_quoted_str(&concatenated)?;
-                        } else {
-                            if self.stack[idx].has_any_field {
-                                self.writer.write_str(",")?;
-                            }
-                            self.writer.write_quoted_str("Data")?;
-                            self.writer.write_str(":{")?;
-                            self.writer.write_quoted_str("#text")?;
-                            self.writer.write_str(":")?;
-                            self.writer.write_str("[")?;
-                            let mut first = true;
-                            for v in values.iter() {
-                                if !first {
-                                    self.writer.write_str(",")?;
-                                }
-                                first = false;
-                                self.writer.write_quoted_str(v)?;
-                            }
-                            self.writer.write_str("]")?;
-                            self.writer.write_str("}")?;
+                            self.writer.write_quoted_str(&buf)?;
                         }
+                    }
+                } else if let Some(values) = self.stack[idx].aggregated_data_values.take() {
+                    if !values.is_empty() {
+                        if self.stack[idx].has_any_field {
+                            self.writer.write_str(",")?;
+                        }
+                        self.writer.write_quoted_str("Data")?;
+                        self.writer.write_str(":{")?;
+                        self.writer.write_quoted_str("#text")?;
+                        self.writer.write_str(":")?;
+                        self.writer.write_str("[")?;
+                        let mut first = true;
+                        for v in values.iter() {
+                            if !first {
+                                self.writer.write_str(",")?;
+                            }
+                            first = false;
+                            self.writer.write_quoted_str(v)?;
+                        }
+                        self.writer.write_str("]")?;
+                        self.writer.write_str("}")?;
                     }
                 }
             }
@@ -1507,7 +1515,24 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     // debug logging removed in release
                     // If this is an EventData/UserData with aggregated values collected, emit them
                     if self.stack[idx].element_is_eventdata {
-                        if let Some(values) = self.stack[idx].aggregated_data_values.take() {
+                        if self.separate_json_attributes {
+                            if let Some(buf) = self.stack[idx].aggregated_data_concat.take() {
+                                if !buf.is_empty() {
+                                    self.write_key_in(parent_idx, &key)?;
+                                    self.writer.write_str("{")?;
+                                    self.writer.write_quoted_str("Data")?;
+                                    self.writer.write_str(":")?;
+                                    self.writer.write_quoted_str(&buf)?;
+                                    self.writer.write_str("}")?;
+                                } else {
+                                    self.write_key_in(parent_idx, &key)?;
+                                    self.writer.write_str("null")?;
+                                }
+                            } else {
+                                self.write_key_in(parent_idx, &key)?;
+                                self.writer.write_str("null")?;
+                            }
+                        } else if let Some(values) = self.stack[idx].aggregated_data_values.take() {
                             if !values.is_empty() {
                                 self.write_key_in(parent_idx, &key)?;
                                 self.writer.write_str("{")?;
@@ -1557,22 +1582,26 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             // If we're inside synthetic aggregated Data child, collect string and return
             if self.stack[idx].is_aggregated_data_child {
                 let parent_idx = idx - 1;
-                if let Some(values) = self.stack[parent_idx].aggregated_data_values.as_mut() {
-                    let s = match value {
-                        Cow::Borrowed(BinXmlValue::StringType(t)) => t.clone(),
-                        Cow::Borrowed(BinXmlValue::AnsiStringType(t)) => t.as_ref().to_string(),
-                        Cow::Borrowed(v) => v.as_cow_str().into_owned(),
-                        Cow::Owned(v) => v.as_cow_str().into_owned(),
-                    };
-                    // Maintain both: vector (for non-separate mode) and concatenated (for separate mode)
-                    values.push(s.clone());
-                    if self.separate_json_attributes {
-                        let buf = self.stack[parent_idx]
-                            .aggregated_data_concat
-                            .get_or_insert_with(|| String::with_capacity(s.len()));
-                        buf.push_str(&s);
-                    }
+                let s = match value {
+                    Cow::Borrowed(BinXmlValue::StringType(t)) => t.clone(),
+                    Cow::Borrowed(BinXmlValue::AnsiStringType(t)) => t.as_ref().to_string(),
+                    Cow::Borrowed(v) => v.as_cow_str().into_owned(),
+                    Cow::Owned(v) => v.as_cow_str().into_owned(),
+                };
+                if self.separate_json_attributes {
+                    let buf = self.stack[parent_idx]
+                        .aggregated_data_concat
+                        .get_or_insert_with(|| String::with_capacity(s.len()));
+                    buf.push_str(&s);
                     // mark parent as having scalar content
+                    self.stack[parent_idx].wrote_scalar = true;
+                } else {
+                    if self.stack[parent_idx].aggregated_data_values.is_none() {
+                        self.stack[parent_idx].aggregated_data_values = Some(Vec::new());
+                    }
+                    if let Some(values) = self.stack[parent_idx].aggregated_data_values.as_mut() {
+                        values.push(s);
+                    }
                     self.stack[parent_idx].wrote_scalar = true;
                 }
                 return Ok(());
