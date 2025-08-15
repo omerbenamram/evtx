@@ -42,8 +42,12 @@ else
   echo "FlameGraph already present"
 fi
 
-# Clean output directory robustly even if root-owned
-sudo rm -rf "${OUT_DIR}" >/dev/null 2>&1 || true
+# Clean output directory robustly even if root-owned, but avoid interactive sudo prompts
+if sudo -n true >/dev/null 2>&1; then
+  sudo rm -rf "${OUT_DIR}" >/dev/null 2>&1 || true
+else
+  rm -rf "${OUT_DIR}" >/dev/null 2>&1 || true
+fi
 mkdir -p "${OUT_DIR}"
 
 # folded-prod (verbatim Linux branch)
@@ -82,3 +86,40 @@ awk '{ \
 }' "${OUT_DIR}/stacks.folded" | sort -nr > "${OUT_DIR}/top_leaf.txt"
 perl -ne 'if (/<title>([^<]+) \((?:\d+(?:\.\d+)?\s+samples,\s+)?(\d+(?:\.\d+)?)%\)/) { print $2, " ", $1, "\n" }' "${OUT_DIR}/flamegraph.svg" | sort -nr | head -n 30 > "${OUT_DIR}/top_titles.txt"
 echo "Top summaries written to ${OUT_DIR}/top_leaf.txt and ${OUT_DIR}/top_titles.txt"
+
+# Extra analysis: attribute memmove leaf samples to their callers
+MEMMOVE_PATTERN="(_platform_memmove|memmove)"
+awk -v pat="${MEMMOVE_PATTERN}" -v outdir="${OUT_DIR}" '
+BEGIN {
+  immediate_out = outdir "/memmove_callers_immediate.txt";
+  evtx_out = outdir "/memmove_callers_evtx.txt";
+}
+{
+  line = $0;
+  count = 1;
+  if (match(line, / [0-9]+$/)) {
+    count = substr(line, RSTART+1, RLENGTH-1);
+    sub(/ [0-9]+$/, "", line);
+  }
+  n = split(line, frames, ";");
+  leaf = frames[n];
+  if (leaf ~ pat) {
+    if (n > 1) {
+      caller = frames[n-1];
+      imm[caller] += count;
+    }
+    found = "";
+    for (i = n-1; i >= 1; i--) {
+      if (frames[i] ~ /evtx(_dump)?`/) { found = frames[i]; break; }
+    }
+    key = (found != "" ? found : (n > 1 ? frames[n-1] : "<root>"));
+    evtxc[key] += count;
+  }
+}
+END {
+  for (k in imm) printf("%12d %s\n", imm[k], k) > immediate_out;
+  for (k in evtxc) printf("%12d %s\n", evtxc[k], k) > evtx_out;
+}' "${OUT_DIR}/stacks.folded"
+sort -nr "${OUT_DIR}/memmove_callers_immediate.txt" -o "${OUT_DIR}/memmove_callers_immediate.txt" || true
+sort -nr "${OUT_DIR}/memmove_callers_evtx.txt" -o "${OUT_DIR}/memmove_callers_evtx.txt" || true
+echo "Memmove caller summaries written to ${OUT_DIR}/memmove_callers_immediate.txt and ${OUT_DIR}/memmove_callers_evtx.txt"

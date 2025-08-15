@@ -72,11 +72,30 @@ impl<W: Write> JsonWriter<W> {
     }
 
     fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
-        self.write_bytes(b"\"")?;
         let bytes = s.as_bytes();
+        // Fast path: no escapes needed → write '"' + bytes + '"' using a single vectored write.
+        // Check for any characters that would require escaping.
+        let mut has_escape = false;
+        for &b in bytes.iter() {
+            if matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t') || (b <= 0x1F) {
+                has_escape = true;
+                break;
+            }
+        }
+
+        if !has_escape {
+            // Minimal writes without building intermediates.
+            self.writer.write_all(b"\"")?;
+            self.writer.write_all(bytes)?;
+            self.writer.write_all(b"\"")?;
+            return Ok(());
+        }
+
+        // Escape path: stream out runs and escapes without building a large intermediate buffer.
+        self.write_bytes(b"\"")?;
+        let hex = b"0123456789ABCDEF";
         let mut run_start = 0usize;
         let len = bytes.len();
-        let hex = b"0123456789ABCDEF";
         let mut i = 0usize;
         while i < len {
             let b = bytes[i];
@@ -194,7 +213,7 @@ impl<W: Write> JsonStreamOutput<W> {
     pub fn with_writer(writer: W, settings: &ParserSettings) -> Self {
         Self {
             writer: JsonWriter::new(writer),
-            stack: Vec::new(),
+            stack: Vec::with_capacity(64),
             separate_json_attributes: settings.should_separate_json_attributes(),
             hasher: ahash::RandomState::new(),
         }
@@ -209,7 +228,7 @@ impl<W: Write> JsonStreamOutput<W> {
         if self.stack.is_empty() {
             self.stack.push(ObjectContext {
                 has_any_field: false,
-                dup_counters: FastMap::with_hasher(self.hasher.clone()),
+                dup_counters: FastMap::with_capacity_and_hasher(8, self.hasher.clone()),
                 pending_key: None,
                 object_opened: true,
                 wrote_scalar: false,
@@ -386,15 +405,20 @@ impl<W: Write> JsonStreamOutput<W> {
 
     fn flush_all_suspended_into_object(&mut self, idx: usize) -> SerializationResult<()> {
         // Take suspended maps out to avoid borrow conflicts during writes
+        // Fast path: nothing suspended → nothing to flush.
+        if self.stack[idx].suspended_scalars.is_none() && self.stack[idx].suspended_attrs.is_none()
+        {
+            return Ok(());
+        }
         let mut vals: FastMap<String, Vec<TextValue>, ahash::RandomState> = self.stack[idx]
             .suspended_scalars
             .take()
-            .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
+            .unwrap_or_else(|| FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
         let mut attrs: FastMap<String, SmallVec<[(String, FlatScalar); 4]>, ahash::RandomState> =
             self.stack[idx]
                 .suspended_attrs
                 .take()
-                .unwrap_or_else(|| FastMap::with_hasher(self.hasher.clone()));
+                .unwrap_or_else(|| FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
 
         // Phase A: flush values, merging attrs if present per base
         for (base, v) in vals.drain() {
@@ -1094,7 +1118,7 @@ impl<W: Write> JsonStreamOutput<W> {
     fn push_deferred_element(&mut self, key: String, separated_attr_emitted: bool) {
         self.stack.push(ObjectContext {
             has_any_field: false,
-            dup_counters: FastMap::with_hasher(self.hasher.clone()),
+            dup_counters: FastMap::with_capacity_and_hasher(8, self.hasher.clone()),
             pending_key: Some(key),
             object_opened: false,
             wrote_scalar: false,
@@ -1120,7 +1144,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         self.writer.write_str("{")?;
         self.stack.push(ObjectContext {
             has_any_field: false,
-            dup_counters: FastMap::with_hasher(self.hasher.clone()),
+            dup_counters: FastMap::with_capacity_and_hasher(8, self.hasher.clone()),
             pending_key: None,
             object_opened: true,
             wrote_scalar: false,
@@ -1188,11 +1212,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 let parent_idx = self.current_index();
                 if self.stack[parent_idx].suspended_scalars.is_none() {
                     self.stack[parent_idx].suspended_scalars =
-                        Some(FastMap::with_hasher(self.hasher.clone()));
+                        Some(FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
                 }
                 if self.stack[parent_idx].suspended_attrs.is_none() {
                     self.stack[parent_idx].suspended_attrs =
-                        Some(FastMap::with_hasher(self.hasher.clone()));
+                        Some(FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
                 }
                 self.flush_prev_for_base_into_suffixed_child(parent_idx, &k)?;
 
@@ -1214,7 +1238,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 // Push synthetic child
                 self.stack.push(ObjectContext {
                     has_any_field: false,
-                    dup_counters: FastMap::with_hasher(self.hasher.clone()),
+                    dup_counters: FastMap::with_capacity_and_hasher(4, self.hasher.clone()),
                     pending_key: None,
                     object_opened: false,
                     wrote_scalar: false,
@@ -1326,7 +1350,14 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.flush_prev_for_base_into_suffixed_child(parent_idx, base)?;
 
                 // Record current attributes as suspended for this base
-                let mut attrs_vec: SmallVec<[(String, FlatScalar); 4]> = SmallVec::new();
+                let mut non_null_count = 0usize;
+                for attr in element.attributes.iter() {
+                    if !matches!(*attr.value, BinXmlValue::NullType) {
+                        non_null_count += 1;
+                    }
+                }
+                let mut attrs_vec: SmallVec<[(String, FlatScalar); 4]> =
+                    SmallVec::with_capacity(non_null_count.min(4));
                 for attr in element.attributes.iter() {
                     if !matches!(*attr.value, BinXmlValue::NullType) {
                         // Convert to flat scalar for stable JSON rendering
@@ -1337,7 +1368,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 }
                 if self.stack[parent_idx].suspended_attrs.is_none() {
                     self.stack[parent_idx].suspended_attrs =
-                        Some(FastMap::with_hasher(self.hasher.clone()));
+                        Some(FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
                 }
                 self.stack[parent_idx]
                     .suspended_attrs
@@ -1365,11 +1396,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 // Ensure maps exist before suspension
                 if self.stack[parent_idx].suspended_scalars.is_none() {
                     self.stack[parent_idx].suspended_scalars =
-                        Some(FastMap::with_hasher(self.hasher.clone()));
+                        Some(FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
                 }
                 if self.stack[parent_idx].suspended_attrs.is_none() {
                     self.stack[parent_idx].suspended_attrs =
-                        Some(FastMap::with_hasher(self.hasher.clone()));
+                        Some(FastMap::with_capacity_and_hasher(4, self.hasher.clone()));
                 }
                 // Flush any prior suspended (scalars and/or attrs) for this base
                 self.flush_prev_for_base_into_suffixed_child(parent_idx, base)?;
