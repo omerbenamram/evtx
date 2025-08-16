@@ -56,6 +56,36 @@ fn append_usize(s: &mut String, n: usize) {
     s.push_str(buf.format(n));
 }
 
+#[inline]
+fn split_numeric_suffix(key: &str) -> Option<(&str, usize)> {
+    // Scan ASCII digits at the end of `key` and ensure they are preceded by an underscore.
+    let bytes = key.as_bytes();
+    let mut i = bytes.len();
+    if i == 0 {
+        return None;
+    }
+    let mut value: usize = 0;
+    let mut place: usize = 1;
+    let mut saw_digit = false;
+    while i > 0 {
+        let b = bytes[i - 1];
+        if b.is_ascii_digit() {
+            saw_digit = true;
+            let digit = (b - b'0') as usize;
+            value = value.checked_add(digit.checked_mul(place)?)?;
+            place = place.checked_mul(10)?;
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    if !saw_digit || i == 0 || bytes[i - 1] != b'_' {
+        return None;
+    }
+    // Base excludes the underscore; digits are guaranteed to be at the end
+    Some((&key[..i - 1], value))
+}
+
 #[derive(Clone)]
 enum FlatScalar {
     Quoted(String),
@@ -211,13 +241,8 @@ impl<W: Write> JsonStreamOutput<W> {
         self.stack[idx].has_any_field = false;
 
         // If parent has suspended attributes for this base, emit them inline now as #attributes
-        let base = if let Some(pos) = pending_key.rfind('_') {
-            let rest = &pending_key[pos + 1..];
-            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-                pending_key[..pos].to_string()
-            } else {
-                pending_key.clone()
-            }
+        let base = if let Some((b, _)) = split_numeric_suffix(&pending_key) {
+            b.to_string()
         } else {
             pending_key.clone()
         };
@@ -665,19 +690,6 @@ impl<W: Write> JsonStreamOutput<W> {
     }
 
     #[inline]
-    fn write_attributes_object(
-        &mut self,
-        attrs: &[(String, FlatScalar)],
-    ) -> SerializationResult<()> {
-        self.writer
-            .write_object_pairs(attrs.iter(), |w, (name, val)| {
-                w.write_key(name)?;
-                Self::write_flat_scalar_into_writer(w, val)
-            })?;
-        Ok(())
-    }
-
-    #[inline]
     fn write_key_attributes_object(
         &mut self,
         key: &str,
@@ -950,23 +962,17 @@ impl<W: Write> JsonStreamOutput<W> {
     #[inline]
     fn compute_attributes_sibling_key(key: &str) -> String {
         // For separate_json_attributes, expected numbering for duplicates starts at _1 for the
-        // second occurrence. Our general allocator returns base, base_2, base_3, ... so we remap
-        // attribute suffix by subtracting 1.
-        if let Some(pos) = key.rfind('_') {
-            let base = &key[..pos];
-            let rest = &key[pos + 1..];
-            if let Ok(n) = rest.parse::<usize>() {
-                // Capacity: base + optional "_" + digits(n-1) + "_attributes"
-                let extra = if n > 1 { 1 + decimal_len(n - 1) } else { 0 };
-                let mut s = String::with_capacity(base.len() + "_attributes".len() + extra);
-                s.push_str(base);
-                if n > 1 {
-                    s.push('_');
-                    append_usize(&mut s, n - 1);
-                }
-                s.push_str("_attributes");
-                return s;
+        // second occurrence. Our general allocator returns base, base_2, base_3, ...
+        if let Some((base, n)) = split_numeric_suffix(key) {
+            let extra = if n > 1 { 1 + decimal_len(n - 1) } else { 0 };
+            let mut s = String::with_capacity(base.len() + "_attributes".len() + extra);
+            s.push_str(base);
+            if n > 1 {
+                s.push('_');
+                append_usize(&mut s, n - 1);
             }
+            s.push_str("_attributes");
+            return s;
         }
         let mut s = String::with_capacity(key.len() + "_attributes".len());
         s.push_str(key);
@@ -1083,13 +1089,11 @@ impl<W: Write> JsonStreamOutput<W> {
 
     #[inline]
     fn strip_numeric_suffix_if_any(key: &str) -> String {
-        if let Some(pos) = key.rfind('_') {
-            let rest = &key[pos + 1..];
-            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-                return key[..pos].to_string();
-            }
+        if let Some((base, _)) = split_numeric_suffix(key) {
+            base.to_string()
+        } else {
+            key.to_string()
         }
-        key.to_string()
     }
 
     fn emit_eventdata_aggregated_on_close_opened(&mut self, idx: usize) -> SerializationResult<()> {
