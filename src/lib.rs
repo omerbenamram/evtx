@@ -30,9 +30,11 @@ mod template_cache;
 mod utils;
 
 mod json_output;
-mod xml_output;
 mod json_stream_output;
+mod xml_output;
 pub use json_stream_output::JsonStreamOutput;
+mod json_writer;
+pub use json_writer::JsonWriter;
 
 // New: arena support
 mod arena;

@@ -14,14 +14,10 @@ use crate::binxml::name::BinXmlName;
 use crate::err::SerializationError::JsonStructureError;
 use quick_xml::events::BytesText;
 
-use hashbrown::HashMap as FastMap;
-
 pub struct JsonOutput {
     map: Value,
     stack: Vec<String>,
     separate_json_attributes: bool,
-    // Per-parent map of duplicate counters for child keys to avoid repeated linear scans
-    dup_counters_stack: Vec<FastMap<String, usize, ahash::RandomState>>,
 }
 
 impl JsonOutput {
@@ -30,97 +26,7 @@ impl JsonOutput {
             map: Value::Object(Map::new()),
             stack: vec![],
             separate_json_attributes: settings.should_separate_json_attributes(),
-            dup_counters_stack: Vec::new(),
         }
-    }
-
-    /// Return the per-parent duplicate counter map for the current parent depth
-    fn parent_dup_map(&mut self) -> &mut FastMap<String, usize, ahash::RandomState> {
-        let parent_depth = self.stack.len().saturating_sub(1);
-        if self.dup_counters_stack.len() <= parent_depth {
-            // Ensure root exists and maintain alignment with stack depth
-            while self.dup_counters_stack.len() <= parent_depth {
-                self.dup_counters_stack
-                    .push(FastMap::with_hasher(ahash::RandomState::new()));
-            }
-        }
-        &mut self.dup_counters_stack[parent_depth]
-    }
-
-    /// Compute or fetch the next duplicate index for `base` under current parent, scanning at most once.
-    #[allow(dead_code)]
-    fn next_duplicate_index_for(&mut self, container: &Map<String, Value>, base: &str) -> usize {
-        let dup_map = self.parent_dup_map();
-        if let Some(next) = dup_map.get(base) {
-            return *next;
-        }
-        // First duplication for this key in this parent: scan once to find max suffix
-        let mut max_idx = 1usize;
-        let prefix = base;
-        let mut tmp = String::with_capacity(prefix.len() + 1);
-        tmp.push_str(prefix);
-        tmp.push('_');
-        let pref = tmp; // now pref = "base_"
-        for k in container.keys() {
-            if let Some(rest) = k.strip_prefix(&pref) {
-                if let Some((num_part, attr_rest)) = rest.split_once("_") {
-                    // Might be base_N_attributes -> consider N
-                    if attr_rest == "attributes" {
-                        if let Ok(n) = num_part.parse::<usize>() {
-                            if n >= max_idx {
-                                max_idx = n + 1;
-                            }
-                        }
-                        continue;
-                    }
-                }
-                // Otherwise keys like base_N
-                if let Ok(n) = rest.parse::<usize>() {
-                    if n >= max_idx {
-                        max_idx = n + 1;
-                    }
-                }
-            }
-        }
-        dup_map.insert(base.to_owned(), max_idx);
-        max_idx
-    }
-
-    fn next_duplicate_index_from_keys(&mut self, keys: &[String], base: &str) -> usize {
-        let dup_map = self.parent_dup_map();
-        if let Some(next) = dup_map.get(base) {
-            return *next;
-        }
-        let mut max_idx = 1usize;
-        let pref = format!("{}_", base);
-        for k in keys {
-            if let Some(rest) = k.strip_prefix(&pref) {
-                if let Some((num_part, attr_rest)) = rest.split_once("_") {
-                    if attr_rest == "attributes" {
-                        if let Ok(n) = num_part.parse::<usize>() {
-                            if n >= max_idx {
-                                max_idx = n + 1;
-                            }
-                        }
-                        continue;
-                    }
-                }
-                if let Ok(n) = rest.parse::<usize>() {
-                    if n >= max_idx {
-                        max_idx = n + 1;
-                    }
-                }
-            }
-        }
-        dup_map.insert(base.to_owned(), max_idx);
-        max_idx
-    }
-
-    /// Advance the counter for `base` under current parent after using it.
-    fn advance_duplicate_index(&mut self, base: &str) {
-        let dup_map = self.parent_dup_map();
-        let entry = dup_map.entry(base.to_owned()).or_insert(1);
-        *entry += 1;
     }
 
     /// Looks up the current path, will fill with empty objects if needed.
@@ -136,8 +42,9 @@ impl JsonOutput {
                 //       <...>
                 // since system has no attributes it has null and not an empty map.
                 if v_temp.is_null() {
-                    let mut map = Map::with_capacity(1);
+                    let mut map = Map::new();
                     map.insert(key.clone(), Value::Object(Map::new()));
+
                     *v_temp = Value::Object(map);
                 } else if !v_temp.is_object() {
                     // This branch could only happen while `separate-json-attributes` was on,
@@ -157,16 +64,16 @@ impl JsonOutput {
                     //   }
                     // ...
                     // ```
-                    let mut map = Map::with_capacity(1);
+                    let mut map = Map::new();
                     map.insert(key.clone(), v_temp.clone());
+
                     *v_temp = Value::Object(map);
                 } else {
                     let current_object = v_temp
                         .as_object_mut()
                         .expect("!v_temp.is_object was matched above.");
-                    current_object
-                        .entry(key.clone())
-                        .or_insert_with(|| Value::Object(Map::new()));
+
+                    current_object.insert(key.clone(), Value::Object(Map::new()));
                 }
             }
 
@@ -219,51 +126,56 @@ impl JsonOutput {
     ) -> SerializationResult<()> {
         trace!("insert_node_without_attributes");
         self.stack.push(name.to_owned());
-        if self.dup_counters_stack.len() < self.stack.len() {
-            self.dup_counters_stack
-                .push(FastMap::with_hasher(ahash::RandomState::new()));
-        }
 
-        // Stage A: insert placeholder and capture old value + current keys
-        let (old_value, keys): (Option<Value>, Vec<String>) = {
-            let parent = self.get_current_parent();
-            let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                SerializationError::JsonStructureError { message:
-                "This is a bug - expected parent container to exist, and to be an object type.\
-                          Check that the referencing parent is not `Value::null`".to_string(), }
-            })?;
-            let old_value = parent_obj.insert(name.to_string(), Value::Null);
-            let keys = parent_obj.keys().cloned().collect();
-            (old_value, keys)
-        };
+        let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
+            SerializationError::JsonStructureError {
+                message:
+                    "This is a bug - expected parent container to exist, and to be an object type.\
+                     Check that the referencing parent is not `Value::null`"
+                        .to_string(),
+            }
+        })?;
 
-        if let Some(old_value) = old_value {
+        // We do a linear probe in case XML contains duplicate keys like so:
+        //    <HTTPResponseHeadersInfo>
+        //        <Header>HTTP/1.1 200 OK</Header>
+        //        <Header>x-ms-version: 2009-09-19</Header>
+        //        <Header>x-ms-lease-status: unlocked</Header>
+        //        <Header>x-ms-blob-type: BlockBlob</Header>
+        //    </HTTPResponseHeadersInfo>
+        //
+        // Insertions should look like:
+        //
+        //    {"Header": Object({})}
+        //    {"Header": String("HTTP/1.1 200 OK")}
+        //    {"Header": String("x-ms-version: 2009-09-19"), "Header_1": String("HTTP/1.1 200 OK")}
+        //   ....
+        //
+        if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+            // Value should move to next slot, key should remain free to allow for next value.
+
+            // If old value is a placeholder, we don't yet move it, to avoid creating empty placeholers.
+            // A placeholder can be either a `Null` or an empty Map.
             if old_value.is_null() {
                 return Ok(());
             }
+
             if let Some(map) = old_value.as_object() {
                 if map.is_empty() {
                     return Ok(());
                 }
             }
 
-            let next_idx = self.next_duplicate_index_from_keys(&keys, name);
+            let mut free_slot = 1;
 
-            // Stage B: move old value to suffixed key
-            {
-                let parent = self.get_current_parent();
-                let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                    SerializationError::JsonStructureError {
-                        message: "Expected parent to be an object".to_string(),
-                    }
-                })?;
-                let dup_key = format!("{}_{}", name, next_idx);
-                parent_obj.insert(dup_key, old_value);
+            // If it is a concrete value, we look for another slot.
+            while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                // Value is an empty object - we can override it's value.
+                free_slot += 1
             }
 
-            // After map borrows are dropped, advance counter
-            self.advance_duplicate_index(name);
-        }
+            container.insert(format!("{}_{}", name, free_slot), old_value);
+        };
 
         Ok(())
     }
@@ -275,134 +187,113 @@ impl JsonOutput {
     ) -> SerializationResult<()> {
         trace!("insert_node_with_attributes");
         self.stack.push(name.to_owned());
-        if self.dup_counters_stack.len() < self.stack.len() {
-            self.dup_counters_stack
-                .push(FastMap::with_hasher(ahash::RandomState::new()));
-        }
 
-        let mut attributes = Map::with_capacity(element.attributes.len());
+        let mut attributes = Map::new();
+
         for attribute in element.attributes.iter() {
             let value = attribute.value.clone().into_owned();
             let value: Value = value.into();
+
             if !value.is_null() {
                 let name: &str = attribute.name.as_str();
                 attributes.insert(name.to_owned(), value);
             }
         }
 
+        // If we have attributes, create a map as usual.
         if !attributes.is_empty() {
             if self.separate_json_attributes {
-                // Stage A: insert placeholders for attributes and name, capture old values and keys
-                let (old_attr, old_val, keys): (Option<Value>, Option<Value>, Vec<String>) = {
-                    let attr_key = format!("{}_attributes", name);
-                    let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| SerializationError::JsonStructureError { message:
-                        "This is a bug - expected current value to exist, and to be an object type.\n                        Check that the value is not `Value::null`".to_string(), })?;
-                    let old_attr = parent_obj.insert(attr_key, Value::Null);
-                    let old_val = parent_obj.insert(name.to_string(), Value::Null);
-                    let keys = parent_obj.keys().cloned().collect();
-                    (old_attr, old_val, keys)
+                // If we are separating the attributes we want
+                // to insert the object for the attributes
+                // into the parent.
+                let value = self.get_current_parent().as_object_mut().ok_or_else(|| {
+                    SerializationError::JsonStructureError {
+                    message:
+                        "This is a bug - expected current value to exist, and to be an object type.
+                        Check that the value is not `Value::null`"
+                            .to_string(),
+                }
+                })?;
+                // We do a linear probe in case XML contains duplicate keys
+                if let Some(old_attribute) =
+                    value.insert(format!("{}_attributes", name), Value::Null)
+                {
+                    if let Some(old_value) = value.insert(name.to_string(), Value::Null) {
+                        let mut free_slot = 1;
+                        // If it is a concrete value, we look for another slot.
+                        while value.get(&format!("{}_{}", name, free_slot)).is_some()
+                            || value
+                                .get(&format!("{}_{}_attributes", name, free_slot))
+                                .is_some()
+                        {
+                            // Value is an empty object - we can override it's value.
+                            free_slot += 1
+                        }
+                        if let Some(old_value_object) = old_value.as_object() {
+                            if !old_value_object.is_empty() {
+                                value.insert(format!("{}_{}", name, free_slot), old_value);
+                            }
+                        };
+                        if let Some(old_attribute_object) = old_attribute.as_object() {
+                            if !old_attribute_object.is_empty() {
+                                value.insert(
+                                    format!("{}_{}_attributes", name, free_slot),
+                                    old_attribute,
+                                );
+                            };
+                        };
+                    };
                 };
 
-                let next_idx = self.next_duplicate_index_from_keys(&keys, name);
+                value.insert(format!("{}_attributes", name), Value::Object(attributes));
 
-                // Stage B: move old values to suffixed keys if non-empty objects
-                {
-                    let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError {
-                            message: "Expected parent to be an object".to_string(),
-                        }
-                    })?;
-
-                    if let Some(v) = old_val {
-                        if v.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
-                            let value_key = format!("{}_{}", name, next_idx);
-                            parent_obj.insert(value_key, v);
-                        }
-                    }
-                    if let Some(a) = old_attr {
-                        if a.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
-                            let attr_dup_key = format!("{}_{}_attributes", name, next_idx);
-                            parent_obj.insert(attr_dup_key, a);
-                        }
-                    }
-                }
-
-                // Advance counter now that moves are complete
-                self.advance_duplicate_index(name);
-
-                // Stage C: set current attributes object and clean empty value placeholder
-                {
-                    let attr_key = format!("{}_attributes", name);
-                    let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError {
-                            message: "Expected parent to be an object".to_string(),
-                        }
-                    })?;
-                    parent_obj.insert(attr_key, Value::Object(attributes));
-                    if parent_obj
-                        .get(name)
-                        .map(|v| {
-                            v.is_null() || v.as_object().map(|m| m.is_empty()).unwrap_or(false)
-                        })
-                        .unwrap_or(false)
-                    {
-                        parent_obj.remove(name);
-                    }
+                // If the element's main value is empty, we want to remove it because we
+                // do not want the value to represent an empty object.
+                if value[name].is_null() || value[name] == Value::Object(Map::new()) {
+                    value.remove(name);
                 }
             } else {
-                // Stage A: insert placeholder for name, capture old value and keys
-                let (old_val, keys): (Option<Value>, Vec<String>) = {
-                    let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| SerializationError::JsonStructureError { message:
-                        "This is a bug - expected parent container to exist, and to be an object type.\
-                                Check that the referencing parent is not `Value::null`".to_string(),})?;
-                    let old_val = parent_obj.insert(name.to_string(), Value::Null);
-                    let keys = parent_obj.keys().cloned().collect();
-                    (old_val, keys)
+                let container = self.get_current_parent().as_object_mut().ok_or_else(|| {
+                    SerializationError::JsonStructureError {
+                        message:
+                            "This is a bug - expected parent container to exist, and to be an object type.\
+                                Check that the referencing parent is not `Value::null`"
+                                .to_string(),
+                    }
+                })?;
+                // We do a linear probe in case XML contains duplicate keys
+                if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
+                    if let Some(map) = old_value.as_object() {
+                        if !map.is_empty() {
+                            let mut free_slot = 1;
+                            // If it is a concrete value, we look for another slot.
+                            while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                                // Value is an empty object - we can override it's value.
+                                free_slot += 1
+                            }
+                            container.insert(format!("{}_{}", name, free_slot), old_value);
+                        }
+                    }
                 };
 
-                let next_idx = self.next_duplicate_index_from_keys(&keys, name);
-
-                // Stage B: move old value if non-empty object and set new attributes object
-                {
-                    let parent = self.get_current_parent();
-                    let parent_obj = parent.as_object_mut().ok_or_else(|| {
-                        SerializationError::JsonStructureError {
-                            message: "Expected parent to be an object".to_string(),
-                        }
-                    })?;
-
-                    let mut needs_advance = false;
-                    if let Some(old_value) = old_val {
-                        if let Some(map) = old_value.as_object() {
-                            if !map.is_empty() {
-                                let dup_key = format!("{}_{}", name, next_idx);
-                                parent_obj.insert(dup_key, old_value);
-                                needs_advance = true;
-                            }
-                        }
-                    }
-
-                    let mut value = Map::with_capacity(1);
-                    value.insert("#attributes".to_owned(), Value::Object(attributes));
-                    parent_obj.insert(name.to_string(), Value::Object(value));
-
-                    let _ = parent_obj;
-                    let _ = parent;
-
-                    if needs_advance {
-                        self.advance_duplicate_index(name);
-                    }
-                }
+                let mut value = Map::new();
+                value.insert("#attributes".to_owned(), Value::Object(attributes));
+                container.insert(name.to_string(), Value::Object(value));
             }
         } else {
-            let parent = self.get_current_parent();
-            let parent_obj = parent.as_object_mut().ok_or(SerializationError::JsonStructureError { message:
-                "This is a bug - expected current value to exist, and to be an object type.\n                         Check that the value is not `Value::null`".to_string(), })?;
-            parent_obj.insert(name.to_string(), Value::Null);
+            // If the object does not have attributes, replace it with a null placeholder,
+            // so it will be printed as a key-value pair
+            let value =
+                self.get_current_parent()
+                    .as_object_mut()
+                    .ok_or(SerializationError::JsonStructureError {
+                    message:
+                        "This is a bug - expected current value to exist, and to be an object type.
+                         Check that the value is not `Value::null`"
+                            .to_string(),
+                })?;
+
+            value.insert(name.to_string(), Value::Null);
         }
 
         Ok(())
@@ -443,8 +334,6 @@ impl BinXmlOutput for JsonOutput {
 
     fn visit_close_element(&mut self, _element: &XmlElement) -> SerializationResult<()> {
         let p = self.stack.pop();
-        // Keep counters stack in sync (pop the current node's counters)
-        self.dup_counters_stack.pop();
         trace!("visit_close_element: {:?}", p);
         Ok(())
     }
@@ -512,7 +401,8 @@ impl BinXmlOutput for JsonOutput {
                         current_value => {
                             return Err(SerializationError::JsonStructureError {
                                 message: format!(
-                                    "expected current value to be a String or an Array, found {current_value:?}, new value is {value:?}"
+                                    "expected current value to be a String or an Array, found {:?}, new value is {:?}",
+                                    current_value, value
                                 ),
                             });
                         }
@@ -529,7 +419,8 @@ impl BinXmlOutput for JsonOutput {
             current_value => {
                 return Err(SerializationError::JsonStructureError {
                     message: format!(
-                        "expected current value to be a String or an Array, found {current_value:?}, new value is {value:?}"
+                        "expected current value to be a String or an Array, found {:?}, new value is {:?}",
+                        current_value, value
                     ),
                 });
             }
@@ -580,11 +471,6 @@ impl BinXmlOutput for JsonOutput {
 
     fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         trace!("visit_start_of_stream");
-        // Ensure root counters map exists
-        if self.dup_counters_stack.is_empty() {
-            self.dup_counters_stack
-                .push(FastMap::with_hasher(ahash::RandomState::new()));
-        }
         Ok(())
     }
 }
@@ -611,8 +497,8 @@ mod tests {
         }
     }
 
-    fn event_to_element(event: BytesStart) -> XmlElement {
-        let mut attrs = Vec::new();
+    fn event_to_element(event: BytesStart) -> XmlElement<'static> {
+        let mut attrs: Vec<XmlAttribute<'static>> = vec![];
 
         for attr in event.attributes() {
             let attr = attr.expect("Failed to read attribute.");
@@ -623,11 +509,13 @@ mod tests {
             });
         }
 
+        // Leak attributes for 'static test lifetime; acceptable in tests
+        let leaked_attrs: &'static [XmlAttribute<'static>] = Box::leak(attrs.into_boxed_slice());
         XmlElement {
             name: Cow::Owned(BinXmlName::from_string(bytes_to_string(
                 event.name().as_ref(),
             ))),
-            attributes: attrs.leak(),
+            attributes: leaked_attrs,
         }
     }
 
