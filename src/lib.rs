@@ -14,6 +14,7 @@ pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords
 pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
+#[cfg(not(feature = "json-stream"))]
 pub use json_output::JsonOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
 
@@ -29,6 +30,7 @@ mod string_cache;
 mod template_cache;
 mod utils;
 
+#[cfg(not(feature = "json-stream"))]
 mod json_output;
 mod json_stream_output;
 mod xml_output;

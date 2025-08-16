@@ -25,7 +25,7 @@ NO_INDENT_ARGS := --no-indent --dont-show-record-number
 FLAMEGRAPH_REPO_URL ?= https://github.com/brendangregg/FlameGraph.git
 FLAMEGRAPH_DIR ?= scripts/FlameGraph
 
-.PHONY: all deps build run folded flamegraph folded-prod flamegraph-prod clean install-flamegraph bench-refs
+.PHONY: all deps build run folded flamegraph folded-prod flamegraph-prod clean install-flamegraph bench-refs flamegraph-compare
 
 all: flamegraph-prod
 
@@ -113,6 +113,33 @@ flamegraph-prod: folded-prod
 	# Parse flamegraph SVG titles and capture percent even when sample count is present
 	@perl -ne 'if (/<title>([^<]+) \((?:\d+(?:\.\d+)?\s+samples,\s+)?(\d+(?:\.\d+)?)%\)/) { print $$2, " ", $$1, "\n" }' "$(OUT_DIR)/flamegraph.svg" | sort -nr | head -n 30 > "$(OUT_DIR)/top_titles.txt"
 	@echo "Top summaries written to $(OUT_DIR)/top_leaf.txt and $(OUT_DIR)/top_titles.txt"
+
+# Build both classic and streaming binaries, run flamegraphs for each, and generate a diff flamegraph
+flamegraph-compare: install-flamegraph
+	@set -euo pipefail; \
+	BIN_CLASSIC=./target/release/evtx_dump_classic; \
+BIN_STREAM=./target/release/evtx_dump_stream; \
+OUT_CLASSIC="$(OUT_DIR)_classic"; \
+OUT_STREAM="$(OUT_DIR)_stream"; \
+OUT_DIFF="$(OUT_DIR)_diff"; \
+echo "Building classic (features: $(FEATURES))..."; \
+cargo build --release --features "$(FEATURES)"; \
+cp -f ./target/release/evtx_dump "$$BIN_CLASSIC"; \
+echo "Profiling classic into $$OUT_CLASSIC..."; \
+OUT_DIR="$$OUT_CLASSIC" FORMAT="$(FORMAT)" FLAME_FILE="$(FLAME_FILE)" NO_INDENT_ARGS="$(NO_INDENT_ARGS)" ./scripts/flamegraph_prod.sh "$$BIN_CLASSIC"; \
+echo "Building stream (features: $(FEATURES) json-stream)..."; \
+cargo build --release --features "$(FEATURES) json-stream"; \
+cp -f ./target/release/evtx_dump "$$BIN_STREAM"; \
+echo "Profiling stream into $$OUT_STREAM..."; \
+OUT_DIR="$$OUT_STREAM" FORMAT="$(FORMAT)" FLAME_FILE="$(FLAME_FILE)" NO_INDENT_ARGS="$(NO_INDENT_ARGS)" ./scripts/flamegraph_prod.sh "$$BIN_STREAM"; \
+echo "Generating diff flamegraph..."; \
+mkdir -p "$$OUT_DIFF"; \
+"$(FLAMEGRAPH_DIR)/difffolded.pl" "$$OUT_CLASSIC/stacks.folded" "$$OUT_STREAM/stacks.folded" > "$$OUT_DIFF/stacks.diff.folded"; \
+"$(FLAMEGRAPH_DIR)/flamegraph.pl" --title "Diff (classic - stream)" "$$OUT_DIFF/stacks.diff.folded" > "$$OUT_DIFF/flamegraph_diff.svg"; \
+echo "Done. Artifacts:"; \
+echo "  Classic: $$OUT_CLASSIC/flamegraph.svg"; \
+echo "  Stream:  $$OUT_STREAM/flamegraph.svg"; \
+echo "  Diff:    $$OUT_DIFF/flamegraph_diff.svg"
 
 # --- Reproducible benchmarking between two git refs (no stashing) ---
 bench-refs:

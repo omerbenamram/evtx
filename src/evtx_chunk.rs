@@ -231,7 +231,7 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
             Ok(record_header) => record_header,
             Err(err) => {
                 self.exhausted = true;
-                return Some(Err(EvtxError::DeserializationError(err)));
+                return Some(Err(EvtxError::DeserializationError(Box::new(err))));
             }
         };
 
@@ -261,27 +261,22 @@ impl<'chunk> Iterator for IterChunkRecords<'chunk> {
             self.settings.get_ansi_codec(),
         );
 
-        // Heuristic: average token size is small; pre-reserve proportional to record data size to reduce growth
-        let token_capacity_hint: usize = {
-            // Bias more aggressively to avoid reallocation: assume ~3 bytes/token, add larger headroom
-            let approx = (binxml_data_size as usize) / 3;
-            let approx = approx.saturating_add(256);
-            if approx < 256 { 256 } else if approx > 262144 { 262144 } else { approx }
-        };
         let mut tokens: Vec<crate::model::deserialized::BinXMLDeserializedTokens<'chunk>> =
-            Vec::with_capacity(token_capacity_hint);
+            Vec::new();
 
-        let iter = match deserializer.iter_tokens(Some(binxml_data_size)).map_err(|e| EvtxError::FailedToParseRecord {
-            record_id: event_record_id,
-            source: Box::new(EvtxError::DeserializationError(e)),
-        }) {
+        let iter = match deserializer
+            .iter_tokens(Some(binxml_data_size))
+            .map_err(|e| EvtxError::FailedToParseRecord {
+                record_id: event_record_id,
+                source: Box::new(EvtxError::DeserializationError(Box::new(e))),
+            }) {
             Ok(iter) => iter,
             Err(err) => return Some(Err(err)),
         };
 
         for token in iter {
             match token.map_err(|e| EvtxError::FailedToParseRecord {
-                source: Box::new(EvtxError::DeserializationError(e)),
+                source: Box::new(EvtxError::DeserializationError(Box::new(e))),
                 record_id: event_record_id,
             }) {
                 Ok(token) => tokens.push(token),

@@ -3,6 +3,7 @@ use crate::binxml::assemble::parse_tokens_streaming;
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
+#[cfg(not(feature = "json-stream"))]
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
@@ -81,6 +82,7 @@ impl EvtxRecord<'_> {
     }
 
     /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
+    #[cfg(not(feature = "json-stream"))]
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
         let mut output_builder = JsonOutput::new(&self.settings);
 
@@ -96,6 +98,7 @@ impl EvtxRecord<'_> {
     }
 
     /// Consumes the record and parse it, producing a JSON serialized record.
+    #[cfg(not(feature = "json-stream"))]
     pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
         let indent = self.settings.should_indent();
         let record_with_json_value = self.into_json_value()?;
@@ -137,6 +140,13 @@ impl EvtxRecord<'_> {
             timestamp,
             data,
         })
+    }
+
+    /// Consumes the record and parse it, producing a JSON serialized record.
+    /// When compiled with the `json-stream` feature, this routes to `into_json_stream`.
+    #[cfg(feature = "json-stream")]
+    pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
+        self.into_json_stream()
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.

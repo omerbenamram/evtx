@@ -54,6 +54,9 @@ rpmalloc = { version = "0.2.2", optional = true }
 
 [features]
 default = ["multithreading", "evtx_dump"]
+# When enabled, JSON output paths use the streaming writer by default
+# (records_json/into_json will route to the streaming implementation).
+json-stream = []
 fast-alloc = ["tikv-jemallocator", "rpmalloc"]
 evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
