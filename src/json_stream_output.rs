@@ -150,6 +150,8 @@ pub struct JsonStreamOutput<W: Write> {
     separate_json_attributes: bool,
     // Reused hasher to avoid repeated RandomState::new costs
     hasher: ahash::RandomState,
+    // Scratch buffer for constructing duplicate keys like base_N without allocating each time
+    dup_key_buf: String,
 }
 
 impl<W: Write> JsonStreamOutput<W> {
@@ -159,6 +161,7 @@ impl<W: Write> JsonStreamOutput<W> {
             stack: Vec::with_capacity(64),
             separate_json_attributes: settings.should_separate_json_attributes(),
             hasher: ahash::RandomState::new(),
+            dup_key_buf: String::with_capacity(32),
         }
     }
 
@@ -895,24 +898,31 @@ impl<W: Write> JsonStreamOutput<W> {
             *entry += 1;
             v
         };
-        // Build duplicate key efficiently: base + '_' + n
-        let mut dup_key = String::with_capacity(base.len() + 1 + decimal_len(n));
-        dup_key.push_str(base);
-        dup_key.push('_');
-        append_usize(&mut dup_key, n);
+        // Build duplicate key efficiently: base + '_' + n using reusable buffer
+        self.dup_key_buf.clear();
+        self.dup_key_buf.reserve(base.len() + 1 + decimal_len(n));
+        self.dup_key_buf.push_str(base);
+        self.dup_key_buf.push('_');
+        append_usize(&mut self.dup_key_buf, n);
+        // Move the string out to avoid borrowing `self` immutably across mutable calls
+        let mut dup_key_owned = std::mem::take(&mut self.dup_key_buf);
+        let dup_key: &str = &dup_key_owned;
 
         match (prev_vals, prev_attrs) {
             (Some(vals), Some(attrs)) => {
-                self.write_child_object_with_attrs_and_text(parent_idx, &dup_key, &attrs, &vals)?;
+                self.write_child_object_with_attrs_and_text(parent_idx, dup_key, &attrs, &vals)?;
             }
             (Some(vals), None) => {
-                self.flush_text_into_parent(parent_idx, &dup_key, vals)?;
+                self.flush_text_into_parent(parent_idx, dup_key, vals)?;
             }
             (None, Some(attrs)) => {
-                self.write_child_object_with_attrs_only(parent_idx, &dup_key, &attrs)?;
+                self.write_child_object_with_attrs_only(parent_idx, dup_key, &attrs)?;
             }
             _ => {}
         }
+        // Return buffer to `self` for reuse
+        dup_key_owned.clear();
+        self.dup_key_buf = dup_key_owned;
         Ok(())
     }
 

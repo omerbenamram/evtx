@@ -584,6 +584,7 @@ dependencies = [
  "insta",
  "itoa",
  "log",
+ "memchr",
  "predicates",
  "pretty_assertions",
  "quick-xml",

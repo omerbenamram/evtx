@@ -734,9 +734,8 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 .template_table
                 .get_template(template.template_def_offset)
             {
-                let borrowed: Vec<&BinXMLDeserializedTokens<'a>> =
-                    template_def.tokens.iter().collect();
-                for t in borrowed.into_iter() {
+                // Iterate directly without allocating a Vec of references
+                for t in template_def.tokens.iter() {
                     if let BinXMLDeserializedTokens::Substitution(desc) = t {
                         if let Some(val) = template
                             .substitution_array

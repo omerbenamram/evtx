@@ -28,6 +28,7 @@ ahash = "0.8"
 rayon = { version = "1", optional = true }
 # Bump allocator for per-thread arenas
 bumpalo = { version = "3", features = ["collections"] }
+memchr = "2.7"
 
 # `evtx_dump` dependencies
 anyhow = { version = "1", optional = true }
@@ -60,6 +61,8 @@ json-stream = []
 fast-alloc = ["tikv-jemallocator", "rpmalloc"]
 evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow"]
 multithreading = ["rayon"]
+# Optional SIMD path for UTF-16 decode (placeholder)
+simd-utf = []
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
@@ -89,4 +92,19 @@ required-features = ["evtx_dump"]
 [[bench]]
 name = "benchmark"
 path = "./src/benches/benchmark.rs"
+harness = false
+
+[[bench]]
+name = "escape"
+path = "./src/benches/escape.rs"
+harness = false
+
+[[bench]]
+name = "dups"
+path = "./src/benches/dups.rs"
+harness = false
+
+[[bench]]
+name = "expander"
+path = "./src/benches/expander.rs"
 harness = false

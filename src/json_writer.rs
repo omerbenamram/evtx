@@ -33,63 +33,58 @@ impl<W: Write> JsonWriter<W> {
 
     /// Writes a JSON-escaped string surrounded by quotes without allocating.
     pub fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
+        use memchr::memchr2;
         let bytes = s.as_bytes();
-        // Fast path: no escapes → write '"' + bytes + '"'.
-        let mut has_escape = false;
-        for &b in bytes.iter() {
-            if matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t') || (b <= 0x1F) {
-                has_escape = true;
+        self.writer.write_all(b"\"")?;
+        let mut i = 0usize;
+        let len = bytes.len();
+        while i < len {
+            let slice = &bytes[i..];
+            let pos = memchr2(b'"', b'\\', slice);
+            let next = pos.map(|p| i + p).unwrap_or(len);
+            // Scan for control bytes within the safe run
+            let mut j = i;
+            while j < next {
+                let b = bytes[j];
+                if b < 0x20 { // control
+                    if i < j {
+                        self.writer.write_all(&bytes[i..j])?;
+                    }
+                    // write control escape
+                    match b {
+                        b'\n' => self.writer.write_all(b"\\n")?,
+                        b'\r' => self.writer.write_all(b"\\r")?,
+                        b'\t' => self.writer.write_all(b"\\t")?,
+                        0x00..=0x1F => {
+                            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                            let esc = [
+                                b'\\', b'u', b'0', b'0', HEX[(b >> 4) as usize], HEX[(b & 0x0F) as usize],
+                            ];
+                            self.writer.write_all(&esc)?;
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                    i = j;
+                } else {
+                    j += 1;
+                }
+            }
+            if i < next {
+                self.writer.write_all(&bytes[i..next])?;
+            }
+            if next >= len {
                 break;
             }
-        }
-
-        if !has_escape {
-            self.writer.write_all(b"\"")?;
-            self.writer.write_all(bytes)?;
-            self.writer.write_all(b"\"")?;
-            return Ok(());
-        }
-
-        // Escape path: stream runs and escapes.
-        self.write_bytes(b"\"")?;
-        let hex = b"0123456789ABCDEF";
-        let mut run_start = 0usize;
-        let len = bytes.len();
-        let mut i = 0usize;
-        while i < len {
-            let b = bytes[i];
-            let needs_escape = matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t') || (b <= 0x1F);
-            if needs_escape {
-                if run_start < i {
-                    self.write_bytes(&bytes[run_start..i])?;
-                }
-                match b {
-                    b'"' => self.write_bytes(b"\\\"")?,
-                    b'\\' => self.write_bytes(b"\\\\")?,
-                    b'\n' => self.write_bytes(b"\\n")?,
-                    b'\r' => self.write_bytes(b"\\r")?,
-                    b'\t' => self.write_bytes(b"\\t")?,
-                    0x00..=0x1F => {
-                        let esc = [
-                            b'\\',
-                            b'u',
-                            b'0',
-                            b'0',
-                            hex[(b >> 4) as usize],
-                            hex[(b & 0x0F) as usize],
-                        ];
-                        self.write_bytes(&esc)?;
-                    }
-                    _ => {}
-                }
-                run_start = i + 1;
+            // Handle special at next
+            match bytes[next] {
+                b'"' => self.writer.write_all(b"\\\"")?,
+                b'\\' => self.writer.write_all(b"\\\\")?,
+                _ => {}
             }
-            i += 1;
+            i = next + 1;
         }
-        if run_start < len {
-            self.write_bytes(&bytes[run_start..len])?;
-        }
-        self.write_bytes(b"\"")
+        self.writer.write_all(b"\"")
     }
 
     #[inline]
