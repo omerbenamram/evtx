@@ -228,18 +228,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 .and_then(|m| m.remove(&base));
             if let Some(attrs) = maybe_attrs {
                 // write #attributes into the newly opened child object
-                self.writer.write_key("#attributes")?;
-                self.writer.open_object()?;
-                let mut first = true;
-                for (name, val) in attrs.iter() {
-                    if !first {
-                        self.writer.comma()?;
-                    }
-                    first = false;
-                    self.writer.write_key(name)?;
-                    self.write_flat_scalar(val)?;
-                }
-                self.writer.close_object()?;
+                self.write_key_attributes_object("#attributes", &attrs)?;
                 self.stack[idx].has_any_field = true;
             }
         }
@@ -313,7 +302,7 @@ impl<W: Write> JsonStreamOutput<W> {
 
     fn write_binxml_scalar(&mut self, v: &BinXmlValue) -> SerializationResult<()> {
         match v {
-            BinXmlValue::NullType => self.writer.write_str("null")?,
+            BinXmlValue::NullType => self.writer.write_null()?,
             BinXmlValue::StringType(s) => self.writer.write_quoted_str(s)?,
             BinXmlValue::AnsiStringType(s) => self.writer.write_quoted_str(s)?,
             BinXmlValue::Int8Type(n) => self.writer.write_i64(*n as i64)?,
@@ -449,7 +438,7 @@ impl<W: Write> JsonStreamOutput<W> {
             | BinXmlValue::EvtArrayHandle
             | BinXmlValue::BinXmlArrayType
             | BinXmlValue::EvtXmlArrayType
-            | BinXmlValue::AnsiStringArrayType => self.writer.write_str("null")?,
+            | BinXmlValue::AnsiStringArrayType => self.writer.write_null()?,
         }
         Ok(())
     }
@@ -659,14 +648,72 @@ impl<W: Write> JsonStreamOutput<W> {
         Ok(())
     }
 
+    #[inline]
+    fn write_flat_scalar_into_writer(
+        writer: &mut JsonWriter<W>,
+        s: &FlatScalar,
+    ) -> std::io::Result<()> {
+        match s {
+            FlatScalar::Quoted(q) => writer.write_quoted_str(q)?,
+            FlatScalar::I64(n) => writer.write_i64(*n)?,
+            FlatScalar::U64(n) => writer.write_u64(*n)?,
+            FlatScalar::F32(n) => writer.write_f32(*n)?,
+            FlatScalar::F64(n) => writer.write_f64(*n)?,
+            FlatScalar::Bool(b) => writer.write_bool(*b)?,
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn write_attributes_object(
+        &mut self,
+        attrs: &[(String, FlatScalar)],
+    ) -> SerializationResult<()> {
+        self.writer
+            .write_object_pairs(attrs.iter(), |w, (name, val)| {
+                w.write_key(name)?;
+                Self::write_flat_scalar_into_writer(w, val)
+            })?;
+        Ok(())
+    }
+
+    #[inline]
+    fn write_key_attributes_object(
+        &mut self,
+        key: &str,
+        attrs: &[(String, FlatScalar)],
+    ) -> SerializationResult<()> {
+        self.writer
+            .write_key_object_pairs(key, attrs.iter(), |w, (name, val)| {
+                w.write_key(name)?;
+                Self::write_flat_scalar_into_writer(w, val)
+            })?;
+        Ok(())
+    }
+
+    #[inline]
+    fn write_text_value_items(&mut self, items: &[TextValue]) -> SerializationResult<()> {
+        if Self::contains_array(items) {
+            self.write_text_items_as_array(items)?;
+        } else {
+            match &items[0] {
+                TextValue::Scalar(s) => self.write_flat_scalar(s)?,
+                TextValue::Array(inner) => {
+                    self.write_text_items_as_array(&[TextValue::Array(inner.clone())])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn write_text_items_as_array(&mut self, items: &[TextValue]) -> SerializationResult<()> {
-        self.writer.write_str("[")?;
+        self.writer.open_array()?;
         let mut first = true;
         for item in items {
             match item {
                 TextValue::Scalar(s) => {
                     if !first {
-                        self.writer.write_str(",")?;
+                        self.writer.comma()?;
                     }
                     first = false;
                     self.write_flat_scalar(s)?;
@@ -674,7 +721,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 TextValue::Array(inner) => {
                     for s in inner {
                         if !first {
-                            self.writer.write_str(",")?;
+                            self.writer.comma()?;
                         }
                         first = false;
                         self.write_flat_scalar(s)?;
@@ -682,7 +729,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 }
             }
         }
-        self.writer.write_str("]")?;
+        self.writer.close_array()?;
         Ok(())
     }
 
@@ -782,31 +829,11 @@ impl<W: Write> JsonStreamOutput<W> {
         self.write_key_in(parent_idx, key)?;
         self.writer.open_object()?;
         // #attributes
-        self.writer.write_key("#attributes")?;
-        self.writer.open_object()?;
-        let mut first = true;
-        for (name, val) in attrs.iter() {
-            if !first {
-                self.writer.comma()?;
-            }
-            first = false;
-            self.writer.write_key(name)?;
-            self.write_flat_scalar(val)?;
-        }
-        self.writer.close_object()?;
+        self.write_key_attributes_object("#attributes", attrs)?;
         // separator before #text
         self.writer.comma()?;
         self.writer.write_key("#text")?;
-        if Self::contains_array(text_items) {
-            self.write_text_items_as_array(text_items)?;
-        } else {
-            match &text_items[0] {
-                TextValue::Scalar(s) => self.write_flat_scalar(s)?,
-                TextValue::Array(inner) => {
-                    self.write_text_items_as_array(&[TextValue::Array(inner.clone())])?
-                }
-            }
-        }
+        self.write_text_value_items(text_items)?;
         self.writer.close_object()?;
         Ok(())
     }
@@ -819,18 +846,7 @@ impl<W: Write> JsonStreamOutput<W> {
     ) -> SerializationResult<()> {
         self.write_key_in(parent_idx, key)?;
         self.writer.open_object()?;
-        self.writer.write_key("#attributes")?;
-        self.writer.open_object()?;
-        let mut first = true;
-        for (name, val) in attrs.iter() {
-            if !first {
-                self.writer.comma()?;
-            }
-            first = false;
-            self.writer.write_key(name)?;
-            self.write_flat_scalar(val)?;
-        }
-        self.writer.close_object()?;
+        self.write_key_attributes_object("#attributes", attrs)?;
         self.writer.close_object()?;
         Ok(())
     }
@@ -933,41 +949,29 @@ impl<W: Write> JsonStreamOutput<W> {
 
     #[inline]
     fn compute_attributes_sibling_key(key: &str) -> String {
-        // For separate_json_attributes, expected numbering for duplicates starts at _1 for the second occurrence.
-        // Our general allocator returns base, base_2, base_3, ... so we remap attribute suffix by subtracting 1.
+        // For separate_json_attributes, expected numbering for duplicates starts at _1 for the
+        // second occurrence. Our general allocator returns base, base_2, base_3, ... so we remap
+        // attribute suffix by subtracting 1.
         if let Some(pos) = key.rfind('_') {
+            let base = &key[..pos];
             let rest = &key[pos + 1..];
-            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-                if let Ok(n) = rest.parse::<usize>() {
-                    if n > 1 {
-                        let mut s = String::with_capacity(key.len() + 12);
-                        s.push_str(&key[..pos]);
-                        s.push('_');
-                        append_usize(&mut s, n - 1);
-                        s.push_str("_attributes");
-                        return s;
-                    } else {
-                        let mut s = String::with_capacity(key.len() + 11);
-                        s.push_str(&key[..pos]);
-                        s.push_str("_attributes");
-                        return s;
-                    }
+            if let Ok(n) = rest.parse::<usize>() {
+                // Capacity: base + optional "_" + digits(n-1) + "_attributes"
+                let extra = if n > 1 { 1 + decimal_len(n - 1) } else { 0 };
+                let mut s = String::with_capacity(base.len() + "_attributes".len() + extra);
+                s.push_str(base);
+                if n > 1 {
+                    s.push('_');
+                    append_usize(&mut s, n - 1);
                 }
-                let mut s = String::with_capacity(key.len() + 11);
-                s.push_str(key);
                 s.push_str("_attributes");
                 return s;
             }
-            let mut s = String::with_capacity(key.len() + 11);
-            s.push_str(key);
-            s.push_str("_attributes");
-            s
-        } else {
-            let mut s = String::with_capacity(key.len() + 11);
-            s.push_str(key);
-            s.push_str("_attributes");
-            s
         }
+        let mut s = String::with_capacity(key.len() + "_attributes".len());
+        s.push_str(key);
+        s.push_str("_attributes");
+        s
     }
 
     fn emit_attributes_sibling_object(
