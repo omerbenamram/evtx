@@ -99,12 +99,4 @@ name = "escape"
 path = "./src/benches/escape.rs"
 harness = false
 
-[[bench]]
-name = "dups"
-path = "./src/benches/dups.rs"
-harness = false
 
-[[bench]]
-name = "expander"
-path = "./src/benches/expander.rs"
-harness = false
