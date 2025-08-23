@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use crate::evtx_parser::ReadSeek;
 
-use crate::utils::dump_stream;
 use crate::FileOffset;
+use crate::utils::dump_stream;
 use log::error;
 
 use crate::evtx_record::RecordId;
@@ -119,9 +119,7 @@ pub enum DeserializationError {
         inner_message: String,
     },
 
-    #[error(
-        "Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:02x}` as binxml token"
-    )]
+    #[error("Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:02x}` as binxml token")]
     InvalidToken { value: u8, offset: u64 },
 
     #[error(
@@ -245,10 +243,13 @@ pub enum EvtxError {
 
     // TODO: Should this be split to `ChunkError` vs `RecordError`?
     #[error("An error occurred while trying to deserialize evtx stream.")]
-    DeserializationError(#[from] DeserializationError),
+    DeserializationError(#[from] Box<DeserializationError>),
 
     #[error("Failed to parse chunk number {chunk_id}")]
-    FailedToParseChunk { chunk_id: u64, source: ChunkError },
+    FailedToParseChunk {
+        chunk_id: u64,
+        source: Box<ChunkError>,
+    },
 
     #[error("Failed to parse record number {record_id}")]
     FailedToParseRecord {
@@ -279,8 +280,14 @@ impl EvtxError {
     pub fn incomplete_chunk(chunk_id: u64) -> EvtxError {
         EvtxError::FailedToParseChunk {
             chunk_id,
-            source: ChunkError::IncompleteChunk,
+            source: Box::new(ChunkError::IncompleteChunk),
         }
+    }
+}
+
+impl From<DeserializationError> for EvtxError {
+    fn from(err: DeserializationError) -> Self {
+        EvtxError::DeserializationError(Box::new(err))
     }
 }
 

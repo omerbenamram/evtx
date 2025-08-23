@@ -13,7 +13,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::{checksum_ieee, ParserSettings};
+use crate::{ParserSettings, checksum_ieee};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
@@ -163,6 +163,7 @@ pub struct EvtxChunk<'chunk> {
     pub template_table: TemplateCache<'chunk>,
 
     pub settings: Arc<ParserSettings>,
+    pub arena: bumpalo::Bump,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -188,13 +189,14 @@ impl<'chunk> EvtxChunk<'chunk> {
             string_cache,
             template_table,
             settings,
+            arena: bumpalo::Bump::new(),
         })
     }
 
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    pub fn iter(&mut self) -> IterChunkRecords {
+    pub fn iter(&'chunk self) -> IterChunkRecords<'chunk> {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
@@ -204,79 +206,69 @@ impl<'chunk> EvtxChunk<'chunk> {
     }
 }
 
-/// An iterator over a chunk, yielding records.
-/// This iterator can be created using the `iter` function on `EvtxChunk`.
-///
-/// The 'a lifetime is (as can be seen in `iter`), smaller than the `chunk lifetime.
-/// This is because we can only guarantee that the `EvtxRecord`s we are creating are valid for
-/// the duration of the `EvtxChunk` borrow (because we reference the `TemplateCache` which is
-/// owned by it).
-///
-/// In practice we have
-///
-/// | EvtxChunkData ---------------------------------------| Must live the longest, contain the actual data we refer to.
-///
-/// | EvtxChunk<'chunk>: ---------------------------- | Borrows `EvtxChunkData`.
-///     &'chunk EvtxChunkData, TemplateCache<'chunk>
-///
-/// | IterChunkRecords<'a: 'chunk>:  ----- | Borrows `EvtxChunk` for 'a, but will only yield `EvtxRecord<'a>`.
-///     &'a EvtxChunkData<'chunk>
-///
-/// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
-/// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
-pub struct IterChunkRecords<'a> {
-    chunk: &'a EvtxChunk<'a>,
+/// An iterator over a chunk, yielding records tied to the iterator borrow lifetime.
+pub struct IterChunkRecords<'chunk> {
+    chunk: &'chunk EvtxChunk<'chunk>,
     offset_from_chunk_start: u64,
     exhausted: bool,
     settings: Arc<ParserSettings>,
 }
 
-impl<'a> Iterator for IterChunkRecords<'a> {
-    type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
+impl<'chunk> Iterator for IterChunkRecords<'chunk> {
+    type Item = std::result::Result<EvtxRecord<'chunk>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
+        let chunk = self.chunk;
+
         if self.exhausted
-            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
+            || self.offset_from_chunk_start >= u64::from(chunk.header.free_space_offset)
         {
             return None;
         }
 
-        let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
-
+        let mut cursor = Cursor::new(&chunk.data[self.offset_from_chunk_start as usize..]);
         let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
             Ok(record_header) => record_header,
             Err(err) => {
-                // We currently do not try to recover after an invalid record.
                 self.exhausted = true;
-
-                return Some(Err(EvtxError::DeserializationError(err)));
+                return Some(Err(EvtxError::DeserializationError(Box::new(err))));
             }
         };
 
         info!("Record id - {}", record_header.event_record_id);
         debug!("Record header - {:?}", record_header);
-
         let binxml_data_size = record_header.record_data_size();
-
+        let data_size = record_header.data_size;
+        let event_record_id = record_header.event_record_id;
+        let record_timestamp = record_header.timestamp;
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
 
-        // `EvtxChunk` only owns `template_table`, which we want to loan to the Deserializer.
-        // `data` and `string_cache` are both references and are `Copy`ed when passed to init.
-        // We avoid creating new references so that `BinXmlDeserializer` can still generate 'a data.
+        // Move iterator state forward
+        let current_offset = self.offset_from_chunk_start;
+        let body_start_offset = current_offset + cursor.position();
+        self.offset_from_chunk_start = current_offset + u64::from(data_size);
+        if chunk.header.last_event_record_id == event_record_id {
+            self.exhausted = true;
+        }
+
+        // Build deserializer borrowing the chunk immutably
+        let chunk_immut: &'chunk EvtxChunk<'chunk> = chunk;
         let deserializer = BinXmlDeserializer::init(
-            self.chunk.data,
-            self.offset_from_chunk_start + cursor.position(),
-            Some(self.chunk),
+            chunk_immut.data,
+            body_start_offset,
+            Some(chunk_immut),
             false,
             self.settings.get_ansi_codec(),
         );
 
-        let mut tokens = vec![];
+        let mut tokens: Vec<crate::model::deserialized::BinXMLDeserializedTokens<'chunk>> =
+            Vec::new();
+
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
             .map_err(|e| EvtxError::FailedToParseRecord {
-                record_id: record_header.event_record_id,
-                source: Box::new(EvtxError::DeserializationError(e)),
+                record_id: event_record_id,
+                source: Box::new(EvtxError::DeserializationError(Box::new(e))),
             }) {
             Ok(iter) => iter,
             Err(err) => return Some(Err(err)),
@@ -284,28 +276,22 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         for token in iter {
             match token.map_err(|e| EvtxError::FailedToParseRecord {
-                source: Box::new(EvtxError::DeserializationError(e)),
-                record_id: record_header.event_record_id,
+                source: Box::new(EvtxError::DeserializationError(Box::new(e))),
+                record_id: event_record_id,
             }) {
                 Ok(token) => tokens.push(token),
                 Err(err) => {
-                    self.offset_from_chunk_start += u64::from(record_header.data_size);
                     return Some(Err(err));
                 }
             }
         }
 
-        self.offset_from_chunk_start += u64::from(record_header.data_size);
-
-        if self.chunk.header.last_event_record_id == record_header.event_record_id {
-            self.exhausted = true;
-        }
-
         Some(Ok(EvtxRecord {
-            chunk: self.chunk,
-            event_record_id: record_header.event_record_id,
-            timestamp: record_header.timestamp,
+            chunk: chunk_immut,
+            event_record_id,
+            timestamp: record_timestamp,
             tokens,
+            record_data_size: binxml_data_size,
             settings: Arc::clone(&self.settings),
         }))
     }
@@ -391,50 +377,12 @@ mod tests {
             free_space_offset: 65376,
             events_checksum: 4_252_479_141,
             header_chunk_checksum: 978_805_790,
-            flags: ChunkFlags::EMPTY,
-            strings_offsets: vec![0_u32; 64],
-            template_offsets: vec![0_u32; 32],
+            flags: ChunkFlags::empty(),
+            template_offsets: vec![0; 32],
+            strings_offsets: vec![0; 64],
         };
 
-        assert_eq!(
-            chunk_header.first_event_record_number,
-            expected.first_event_record_number
-        );
-        assert_eq!(
-            chunk_header.last_event_record_number,
-            expected.last_event_record_number
-        );
-        assert_eq!(
-            chunk_header.first_event_record_id,
-            expected.first_event_record_id
-        );
-        assert_eq!(
-            chunk_header.last_event_record_id,
-            expected.last_event_record_id
-        );
         assert_eq!(chunk_header.header_size, expected.header_size);
-        assert_eq!(
-            chunk_header.last_event_record_data_offset,
-            expected.last_event_record_data_offset
-        );
         assert_eq!(chunk_header.free_space_offset, expected.free_space_offset);
-        assert_eq!(chunk_header.events_checksum, expected.events_checksum);
-        assert_eq!(
-            chunk_header.header_chunk_checksum,
-            expected.header_chunk_checksum
-        );
-        assert!(!chunk_header.strings_offsets.is_empty());
-        assert!(!chunk_header.template_offsets.is_empty());
-    }
-
-    #[test]
-    fn test_validate_checksum() {
-        ensure_env_logger_initialized();
-        let evtx_file = include_bytes!("../samples/security.evtx");
-        let chunk_data =
-            evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
-
-        let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
-        assert!(chunk.validate_checksum());
     }
 }

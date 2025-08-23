@@ -272,7 +272,8 @@ impl EvtxParser<Cursor<Vec<u8>>> {
 
 impl<T: ReadSeek> EvtxParser<T> {
     pub fn from_read_seek(mut read_seek: T) -> Result<Self> {
-        let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)?;
+        let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)
+            .map_err(|e| EvtxError::DeserializationError(Box::new(e)))?;
 
         // Because an event log can be larger than u16 MAX * EVTX_CHUNK_SIZE,
         // We need to calculate the chunk count instead of using the header value
@@ -327,7 +328,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         data.seek(SeekFrom::Start(chunk_offset as u64))
             .map_err(|e| EvtxError::FailedToParseChunk {
                 chunk_id: chunk_number,
-                source: ChunkError::FailedToSeekToChunk(e),
+                source: Box::new(ChunkError::FailedToSeekToChunk(e)),
             })?;
 
         let amount_read = data
@@ -348,7 +349,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             .map(Some)
             .map_err(|e| EvtxError::FailedToParseChunk {
                 chunk_id: chunk_number,
-                source: e,
+                source: Box::new(e),
             })
     }
 
@@ -450,7 +451,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                             match chunk_records_res {
                                 Err(err) => vec![Err(EvtxError::FailedToParseChunk {
                                     chunk_id: i as u64,
-                                    source: err,
+                                    source: Box::new(err),
                                 })],
                                 Ok(mut chunk_records) => {
                                     chunk_records.iter().map(f.clone()).collect()
@@ -476,6 +477,8 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be JSON-formatted.
+    /// When compiled with the `json-stream` feature, this uses the streaming implementation.
+    #[cfg(not(feature = "json-stream"))]
     pub fn records_json(
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
@@ -483,11 +486,30 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     /// Return an iterator over all the records.
+    /// Records will be JSON-formatted using the streaming writer when the `json-stream` feature is enabled.
+    #[cfg(feature = "json-stream")]
+    pub fn records_json(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json_stream()))
+    }
+
+    /// Return an iterator over all the records.
     /// Records will have a `serde_json::Value` data attribute.
+    #[cfg(not(feature = "json-stream"))]
     pub fn records_json_value(
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<serde_json::Value>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json_value()))
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will be JSON-formatted using a streaming writer that skips XmlModel and serde_json::Value construction.
+    #[cfg(feature = "json-stream")]
+    pub fn records_json_stream(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json_stream()))
     }
 }
 
@@ -700,6 +722,7 @@ mod tests {
         assert_eq!(parser.into_chunks().count(), 1);
     }
 
+    #[cfg(not(feature = "json-stream"))]
     #[test]
     fn test_into_json_value_records() {
         ensure_env_logger_initialized();

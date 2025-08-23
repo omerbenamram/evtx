@@ -1,5 +1,5 @@
 #![deny(unused_must_use)]
-#![forbid(unsafe_code)]
+#![allow(unsafe_code)]
 #![allow(clippy::upper_case_acronyms)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
@@ -14,6 +14,7 @@ pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords
 pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
+#[cfg(not(feature = "json-stream"))]
 pub use json_output::JsonOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
 
@@ -29,8 +30,17 @@ mod string_cache;
 mod template_cache;
 mod utils;
 
+#[cfg(not(feature = "json-stream"))]
 mod json_output;
+#[cfg(feature = "json-stream")]
+mod json_stream_output;
 mod xml_output;
+#[cfg(feature = "json-stream")]
+pub use json_stream_output::JsonStreamOutput;
+#[cfg(feature = "json-stream")]
+mod json_writer;
+#[cfg(feature = "json-stream")]
+pub use json_writer::JsonWriter;
 
 pub type ChunkOffset = u32;
 pub type FileOffset = u64;
