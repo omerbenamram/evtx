@@ -1,17 +1,24 @@
+use crate::ParserSettings;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlElement};
-use crate::ParserSettings;
 
 use log::trace;
 use std::io::Write;
 
-use quick_xml::events::attributes::Attribute;
-use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
 use quick_xml::Writer;
+use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
 
 use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;
+
+#[allow(dead_code)]
+fn is_xml_plain_text(s: &str) -> bool {
+    // Fast check: no &, <, > means writer doesn't need to escape
+    !s.as_bytes()
+        .iter()
+        .any(|&b| b == b'&' || b == b'<' || b == b'>')
+}
 
 pub trait BinXmlOutput {
     /// Called once when EOF is reached.
@@ -49,6 +56,8 @@ pub trait BinXmlOutput {
 
 pub struct XmlOutput<W: Write> {
     writer: Writer<W>,
+    scratch: String,
+    attr_scratch: Vec<String>,
 }
 
 impl<W: Write> XmlOutput<W> {
@@ -59,7 +68,11 @@ impl<W: Write> XmlOutput<W> {
             Writer::new(target)
         };
 
-        XmlOutput { writer }
+        XmlOutput {
+            writer,
+            scratch: String::with_capacity(64),
+            attr_scratch: Vec::new(),
+        }
     }
 
     pub fn into_writer(self) -> W {
@@ -79,19 +92,138 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         trace!("visit_open_start_element: {:?}", element);
 
-        let mut event_builder = BytesStart::new(element.name.as_ref().as_str());
+        let name = element.name.as_ref().as_str();
+
+        // Fast path: no attributes
+        if element.attributes.is_empty() {
+            let event_builder = BytesStart::new(name);
+            self.writer.write_event(Event::Start(event_builder))?;
+            return Ok(());
+        }
+
+        // Build attributes incrementally to avoid intermediate Vec<Attribute> and reduce allocations
+        let mut start = BytesStart::new(name);
+        self.attr_scratch.clear();
+        self.attr_scratch.reserve(element.attributes.len());
 
         for attr in element.attributes.iter() {
-            let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
-
-            if value_cow.len() > 0 {
-                let name_as_str = attr.name.as_str();
-                let attr = Attribute::from((name_as_str, value_cow.as_ref()));
-                event_builder.push_attribute(attr);
+            let key = attr.name.as_str();
+            match attr.value.as_ref() {
+                BinXmlValue::NullType => {
+                    // Skip
+                }
+                BinXmlValue::StringType(s) => {
+                    if !s.is_empty() {
+                        start.push_attribute((key, s.as_str()));
+                    }
+                }
+                BinXmlValue::AnsiStringType(s) => {
+                    let v = s.as_ref();
+                    if !v.is_empty() {
+                        start.push_attribute((key, v));
+                    }
+                }
+                BinXmlValue::HexInt32Type(s) => {
+                    let v = s.as_ref();
+                    if !v.is_empty() {
+                        start.push_attribute((key, v));
+                    }
+                }
+                BinXmlValue::HexInt64Type(s) => {
+                    let v = s.as_ref();
+                    if !v.is_empty() {
+                        start.push_attribute((key, v));
+                    }
+                }
+                BinXmlValue::Int8Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as i64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt8Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as u64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Int16Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as i64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt16Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as u64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Int32Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as i64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt32Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n as u64).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Int64Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::UInt64Type(n) => {
+                    let mut buf = itoa::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Real32Type(n) => {
+                    let mut buf = ryu::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::Real64Type(n) => {
+                    let mut buf = ryu::Buffer::new();
+                    let s = buf.format(*n).to_owned();
+                    self.attr_scratch.push(s);
+                    let v = self.attr_scratch.last().unwrap();
+                    start.push_attribute((key, v.as_str()));
+                }
+                BinXmlValue::BoolType(b) => {
+                    let v = if *b { "true" } else { "false" };
+                    start.push_attribute((key, v));
+                }
+                _ => {
+                    // Fallback: materialize via as_cow_str into scratch and borrow
+                    let owned = attr.value.as_ref().as_cow_str().into_owned();
+                    if !owned.is_empty() {
+                        self.attr_scratch.push(owned);
+                        let v = self.attr_scratch.last().unwrap();
+                        start.push_attribute((key, v.as_str()));
+                    }
+                }
             }
         }
 
-        self.writer.write_event(Event::Start(event_builder))?;
+        self.writer.write_event(Event::Start(start))?;
+        // Clear scratch for next element
+        self.attr_scratch.clear();
 
         Ok(())
     }
@@ -107,9 +239,86 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
 
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         trace!("visit_chars");
-        let cow: Cow<str> = value.as_cow_str();
-        let event = BytesText::new(&cow);
-        self.writer.write_event(Event::Text(event))?;
+        match value {
+            Cow::Borrowed(BinXmlValue::StringType(s)) => {
+                let v = s.as_ref();
+                let event = Event::Text(BytesText::new(v));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::AnsiStringType(s)) => {
+                let v = s.as_ref();
+                let event = Event::Text(BytesText::new(v));
+                self.writer.write_event(event)?;
+            }
+            // Numeric and bool fast path: content has no XML special chars, so treat as escaped
+            Cow::Borrowed(BinXmlValue::Int8Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as i64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt8Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as u64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::Int16Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as i64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt16Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as u64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::Int32Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as i64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt32Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n as u64);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::Int64Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::UInt64Type(n)) => {
+                let mut buf = itoa::Buffer::new();
+                let s = buf.format(*n);
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            Cow::Borrowed(BinXmlValue::BoolType(b)) => {
+                let s = if *b { "true" } else { "false" };
+                let event = Event::Text(BytesText::from_escaped(s));
+                self.writer.write_event(event)?;
+            }
+            _ => {
+                let cow: Cow<str> = value.as_cow_str();
+                if cow.len() <= 128 {
+                    let s = &mut self.scratch;
+                    s.clear();
+                    s.reserve(cow.len());
+                    s.push_str(&cow);
+                    let event = Event::Text(BytesText::new(s.as_str()));
+                    self.writer.write_event(event)?;
+                } else {
+                    let event = Event::Text(BytesText::new(&cow));
+                    self.writer.write_event(event)?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -120,10 +329,16 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         })
     }
 
-    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> Result<(), SerializationError> {
-        let xml_ref = "&".to_string() + entity.as_str() + ";";
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> SerializationResult<()> {
+        let name = entity.as_str();
+        let s = &mut self.scratch;
+        s.clear();
+        s.reserve(2 + name.len());
+        s.push('&');
+        s.push_str(name);
+        s.push(';');
         // xml_ref is already escaped
-        let event = Event::Text(BytesText::from_escaped(&xml_ref));
+        let event = Event::Text(BytesText::from_escaped(s.as_str()));
         self.writer.write_event(event)?;
 
         Ok(())
@@ -141,8 +356,12 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
     fn visit_processing_instruction(&mut self, pi: &BinXmlPI) -> SerializationResult<()> {
         // PITARGET - Emit the text "<?", the text (as specified by the Name rule in 2.2.12), and then the space character " ".
         // Emit the text (as specified by the NullTerminatedUnicodeString rule in 2.2.12), and then the text "?>".
-        let concat = pi.name.as_str().to_owned() + pi.data.as_ref(); // only `String` supports concatenation.
-        let event = Event::PI(BytesPI::new(concat.as_str()));
+        let s = &mut self.scratch;
+        s.clear();
+        s.reserve(pi.name.as_str().len() + pi.data.as_ref().len());
+        s.push_str(pi.name.as_str());
+        s.push_str(pi.data.as_ref());
+        let event = Event::PI(BytesPI::new(s.as_str()));
         self.writer.write_event(event)?;
 
         Ok(())
