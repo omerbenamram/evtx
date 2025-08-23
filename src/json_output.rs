@@ -484,12 +484,12 @@ mod tests {
     fn dummy_event() -> XmlElement<'static> {
         XmlElement {
             name: Cow::Owned(BinXmlName::from_str("Dummy")),
-            attributes: vec![],
+            attributes: &[],
         }
     }
 
-    fn event_to_element(event: BytesStart) -> XmlElement {
-        let mut attrs = vec![];
+    fn event_to_element(event: BytesStart) -> XmlElement<'static> {
+        let mut attrs: Vec<XmlAttribute<'static>> = Vec::new();
 
         for attr in event.attributes() {
             let attr = attr.expect("Failed to read attribute.");
@@ -500,11 +500,13 @@ mod tests {
             });
         }
 
+        let leaked_attrs: &'static [XmlAttribute<'static>] = Box::leak(attrs.into_boxed_slice());
+
         XmlElement {
             name: Cow::Owned(BinXmlName::from_string(bytes_to_string(
                 event.name().as_ref(),
             ))),
-            attributes: attrs,
+            attributes: leaked_attrs,
         }
     }
 

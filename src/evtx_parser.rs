@@ -477,8 +477,6 @@ impl<T: ReadSeek> EvtxParser<T> {
 
     /// Return an iterator over all the records.
     /// Records will be JSON-formatted.
-    /// When compiled with the `json-stream` feature, this uses the streaming implementation.
-    #[cfg(not(feature = "json-stream"))]
     pub fn records_json(
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
@@ -486,30 +484,11 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     /// Return an iterator over all the records.
-    /// Records will be JSON-formatted using the streaming writer when the `json-stream` feature is enabled.
-    #[cfg(feature = "json-stream")]
-    pub fn records_json(
-        &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
-        self.serialized_records(|record| record.and_then(|record| record.into_json_stream()))
-    }
-
-    /// Return an iterator over all the records.
     /// Records will have a `serde_json::Value` data attribute.
-    #[cfg(not(feature = "json-stream"))]
     pub fn records_json_value(
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<serde_json::Value>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json_value()))
-    }
-
-    /// Return an iterator over all the records.
-    /// Records will be JSON-formatted using a streaming writer that skips XmlModel and serde_json::Value construction.
-    #[cfg(feature = "json-stream")]
-    pub fn records_json_stream(
-        &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
-        self.serialized_records(|record| record.and_then(|record| record.into_json_stream()))
     }
 }
 

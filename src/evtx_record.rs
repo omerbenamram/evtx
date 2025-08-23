@@ -1,10 +1,8 @@
 use crate::binxml::assemble::parse_tokens;
-#[cfg(feature = "json-stream")]
-use crate::binxml::assemble::parse_tokens_streaming;
+// No json-stream support in this branch
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
-#[cfg(not(feature = "json-stream"))]
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
@@ -83,7 +81,6 @@ impl EvtxRecord<'_> {
     }
 
     /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
-    #[cfg(not(feature = "json-stream"))]
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
         let mut output_builder = JsonOutput::new(&self.settings);
 
@@ -99,7 +96,6 @@ impl EvtxRecord<'_> {
     }
 
     /// Consumes the record and parse it, producing a JSON serialized record.
-    #[cfg(not(feature = "json-stream"))]
     pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
         let indent = self.settings.should_indent();
         let record_with_json_value = self.into_json_value()?;
@@ -118,38 +114,7 @@ impl EvtxRecord<'_> {
         })
     }
 
-    /// Consumes the record and streams JSON directly into a buffer using the streaming visitor.
-    #[cfg(feature = "json-stream")]
-    pub fn into_json_stream(self) -> Result<SerializedEvtxRecord<String>> {
-        let capacity_hint = (self.record_data_size as usize).saturating_mul(2);
-        let buf = Vec::with_capacity(capacity_hint);
-        let mut output_builder = crate::JsonStreamOutput::with_writer(buf, &self.settings);
-
-        let event_record_id = self.event_record_id;
-        let timestamp = self.timestamp;
-        parse_tokens_streaming(&self.tokens, self.chunk, &mut output_builder).map_err(|e| {
-            EvtxError::FailedToParseRecord {
-                record_id: event_record_id,
-                source: Box::new(e),
-            }
-        })?;
-
-        let data = String::from_utf8(output_builder.into_writer())
-            .map_err(crate::err::SerializationError::from)?;
-
-        Ok(SerializedEvtxRecord {
-            event_record_id,
-            timestamp,
-            data,
-        })
-    }
-
-    /// Consumes the record and parse it, producing a JSON serialized record.
-    /// When compiled with the `json-stream` feature, this routes to `into_json_stream`.
-    #[cfg(feature = "json-stream")]
-    pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
-        self.into_json_stream()
-    }
+    // No json-stream variant in this branch
 
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
