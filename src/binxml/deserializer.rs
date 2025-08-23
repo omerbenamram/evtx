@@ -83,11 +83,14 @@ impl<'a> BinXmlDeserializer<'a> {
 
         loop {
             let token = iterator.next();
-            match token { Some(t) => {
-                tokens.push(t?);
-            } _ => {
-                break;
-            }}
+            match token {
+                Some(t) => {
+                    tokens.push(t?);
+                }
+                _ => {
+                    break;
+                }
+            }
         }
 
         let seek_ahead = iterator.cursor.position() - offset;
@@ -250,7 +253,7 @@ impl<'a> Iterator for IterTokens<'a> {
 #[cfg(test)]
 mod tests {
     use crate::evtx_chunk::EvtxChunkData;
-    use crate::{ensure_env_logger_initialized, ParserSettings};
+    use crate::{ParserSettings, ensure_env_logger_initialized};
     use std::sync::Arc;
 
     #[test]
@@ -262,10 +265,11 @@ mod tests {
         let mut chunk = EvtxChunkData::new(from_start_of_chunk.to_vec(), true).unwrap();
         let settings = ParserSettings::default();
         let mut evtx_chunk = chunk.parse(Arc::new(settings)).unwrap();
-        let records = evtx_chunk.iter();
+        let mut records = evtx_chunk.iter();
 
-        for record in records.take(1) {
-            assert!(record.is_ok(), "Record failed to parse")
+        let first = records.next().expect("No records were found in the chunk");
+        if let Err(e) = first {
+            panic!("Record failed to parse: {:?}", e);
         }
     }
 
@@ -281,13 +285,15 @@ mod tests {
         let records = evtx_chunk.iter();
 
         for record in records.take(100) {
-            assert!(!record
-                .unwrap()
-                .into_xml()
-                .unwrap()
-                .data
-                .chars()
-                .any(|c| c == '\0'))
+            assert!(
+                !record
+                    .unwrap()
+                    .into_xml()
+                    .unwrap()
+                    .data
+                    .chars()
+                    .any(|c| c == '\0')
+            )
         }
     }
 
