@@ -57,10 +57,17 @@ impl EvtxRecordHeader {
         })
     }
 
-    pub fn record_data_size(&self) -> u32 {
+    pub fn record_data_size(&self) -> Result<u32> {
         // 24 - record header size
         // 4 - copy of size record size
-        self.data_size - 24 - 4
+        let decal = 24 + 4;
+        if self.data_size < decal {
+            return Err(EvtxError::InvalidDataSize {
+                length: self.data_size,
+                expected: decal,
+            });
+        }
+        Ok(self.data_size - decal)
     }
 }
 

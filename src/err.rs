@@ -2,8 +2,8 @@ use thiserror::Error;
 
 use crate::evtx_parser::ReadSeek;
 
-use crate::utils::dump_stream;
 use crate::FileOffset;
+use crate::utils::dump_stream;
 use log::error;
 
 use crate::evtx_record::RecordId;
@@ -119,9 +119,7 @@ pub enum DeserializationError {
         inner_message: String,
     },
 
-    #[error(
-        "Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:02x}` as binxml token"
-    )]
+    #[error("Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:02x}` as binxml token")]
     InvalidToken { value: u8, offset: u64 },
 
     #[error(
@@ -269,6 +267,11 @@ pub enum EvtxError {
     // TODO: should we keep an `Unimplemented` variant at public API?
     #[error("Unimplemented: {name}")]
     Unimplemented { name: String },
+
+    #[error(
+        "Invalid EVTX record data size, should be equals or greater than {expected}, found `{length}`"
+    )]
+    InvalidDataSize { length: u32, expected: u32 },
 }
 
 impl EvtxError {

@@ -13,7 +13,7 @@ use std::{
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
-use crate::{checksum_ieee, ParserSettings};
+use crate::{ParserSettings, checksum_ieee};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
@@ -256,7 +256,15 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         info!("Record id - {}", record_header.event_record_id);
         debug!("Record header - {:?}", record_header);
 
-        let binxml_data_size = record_header.record_data_size();
+        let binxml_data_size = match record_header.record_data_size() {
+            Ok(size) => size,
+            Err(err) => {
+                //The evtx record is corrupted, skip the rest of the chunk
+                //It could be interesting to carve the rest of the chunk to find the next EVTX record header magic `2a2a0000`
+                self.exhausted = true;
+                return Some(Err(err));
+            }
+        };
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
 

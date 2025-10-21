@@ -715,4 +715,20 @@ mod tests {
             assert!(record.data.as_object().unwrap().contains_key("Event"));
         }
     }
+
+     #[test]
+    fn test_parse_event_with_zero_() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/new-user-security.evtx");
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+        let records: Vec<_> = parser.records_json_value().collect();
+
+        for record in records {
+            let record = record.unwrap();
+
+            assert!(record.data.is_object());
+            assert!(record.data.as_object().unwrap().contains_key("Event"));
+        }
+    }
 }
