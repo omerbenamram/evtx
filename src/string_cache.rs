@@ -1,6 +1,6 @@
+use crate::ChunkOffset;
 use crate::binxml::name::{BinXmlName, BinXmlNameLink};
 use crate::err::DeserializationResult;
-use crate::ChunkOffset;
 
 use log::trace;
 use std::borrow::BorrowMut;
@@ -30,6 +30,9 @@ impl StringCache {
 
                 match link.next_string {
                     Some(offset) => {
+                        if offset == string_position {
+                            break;
+                        }
                         try_seek!(cursor_ref, offset, "next xml string")?;
                     }
                     None => break,
