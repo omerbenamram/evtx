@@ -1,8 +1,8 @@
 use crate::binxml::tokens::read_template_definition;
 use crate::err::DeserializationResult;
 
-use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::ChunkOffset;
+use crate::model::deserialized::BinXMLTemplateDefinition;
 
 use encoding::EncodingRef;
 use log::trace;
@@ -41,7 +41,7 @@ impl<'chunk> TemplateCache<'chunk> {
 
                 trace!("Next template will be at {}", next_template_offset);
 
-                if next_template_offset == 0 {
+                if next_template_offset == 0 || table_offset == next_template_offset {
                     break;
                 }
 
