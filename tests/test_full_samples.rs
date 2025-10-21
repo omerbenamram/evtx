@@ -176,3 +176,23 @@ fn test_sample_with_no_crc32() {
 fn test_sample_with_invalid_flags_in_header() {
     test_full_sample(sample_with_invalid_flags_in_header(), 126, 0)
 }
+
+#[test]
+fn test_sample_with_zero_data_size_event() {
+    ensure_env_logger_initialized();
+    let evtx_file = include_bytes!("../samples/sample-with-zero-data-size-event.evtx");
+
+    let mut parser = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+
+    let mut count = 0;
+    for r in parser.records() {
+        if let Err(e) = r {
+            assert_eq!(
+                e.to_string(),
+                "Invalid EVTX record data size, should be equals or greater than 28, found `0`"
+            );
+        }
+        count += 1;
+    }
+    assert_eq!(count, 336, "Single threaded iteration failed");
+}
