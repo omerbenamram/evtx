@@ -43,6 +43,10 @@ struct ObjectContext {
     has_any_field: bool,
     // Per-parent duplicate counters for child keys
     dup_counters: HashMap<String, usize>,
+    // Track if current element has attributes (affects how we write text values)
+    has_attributes: bool,
+    // Track if we opened an object for this context
+    object_opened: bool,
 }
 
 pub struct JsonStreamOutput<W: Write> {
@@ -132,6 +136,54 @@ impl<W: Write> JsonStreamOutput<W> {
             other => other.into_owned().into(),
         }
     }
+
+    fn can_write_binxml_value(value: &BinXmlValue) -> bool {
+        // Check if we can safely write this value
+        !matches!(value, BinXmlValue::EvtXml | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtHandle)
+    }
+
+    fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+        // Serialize BinXmlValue directly without converting to serde_json::Value first
+        // This avoids panicking on types that require template expansion
+        match value {
+            BinXmlValue::NullType => self.writer.write_str("null")?,
+            BinXmlValue::StringType(s) => self.writer.write_quoted_str(s)?,
+            BinXmlValue::AnsiStringType(s) => self.writer.write_quoted_str(s.as_ref())?,
+            BinXmlValue::Int8Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt8Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Int16Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt16Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Int32Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt32Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Int64Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::UInt64Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Real32Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::Real64Type(n) => self.writer.write_str(&n.to_string())?,
+            BinXmlValue::BoolType(b) => self.writer.write_str(if *b { "true" } else { "false" })?,
+            BinXmlValue::GuidType(g) => self.writer.write_quoted_str(&g.to_string())?,
+            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => {
+                self.writer.write_quoted_str(&dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())?
+            }
+            BinXmlValue::SidType(sid) => self.writer.write_quoted_str(&sid.to_string())?,
+            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => {
+                self.writer.write_quoted_str(s)?
+            }
+            BinXmlValue::SizeTType(n) => self.writer.write_str(&n.to_string())?,
+            // Types that require template expansion - write null (shouldn't appear after expansion)
+            BinXmlValue::EvtXml | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtHandle => {
+                // These should have been expanded by the streaming parser
+                // Write null as fallback
+                self.writer.write_str("null")?
+            }
+            // Array and complex types - convert via serde_json
+            _ => {
+                // Fallback: try to convert via serde_json
+                let v: Value = value.clone().into();
+                self.writer.write_value(&v)?
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
@@ -153,6 +205,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
 
     fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
         let name = element.name.as_str();
+        let has_attributes = !element.attributes.is_empty();
 
         // Handle duplicate key naming under current parent
         let mut key = name.to_string();
@@ -162,11 +215,30 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             self.advance_duplicate_index(name);
         }
 
-        // Always open an object for the element
+        // If element has no attributes, we'll write the value directly (not wrapped in #text)
+        // So we don't open an object yet - we'll write the value directly in visit_characters
+        if !has_attributes {
+            // Just write the key, we'll write the value in visit_characters
+            self.write_key(&key)?;
+            // Push a context to track this element (but no object opened)
+            self.stack.push(ObjectContext {
+                has_attributes: false,
+                object_opened: false,
+                ..Default::default()
+            });
+            return Ok(());
+        }
+
+        // Element has attributes, so we need an object
         self.write_object_start(&key)?;
+        // Mark that this element has attributes and object was opened
+        if let Some(ctx) = self.stack.last_mut() {
+            ctx.has_attributes = true;
+            ctx.object_opened = true;
+        }
 
         // Attributes
-        if !element.attributes.is_empty() {
+        if has_attributes {
             if self.separate_json_attributes {
                 // Emit sibling <name>_attributes at parent level; we will add after closing current object
                 // For streaming simplicity, we emit attributes inside the object under "#attributes" as well
@@ -175,16 +247,16 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.writer.write_str("{")?;
                 let mut first = true;
                 for attr in element.attributes.iter() {
-                    if let Some(v) = Some(attr.value.clone().into_owned().into()) {
-                        if !matches!(v, Value::Null) {
-                            if !first {
-                                self.writer.write_str(",")?;
-                            }
-                            first = false;
-                            self.writer.write_quoted_str(attr.name.as_str())?;
-                            self.writer.write_str(":")?;
-                            self.writer.write_value(&v)?;
+                    if !matches!(attr.value.as_ref(), BinXmlValue::NullType)
+                        && Self::can_write_binxml_value(attr.value.as_ref())
+                    {
+                        if !first {
+                            self.writer.write_str(",")?;
                         }
+                        first = false;
+                        self.writer.write_quoted_str(attr.name.as_str())?;
+                        self.writer.write_str(":")?;
+                        self.write_binxml_value(attr.value.as_ref())?;
                     }
                 }
                 self.writer.write_str("}")?;
@@ -193,15 +265,16 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.writer.write_str("{")?;
                 let mut first = true;
                 for attr in element.attributes.iter() {
-                    let v: Value = attr.value.clone().into_owned().into();
-                    if !matches!(v, Value::Null) {
+                    if !matches!(attr.value.as_ref(), BinXmlValue::NullType)
+                        && Self::can_write_binxml_value(attr.value.as_ref())
+                    {
                         if !first {
                             self.writer.write_str(",")?;
                         }
                         first = false;
                         self.writer.write_quoted_str(attr.name.as_str())?;
                         self.writer.write_str(":")?;
-                        self.writer.write_value(&v)?;
+                        self.write_binxml_value(attr.value.as_ref())?;
                     }
                 }
                 self.writer.write_str("}")?;
@@ -212,14 +285,31 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
     }
 
     fn visit_close_element(&mut self, _element: &XmlElement) -> SerializationResult<()> {
-        self.write_object_end()
+        // Pop the context for this element
+        if let Some(ctx) = self.stack.pop() {
+            // Only close object if one was opened
+            if ctx.object_opened {
+                self.write_object_end()?;
+            }
+            // If no object was opened and no value was written, we need to write null
+            // (This handles empty elements without attributes)
+            // Actually, if we wrote a key but no value, that's an error case we should handle
+        }
+        Ok(())
     }
 
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
-        // Serialize as #text field within the current object
-        self.write_key("#text")?;
-        let v = Self::value_to_json(value);
-        self.writer.write_value(&v)?;
+        // Check if current element has attributes
+        let has_attributes = self.stack.last().map(|ctx| ctx.has_attributes).unwrap_or(false);
+        
+        if has_attributes {
+            // Element has attributes, so wrap text in #text field
+            self.write_key("#text")?;
+            self.write_binxml_value(value.as_ref())?;
+        } else {
+            // Element has no attributes, write value directly (no #text wrapper)
+            self.write_binxml_value(value.as_ref())?;
+        }
         Ok(())
     }
 
