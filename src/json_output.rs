@@ -1,13 +1,13 @@
 use crate::err::{SerializationError, SerializationResult};
 
+use crate::ParserSettings;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
-use crate::ParserSettings;
 
 use core::borrow::BorrowMut;
 use log::trace;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::borrow::Cow;
 
 use crate::binxml::name::BinXmlName;
@@ -160,10 +160,10 @@ impl JsonOutput {
                 return Ok(());
             }
 
-            if let Some(map) = old_value.as_object() {
-                if map.is_empty() {
-                    return Ok(());
-                }
+            if let Some(map) = old_value.as_object()
+                && map.is_empty()
+            {
+                return Ok(());
             }
 
             let mut free_slot = 1;
@@ -215,26 +215,31 @@ impl JsonOutput {
                 }
                 })?;
                 // We do a linear probe in case XML contains duplicate keys
-                if let Some(old_attribute) = value.insert(format!("{}_attributes", name), Value::Null) {
-                    if let Some(old_value) = value.insert(name.to_string(), Value::Null) {
-                        let mut free_slot = 1;
-                        // If it is a concrete value, we look for another slot.
-                        while value.get(&format!("{}_{}", name, free_slot)).is_some() || value.get(&format!("{}_{}_attributes", name, free_slot)).is_some() {
-                            // Value is an empty object - we can override it's value.
-                            free_slot += 1
-                        }
-                        if let Some(old_value_object) = old_value.as_object() {
-                            if !old_value_object.is_empty(){
-                                value.insert(format!("{}_{}", name, free_slot), old_value);
-                            }
-                        };
-                        if let Some(old_attribute_object) = old_attribute.as_object() {
-                            if !old_attribute_object.is_empty() {
-                                value.insert(format!("{}_{}_attributes", name, free_slot), old_attribute);
-                            };
-                        };
-                    };
-                };
+                if let Some(old_attribute) =
+                    value.insert(format!("{}_attributes", name), Value::Null)
+                    && let Some(old_value) = value.insert(name.to_string(), Value::Null)
+                {
+                    let mut free_slot = 1;
+                    // If it is a concrete value, we look for another slot.
+                    while value.get(&format!("{}_{}", name, free_slot)).is_some()
+                        || value
+                            .get(&format!("{}_{}_attributes", name, free_slot))
+                            .is_some()
+                    {
+                        // Value is an empty object - we can override it's value.
+                        free_slot += 1
+                    }
+                    if let Some(old_value_object) = old_value.as_object()
+                        && !old_value_object.is_empty()
+                    {
+                        value.insert(format!("{}_{}", name, free_slot), old_value);
+                    }
+                    if let Some(old_attribute_object) = old_attribute.as_object()
+                        && !old_attribute_object.is_empty()
+                    {
+                        value.insert(format!("{}_{}_attributes", name, free_slot), old_attribute);
+                    }
+                }
 
                 value.insert(format!("{}_attributes", name), Value::Object(attributes));
 
@@ -253,19 +258,18 @@ impl JsonOutput {
                     }
                 })?;
                 // We do a linear probe in case XML contains duplicate keys
-                if let Some(old_value) = container.insert(name.to_string(), Value::Null) {
-                    if let Some(map) = old_value.as_object() {
-                        if !map.is_empty() {
-                            let mut free_slot = 1;
-                            // If it is a concrete value, we look for another slot.
-                            while container.get(&format!("{}_{}", name, free_slot)).is_some() {
-                                // Value is an empty object - we can override it's value.
-                                free_slot += 1
-                            }
-                            container.insert(format!("{}_{}", name, free_slot), old_value);
-                        }
+                if let Some(old_value) = container.insert(name.to_string(), Value::Null)
+                    && let Some(map) = old_value.as_object()
+                    && !map.is_empty()
+                {
+                    let mut free_slot = 1;
+                    // If it is a concrete value, we look for another slot.
+                    while container.get(&format!("{}_{}", name, free_slot)).is_some() {
+                        // Value is an empty object - we can override it's value.
+                        free_slot += 1
                     }
-                };
+                    container.insert(format!("{}_{}", name, free_slot), old_value);
+                }
 
                 let mut value = Map::new();
                 value.insert("#attributes".to_owned(), Value::Object(attributes));
@@ -391,11 +395,11 @@ impl BinXmlOutput for JsonOutput {
                         Some(Value::Array(arr)) => arr.push(value_to_json(value)),
                         current_value => {
                             return Err(SerializationError::JsonStructureError {
-                            message: format!(
-                                "expected current value to be a String or an Array, found {:?}, new value is {:?}",
-                                current_value, value
-                            ),
-                        });
+                                message: format!(
+                                    "expected current value to be a String or an Array, found {:?}, new value is {:?}",
+                                    current_value, value
+                                ),
+                            });
                         }
                     }
                 }
@@ -473,8 +477,8 @@ mod tests {
     use crate::model::xml::{XmlAttribute, XmlElement};
     use crate::{BinXmlOutput, JsonOutput, ParserSettings};
     use pretty_assertions::assert_eq;
-    use quick_xml::events::{BytesStart, Event};
     use quick_xml::Reader;
+    use quick_xml::events::{BytesStart, Event};
     use std::borrow::Cow;
 
     fn bytes_to_string(bytes: &[u8]) -> String {

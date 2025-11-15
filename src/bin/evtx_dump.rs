@@ -207,7 +207,7 @@ impl EvtxDump {
         if p.exists() {
             if prompt {
                 match Confirm::new()
-                    .with_prompt(&format!(
+                    .with_prompt(format!(
                         "Are you sure you want to override output file at {}",
                         p.display()
                     ))
