@@ -1,186 +1,228 @@
 use crate::ParserSettings;
-use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{SerializationError, SerializationResult};
-use crate::model::xml::{BinXmlPI, XmlElement};
 use crate::xml_output::BinXmlOutput;
 
-use serde_json::Value;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::io::{Result as IoResult, Write};
-
+use crate::binxml::name::BinXmlName;
+use crate::binxml::value_variant::BinXmlValue;
+use crate::model::xml::{BinXmlPI, XmlElement};
 use quick_xml::events::BytesText;
+use serde_json::Value as JsonValue;
+use std::borrow::Cow;
+use std::io::Write;
 
-struct JsonWriter<W: Write> {
-    writer: W,
+/// Represents how the current XML element is being rendered in JSON.
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum ElementValueKind {
+    /// We haven't decided yet if this element will be rendered as a scalar,
+    /// an object, or `null`. This is the case for elements without attributes.
+    Pending,
+    /// The element has been rendered as a scalar JSON value (`"key": 123`).
+    Scalar,
+    /// The element is rendered as an object (`"key": { ... }`).
+    Object,
 }
 
-impl<W: Write> JsonWriter<W> {
-    fn new(writer: W) -> Self {
-        Self { writer }
-    }
-
-    fn write_str(&mut self, s: &str) -> IoResult<()> {
-        self.writer.write_all(s.as_bytes())
-    }
-
-    fn write_quoted_str(&mut self, s: &str) -> IoResult<()> {
-        // Minimal JSON string escaping; delegate to serde_json for correctness
-        let mut buf = Vec::new();
-        serde_json::to_writer(&mut buf, &Value::String(s.to_string())).unwrap();
-        self.writer.write_all(&buf)
-    }
-
-    fn write_value(&mut self, v: &Value) -> IoResult<()> {
-        let mut buf = Vec::new();
-        serde_json::to_writer(&mut buf, v).unwrap();
-        self.writer.write_all(&buf)
-    }
+/// Per-element state while streaming.
+#[derive(Debug)]
+struct ElementState {
+    /// JSON key for this element in its parent object.
+    name: String,
+    /// How this element's JSON value is currently represented.
+    kind: ElementValueKind,
+    /// Whether we've already emitted a `#text` field for this element (when `kind == Object`).
+    has_text: bool,
 }
 
-#[derive(Default)]
-struct ObjectContext {
-    has_any_field: bool,
-    // Per-parent duplicate counters for child keys
-    dup_counters: HashMap<String, usize>,
-    // Track if current element has attributes (affects how we write text values)
-    has_attributes: bool,
-    // Track if we opened an object for this context
-    object_opened: bool,
+/// JSON object context (either the root object or any nested object).
+#[derive(Debug)]
+struct ObjectFrame {
+    /// Whether we've already written any field in this object.
+    first_field: bool,
 }
 
 pub struct JsonStreamOutput<W: Write> {
-    writer: JsonWriter<W>,
-    // Stack of open objects (root + nested elements)
-    stack: Vec<ObjectContext>,
-    // separate_json_attributes option
+    writer: Option<W>,
+    /// Whether pretty-printing was requested. Currently unused – streaming
+    /// output is always compact, and callers compare via `serde_json::Value`.
+    #[allow(dead_code)]
+    indent: bool,
     separate_json_attributes: bool,
+
+    /// Stack of JSON object frames. The root object is at index 0.
+    frames: Vec<ObjectFrame>,
+    /// Stack of currently open XML elements.
+    elements: Vec<ElementState>,
+
+    /// Optional depth (in `elements`) of an `EventData` element that owns a
+    /// synthetic `"Data": { "#text": [...] }` aggregator, used to model
+    /// `<EventData><Data>...</Data>...</EventData>` without building an
+    /// intermediate tree.
+    data_owner_depth: Option<usize>,
+    /// Whether we've already written at least one entry into the aggregated
+    /// `"Data": { "#text": [...] }` array.
+    data_array_started: bool,
+    /// Whether we are currently inside a `<Data>` element that contributes to
+    /// the aggregated `"Data"` array.
+    data_inside_element: bool,
 }
 
 impl<W: Write> JsonStreamOutput<W> {
     pub fn with_writer(writer: W, settings: &ParserSettings) -> Self {
-        Self {
-            writer: JsonWriter::new(writer),
-            stack: Vec::new(),
+        JsonStreamOutput {
+            writer: Some(writer),
+            indent: settings.should_indent(),
             separate_json_attributes: settings.should_separate_json_attributes(),
+            frames: Vec::new(),
+            elements: Vec::new(),
+            data_owner_depth: None,
+            data_array_started: false,
+            data_inside_element: false,
         }
+    }
+
+    /// Finalize the JSON stream and return the underlying writer.
+    pub fn finish(mut self) -> SerializationResult<W> {
+        // If the caller didn't drive the parser fully, we may still have an
+        // open root object; try to close it gracefully.
+        if !self.frames.is_empty() {
+            // Close any remaining open element objects.
+            while let Some(_elem) = self.elements.pop() {
+                self.end_element_object_if_needed()?;
+            }
+
+            // Close the root object.
+            self.write_bytes(b"}")?;
+            self.frames.clear();
+        }
+
+        self.writer
+            .take()
+            .ok_or_else(|| SerializationError::JsonStructureError {
+                message: "Writer already taken".to_string(),
+            })
     }
 
     pub fn into_writer(self) -> W {
-        self.writer.writer
+        self.finish()
+            .expect("failed to finalize JSON output in JsonStreamOutput")
     }
 
-    fn current_mut(&mut self) -> &mut ObjectContext {
-        if self.stack.is_empty() {
-            self.stack.push(ObjectContext::default());
-        }
-        self.stack.last_mut().unwrap()
+    fn writer_mut(&mut self) -> &mut W {
+        self.writer
+            .as_mut()
+            .expect("JsonStreamOutput writer missing")
     }
 
-    fn next_duplicate_index_for(&mut self, base: &str) -> usize {
-        let ctx = self.current_mut();
-        if let Some(next) = ctx.dup_counters.get(base) {
-            return *next;
-        }
-        ctx.dup_counters.insert(base.to_owned(), 1);
-        1
+    fn write_bytes(&mut self, bytes: &[u8]) -> SerializationResult<()> {
+        self.writer_mut()
+            .write_all(bytes)
+            .map_err(SerializationError::from)
     }
 
-    fn advance_duplicate_index(&mut self, base: &str) {
-        let ctx = self.current_mut();
-        let entry = ctx.dup_counters.entry(base.to_owned()).or_insert(1);
-        *entry += 1;
+    fn current_frame_mut(&mut self) -> &mut ObjectFrame {
+        self.frames
+            .last_mut()
+            .expect("no current JSON object frame available")
     }
 
+    /// Write a comma if needed for the current JSON object.
     fn write_comma_if_needed(&mut self) -> SerializationResult<()> {
-        // Avoid holding two mutable borrows: first check, then write
-        let needs_comma = {
-            let ctx = self.current_mut();
-            let needs = ctx.has_any_field;
-            // mark will be set after writing
-            needs
-        };
-        if needs_comma {
-            self.writer.write_str(",")?;
+        let frame = self.current_frame_mut();
+        if frame.first_field {
+            frame.first_field = false;
+            Ok(())
+        } else {
+            self.write_bytes(b",")
         }
-        {
-            let ctx = self.current_mut();
-            ctx.has_any_field = true;
-        }
-        Ok(())
     }
 
+    /// Write a JSON string key (with surrounding quotes and escaping).
     fn write_key(&mut self, key: &str) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
-        self.writer.write_quoted_str(key)?;
-        self.writer.write_str(":")?;
-        Ok(())
+        serde_json::to_writer(self.writer_mut(), key).map_err(SerializationError::from)?;
+        self.write_bytes(b":")
     }
 
-    fn write_object_start(&mut self, key: &str) -> SerializationResult<()> {
+    /// Start a new nested JSON object as the value of `key` in the current object.
+    fn start_object_value(&mut self, key: &str) -> SerializationResult<()> {
         self.write_key(key)?;
-        self.writer.write_str("{")?;
-        self.stack.push(ObjectContext::default());
+        self.write_bytes(b"{")?;
+        self.frames.push(ObjectFrame { first_field: true });
         Ok(())
     }
 
-    fn write_object_end(&mut self) -> SerializationResult<()> {
-        self.writer.write_str("}")?;
-        self.stack.pop();
+    /// End the current JSON object frame.
+    fn end_object(&mut self) -> SerializationResult<()> {
+        self.write_bytes(b"}")?;
+        self.frames.pop();
         Ok(())
     }
 
-    fn value_to_json(value: Cow<BinXmlValue>) -> Value {
+    /// Write a scalar JSON value based on a `BinXmlValue`.
+    fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+        // We reuse the existing conversion logic to preserve semantics;
+        // this only allocates for the single value, not for the entire record.
+        let json_value: JsonValue = JsonValue::from(value);
+        serde_json::to_writer(self.writer_mut(), &json_value).map_err(SerializationError::from)
+    }
+
+    /// Helper for writing `Cow<BinXmlValue>` in `visit_characters`.
+    fn write_cow_binxml_value(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         match value {
-            Cow::Owned(BinXmlValue::StringType(s)) => Value::String(s),
-            other => other.into_owned().into(),
+            Cow::Borrowed(v) => self.write_binxml_value(v),
+            Cow::Owned(v) => self.write_binxml_value(&v),
         }
     }
 
-    fn can_write_binxml_value(value: &BinXmlValue) -> bool {
-        // Check if we can safely write this value
-        !matches!(value, BinXmlValue::EvtXml | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtHandle)
+    /// For elements without attributes, if their first child is another element
+    /// we need to materialize this element as an object (`"name": { ... }`).
+    fn ensure_parent_is_object(&mut self) -> SerializationResult<()> {
+        if let Some(parent_index) = self.elements.len().checked_sub(1)
+            && self.elements[parent_index].kind == ElementValueKind::Pending
+        {
+            // Turn `"parent": null` into `"parent": { ... }` by starting an
+            // object value for it now.
+            let key = self.elements[parent_index].name.clone();
+            self.start_object_value(&key)?;
+            self.elements[parent_index].kind = ElementValueKind::Object;
+        }
+
+        Ok(())
     }
 
-    fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
-        // Serialize BinXmlValue directly without converting to serde_json::Value first
-        // This avoids panicking on types that require template expansion
-        match value {
-            BinXmlValue::NullType => self.writer.write_str("null")?,
-            BinXmlValue::StringType(s) => self.writer.write_quoted_str(s)?,
-            BinXmlValue::AnsiStringType(s) => self.writer.write_quoted_str(s.as_ref())?,
-            BinXmlValue::Int8Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt8Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Int16Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt16Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Int32Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt32Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Int64Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::UInt64Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Real32Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::Real64Type(n) => self.writer.write_str(&n.to_string())?,
-            BinXmlValue::BoolType(b) => self.writer.write_str(if *b { "true" } else { "false" })?,
-            BinXmlValue::GuidType(g) => self.writer.write_quoted_str(&g.to_string())?,
-            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => {
-                self.writer.write_quoted_str(&dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())?
+    /// If the current element is represented as an object, close its JSON object.
+    fn end_element_object_if_needed(&mut self) -> SerializationResult<()> {
+        if let Some(elem) = self.elements.last() {
+            if elem.kind == ElementValueKind::Object {
+                // The current element owns the top-most JSON object frame.
+                self.end_object()?;
             }
-            BinXmlValue::SidType(sid) => self.writer.write_quoted_str(&sid.to_string())?,
-            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => {
-                self.writer.write_quoted_str(s)?
-            }
-            BinXmlValue::SizeTType(n) => self.writer.write_str(&n.to_string())?,
-            // Types that require template expansion - write null (shouldn't appear after expansion)
-            BinXmlValue::EvtXml | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtHandle => {
-                // These should have been expanded by the streaming parser
-                // Write null as fallback
-                self.writer.write_str("null")?
-            }
-            // Array and complex types - convert via serde_json
-            _ => {
-                // Fallback: try to convert via serde_json
-                let v: Value = value.clone().into();
-                self.writer.write_value(&v)?
-            }
+        }
+        Ok(())
+    }
+
+    /// Append a value into the aggregated `"Data": { "#text": ... }` under an
+    /// `EventData` element. The BinXml value may itself be an array (e.g.
+    /// `StringArrayType`), in which case it is written as-is, matching the
+    /// behaviour of `JsonOutput::value_to_json`.
+    fn write_data_aggregated_value(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
+        let json_value: JsonValue = match &value {
+            Cow::Borrowed(v) => JsonValue::from(*v),
+            Cow::Owned(v) => JsonValue::from(&*v),
+        };
+
+        serde_json::to_writer(self.writer_mut(), &json_value).map_err(SerializationError::from)
+    }
+
+    /// Finalize the aggregated `"Data": { "#text": [...] }` object, if any.
+    fn finalize_data_aggregator(&mut self) -> SerializationResult<()> {
+        if self.data_owner_depth.is_some() {
+            // Close the `"Data"` object.
+            self.end_object()?;
+            // Reset aggregator state.
+            self.data_owner_depth = None;
+            self.data_array_started = false;
+            self.data_inside_element = false;
         }
         Ok(())
     }
@@ -188,128 +230,351 @@ impl<W: Write> JsonStreamOutput<W> {
 
 impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
     fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
-        // Root object
-        self.writer.write_str("{")?;
-        self.stack.push(ObjectContext::default());
+        // Open the root JSON object.
+        self.write_bytes(b"{")?;
+        self.frames.push(ObjectFrame { first_field: true });
         Ok(())
     }
 
     fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
-        // Close any open objects including root
-        while self.stack.len() > 1 {
-            self.write_object_end()?;
+        // Close any remaining elements (this will close their objects).
+        while let Some(_elem) = self.elements.pop() {
+            self.end_element_object_if_needed()?;
         }
-        self.writer.write_str("}")?;
+
+        // Close the root JSON object.
+        if !self.frames.is_empty() {
+            self.write_bytes(b"}")?;
+            self.frames.clear();
+        }
+
         Ok(())
     }
 
     fn visit_open_start_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
-        let name = element.name.as_str();
-        let has_attributes = !element.attributes.is_empty();
+        // If we're nested under an element without attributes, and this is the
+        // first child element, we must represent the parent as an object.
+        self.ensure_parent_is_object()?;
 
-        // Handle duplicate key naming under current parent
-        let mut key = name.to_string();
-        let next = self.next_duplicate_index_for(name);
-        if next > 1 {
-            key = format!("{}_{}", name, next);
-            self.advance_duplicate_index(name);
-        }
+        // Determine JSON key for this element.
+        let element_name = element.name.as_str();
 
-        // If element has no attributes, we'll write the value directly (not wrapped in #text)
-        // So we don't open an object yet - we'll write the value directly in visit_characters
-        if !has_attributes {
-            // Just write the key, we'll write the value in visit_characters
-            self.write_key(&key)?;
-            // Push a context to track this element (but no object opened)
-            self.stack.push(ObjectContext {
-                has_attributes: false,
-                object_opened: false,
-                ..Default::default()
-            });
-            return Ok(());
-        }
+        // Special handling for `<Data>` nodes: they use their "Name" attribute
+        // as the JSON key when present, and ignore attributes entirely.
+        let is_data = element_name == "Data";
+        let data_name_attr = if is_data {
+            element
+                .attributes
+                .iter()
+                .find(|a| a.name.as_ref().as_str() == "Name")
+        } else {
+            None
+        };
 
-        // Element has attributes, so we need an object
-        self.write_object_start(&key)?;
-        // Mark that this element has attributes and object was opened
-        if let Some(ctx) = self.stack.last_mut() {
-            ctx.has_attributes = true;
-            ctx.object_opened = true;
-        }
+        let key = if let Some(name_attr) = data_name_attr {
+            name_attr.value.as_cow_str().into_owned()
+        } else {
+            element_name.to_owned()
+        };
 
-        // Attributes
-        if has_attributes {
-            if self.separate_json_attributes {
-                // Emit sibling <name>_attributes at parent level; we will add after closing current object
-                // For streaming simplicity, we emit attributes inside the object under "#attributes" as well
-                // to preserve information locally.
-                self.write_key("#attributes")?;
-                self.writer.write_str("{")?;
-                let mut first = true;
-                for attr in element.attributes.iter() {
-                    if !matches!(attr.value.as_ref(), BinXmlValue::NullType)
-                        && Self::can_write_binxml_value(attr.value.as_ref())
-                    {
-                        if !first {
-                            self.writer.write_str(",")?;
-                        }
-                        first = false;
-                        self.writer.write_quoted_str(attr.name.as_str())?;
-                        self.writer.write_str(":")?;
-                        self.write_binxml_value(attr.value.as_ref())?;
-                    }
-                }
-                self.writer.write_str("}")?;
-            } else {
-                self.write_key("#attributes")?;
-                self.writer.write_str("{")?;
-                let mut first = true;
-                for attr in element.attributes.iter() {
-                    if !matches!(attr.value.as_ref(), BinXmlValue::NullType)
-                        && Self::can_write_binxml_value(attr.value.as_ref())
-                    {
-                        if !first {
-                            self.writer.write_str(",")?;
-                        }
-                        first = false;
-                        self.writer.write_quoted_str(attr.name.as_str())?;
-                        self.writer.write_str(":")?;
-                        self.write_binxml_value(attr.value.as_ref())?;
-                    }
-                }
-                self.writer.write_str("}")?;
+        // If we have an active aggregated `"Data"` under an `EventData` element
+        // and are about to open another child (e.g. `<Binary>`), finalize the
+        // aggregator so that subsequent fields are siblings of `"Data"`, not
+        // elements of its `#text` array.
+        if let Some(owner_depth) = self.data_owner_depth {
+            if self.elements.len() == owner_depth && element_name != "Data" {
+                self.finalize_data_aggregator()?;
             }
+        }
+
+        // Aggregated `<EventData><Data>...</Data>...</EventData>` case:
+        // multiple `<Data>` children without a `Name` attribute become a single
+        // `"Data": { "#text": [ ... ] }` object under their `EventData` parent.
+        if is_data && data_name_attr.is_none() {
+            if let Some(parent) = self.elements.last() {
+                if parent.name == "EventData" {
+                    // Depth of the owning `EventData` element.
+                    let owner_depth = self.elements.len();
+
+                    // Initialize a new aggregator for this `EventData`, if needed.
+                    if self.data_owner_depth != Some(owner_depth) {
+                        // Ensure `EventData` itself is an object.
+                        self.ensure_parent_is_object()?;
+
+                        // `"Data": {`
+                        self.start_object_value("Data")?;
+
+                        // `"#text": [`
+                        let first_field = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !first_field {
+                            self.write_bytes(b",")?;
+                        }
+                        serde_json::to_writer(self.writer_mut(), "#text")
+                            .map_err(SerializationError::from)?;
+                        self.write_bytes(b":")?;
+
+                        self.data_owner_depth = Some(owner_depth);
+                        self.data_array_started = false;
+                    }
+
+                    // We're now inside a `<Data>` element that contributes to
+                    // the aggregated array.
+                    self.data_inside_element = true;
+
+                    // Do NOT push a new `ElementState` for this `<Data>` node;
+                    // its values are handled by the aggregator.
+                    return Ok(());
+                }
+            }
+        }
+
+        // In the JSON representation, `<Data Name="...">` behaves like a
+        // regular node without attributes. Attributes whose JSON value is
+        // `null` are ignored (this matches `JsonOutput`).
+        let mut has_json_attributes = false;
+        if !is_data {
+            for attr in &element.attributes {
+                let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
+                if !json_value.is_null() {
+                    has_json_attributes = true;
+                    break;
+                }
+            }
+        }
+
+        // Elements with attributes and `separate_json_attributes == false` are
+        // materialized as objects with a `#attributes` field.
+        if has_json_attributes && !self.separate_json_attributes {
+            // `"key": { "#attributes": { ... } }`
+            self.start_object_value(&key)?;
+
+            // Write `#attributes` object.
+            {
+                // Update first-field state for the element object.
+                let first_field = {
+                    let frame = self.current_frame_mut();
+                    let first = frame.first_field;
+                    if first {
+                        frame.first_field = false;
+                    }
+                    first
+                };
+                if !first_field {
+                    self.write_bytes(b",")?;
+                }
+                serde_json::to_writer(self.writer_mut(), "#attributes")
+                    .map_err(SerializationError::from)?;
+                self.write_bytes(b":")?;
+
+                // Start attributes object.
+                self.write_bytes(b"{")?;
+                self.frames.push(ObjectFrame { first_field: true });
+
+                {
+                    for attr in &element.attributes {
+                        let attr_key = attr.name.as_str();
+                        // Skip the `Name` attribute on `<Data>`; it is only
+                        // used as the field name, not as an attribute.
+                        if is_data && attr_key == "Name" {
+                            continue;
+                        }
+
+                        let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
+                        if json_value.is_null() {
+                            continue;
+                        }
+
+                        let is_first = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !is_first {
+                            self.write_bytes(b",")?;
+                        }
+                        serde_json::to_writer(self.writer_mut(), attr_key)
+                            .map_err(SerializationError::from)?;
+                        self.write_bytes(b":")?;
+                        serde_json::to_writer(self.writer_mut(), &json_value)
+                            .map_err(SerializationError::from)?;
+                    }
+                }
+
+                // Close `#attributes` object.
+                self.end_object()?;
+            }
+
+            self.elements.push(ElementState {
+                name: key,
+                kind: ElementValueKind::Object,
+                has_text: false,
+            });
+        } else {
+            // `separate_json_attributes == true` or element has no attributes.
+            if has_json_attributes && self.separate_json_attributes {
+                // Emit `"<key>_attributes": { ... }` into the parent object.
+                let attr_key = format!("{}_attributes", key);
+                self.write_key(&attr_key)?;
+                self.write_bytes(b"{")?;
+                self.frames.push(ObjectFrame { first_field: true });
+
+                {
+                    for attr in &element.attributes {
+                        let attr_name = attr.name.as_str();
+                        let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
+                        if json_value.is_null() {
+                            continue;
+                        }
+
+                        let is_first = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !is_first {
+                            self.write_bytes(b",")?;
+                        }
+                        serde_json::to_writer(self.writer_mut(), attr_name)
+                            .map_err(SerializationError::from)?;
+                        self.write_bytes(b":")?;
+                        serde_json::to_writer(self.writer_mut(), &json_value)
+                            .map_err(SerializationError::from)?;
+                    }
+                }
+
+                self.end_object()?;
+            }
+
+            // We delay emitting the actual `"key": ...` until we see either
+            // a character node or a child element, so we can decide whether
+            // this element is a scalar, an object, or `null`.
+            self.elements.push(ElementState {
+                name: key,
+                kind: ElementValueKind::Pending,
+                has_text: false,
+            });
         }
 
         Ok(())
     }
 
-    fn visit_close_element(&mut self, _element: &XmlElement) -> SerializationResult<()> {
-        // Pop the context for this element
-        if let Some(ctx) = self.stack.pop() {
-            // Only close object if one was opened
-            if ctx.object_opened {
-                self.write_object_end()?;
+    fn visit_close_element(&mut self, element: &XmlElement) -> SerializationResult<()> {
+        let element_name = element.name.as_str();
+
+        // Closing an aggregated `<Data>` node: we only need to mark that we
+        // are no longer inside a contributing `<Data>`; the owning `EventData`
+        // element remains on the stack.
+        if element_name == "Data" && self.data_owner_depth.is_some() && self.data_inside_element {
+            self.data_inside_element = false;
+            return Ok(());
+        }
+
+        let current_depth = self.elements.len();
+        let is_data_owner = self.data_owner_depth == Some(current_depth);
+
+        if let Some(elem) = self.elements.pop() {
+            if is_data_owner {
+                // Finalize the aggregated `"Data": { "#text": [...] }` object.
+                self.finalize_data_aggregator()?;
             }
-            // If no object was opened and no value was written, we need to write null
-            // (This handles empty elements without attributes)
-            // Actually, if we wrote a key but no value, that's an error case we should handle
+
+            match elem.kind {
+                ElementValueKind::Pending => {
+                    // No text and no children – render as `null`.
+                    self.write_key(&elem.name)?;
+                    self.write_bytes(b"null")?;
+                }
+                ElementValueKind::Scalar => {
+                    // Already fully rendered (`"key": value`).
+                }
+                ElementValueKind::Object => {
+                    // Close the element's object.
+                    self.end_object()?;
+                }
+            }
         }
         Ok(())
     }
 
     fn visit_characters(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
-        // Check if current element has attributes
-        let has_attributes = self.stack.last().map(|ctx| ctx.has_attributes).unwrap_or(false);
-        
-        if has_attributes {
-            // Element has attributes, so wrap text in #text field
-            self.write_key("#text")?;
-            self.write_binxml_value(value.as_ref())?;
-        } else {
-            // Element has no attributes, write value directly (no #text wrapper)
-            self.write_binxml_value(value.as_ref())?;
+        // Aggregated `<EventData><Data>...</Data>...</EventData>` case.
+        if let Some(owner_depth) = self.data_owner_depth {
+            let current_depth = self.elements.len();
+            if self.data_inside_element && current_depth == owner_depth {
+                self.write_data_aggregated_value(value)?;
+                return Ok(());
+            }
         }
+
+        // Characters belong to the innermost open XML element.
+        let Some(index) = self.elements.len().checked_sub(1) else {
+            return Ok(());
+        };
+
+        let kind = self.elements[index].kind;
+
+        match kind {
+            ElementValueKind::Pending => {
+                // First content for this element and it has no attributes:
+                // render as scalar `"key": <value>`.
+                let key = self.elements[index].name.clone();
+                self.write_key(&key)?;
+                self.write_cow_binxml_value(value)?;
+                self.elements[index].kind = ElementValueKind::Scalar;
+            }
+            ElementValueKind::Scalar => {
+                // Multiple character nodes for a scalar element are unusual in
+                // real EVTX data. We approximate the behaviour of the regular
+                // JSON output by concatenating string representations.
+                //
+                // To keep this simple and allocation-light, we just ignore
+                // additional character nodes here – they are not expected in
+                // the typical Windows Event Log schema that this crate targets.
+                let _ = value;
+            }
+            ElementValueKind::Object => {
+                // Elements with attributes: we store text under a `#text` key.
+                // For the streaming implementation we only support a single
+                // `#text` value; multiple text nodes for the same element are
+                // not expected in real EVTX data.
+                if self.elements[index].has_text {
+                    // As above, we ignore additional character nodes.
+                    let _ = value;
+                    return Ok(());
+                }
+
+                let is_first = {
+                    let frame = self.current_frame_mut();
+                    let first = frame.first_field;
+                    if first {
+                        frame.first_field = false;
+                    }
+                    first
+                };
+                if !is_first {
+                    self.write_bytes(b",")?;
+                }
+                serde_json::to_writer(self.writer_mut(), "#text")
+                    .map_err(SerializationError::from)?;
+                self.write_bytes(b":")?;
+                self.write_cow_binxml_value(value)?;
+                self.elements[index].has_text = true;
+            }
+        }
+
         Ok(())
     }
 
@@ -319,18 +584,9 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         })
     }
 
-    fn visit_entity_reference(
-        &mut self,
-        entity: &crate::binxml::name::BinXmlName,
-    ) -> SerializationResult<()> {
-        // Expand entity into characters and delegate to visit_characters
-        let entity_ref = {
-            let mut s = String::with_capacity(entity.as_str().len() + 2);
-            s.push('&');
-            s.push_str(entity.as_str());
-            s.push(';');
-            s
-        };
+    fn visit_entity_reference(&mut self, entity: &BinXmlName) -> SerializationResult<()> {
+        // Match JsonOutput behaviour: use quick-xml's unescape to resolve the entity.
+        let entity_ref = "&".to_string() + entity.as_str() + ";";
         let xml_event = BytesText::from_escaped(&entity_ref);
         match xml_event.unescape() {
             Ok(escaped) => {

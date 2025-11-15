@@ -128,15 +128,17 @@ impl EvtxRecord<'_> {
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
-        parse_tokens_streaming(&self.tokens, self.chunk, &mut output_builder).map_err(|e| {
+        parse_tokens_streaming(self.tokens, self.chunk, &mut output_builder).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),
             }
         })?;
 
-        let data = String::from_utf8(output_builder.into_writer())
+        let writer = output_builder
+            .finish()
             .map_err(crate::err::SerializationError::from)?;
+        let data = String::from_utf8(writer).map_err(crate::err::SerializationError::from)?;
 
         Ok(SerializedEvtxRecord {
             event_record_id,

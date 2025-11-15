@@ -28,7 +28,10 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
         actual_ok_count, ok_count,
         "Streaming JSON: Failed to parse all expected records"
     );
-    assert_eq!(actual_err_count, err_count, "Streaming JSON: Expected errors");
+    assert_eq!(
+        actual_err_count, err_count,
+        "Streaming JSON: Expected errors"
+    );
 
     // Test streaming JSON parser with separate_json_attributes
     let mut actual_ok_count = 0;
@@ -50,13 +53,16 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
         actual_ok_count, ok_count,
         "Streaming JSON (separate attributes): Failed to parse all expected records"
     );
-    assert_eq!(actual_err_count, err_count, "Streaming JSON (separate attributes): Expected errors");
+    assert_eq!(
+        actual_err_count, err_count,
+        "Streaming JSON (separate attributes): Expected errors"
+    );
 }
 
 /// Compare streaming JSON output with regular JSON output to ensure they produce equivalent results
 fn test_streaming_equivalent_to_regular(path: impl AsRef<Path>) {
     ensure_env_logger_initialized();
-    
+
     // Parse with regular JSON parser
     let mut parser_regular = EvtxParser::from_path(&path).unwrap();
     let mut regular_results: Vec<String> = Vec::new();
@@ -84,12 +90,26 @@ fn test_streaming_equivalent_to_regular(path: impl AsRef<Path>) {
 
     // Compare JSON values (parse and compare as Value to handle formatting differences)
     use serde_json::Value;
-    for (i, (regular, streaming)) in regular_results.iter().zip(streaming_results.iter()).enumerate() {
+    for (i, (regular, streaming)) in regular_results
+        .iter()
+        .zip(streaming_results.iter())
+        .enumerate()
+    {
         let regular_value: Value = serde_json::from_str(regular)
             .expect(&format!("Regular JSON should be valid at record {}", i));
         let streaming_value: Value = serde_json::from_str(streaming)
             .expect(&format!("Streaming JSON should be valid at record {}", i));
-        
+
+        if regular_value != streaming_value {
+            eprintln!(
+                "Regular JSON record {}:\n{}\nStreaming JSON record {}:\n{}",
+                i,
+                serde_json::to_string_pretty(&regular_value).unwrap(),
+                i,
+                serde_json::to_string_pretty(&streaming_value).unwrap()
+            );
+        }
+
         assert_eq!(
             regular_value, streaming_value,
             "Streaming parser should produce equivalent JSON to regular parser at record {}",
@@ -179,4 +199,3 @@ fn test_sample_with_no_crc32_streaming() {
 fn test_sample_with_invalid_flags_in_header_streaming() {
     test_full_sample_streaming(sample_with_invalid_flags_in_header(), 126, 0)
 }
-

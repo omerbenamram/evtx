@@ -388,7 +388,7 @@ pub fn expand_templates<'a>(
 }
 
 fn stream_expand_token<'a, T: BinXmlOutput>(
-    token: &'a BinXMLDeserializedTokens<'a>,
+    token: BinXMLDeserializedTokens<'a>,
     chunk: &'a EvtxChunk<'a>,
     visitor: &mut T,
     element_stack: &mut Vec<XmlElement<'a>>,
@@ -406,20 +406,24 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
             if let Some(b) = current_element.as_mut() {
                 b.attribute_name(expand_string_ref(&attr.name, chunk)?);
             } else {
-                return Err(EvtxError::FailedToCreateRecordModel("attribute - Bad parser state"));
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "attribute - Bad parser state",
+                ));
             }
         }
         BinXMLDeserializedTokens::Value(value) => {
             if let Some(b) = current_element.as_mut() {
-                b.attribute_value(Cow::Borrowed(value))?;
+                b.attribute_value(Cow::Owned(value))?;
             } else {
-                visitor.visit_characters(Cow::Borrowed(value))?;
+                visitor.visit_characters(Cow::Owned(value))?;
             }
         }
         BinXMLDeserializedTokens::CloseStartElement => {
             let element = current_element
                 .take()
-                .ok_or(EvtxError::FailedToCreateRecordModel("close start - Bad parser state"))?
+                .ok_or(EvtxError::FailedToCreateRecordModel(
+                    "close start - Bad parser state",
+                ))?
                 .finish()?;
             visitor.visit_open_start_element(&element)?;
             element_stack.push(element);
@@ -427,7 +431,9 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
         BinXMLDeserializedTokens::CloseEmptyElement => {
             let element = current_element
                 .take()
-                .ok_or(EvtxError::FailedToCreateRecordModel("close empty - Bad parser state"))?
+                .ok_or(EvtxError::FailedToCreateRecordModel(
+                    "close empty - Bad parser state",
+                ))?
                 .finish()?;
             visitor.visit_open_start_element(&element)?;
             visitor.visit_close_element(&element)?;
@@ -435,7 +441,9 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
         BinXMLDeserializedTokens::CloseElement => {
             let element = element_stack
                 .pop()
-                .ok_or(EvtxError::FailedToCreateRecordModel("close element - Bad parser state"))?;
+                .ok_or(EvtxError::FailedToCreateRecordModel(
+                    "close element - Bad parser state",
+                ))?;
             visitor.visit_close_element(&element)?;
         }
         BinXMLDeserializedTokens::EntityRef(entity) => {
@@ -458,7 +466,7 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 .ok_or(EvtxError::FailedToCreateRecordModel(
                     "PI Data without PI target - Bad parser state",
                 ))?;
-            b.data(Cow::Borrowed(data));
+            b.data(Cow::Owned(data));
             if let XmlModel::PI(pi) = b.finish() {
                 visitor.visit_processing_instruction(&pi)?;
             }
@@ -472,60 +480,108 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 for t in template_def.tokens.iter() {
                     match t {
                         BinXMLDeserializedTokens::Substitution(desc) => {
-                            if let Some(val) = template.substitution_array.get(desc.substitution_index as usize) {
-                                stream_expand_token(val, chunk, visitor, element_stack, current_element, current_pi)?;
+                            if let Some(val) = template
+                                .substitution_array
+                                .get(desc.substitution_index as usize)
+                            {
+                                stream_expand_token(
+                                    val.clone(),
+                                    chunk,
+                                    visitor,
+                                    element_stack,
+                                    current_element,
+                                    current_pi,
+                                )?;
                             } else {
                                 visitor.visit_characters(Cow::Owned(BinXmlValue::NullType))?;
                             }
                         }
-                        other => stream_expand_token(other, chunk, visitor, element_stack, current_element, current_pi)?,
+                        other => stream_expand_token(
+                            other.clone(),
+                            chunk,
+                            visitor,
+                            element_stack,
+                            current_element,
+                            current_pi,
+                        )?,
                     }
                 }
             } else {
                 let mut cursor = Cursor::new(chunk.data);
                 let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
-                let template_def =
-                    read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
+                let template_def = read_template_definition(
+                    &mut cursor,
+                    Some(chunk),
+                    chunk.settings.get_ansi_codec(),
+                )?;
                 // For templates not in cache, expand them first then visit
                 let expanded = expand_templates(template_def.tokens, chunk)?;
-                for t in expanded.iter() {
+                for t in expanded {
                     match t {
                         Cow::Borrowed(BinXMLDeserializedTokens::Substitution(desc)) => {
-                            if let Some(val) = template.substitution_array.get(desc.substitution_index as usize) {
-                                stream_expand_token(val, chunk, visitor, element_stack, current_element, current_pi)?;
+                            if let Some(val) = template
+                                .substitution_array
+                                .get(desc.substitution_index as usize)
+                            {
+                                stream_expand_token(
+                                    val.clone(),
+                                    chunk,
+                                    visitor,
+                                    element_stack,
+                                    current_element,
+                                    current_pi,
+                                )?;
                             } else {
                                 visitor.visit_characters(Cow::Owned(BinXmlValue::NullType))?;
                             }
                         }
                         Cow::Owned(BinXMLDeserializedTokens::Substitution(desc)) => {
-                            if let Some(val) = template.substitution_array.get(desc.substitution_index as usize) {
-                                stream_expand_token(val, chunk, visitor, element_stack, current_element, current_pi)?;
+                            if let Some(val) = template
+                                .substitution_array
+                                .get(desc.substitution_index as usize)
+                            {
+                                stream_expand_token(
+                                    val.clone(),
+                                    chunk,
+                                    visitor,
+                                    element_stack,
+                                    current_element,
+                                    current_pi,
+                                )?;
                             } else {
                                 visitor.visit_characters(Cow::Owned(BinXmlValue::NullType))?;
                             }
                         }
-                        Cow::Borrowed(other) => stream_expand_token(other, chunk, visitor, element_stack, current_element, current_pi)?,
+                        Cow::Borrowed(other) => stream_expand_token(
+                            other.clone(),
+                            chunk,
+                            visitor,
+                            element_stack,
+                            current_element,
+                            current_pi,
+                        )?,
                         Cow::Owned(other) => {
                             // For owned tokens, we need to expand them recursively
                             // This is a fallback - ideally templates should be in cache
                             let expanded_nested = expand_templates(vec![other.clone()], chunk)?;
-                            for nested in expanded_nested.iter() {
+                            for nested in expanded_nested {
                                 match nested {
-                                    Cow::Borrowed(n) => stream_expand_token(n, chunk, visitor, element_stack, current_element, current_pi)?,
-                                    Cow::Owned(n) => {
-                                        // Recursively expand if needed
-                                        let mut stack = Vec::new();
-                                        _expand_templates(Cow::Owned(n.clone()), chunk, &mut stack)?;
-                                        // Visit expanded tokens
-                                        for expanded_token in stack.iter() {
-                                            match expanded_token {
-                                                Cow::Borrowed(et) => stream_expand_token(et, chunk, visitor, element_stack, current_element, current_pi)?,
-                                                Cow::Owned(_) => {
-                                                    // Skip deeply nested owned tokens for simplicity
-                                                }
-                                            }
-                                        }
-                                    }
+                                    Cow::Borrowed(n) => stream_expand_token(
+                                        n.clone(),
+                                        chunk,
+                                        visitor,
+                                        element_stack,
+                                        current_element,
+                                        current_pi,
+                                    )?,
+                                    Cow::Owned(n) => stream_expand_token(
+                                        n,
+                                        chunk,
+                                        visitor,
+                                        element_stack,
+                                        current_element,
+                                        current_pi,
+                                    )?,
                                 }
                             }
                         }
@@ -547,18 +603,32 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
     Ok(())
 }
 
-
 pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
-    tokens: &'a [BinXMLDeserializedTokens<'a>],
+    tokens: Vec<BinXMLDeserializedTokens<'a>>,
     chunk: &'a EvtxChunk<'a>,
     visitor: &mut T,
 ) -> Result<()> {
+    let expanded = expand_templates(tokens, chunk)?;
+    let mut flattened: Vec<BinXMLDeserializedTokens<'a>> = Vec::with_capacity(expanded.len());
+    for token in expanded {
+        match token {
+            Cow::Borrowed(t) => flattened.push(t.clone()),
+            Cow::Owned(t) => flattened.push(t),
+        }
+    }
     visitor.visit_start_of_stream()?;
     let mut element_stack: Vec<XmlElement<'a>> = Vec::new();
     let mut current_element: Option<XmlElementBuilder<'a>> = None;
     let mut current_pi: Option<XmlPIBuilder<'a>> = None;
-    for t in tokens.iter() {
-        stream_expand_token(t, chunk, visitor, &mut element_stack, &mut current_element, &mut current_pi)?;
+    for token in flattened.into_iter() {
+        stream_expand_token(
+            token,
+            chunk,
+            visitor,
+            &mut element_stack,
+            &mut current_element,
+            &mut current_pi,
+        )?;
     }
     visitor.visit_end_of_stream()?;
     Ok(())
