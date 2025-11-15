@@ -46,7 +46,7 @@ pub struct WrappedIoError {
 
 impl WrappedIoError {
     pub fn capture_hexdump<S: ReadSeek>(
-        error: Box<(dyn std::error::Error + 'static + Send + Sync)>,
+        error: Box<dyn std::error::Error + 'static + Send + Sync>,
         stream: &mut S,
     ) -> WrappedIoError {
         let offset = stream.tell().unwrap_or_else(|_| {
@@ -227,7 +227,7 @@ pub enum ChunkError {
     #[error("Failed to build template cache")]
     FailedToBuildTemplateCache {
         message: String,
-        source: DeserializationError,
+        source: Box<DeserializationError>,
     },
 }
 
@@ -246,7 +246,10 @@ pub enum EvtxError {
     DeserializationError(#[from] DeserializationError),
 
     #[error("Failed to parse chunk number {chunk_id}")]
-    FailedToParseChunk { chunk_id: u64, source: ChunkError },
+    FailedToParseChunk {
+        chunk_id: u64,
+        source: Box<ChunkError>,
+    },
 
     #[error("Failed to parse record number {record_id}")]
     FailedToParseRecord {
@@ -282,7 +285,7 @@ impl EvtxError {
     pub fn incomplete_chunk(chunk_id: u64) -> EvtxError {
         EvtxError::FailedToParseChunk {
             chunk_id,
-            source: ChunkError::IncompleteChunk,
+            source: Box::new(ChunkError::IncompleteChunk),
         }
     }
 }

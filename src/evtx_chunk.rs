@@ -81,7 +81,7 @@ impl EvtxChunkData {
     }
 
     /// Require that the settings live at least as long as &self.
-    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk> {
+    pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
         EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
@@ -180,7 +180,11 @@ impl<'chunk> EvtxChunk<'chunk> {
 
         info!("Initializing template cache");
         let template_table =
-            TemplateCache::populate(data, &header.template_offsets, settings.get_ansi_codec())?;
+            TemplateCache::populate(data, &header.template_offsets, settings.get_ansi_codec())
+                .map_err(|e| ChunkError::FailedToBuildTemplateCache {
+                    message: e.to_string(),
+                    source: Box::new(e),
+                })?;
 
         Ok(EvtxChunk {
             header,
@@ -194,7 +198,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
-    pub fn iter(&mut self) -> IterChunkRecords {
+    pub fn iter(&mut self) -> IterChunkRecords<'_> {
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,

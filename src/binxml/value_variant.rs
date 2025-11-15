@@ -537,7 +537,7 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
 }
 
 impl BinXmlValue<'_> {
-    pub fn as_cow_str(&self) -> Cow<str> {
+    pub fn as_cow_str(&self) -> Cow<'_, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
             BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),

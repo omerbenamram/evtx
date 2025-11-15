@@ -91,7 +91,7 @@ fn print_line(
     // print address (ex - 000000d0)
     write!(s, "\n{:08x}:", address)?;
 
-    let words = if (line.len() % bytes) == 0 {
+    let words = if line.len().is_multiple_of(bytes) {
         line.len() / bytes
     } else {
         (line.len() / bytes) + 1
@@ -127,7 +127,7 @@ fn print_line(
 
     // print ASCII repr
     if display != 'c' {
-        if (line.len() % 16) > 0 {
+        if !line.len().is_multiple_of(16) {
             // align
             let words_left = (16 - line.len()) / bytes;
             let word_size = match display {

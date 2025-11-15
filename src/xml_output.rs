@@ -84,7 +84,7 @@ impl<W: Write> BinXmlOutput for XmlOutput<W> {
         for attr in element.attributes.iter() {
             let value_cow: Cow<'_, str> = attr.value.as_ref().as_cow_str();
 
-            if value_cow.len() > 0 {
+            if !value_cow.is_empty() {
                 let name_as_str = attr.name.as_str();
                 let attr = Attribute::from((name_as_str, value_cow.as_ref()));
                 event_builder.push_attribute(attr);
