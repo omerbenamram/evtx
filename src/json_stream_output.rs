@@ -201,11 +201,19 @@ impl<W: Write> JsonStreamOutput<W> {
         Ok(())
     }
 
-    /// Append a value into the aggregated `"Data": { "#text": ... }` under an
+    /// Append a value into the aggregated `"Data": { "#text": [...] }` under an
     /// `EventData` element. The BinXml value may itself be an array (e.g.
     /// `StringArrayType`), in which case it is written as-is, matching the
     /// behaviour of `JsonOutput::value_to_json`.
     fn write_data_aggregated_value(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
+        // Values are written into a JSON array; insert comma delimiters between
+        // successive elements.
+        if self.data_array_started {
+            self.write_bytes(b",")?;
+        } else {
+            self.data_array_started = true;
+        }
+
         let json_value: JsonValue = match &value {
             Cow::Borrowed(v) => JsonValue::from(*v),
             Cow::Owned(v) => JsonValue::from(&*v),
@@ -217,6 +225,9 @@ impl<W: Write> JsonStreamOutput<W> {
     /// Finalize the aggregated `"Data": { "#text": [...] }` object, if any.
     fn finalize_data_aggregator(&mut self) -> SerializationResult<()> {
         if self.data_owner_depth.is_some() {
+            // Close the `#text` array (even if no elements were written, we
+            // still emit an empty array).
+            self.write_bytes(b"]")?;
             // Close the `"Data"` object.
             self.end_object()?;
             // Reset aggregator state.
@@ -305,20 +316,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         self.start_object_value("Data")?;
 
                         // `"#text": [`
-                        let first_field = {
-                            let frame = self.current_frame_mut();
-                            let first = frame.first_field;
-                            if first {
-                                frame.first_field = false;
-                            }
-                            first
-                        };
-                        if !first_field {
-                            self.write_bytes(b",")?;
-                        }
-                        serde_json::to_writer(self.writer_mut(), "#text")
-                            .map_err(SerializationError::from)?;
-                        self.write_bytes(b":")?;
+                        self.write_key("#text")?;
+                        self.write_bytes(b"[")?;
 
                         self.data_owner_depth = Some(owner_depth);
                         self.data_array_started = false;
