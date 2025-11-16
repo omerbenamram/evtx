@@ -13,3 +13,5 @@ repomix-output.txt
 evtx-wasm/evtx-viewer/public/pkg
 # Samples are being copied by build scripts before deploying
 **/public/samples/
+
+profile/*
