@@ -58,12 +58,185 @@ pub struct JsonStreamOutput<W: Write> {
     /// `<EventData><Data>...</Data>...</EventData>` without building an
     /// intermediate tree.
     data_owner_depth: Option<usize>,
-    /// Whether we've already written at least one entry into the aggregated
-    /// `"Data": { "#text": [...] }` array.
-    data_array_started: bool,
+    /// Collected values for the aggregated `"Data": { "#text": [...] }` array.
+    data_values: Vec<JsonValue>,
     /// Whether we are currently inside a `<Data>` element that contributes to
     /// the aggregated `"Data"` array.
     data_inside_element: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JsonStreamOutput;
+    use crate::binxml::name::BinXmlName;
+    use crate::binxml::value_variant::BinXmlValue;
+    use crate::model::xml::{XmlAttribute, XmlElement};
+    use crate::{BinXmlOutput, JsonOutput, ParserSettings};
+    use pretty_assertions::assert_eq;
+    use quick_xml::Reader;
+    use quick_xml::events::{BytesStart, Event};
+    use std::borrow::Cow;
+
+    fn bytes_to_string(bytes: &[u8]) -> String {
+        String::from_utf8(bytes.to_vec()).expect("UTF8 Input")
+    }
+
+    fn event_to_element(event: BytesStart) -> XmlElement {
+        let mut attrs = vec![];
+
+        for attr in event.attributes() {
+            let attr = attr.expect("Failed to read attribute.");
+            attrs.push(XmlAttribute {
+                name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
+                // We have to compromise here and assume all values are strings.
+                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
+            });
+        }
+
+        XmlElement {
+            name: Cow::Owned(BinXmlName::from_string(bytes_to_string(
+                event.name().as_ref(),
+            ))),
+            attributes: attrs,
+        }
+    }
+
+    /// Converts an XML string to JSON using the legacy `JsonOutput`.
+    fn xml_to_json_legacy(xml: &str, settings: &ParserSettings) -> String {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut output = JsonOutput::new(settings);
+        output.visit_start_of_stream().expect("Start of stream");
+
+        let mut element_stack: Vec<XmlElement> = Vec::new();
+
+        loop {
+            match reader.read_event() {
+                Ok(event) => match event {
+                    Event::Start(start) => {
+                        let elem = event_to_element(start);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Open start element");
+                        element_stack.push(elem);
+                    }
+                    Event::End(_) => {
+                        let elem = element_stack.pop().expect("Unbalanced XML (End)");
+                        output.visit_close_element(&elem).expect("Close element");
+                    }
+                    Event::Empty(empty) => {
+                        let elem = event_to_element(empty);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Empty Open start element");
+                        output.visit_close_element(&elem).expect("Empty Close");
+                    }
+                    Event::Text(text) => output
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
+                            text.as_ref(),
+                        ))))
+                        .expect("Text element"),
+                    Event::Comment(_) => {}
+                    Event::CData(_) => unimplemented!(),
+                    Event::Decl(_) => {}
+                    Event::PI(_) => unimplemented!(),
+                    Event::DocType(_) => {}
+                    Event::Eof => {
+                        output.visit_end_of_stream().expect("End of stream");
+                        break;
+                    }
+                },
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            }
+        }
+
+        serde_json::to_string_pretty(&output.into_value().expect("Output")).expect("To serialize")
+    }
+
+    /// Converts an XML string to JSON using the streaming `JsonStreamOutput`.
+    fn xml_to_json_streaming(xml: &str, settings: &ParserSettings) -> String {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let writer = Vec::new();
+        let mut output = JsonStreamOutput::with_writer(writer, settings);
+        output.visit_start_of_stream().expect("Start of stream");
+
+        let mut element_stack: Vec<XmlElement> = Vec::new();
+
+        loop {
+            match reader.read_event() {
+                Ok(event) => match event {
+                    Event::Start(start) => {
+                        let elem = event_to_element(start);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Open start element");
+                        element_stack.push(elem);
+                    }
+                    Event::End(_) => {
+                        let elem = element_stack.pop().expect("Unbalanced XML (End)");
+                        output.visit_close_element(&elem).expect("Close element");
+                    }
+                    Event::Empty(empty) => {
+                        let elem = event_to_element(empty);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Empty Open start element");
+                        output.visit_close_element(&elem).expect("Empty Close");
+                    }
+                    Event::Text(text) => output
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
+                            text.as_ref(),
+                        ))))
+                        .expect("Text element"),
+                    Event::Comment(_) => {}
+                    Event::CData(_) => unimplemented!(),
+                    Event::Decl(_) => {}
+                    Event::PI(_) => unimplemented!(),
+                    Event::DocType(_) => {}
+                    Event::Eof => {
+                        output.visit_end_of_stream().expect("End of stream");
+                        break;
+                    }
+                },
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            }
+        }
+
+        let bytes = output.finish().expect("finish streaming JSON");
+        String::from_utf8(bytes).expect("UTF8 JSON")
+    }
+
+    #[test]
+    fn test_unnamed_data_interspersed_with_binary_matches_legacy() {
+        let xml = r#"
+<Event>
+  <EventData>
+    <Data>v1</Data>
+    <Binary>00AA</Binary>
+    <Data>v2</Data>
+  </EventData>
+</Event>
+        "#
+        .trim();
+
+        let settings = ParserSettings::new().num_threads(1);
+
+        let legacy_json = xml_to_json_legacy(xml, &settings);
+        let streaming_json = xml_to_json_streaming(xml, &settings);
+
+        let legacy_value: serde_json::Value =
+            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
+        let streaming_value: serde_json::Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "streaming JSON must match legacy JSON for unnamed <Data> elements interspersed with <Binary>"
+        );
+    }
 }
 
 impl<W: Write> JsonStreamOutput<W> {
@@ -75,7 +248,7 @@ impl<W: Write> JsonStreamOutput<W> {
             frames: Vec::new(),
             elements: Vec::new(),
             data_owner_depth: None,
-            data_array_started: false,
+            data_values: Vec::new(),
             data_inside_element: false,
         }
     }
@@ -203,38 +376,59 @@ impl<W: Write> JsonStreamOutput<W> {
 
     /// Append a value into the aggregated `"Data": { "#text": [...] }` under an
     /// `EventData` element. The BinXml value may itself be an array (e.g.
-    /// `StringArrayType`), in which case it is written as-is, matching the
+    /// `StringArrayType`), in which case it is stored as-is, matching the
     /// behaviour of `JsonOutput::value_to_json`.
     fn write_data_aggregated_value(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
-        // Values are written into a JSON array; insert comma delimiters between
-        // successive elements.
-        if self.data_array_started {
-            self.write_bytes(b",")?;
-        } else {
-            self.data_array_started = true;
-        }
-
         let json_value: JsonValue = match &value {
             Cow::Borrowed(v) => JsonValue::from(*v),
             Cow::Owned(v) => JsonValue::from(&*v),
         };
 
-        serde_json::to_writer(self.writer_mut(), &json_value).map_err(SerializationError::from)
+        self.data_values.push(json_value);
+        Ok(())
     }
 
     /// Finalize the aggregated `"Data": { "#text": [...] }` object, if any.
     fn finalize_data_aggregator(&mut self) -> SerializationResult<()> {
-        if self.data_owner_depth.is_some() {
-            // Close the `#text` array (even if no elements were written, we
-            // still emit an empty array).
-            self.write_bytes(b"]")?;
-            // Close the `"Data"` object.
+        if self.data_owner_depth.is_some() && !self.data_values.is_empty() {
+            // We are closing the owning `EventData` element. Emit the synthetic
+            // `"Data": { "#text": ... }` field into its JSON object now so that all
+            // unnamed `<Data>` children (even if interspersed with other elements)
+            // are aggregated, matching the legacy `JsonOutput` semantics.
+            //
+            // `"Data": {`
+            self.start_object_value("Data")?;
+
+            // `"#text": ...`
+            self.write_key("#text")?;
+
+            // Avoid aliasing `self` while iterating by taking the values out.
+            let values = std::mem::take(&mut self.data_values);
+            if values.len() == 1 {
+                // Single `<Data>` child: use its JSON value directly (which may itself
+                // be an array), avoiding an extra level of nesting.
+                serde_json::to_writer(self.writer_mut(), &values[0])
+                    .map_err(SerializationError::from)?;
+            } else {
+                // Multiple `<Data>` children: aggregate into an array, one entry per
+                // child, as in the legacy parser.
+                self.write_bytes(b"[")?;
+                for (idx, json_value) in values.into_iter().enumerate() {
+                    if idx > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    serde_json::to_writer(self.writer_mut(), &json_value)
+                        .map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"]")?;
+            }
+
             self.end_object()?;
-            // Reset aggregator state.
-            self.data_owner_depth = None;
-            self.data_array_started = false;
-            self.data_inside_element = false;
         }
+
+        // Reset aggregator state.
+        self.data_owner_depth = None;
+        self.data_inside_element = false;
         Ok(())
     }
 }
@@ -288,16 +482,6 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             element_name.to_owned()
         };
 
-        // If we have an active aggregated `"Data"` under an `EventData` element
-        // and are about to open another child (e.g. `<Binary>`), finalize the
-        // aggregator so that subsequent fields are siblings of `"Data"`, not
-        // elements of its `#text` array.
-        if let Some(owner_depth) = self.data_owner_depth {
-            if self.elements.len() == owner_depth && element_name != "Data" {
-                self.finalize_data_aggregator()?;
-            }
-        }
-
         // Aggregated `<EventData><Data>...</Data>...</EventData>` case:
         // multiple `<Data>` children without a `Name` attribute become a single
         // `"Data": { "#text": [ ... ] }` object under their `EventData` parent.
@@ -309,18 +493,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
 
                     // Initialize a new aggregator for this `EventData`, if needed.
                     if self.data_owner_depth != Some(owner_depth) {
-                        // Ensure `EventData` itself is an object.
-                        self.ensure_parent_is_object()?;
-
-                        // `"Data": {`
-                        self.start_object_value("Data")?;
-
-                        // `"#text": [`
-                        self.write_key("#text")?;
-                        self.write_bytes(b"[")?;
-
                         self.data_owner_depth = Some(owner_depth);
-                        self.data_array_started = false;
+                        self.data_values.clear();
                     }
 
                     // We're now inside a `<Data>` element that contributes to

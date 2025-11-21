@@ -15,3 +15,5 @@ evtx-wasm/evtx-viewer/public/pkg
 **/public/samples/
 
 profile/*
+binaries/*
+benchmarks/*

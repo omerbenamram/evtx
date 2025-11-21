@@ -37,7 +37,8 @@ hyperfine -w 10 -r 20 \
 sudo TAG="$TAG" make flamegraph-prod \
   FLAME_FILE="samples/security_big_sample.evtx" \
   DURATION=30 \
-  FORMAT=json
+  FORMAT=json \
+  BIN="$PRE"
 
 mv "profile/flamegraph_${TAG}.svg" "profile/flamegraph_${TAG}_${TS}_pre.svg" || true
 cp "profile/top_leaf_${TAG}.txt" "profile/top_leaf_${TAG}_${TS}_pre.txt" || true
