@@ -446,33 +446,46 @@ impl<W: Write> JsonStreamOutput<W> {
         }
     }
 
-    /// Write a JSON string key (with surrounding quotes and escaping).
-    /// Write a JSON string key, handling duplicates by appending `_1`, `_2`, etc.
-    fn write_key(&mut self, key: &str) -> SerializationResult<()> {
-        self.write_comma_if_needed()?;
-
-        // Check for duplicate keys and find a unique name
+    /// Reserve a unique key in the current frame without writing it.
+    /// Returns the unique key that will be used (with `_1`, `_2` suffix if needed).
+    fn reserve_unique_key(&mut self, key: &str) -> String {
         let frame = self
             .frames
             .last_mut()
             .expect("no current JSON object frame");
-        let unique_key = if frame.used_keys.contains(key) {
+        if frame.used_keys.contains(key) {
             // Find next available suffix
             let mut suffix = 1;
             loop {
                 let candidate = format!("{}_{}", key, suffix);
                 if !frame.used_keys.contains(&candidate) {
                     frame.used_keys.insert(candidate.clone());
-                    break candidate;
+                    return candidate;
                 }
                 suffix += 1;
             }
         } else {
             frame.used_keys.insert(key.to_owned());
             key.to_owned()
-        };
+        }
+    }
+
+    /// Write a JSON string key (with surrounding quotes and escaping).
+    /// Write a JSON string key, handling duplicates by appending `_1`, `_2`, etc.
+    fn write_key(&mut self, key: &str) -> SerializationResult<()> {
+        self.write_comma_if_needed()?;
+
+        // Check for duplicate keys and find a unique name
+        let unique_key = self.reserve_unique_key(key);
 
         serde_json::to_writer(self.writer_mut(), &unique_key).map_err(SerializationError::from)?;
+        self.write_bytes(b":")
+    }
+
+    /// Write a pre-reserved key directly (no duplicate checking needed).
+    fn write_reserved_key(&mut self, key: &str) -> SerializationResult<()> {
+        self.write_comma_if_needed()?;
+        serde_json::to_writer(self.writer_mut(), key).map_err(SerializationError::from)?;
         self.write_bytes(b":")
     }
 
@@ -513,14 +526,70 @@ impl<W: Write> JsonStreamOutput<W> {
     /// For elements without attributes, if their first child is another element
     /// we need to materialize this element as an object (`"name": { ... }`).
     fn ensure_parent_is_object(&mut self) -> SerializationResult<()> {
-        if let Some(parent_index) = self.elements.len().checked_sub(1)
-            && self.elements[parent_index].kind == ElementValueKind::Pending
-        {
-            // Turn `"parent": null` into `"parent": { ... }` by starting an
-            // object value for it now.
-            let key = self.elements[parent_index].name.clone();
-            self.start_object_value(&key)?;
-            self.elements[parent_index].kind = ElementValueKind::Object;
+        let Some(parent_index) = self.elements.len().checked_sub(1) else {
+            return Ok(());
+        };
+
+        let parent_kind = self.elements[parent_index].kind;
+
+        match parent_kind {
+            ElementValueKind::Pending => {
+                // Turn `"parent": null` into `"parent": { ... }` by starting an
+                // object value for it now.
+                let key = self.elements[parent_index].name.clone();
+                let was_reserved = self.elements[parent_index].has_separate_attributes;
+
+                // If the key was pre-reserved (separate_json_attributes mode), use
+                // write_reserved_key to avoid double-reservation.
+                if was_reserved {
+                    self.write_reserved_key(&key)?;
+                } else {
+                    self.write_key(&key)?;
+                }
+                self.write_bytes(b"{")?;
+                self.frames.push(ObjectFrame {
+                    first_field: true,
+                    used_keys: std::collections::HashSet::new(),
+                });
+
+                self.elements[parent_index].kind = ElementValueKind::Object;
+            }
+            ElementValueKind::Scalar => {
+                // Element had text content but now has child elements too.
+                // Turn it into an object and move buffered text to #text field.
+                let key = self.elements[parent_index].name.clone();
+                let was_reserved = self.elements[parent_index].has_separate_attributes;
+                let buffered = std::mem::take(&mut self.elements[parent_index].buffered_values);
+
+                if was_reserved {
+                    self.write_reserved_key(&key)?;
+                } else {
+                    self.write_key(&key)?;
+                }
+                self.write_bytes(b"{")?;
+                self.frames.push(ObjectFrame {
+                    first_field: true,
+                    used_keys: std::collections::HashSet::new(),
+                });
+
+                // Write the buffered text as #text if not in separate mode
+                // (in separate mode, text in mixed-content elements is dropped).
+                if !buffered.is_empty() && !self.separate_json_attributes {
+                    self.write_key("#text")?;
+                    if buffered.len() == 1 {
+                        serde_json::to_writer(self.writer_mut(), &buffered[0])
+                            .map_err(SerializationError::from)?;
+                    } else {
+                        serde_json::to_writer(self.writer_mut(), &buffered)
+                            .map_err(SerializationError::from)?;
+                    }
+                }
+
+                self.elements[parent_index].kind = ElementValueKind::Object;
+            }
+            ElementValueKind::Object => {
+                // Already an object, nothing to do.
+            }
         }
 
         Ok(())
@@ -785,10 +854,15 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         } else {
             // `separate_json_attributes == true` or element has no attributes.
             let wrote_separate_attrs = has_json_attributes && self.separate_json_attributes;
-            if wrote_separate_attrs {
-                // Emit `"<key>_attributes": { ... }` into the parent object.
-                let attr_key = format!("{}_attributes", key);
-                self.write_key(&attr_key)?;
+
+            // If we're writing `_attributes`, pre-reserve the element key so both
+            // the `_attributes` and the element itself use matching suffixes.
+            let element_key = if wrote_separate_attrs {
+                let unique_key = self.reserve_unique_key(&key);
+
+                // Emit `"<unique_key>_attributes": { ... }` into the parent object.
+                let attr_key = format!("{}_attributes", unique_key);
+                self.write_reserved_key(&attr_key)?;
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
@@ -823,13 +897,17 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 }
 
                 self.end_object()?;
-            }
+                unique_key
+            } else {
+                // No attributes to write - use original key (will be deduped on write).
+                key
+            };
 
             // We delay emitting the actual `"key": ...` until we see either
             // a character node or a child element, so we can decide whether
             // this element is a scalar, an object, or `null`.
             self.elements.push(ElementState {
-                name: key,
+                name: element_key,
                 kind: ElementValueKind::Pending,
                 has_text: false,
                 has_separate_attributes: wrote_separate_attrs,
@@ -872,7 +950,12 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 ElementValueKind::Scalar => {
                     // Write the buffered scalar value(s) now.
                     if !elem.buffered_values.is_empty() {
-                        self.write_key(&elem.name)?;
+                        // If key was pre-reserved (separate_json_attributes mode), use reserved writer.
+                        if elem.has_separate_attributes {
+                            self.write_reserved_key(&elem.name)?;
+                        } else {
+                            self.write_key(&elem.name)?;
+                        }
                         if elem.buffered_values.len() == 1 {
                             // Single value: preserve original type.
                             serde_json::to_writer(self.writer_mut(), &elem.buffered_values[0])
@@ -898,6 +981,35 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     }
                 }
                 ElementValueKind::Object => {
+                    // Write buffered #text values if any, then close the object.
+                    // In separate_json_attributes mode, elements with child elements
+                    // drop text content (legacy behavior - no #text field).
+                    if !elem.buffered_values.is_empty() && !self.separate_json_attributes {
+                        let is_first = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !is_first {
+                            self.write_bytes(b",")?;
+                        }
+                        serde_json::to_writer(self.writer_mut(), "#text")
+                            .map_err(SerializationError::from)?;
+                        self.write_bytes(b":")?;
+
+                        if elem.buffered_values.len() == 1 {
+                            // Single value: write directly.
+                            serde_json::to_writer(self.writer_mut(), &elem.buffered_values[0])
+                                .map_err(SerializationError::from)?;
+                        } else {
+                            // Multiple values: write as array (legacy behavior).
+                            serde_json::to_writer(self.writer_mut(), &elem.buffered_values)
+                                .map_err(SerializationError::from)?;
+                        }
+                    }
                     // Close the element's object.
                     self.end_object()?;
                 }
@@ -956,30 +1068,12 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     }
                 }
 
-                // For the streaming implementation we only support a single
-                // `#text` value; multiple text nodes for the same element are
-                // not expected in real EVTX data.
-                if self.elements[index].has_text {
-                    // As above, we ignore additional character nodes.
-                    let _ = value;
-                    return Ok(());
-                }
-
-                let is_first = {
-                    let frame = self.current_frame_mut();
-                    let first = frame.first_field;
-                    if first {
-                        frame.first_field = false;
-                    }
-                    first
+                // Buffer text values to support multiple text nodes (legacy creates an array).
+                let json_value: JsonValue = match value {
+                    Cow::Borrowed(v) => JsonValue::from(v),
+                    Cow::Owned(v) => JsonValue::from(&v),
                 };
-                if !is_first {
-                    self.write_bytes(b",")?;
-                }
-                serde_json::to_writer(self.writer_mut(), "#text")
-                    .map_err(SerializationError::from)?;
-                self.write_bytes(b":")?;
-                self.write_cow_binxml_value(value)?;
+                self.elements[index].buffered_values.push(json_value);
                 self.elements[index].has_text = true;
             }
         }

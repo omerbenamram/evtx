@@ -260,9 +260,18 @@ fn canonical_json_string(value: &Value) -> String {
     }
 }
 
-/// Extract the base key name, stripping any `_N` suffix.
-/// e.g., "Header_1" -> "Header", "Header_12" -> "Header", "Header" -> "Header"
+/// Extract the base key name, stripping any `_N` suffix (and handling `_attributes`).
+/// e.g., "Header_1" -> "Header", "Certificate_1_attributes" -> "Certificate_attributes"
 fn extract_base_key(key: &str) -> String {
+    // Handle `_attributes` suffix: strip it, find base, then re-add
+    if let Some(base) = key.strip_suffix("_attributes") {
+        return format!("{}_attributes", extract_base_key_simple(base));
+    }
+    extract_base_key_simple(key)
+}
+
+/// Simple base key extraction: strip trailing `_N` where N is all digits.
+fn extract_base_key_simple(key: &str) -> String {
     if let Some(pos) = key.rfind('_') {
         let suffix = &key[pos + 1..];
         if suffix.chars().all(|c| c.is_ascii_digit()) && !suffix.is_empty() {
