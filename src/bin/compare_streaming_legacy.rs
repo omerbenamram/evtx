@@ -26,10 +26,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut index: usize = 0;
 
     loop {
-        if let Some(limit) = max_records {
-            if index >= limit {
-                break;
-            }
+        if let Some(limit) = max_records
+            && index >= limit
+        {
+            break;
         }
 
         let legacy_next = legacy_iter.next();
@@ -224,7 +224,7 @@ fn normalize_for_comparison(value: &Value) -> Value {
                     // Multiple keys with same base - normalize to a canonical form
                     // Sort values using canonical JSON representation (sorted keys)
                     let mut values: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
-                    values.sort_by(|a, b| canonical_json_string(a).cmp(&canonical_json_string(b)));
+                    values.sort_by_key(canonical_json_string);
 
                     // Store as array under the base key with a special marker
                     result.insert(

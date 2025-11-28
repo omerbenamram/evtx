@@ -135,9 +135,7 @@ impl EvtxRecord<'_> {
             }
         })?;
 
-        let writer = output_builder
-            .finish()
-            .map_err(crate::err::SerializationError::from)?;
+        let writer = output_builder.finish()?;
         let data = String::from_utf8(writer).map_err(crate::err::SerializationError::from)?;
 
         Ok(SerializedEvtxRecord {

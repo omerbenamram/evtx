@@ -543,22 +543,6 @@ impl<W: Write> JsonStreamOutput<W> {
         Ok(())
     }
 
-    /// Write a scalar JSON value based on a `BinXmlValue`.
-    fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
-        // We reuse the existing conversion logic to preserve semantics;
-        // this only allocates for the single value, not for the entire record.
-        let json_value: JsonValue = JsonValue::from(value);
-        serde_json::to_writer(self.writer_mut(), &json_value).map_err(SerializationError::from)
-    }
-
-    /// Helper for writing `Cow<BinXmlValue>` in `visit_characters`.
-    fn write_cow_binxml_value(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
-        match value {
-            Cow::Borrowed(v) => self.write_binxml_value(v),
-            Cow::Owned(v) => self.write_binxml_value(&v),
-        }
-    }
-
     /// For elements without attributes, if their first child is another element
     /// we need to materialize this element as an object (`"name": { ... }`).
     fn ensure_parent_is_object(&mut self) -> SerializationResult<()> {
@@ -633,11 +617,11 @@ impl<W: Write> JsonStreamOutput<W> {
 
     /// If the current element is represented as an object, close its JSON object.
     fn end_element_object_if_needed(&mut self) -> SerializationResult<()> {
-        if let Some(elem) = self.elements.last() {
-            if elem.kind == ElementValueKind::Object {
-                // The current element owns the top-most JSON object frame.
-                self.end_object()?;
-            }
+        if let Some(elem) = self.elements.last()
+            && elem.kind == ElementValueKind::Object
+        {
+            // The current element owns the top-most JSON object frame.
+            self.end_object()?;
         }
         Ok(())
     }
@@ -649,7 +633,7 @@ impl<W: Write> JsonStreamOutput<W> {
     fn write_data_aggregated_value(&mut self, value: Cow<BinXmlValue>) -> SerializationResult<()> {
         let json_value: JsonValue = match &value {
             Cow::Borrowed(v) => JsonValue::from(*v),
-            Cow::Owned(v) => JsonValue::from(&*v),
+            Cow::Owned(v) => JsonValue::from(v),
         };
 
         self.data_values.push(json_value);
@@ -775,27 +759,27 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         // Aggregated `<EventData><Data>...</Data>...</EventData>` case:
         // multiple `<Data>` children without a `Name` attribute become a single
         // `"Data": { "#text": [ ... ] }` object under their `EventData` parent.
-        if is_data && data_name_attr.is_none() {
-            if let Some(parent) = self.elements.last() {
-                if parent.name == "EventData" {
-                    // Depth of the owning `EventData` element.
-                    let owner_depth = self.elements.len();
+        if is_data
+            && data_name_attr.is_none()
+            && let Some(parent) = self.elements.last()
+            && parent.name == "EventData"
+        {
+            // Depth of the owning `EventData` element.
+            let owner_depth = self.elements.len();
 
-                    // Initialize a new aggregator for this `EventData`, if needed.
-                    if self.data_owner_depth != Some(owner_depth) {
-                        self.data_owner_depth = Some(owner_depth);
-                        self.data_values.clear();
-                    }
-
-                    // We're now inside a `<Data>` element that contributes to
-                    // the aggregated array.
-                    self.data_inside_element = true;
-
-                    // Do NOT push a new `ElementState` for this `<Data>` node;
-                    // its values are handled by the aggregator.
-                    return Ok(());
-                }
+            // Initialize a new aggregator for this `EventData`, if needed.
+            if self.data_owner_depth != Some(owner_depth) {
+                self.data_owner_depth = Some(owner_depth);
+                self.data_values.clear();
             }
+
+            // We're now inside a `<Data>` element that contributes to
+            // the aggregated array.
+            self.data_inside_element = true;
+
+            // Do NOT push a new `ElementState` for this `<Data>` node;
+            // its values are handled by the aggregator.
+            return Ok(());
         }
 
         // In the JSON representation, `<Data Name="...">` behaves like a

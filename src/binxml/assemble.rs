@@ -127,12 +127,8 @@ pub fn create_record_model<'a>(
                     "Call `expand_templates` before calling this function",
                 ));
             }
-            BinXMLDeserializedTokens::EndOfStream => {
-                model.push(XmlModel::EndOfStream)
-            }
-            BinXMLDeserializedTokens::StartOfStream => {
-                model.push(XmlModel::StartOfStream)
-            }
+            BinXMLDeserializedTokens::EndOfStream => model.push(XmlModel::EndOfStream),
+            BinXMLDeserializedTokens::StartOfStream => model.push(XmlModel::StartOfStream),
             BinXMLDeserializedTokens::CloseEmptyElement => {
                 trace!("BinXMLDeserializedTokens::CloseEmptyElement");
                 match current_element.take() {
