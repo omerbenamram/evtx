@@ -74,344 +74,6 @@ pub struct JsonStreamOutput<W: Write> {
     data_inside_element: bool,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::JsonStreamOutput;
-    use crate::binxml::name::BinXmlName;
-    use crate::binxml::value_variant::BinXmlValue;
-    use crate::model::xml::{XmlAttribute, XmlElement};
-    use crate::{BinXmlOutput, JsonOutput, ParserSettings};
-    use pretty_assertions::assert_eq;
-    use quick_xml::Reader;
-    use quick_xml::events::{BytesStart, Event};
-    use std::borrow::Cow;
-
-    fn bytes_to_string(bytes: &[u8]) -> String {
-        String::from_utf8(bytes.to_vec()).expect("UTF8 Input")
-    }
-
-    fn event_to_element(event: BytesStart) -> XmlElement {
-        let mut attrs = vec![];
-
-        for attr in event.attributes() {
-            let attr = attr.expect("Failed to read attribute.");
-            attrs.push(XmlAttribute {
-                name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
-                // We have to compromise here and assume all values are strings.
-                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
-            });
-        }
-
-        XmlElement {
-            name: Cow::Owned(BinXmlName::from_string(bytes_to_string(
-                event.name().as_ref(),
-            ))),
-            attributes: attrs,
-        }
-    }
-
-    /// Converts an XML string to JSON using the legacy `JsonOutput`.
-    fn xml_to_json_legacy(xml: &str, settings: &ParserSettings) -> String {
-        let mut reader = Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
-
-        let mut output = JsonOutput::new(settings);
-        output.visit_start_of_stream().expect("Start of stream");
-
-        let mut element_stack: Vec<XmlElement> = Vec::new();
-
-        loop {
-            match reader.read_event() {
-                Ok(event) => match event {
-                    Event::Start(start) => {
-                        let elem = event_to_element(start);
-                        output
-                            .visit_open_start_element(&elem)
-                            .expect("Open start element");
-                        element_stack.push(elem);
-                    }
-                    Event::End(_) => {
-                        let elem = element_stack.pop().expect("Unbalanced XML (End)");
-                        output.visit_close_element(&elem).expect("Close element");
-                    }
-                    Event::Empty(empty) => {
-                        let elem = event_to_element(empty);
-                        output
-                            .visit_open_start_element(&elem)
-                            .expect("Empty Open start element");
-                        output.visit_close_element(&elem).expect("Empty Close");
-                    }
-                    Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
-                        .expect("Text element"),
-                    Event::Comment(_) => {}
-                    Event::CData(_) => unimplemented!(),
-                    Event::Decl(_) => {}
-                    Event::PI(_) => unimplemented!(),
-                    Event::DocType(_) => {}
-                    Event::Eof => {
-                        output.visit_end_of_stream().expect("End of stream");
-                        break;
-                    }
-                },
-                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-            }
-        }
-
-        serde_json::to_string_pretty(&output.into_value().expect("Output")).expect("To serialize")
-    }
-
-    /// Converts an XML string to JSON using the streaming `JsonStreamOutput`.
-    fn xml_to_json_streaming(xml: &str, settings: &ParserSettings) -> String {
-        let mut reader = Reader::from_str(xml);
-        reader.config_mut().trim_text(true);
-
-        let writer = Vec::new();
-        let mut output = JsonStreamOutput::with_writer(writer, settings);
-        output.visit_start_of_stream().expect("Start of stream");
-
-        let mut element_stack: Vec<XmlElement> = Vec::new();
-
-        loop {
-            match reader.read_event() {
-                Ok(event) => match event {
-                    Event::Start(start) => {
-                        let elem = event_to_element(start);
-                        output
-                            .visit_open_start_element(&elem)
-                            .expect("Open start element");
-                        element_stack.push(elem);
-                    }
-                    Event::End(_) => {
-                        let elem = element_stack.pop().expect("Unbalanced XML (End)");
-                        output.visit_close_element(&elem).expect("Close element");
-                    }
-                    Event::Empty(empty) => {
-                        let elem = event_to_element(empty);
-                        output
-                            .visit_open_start_element(&elem)
-                            .expect("Empty Open start element");
-                        output.visit_close_element(&elem).expect("Empty Close");
-                    }
-                    Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
-                        .expect("Text element"),
-                    Event::Comment(_) => {}
-                    Event::CData(_) => unimplemented!(),
-                    Event::Decl(_) => {}
-                    Event::PI(_) => unimplemented!(),
-                    Event::DocType(_) => {}
-                    Event::Eof => {
-                        output.visit_end_of_stream().expect("End of stream");
-                        break;
-                    }
-                },
-                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
-            }
-        }
-
-        let bytes = output.finish().expect("finish streaming JSON");
-        String::from_utf8(bytes).expect("UTF8 JSON")
-    }
-
-    #[test]
-    fn test_unnamed_data_interspersed_with_binary_matches_legacy() {
-        let xml = r#"
-<Event>
-  <EventData>
-    <Data>v1</Data>
-    <Binary>00AA</Binary>
-    <Data>v2</Data>
-  </EventData>
-</Event>
-        "#
-        .trim();
-
-        let settings = ParserSettings::new().num_threads(1);
-
-        let legacy_json = xml_to_json_legacy(xml, &settings);
-        let streaming_json = xml_to_json_streaming(xml, &settings);
-
-        let legacy_value: serde_json::Value =
-            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
-        let streaming_value: serde_json::Value =
-            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
-
-        assert_eq!(
-            legacy_value, streaming_value,
-            "streaming JSON must match legacy JSON for unnamed <Data> elements interspersed with <Binary>"
-        );
-    }
-
-    /// Regression test for Issue 1: Data aggregation format in separate_json_attributes mode.
-    /// Legacy outputs `"Data": [...]` but streaming was outputting `"Data": { "#text": [...] }`.
-    #[test]
-    fn test_data_aggregation_separate_attributes_mode() {
-        let xml = r#"
-<Event>
-  <EventData>
-    <Data>v1</Data>
-    <Data>v2</Data>
-  </EventData>
-</Event>
-        "#
-        .trim();
-
-        let settings = ParserSettings::new()
-            .num_threads(1)
-            .separate_json_attributes(true);
-
-        let legacy_json = xml_to_json_legacy(xml, &settings);
-        let streaming_json = xml_to_json_streaming(xml, &settings);
-
-        let legacy_value: serde_json::Value =
-            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
-        let streaming_value: serde_json::Value =
-            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
-
-        assert_eq!(
-            legacy_value, streaming_value,
-            "Data aggregation in separate_json_attributes mode: streaming must match legacy.\nLegacy: {}\nStreaming: {}",
-            legacy_json, streaming_json
-        );
-    }
-
-    /// Regression test for Issue 2: Duplicate element key handling.
-    /// Legacy outputs `"LogonGuid": "...", "LogonGuid_1": "..."` but streaming was losing duplicates.
-    ///
-    /// NOTE: Legacy and streaming have different key ordering for duplicates:
-    /// - Legacy: last value gets unsuffixed key (LogonGuid: guid2, LogonGuid_1: guid1)
-    /// - Streaming: first value gets unsuffixed key (LogonGuid: guid1, LogonGuid_1: guid2)
-    /// Both preserve all data, just with different key assignments. This is acceptable
-    /// for streaming since we can't retroactively rename already-written keys.
-    #[test]
-    fn test_duplicate_element_keys() {
-        let xml = r#"
-<Event>
-  <EventData>
-    <Data Name="LogonGuid">guid1</Data>
-    <Data Name="LogonGuid">guid2</Data>
-  </EventData>
-</Event>
-        "#
-        .trim();
-
-        let settings = ParserSettings::new().num_threads(1);
-
-        let legacy_json = xml_to_json_legacy(xml, &settings);
-        let streaming_json = xml_to_json_streaming(xml, &settings);
-
-        let legacy_value: serde_json::Value =
-            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
-        let streaming_value: serde_json::Value =
-            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
-
-        // Extract the set of LogonGuid values from EventData (regardless of key ordering)
-        let legacy_event_data = &legacy_value["Event"]["EventData"];
-        let streaming_event_data = &streaming_value["Event"]["EventData"];
-
-        // Collect all values for LogonGuid* keys
-        let mut legacy_values: Vec<&str> = Vec::new();
-        let mut streaming_values: Vec<&str> = Vec::new();
-
-        if let serde_json::Value::Object(obj) = legacy_event_data {
-            for (key, val) in obj {
-                if key.starts_with("LogonGuid") {
-                    if let serde_json::Value::String(s) = val {
-                        legacy_values.push(s);
-                    }
-                }
-            }
-        }
-        if let serde_json::Value::Object(obj) = streaming_event_data {
-            for (key, val) in obj {
-                if key.starts_with("LogonGuid") {
-                    if let serde_json::Value::String(s) = val {
-                        streaming_values.push(s);
-                    }
-                }
-            }
-        }
-
-        legacy_values.sort();
-        streaming_values.sort();
-
-        assert_eq!(
-            legacy_values, streaming_values,
-            "Duplicate element keys: both parsers must preserve all values.\nLegacy: {}\nStreaming: {}",
-            legacy_json, streaming_json
-        );
-    }
-
-    /// Regression test for Issue 3: Multiple character nodes concatenation.
-    /// Legacy concatenates multiple text nodes, streaming was only keeping the first.
-    /// This test directly invokes visit_characters multiple times to simulate the real case.
-    #[test]
-    fn test_multiple_character_nodes_concatenation() {
-        use crate::model::xml::XmlElement;
-
-        // Test by directly calling the visitor methods to simulate multiple character nodes
-        let settings = ParserSettings::new().num_threads(1);
-
-        // Legacy parser
-        let mut legacy_output = JsonOutput::new(&settings);
-        legacy_output.visit_start_of_stream().unwrap();
-        let event_elem = XmlElement {
-            name: Cow::Owned(BinXmlName::from_str("Event")),
-            attributes: vec![],
-        };
-        let msg_elem = XmlElement {
-            name: Cow::Owned(BinXmlName::from_str("Message")),
-            attributes: vec![],
-        };
-        legacy_output.visit_open_start_element(&event_elem).unwrap();
-        legacy_output.visit_open_start_element(&msg_elem).unwrap();
-        legacy_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
-            .unwrap();
-        legacy_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
-            .unwrap();
-        legacy_output.visit_close_element(&msg_elem).unwrap();
-        legacy_output.visit_close_element(&event_elem).unwrap();
-        legacy_output.visit_end_of_stream().unwrap();
-        let legacy_value = legacy_output.into_value().unwrap();
-
-        // Streaming parser
-        let writer = Vec::new();
-        let mut streaming_output = JsonStreamOutput::with_writer(writer, &settings);
-        streaming_output.visit_start_of_stream().unwrap();
-        streaming_output
-            .visit_open_start_element(&event_elem)
-            .unwrap();
-        streaming_output
-            .visit_open_start_element(&msg_elem)
-            .unwrap();
-        streaming_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
-            .unwrap();
-        streaming_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
-            .unwrap();
-        streaming_output.visit_close_element(&msg_elem).unwrap();
-        streaming_output.visit_close_element(&event_elem).unwrap();
-        streaming_output.visit_end_of_stream().unwrap();
-        let bytes = streaming_output.finish().unwrap();
-        let streaming_json = String::from_utf8(bytes).unwrap();
-        let streaming_value: serde_json::Value = serde_json::from_str(&streaming_json).unwrap();
-
-        assert_eq!(
-            legacy_value, streaming_value,
-            "Multiple character nodes: streaming must match legacy.\nLegacy: {:?}\nStreaming: {}",
-            legacy_value, streaming_json
-        );
-    }
-}
-
 impl<W: Write> JsonStreamOutput<W> {
     pub fn with_writer(writer: W, settings: &ParserSettings) -> Self {
         JsonStreamOutput {
@@ -1132,5 +794,343 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         Err(SerializationError::Unimplemented {
             message: format!("`{}`: visit_processing_instruction_data", file!()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JsonStreamOutput;
+    use crate::binxml::name::BinXmlName;
+    use crate::binxml::value_variant::BinXmlValue;
+    use crate::model::xml::{XmlAttribute, XmlElement};
+    use crate::{BinXmlOutput, JsonOutput, ParserSettings};
+    use pretty_assertions::assert_eq;
+    use quick_xml::Reader;
+    use quick_xml::events::{BytesStart, Event};
+    use std::borrow::Cow;
+
+    fn bytes_to_string(bytes: &[u8]) -> String {
+        String::from_utf8(bytes.to_vec()).expect("UTF8 Input")
+    }
+
+    fn event_to_element(event: BytesStart) -> XmlElement {
+        let mut attrs = vec![];
+
+        for attr in event.attributes() {
+            let attr = attr.expect("Failed to read attribute.");
+            attrs.push(XmlAttribute {
+                name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
+                // We have to compromise here and assume all values are strings.
+                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
+            });
+        }
+
+        XmlElement {
+            name: Cow::Owned(BinXmlName::from_string(bytes_to_string(
+                event.name().as_ref(),
+            ))),
+            attributes: attrs,
+        }
+    }
+
+    /// Converts an XML string to JSON using the legacy `JsonOutput`.
+    fn xml_to_json_legacy(xml: &str, settings: &ParserSettings) -> String {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let mut output = JsonOutput::new(settings);
+        output.visit_start_of_stream().expect("Start of stream");
+
+        let mut element_stack: Vec<XmlElement> = Vec::new();
+
+        loop {
+            match reader.read_event() {
+                Ok(event) => match event {
+                    Event::Start(start) => {
+                        let elem = event_to_element(start);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Open start element");
+                        element_stack.push(elem);
+                    }
+                    Event::End(_) => {
+                        let elem = element_stack.pop().expect("Unbalanced XML (End)");
+                        output.visit_close_element(&elem).expect("Close element");
+                    }
+                    Event::Empty(empty) => {
+                        let elem = event_to_element(empty);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Empty Open start element");
+                        output.visit_close_element(&elem).expect("Empty Close");
+                    }
+                    Event::Text(text) => output
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
+                            text.as_ref(),
+                        ))))
+                        .expect("Text element"),
+                    Event::Comment(_) => {}
+                    Event::CData(_) => unimplemented!(),
+                    Event::Decl(_) => {}
+                    Event::PI(_) => unimplemented!(),
+                    Event::DocType(_) => {}
+                    Event::Eof => {
+                        output.visit_end_of_stream().expect("End of stream");
+                        break;
+                    }
+                },
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            }
+        }
+
+        serde_json::to_string_pretty(&output.into_value().expect("Output")).expect("To serialize")
+    }
+
+    /// Converts an XML string to JSON using the streaming `JsonStreamOutput`.
+    fn xml_to_json_streaming(xml: &str, settings: &ParserSettings) -> String {
+        let mut reader = Reader::from_str(xml);
+        reader.config_mut().trim_text(true);
+
+        let writer = Vec::new();
+        let mut output = JsonStreamOutput::with_writer(writer, settings);
+        output.visit_start_of_stream().expect("Start of stream");
+
+        let mut element_stack: Vec<XmlElement> = Vec::new();
+
+        loop {
+            match reader.read_event() {
+                Ok(event) => match event {
+                    Event::Start(start) => {
+                        let elem = event_to_element(start);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Open start element");
+                        element_stack.push(elem);
+                    }
+                    Event::End(_) => {
+                        let elem = element_stack.pop().expect("Unbalanced XML (End)");
+                        output.visit_close_element(&elem).expect("Close element");
+                    }
+                    Event::Empty(empty) => {
+                        let elem = event_to_element(empty);
+                        output
+                            .visit_open_start_element(&elem)
+                            .expect("Empty Open start element");
+                        output.visit_close_element(&elem).expect("Empty Close");
+                    }
+                    Event::Text(text) => output
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
+                            text.as_ref(),
+                        ))))
+                        .expect("Text element"),
+                    Event::Comment(_) => {}
+                    Event::CData(_) => unimplemented!(),
+                    Event::Decl(_) => {}
+                    Event::PI(_) => unimplemented!(),
+                    Event::DocType(_) => {}
+                    Event::Eof => {
+                        output.visit_end_of_stream().expect("End of stream");
+                        break;
+                    }
+                },
+                Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            }
+        }
+
+        let bytes = output.finish().expect("finish streaming JSON");
+        String::from_utf8(bytes).expect("UTF8 JSON")
+    }
+
+    #[test]
+    fn test_unnamed_data_interspersed_with_binary_matches_legacy() {
+        let xml = r#"
+<Event>
+  <EventData>
+    <Data>v1</Data>
+    <Binary>00AA</Binary>
+    <Data>v2</Data>
+  </EventData>
+</Event>
+        "#
+        .trim();
+
+        let settings = ParserSettings::new().num_threads(1);
+
+        let legacy_json = xml_to_json_legacy(xml, &settings);
+        let streaming_json = xml_to_json_streaming(xml, &settings);
+
+        let legacy_value: serde_json::Value =
+            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
+        let streaming_value: serde_json::Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "streaming JSON must match legacy JSON for unnamed <Data> elements interspersed with <Binary>"
+        );
+    }
+
+    /// Regression test for Issue 1: Data aggregation format in separate_json_attributes mode.
+    /// Legacy outputs `"Data": [...]` but streaming was outputting `"Data": { "#text": [...] }`.
+    #[test]
+    fn test_data_aggregation_separate_attributes_mode() {
+        let xml = r#"
+<Event>
+  <EventData>
+    <Data>v1</Data>
+    <Data>v2</Data>
+  </EventData>
+</Event>
+        "#
+        .trim();
+
+        let settings = ParserSettings::new()
+            .num_threads(1)
+            .separate_json_attributes(true);
+
+        let legacy_json = xml_to_json_legacy(xml, &settings);
+        let streaming_json = xml_to_json_streaming(xml, &settings);
+
+        let legacy_value: serde_json::Value =
+            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
+        let streaming_value: serde_json::Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "Data aggregation in separate_json_attributes mode: streaming must match legacy.\nLegacy: {}\nStreaming: {}",
+            legacy_json, streaming_json
+        );
+    }
+
+    /// Regression test for Issue 2: Duplicate element key handling.
+    /// Legacy outputs `"LogonGuid": "...", "LogonGuid_1": "..."` but streaming was losing duplicates.
+    ///
+    /// NOTE: Legacy and streaming have different key ordering for duplicates:
+    /// - Legacy: last value gets unsuffixed key (LogonGuid: guid2, LogonGuid_1: guid1)
+    /// - Streaming: first value gets unsuffixed key (LogonGuid: guid1, LogonGuid_1: guid2)
+    /// Both preserve all data, just with different key assignments. This is acceptable
+    /// for streaming since we can't retroactively rename already-written keys.
+    #[test]
+    fn test_duplicate_element_keys() {
+        let xml = r#"
+<Event>
+  <EventData>
+    <Data Name="LogonGuid">guid1</Data>
+    <Data Name="LogonGuid">guid2</Data>
+  </EventData>
+</Event>
+        "#
+        .trim();
+
+        let settings = ParserSettings::new().num_threads(1);
+
+        let legacy_json = xml_to_json_legacy(xml, &settings);
+        let streaming_json = xml_to_json_streaming(xml, &settings);
+
+        let legacy_value: serde_json::Value =
+            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
+        let streaming_value: serde_json::Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
+
+        // Extract the set of LogonGuid values from EventData (regardless of key ordering)
+        let legacy_event_data = &legacy_value["Event"]["EventData"];
+        let streaming_event_data = &streaming_value["Event"]["EventData"];
+
+        // Collect all values for LogonGuid* keys
+        let mut legacy_values: Vec<&str> = Vec::new();
+        let mut streaming_values: Vec<&str> = Vec::new();
+
+        if let serde_json::Value::Object(obj) = legacy_event_data {
+            for (key, val) in obj {
+                if key.starts_with("LogonGuid") {
+                    if let serde_json::Value::String(s) = val {
+                        legacy_values.push(s);
+                    }
+                }
+            }
+        }
+        if let serde_json::Value::Object(obj) = streaming_event_data {
+            for (key, val) in obj {
+                if key.starts_with("LogonGuid") {
+                    if let serde_json::Value::String(s) = val {
+                        streaming_values.push(s);
+                    }
+                }
+            }
+        }
+
+        legacy_values.sort();
+        streaming_values.sort();
+
+        assert_eq!(
+            legacy_values, streaming_values,
+            "Duplicate element keys: both parsers must preserve all values.\nLegacy: {}\nStreaming: {}",
+            legacy_json, streaming_json
+        );
+    }
+
+    /// Regression test for Issue 3: Multiple character nodes concatenation.
+    /// Legacy concatenates multiple text nodes, streaming was only keeping the first.
+    /// This test directly invokes visit_characters multiple times to simulate the real case.
+    #[test]
+    fn test_multiple_character_nodes_concatenation() {
+        use crate::model::xml::XmlElement;
+
+        // Test by directly calling the visitor methods to simulate multiple character nodes
+        let settings = ParserSettings::new().num_threads(1);
+
+        // Legacy parser
+        let mut legacy_output = JsonOutput::new(&settings);
+        legacy_output.visit_start_of_stream().unwrap();
+        let event_elem = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("Event")),
+            attributes: vec![],
+        };
+        let msg_elem = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("Message")),
+            attributes: vec![],
+        };
+        legacy_output.visit_open_start_element(&event_elem).unwrap();
+        legacy_output.visit_open_start_element(&msg_elem).unwrap();
+        legacy_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .unwrap();
+        legacy_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .unwrap();
+        legacy_output.visit_close_element(&msg_elem).unwrap();
+        legacy_output.visit_close_element(&event_elem).unwrap();
+        legacy_output.visit_end_of_stream().unwrap();
+        let legacy_value = legacy_output.into_value().unwrap();
+
+        // Streaming parser
+        let writer = Vec::new();
+        let mut streaming_output = JsonStreamOutput::with_writer(writer, &settings);
+        streaming_output.visit_start_of_stream().unwrap();
+        streaming_output
+            .visit_open_start_element(&event_elem)
+            .unwrap();
+        streaming_output
+            .visit_open_start_element(&msg_elem)
+            .unwrap();
+        streaming_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .unwrap();
+        streaming_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .unwrap();
+        streaming_output.visit_close_element(&msg_elem).unwrap();
+        streaming_output.visit_close_element(&event_elem).unwrap();
+        streaming_output.visit_end_of_stream().unwrap();
+        let bytes = streaming_output.finish().unwrap();
+        let streaming_json = String::from_utf8(bytes).unwrap();
+        let streaming_value: serde_json::Value = serde_json::from_str(&streaming_json).unwrap();
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "Multiple character nodes: streaming must match legacy.\nLegacy: {:?}\nStreaming: {}",
+            legacy_value, streaming_json
+        );
     }
 }
