@@ -94,8 +94,10 @@ impl<W: Write> JsonStreamOutput<W> {
         // open root object; try to close it gracefully.
         if !self.frames.is_empty() {
             // Close any remaining open element objects.
-            while let Some(_elem) = self.elements.pop() {
-                self.end_element_object_if_needed()?;
+            while let Some(elem) = self.elements.pop() {
+                if elem.kind == ElementValueKind::Object {
+                    self.end_object()?;
+                }
             }
 
             // Close the root object.
@@ -277,17 +279,6 @@ impl<W: Write> JsonStreamOutput<W> {
         Ok(())
     }
 
-    /// If the current element is represented as an object, close its JSON object.
-    fn end_element_object_if_needed(&mut self) -> SerializationResult<()> {
-        if let Some(elem) = self.elements.last()
-            && elem.kind == ElementValueKind::Object
-        {
-            // The current element owns the top-most JSON object frame.
-            self.end_object()?;
-        }
-        Ok(())
-    }
-
     /// Append a value into the aggregated `"Data": { "#text": [...] }` under an
     /// `EventData` element. The BinXml value may itself be an array (e.g.
     /// `StringArrayType`), in which case it is stored as-is, matching the
@@ -378,9 +369,11 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
     }
 
     fn visit_end_of_stream(&mut self) -> SerializationResult<()> {
-        // Close any remaining elements (this will close their objects).
-        while let Some(_elem) = self.elements.pop() {
-            self.end_element_object_if_needed()?;
+        // Close any remaining elements that own JSON object frames.
+        while let Some(elem) = self.elements.pop() {
+            if elem.kind == ElementValueKind::Object {
+                self.end_object()?;
+            }
         }
 
         // Close the root JSON object.

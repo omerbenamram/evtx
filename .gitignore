@@ -17,3 +17,4 @@ evtx-wasm/evtx-viewer/public/pkg
 profile/*
 binaries/*
 benchmarks/*
+.PRE_PATH
