@@ -480,6 +480,9 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 for t in template_def.tokens.iter() {
                     match t {
                         BinXMLDeserializedTokens::Substitution(desc) => {
+                            if desc.ignore {
+                                continue;
+                            }
                             if let Some(val) = template
                                 .substitution_array
                                 .get(desc.substitution_index as usize)
@@ -519,6 +522,9 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 for t in expanded {
                     match t {
                         Cow::Borrowed(BinXMLDeserializedTokens::Substitution(desc)) => {
+                            if desc.ignore {
+                                continue;
+                            }
                             if let Some(val) = template
                                 .substitution_array
                                 .get(desc.substitution_index as usize)
@@ -536,6 +542,9 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                             }
                         }
                         Cow::Owned(BinXMLDeserializedTokens::Substitution(desc)) => {
+                            if desc.ignore {
+                                continue;
+                            }
                             if let Some(val) = template
                                 .substitution_array
                                 .get(desc.substitution_index as usize)
