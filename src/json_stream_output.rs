@@ -1009,6 +1009,7 @@ mod tests {
     /// NOTE: Legacy and streaming have different key ordering for duplicates:
     /// - Legacy: last value gets unsuffixed key (LogonGuid: guid2, LogonGuid_1: guid1)
     /// - Streaming: first value gets unsuffixed key (LogonGuid: guid1, LogonGuid_1: guid2)
+    ///
     /// Both preserve all data, just with different key assignments. This is acceptable
     /// for streaming since we can't retroactively rename already-written keys.
     #[test]
@@ -1043,19 +1044,19 @@ mod tests {
 
         if let serde_json::Value::Object(obj) = legacy_event_data {
             for (key, val) in obj {
-                if key.starts_with("LogonGuid") {
-                    if let serde_json::Value::String(s) = val {
-                        legacy_values.push(s);
-                    }
+                if key.starts_with("LogonGuid")
+                    && let serde_json::Value::String(s) = val
+                {
+                    legacy_values.push(s);
                 }
             }
         }
         if let serde_json::Value::Object(obj) = streaming_event_data {
             for (key, val) in obj {
-                if key.starts_with("LogonGuid") {
-                    if let serde_json::Value::String(s) = val {
-                        streaming_values.push(s);
-                    }
+                if key.starts_with("LogonGuid")
+                    && let serde_json::Value::String(s) = val
+                {
+                    streaming_values.push(s);
                 }
             }
         }
