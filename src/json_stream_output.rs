@@ -31,6 +31,13 @@ struct ElementState {
     kind: ElementValueKind,
     /// Whether we've already emitted a `#text` field for this element (when `kind == Object`).
     has_text: bool,
+    /// Whether we've emitted `<name>_attributes` separately (when `separate_json_attributes == true`).
+    /// If true and `kind == Pending` on close, we skip emitting `null` to match legacy behavior.
+    has_separate_attributes: bool,
+    /// Buffered scalar values for elements without attributes.
+    /// We buffer instead of writing immediately to support concatenation of multiple character nodes.
+    /// Uses serde_json::Value to avoid lifetime issues with BinXmlValue.
+    buffered_values: Vec<JsonValue>,
 }
 
 /// JSON object context (either the root object or any nested object).
@@ -38,6 +45,8 @@ struct ElementState {
 struct ObjectFrame {
     /// Whether we've already written any field in this object.
     first_field: bool,
+    /// Keys already used in this object (for duplicate key handling).
+    used_keys: std::collections::HashSet<String>,
 }
 
 pub struct JsonStreamOutput<W: Write> {
@@ -237,6 +246,134 @@ mod tests {
             "streaming JSON must match legacy JSON for unnamed <Data> elements interspersed with <Binary>"
         );
     }
+
+    /// Regression test for Issue 1: Data aggregation format in separate_json_attributes mode.
+    /// Legacy outputs `"Data": [...]` but streaming was outputting `"Data": { "#text": [...] }`.
+    #[test]
+    fn test_data_aggregation_separate_attributes_mode() {
+        let xml = r#"
+<Event>
+  <EventData>
+    <Data>v1</Data>
+    <Data>v2</Data>
+  </EventData>
+</Event>
+        "#
+        .trim();
+
+        let settings = ParserSettings::new()
+            .num_threads(1)
+            .separate_json_attributes(true);
+
+        let legacy_json = xml_to_json_legacy(xml, &settings);
+        let streaming_json = xml_to_json_streaming(xml, &settings);
+
+        let legacy_value: serde_json::Value =
+            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
+        let streaming_value: serde_json::Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "Data aggregation in separate_json_attributes mode: streaming must match legacy.\nLegacy: {}\nStreaming: {}",
+            legacy_json, streaming_json
+        );
+    }
+
+    /// Regression test for Issue 2: Duplicate element key handling.
+    /// Legacy outputs `"LogonGuid": "...", "LogonGuid_1": "..."` but streaming was losing duplicates.
+    #[test]
+    fn test_duplicate_element_keys() {
+        let xml = r#"
+<Event>
+  <EventData>
+    <Data Name="LogonGuid">guid1</Data>
+    <Data Name="LogonGuid">guid2</Data>
+  </EventData>
+</Event>
+        "#
+        .trim();
+
+        let settings = ParserSettings::new().num_threads(1);
+
+        let legacy_json = xml_to_json_legacy(xml, &settings);
+        let streaming_json = xml_to_json_streaming(xml, &settings);
+
+        let legacy_value: serde_json::Value =
+            serde_json::from_str(&legacy_json).expect("legacy JSON should be valid");
+        let streaming_value: serde_json::Value =
+            serde_json::from_str(&streaming_json).expect("streaming JSON should be valid");
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "Duplicate element keys: streaming must match legacy.\nLegacy: {}\nStreaming: {}",
+            legacy_json, streaming_json
+        );
+    }
+
+    /// Regression test for Issue 3: Multiple character nodes concatenation.
+    /// Legacy concatenates multiple text nodes, streaming was only keeping the first.
+    /// This test directly invokes visit_characters multiple times to simulate the real case.
+    #[test]
+    fn test_multiple_character_nodes_concatenation() {
+        use crate::model::xml::XmlElement;
+
+        // Test by directly calling the visitor methods to simulate multiple character nodes
+        let settings = ParserSettings::new().num_threads(1);
+
+        // Legacy parser
+        let mut legacy_output = JsonOutput::new(&settings);
+        legacy_output.visit_start_of_stream().unwrap();
+        let event_elem = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("Event")),
+            attributes: vec![],
+        };
+        let msg_elem = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("Message")),
+            attributes: vec![],
+        };
+        legacy_output.visit_open_start_element(&event_elem).unwrap();
+        legacy_output.visit_open_start_element(&msg_elem).unwrap();
+        legacy_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .unwrap();
+        legacy_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .unwrap();
+        legacy_output.visit_close_element(&msg_elem).unwrap();
+        legacy_output.visit_close_element(&event_elem).unwrap();
+        legacy_output.visit_end_of_stream().unwrap();
+        let legacy_value = legacy_output.into_value().unwrap();
+
+        // Streaming parser
+        let writer = Vec::new();
+        let mut streaming_output = JsonStreamOutput::with_writer(writer, &settings);
+        streaming_output.visit_start_of_stream().unwrap();
+        streaming_output
+            .visit_open_start_element(&event_elem)
+            .unwrap();
+        streaming_output
+            .visit_open_start_element(&msg_elem)
+            .unwrap();
+        streaming_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .unwrap();
+        streaming_output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .unwrap();
+        streaming_output.visit_close_element(&msg_elem).unwrap();
+        streaming_output.visit_close_element(&event_elem).unwrap();
+        streaming_output.visit_end_of_stream().unwrap();
+        let bytes = streaming_output.finish().unwrap();
+        let streaming_json = String::from_utf8(bytes).unwrap();
+        let streaming_value: serde_json::Value = serde_json::from_str(&streaming_json).unwrap();
+
+        assert_eq!(
+            legacy_value, streaming_value,
+            "Multiple character nodes: streaming must match legacy.\nLegacy: {:?}\nStreaming: {}",
+            legacy_value, streaming_json
+        );
+    }
 }
 
 impl<W: Write> JsonStreamOutput<W> {
@@ -310,9 +447,32 @@ impl<W: Write> JsonStreamOutput<W> {
     }
 
     /// Write a JSON string key (with surrounding quotes and escaping).
+    /// Write a JSON string key, handling duplicates by appending `_1`, `_2`, etc.
     fn write_key(&mut self, key: &str) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
-        serde_json::to_writer(self.writer_mut(), key).map_err(SerializationError::from)?;
+
+        // Check for duplicate keys and find a unique name
+        let frame = self
+            .frames
+            .last_mut()
+            .expect("no current JSON object frame");
+        let unique_key = if frame.used_keys.contains(key) {
+            // Find next available suffix
+            let mut suffix = 1;
+            loop {
+                let candidate = format!("{}_{}", key, suffix);
+                if !frame.used_keys.contains(&candidate) {
+                    frame.used_keys.insert(candidate.clone());
+                    break candidate;
+                }
+                suffix += 1;
+            }
+        } else {
+            frame.used_keys.insert(key.to_owned());
+            key.to_owned()
+        };
+
+        serde_json::to_writer(self.writer_mut(), &unique_key).map_err(SerializationError::from)?;
         self.write_bytes(b":")
     }
 
@@ -320,7 +480,10 @@ impl<W: Write> JsonStreamOutput<W> {
     fn start_object_value(&mut self, key: &str) -> SerializationResult<()> {
         self.write_key(key)?;
         self.write_bytes(b"{")?;
-        self.frames.push(ObjectFrame { first_field: true });
+        self.frames.push(ObjectFrame {
+            first_field: true,
+            used_keys: std::collections::HashSet::new(),
+        });
         Ok(())
     }
 
@@ -388,42 +551,61 @@ impl<W: Write> JsonStreamOutput<W> {
         Ok(())
     }
 
-    /// Finalize the aggregated `"Data": { "#text": [...] }` object, if any.
+    /// Finalize the aggregated `"Data"` value, if any.
+    /// With `separate_json_attributes == false`: outputs `"Data": { "#text": ... }`
+    /// With `separate_json_attributes == true`: outputs `"Data": ...` directly
     fn finalize_data_aggregator(&mut self) -> SerializationResult<()> {
         if self.data_owner_depth.is_some() && !self.data_values.is_empty() {
-            // We are closing the owning `EventData` element. Emit the synthetic
-            // `"Data": { "#text": ... }` field into its JSON object now so that all
-            // unnamed `<Data>` children (even if interspersed with other elements)
-            // are aggregated, matching the legacy `JsonOutput` semantics.
-            //
-            // `"Data": {`
-            self.start_object_value("Data")?;
-
-            // `"#text": ...`
-            self.write_key("#text")?;
-
             // Avoid aliasing `self` while iterating by taking the values out.
             let values = std::mem::take(&mut self.data_values);
-            if values.len() == 1 {
-                // Single `<Data>` child: use its JSON value directly (which may itself
-                // be an array), avoiding an extra level of nesting.
-                serde_json::to_writer(self.writer_mut(), &values[0])
-                    .map_err(SerializationError::from)?;
-            } else {
-                // Multiple `<Data>` children: aggregate into an array, one entry per
-                // child, as in the legacy parser.
-                self.write_bytes(b"[")?;
-                for (idx, json_value) in values.into_iter().enumerate() {
-                    if idx > 0 {
-                        self.write_bytes(b",")?;
+
+            if self.separate_json_attributes {
+                // In separate_json_attributes mode, output directly without wrapper.
+                // Legacy concatenates multiple string values into one.
+                self.write_key("Data")?;
+                if values.len() == 1 {
+                    serde_json::to_writer(self.writer_mut(), &values[0])
+                        .map_err(SerializationError::from)?;
+                } else {
+                    // Concatenate multiple values as strings (legacy behavior).
+                    let mut concat = String::new();
+                    for v in &values {
+                        match v {
+                            JsonValue::String(s) => concat.push_str(s),
+                            JsonValue::Number(n) => concat.push_str(&n.to_string()),
+                            JsonValue::Bool(b) => {
+                                concat.push_str(if *b { "true" } else { "false" })
+                            }
+                            JsonValue::Null => {}
+                            _ => concat.push_str(&v.to_string()),
+                        }
                     }
-                    serde_json::to_writer(self.writer_mut(), &json_value)
+                    serde_json::to_writer(self.writer_mut(), &concat)
                         .map_err(SerializationError::from)?;
                 }
-                self.write_bytes(b"]")?;
-            }
+            } else {
+                // With `#attributes` mode, wrap in `"Data": { "#text": ... }`.
+                self.start_object_value("Data")?;
+                self.write_key("#text")?;
 
-            self.end_object()?;
+                if values.len() == 1 {
+                    serde_json::to_writer(self.writer_mut(), &values[0])
+                        .map_err(SerializationError::from)?;
+                } else {
+                    // Multiple `<Data>` children: aggregate into an array.
+                    self.write_bytes(b"[")?;
+                    for (idx, json_value) in values.into_iter().enumerate() {
+                        if idx > 0 {
+                            self.write_bytes(b",")?;
+                        }
+                        serde_json::to_writer(self.writer_mut(), &json_value)
+                            .map_err(SerializationError::from)?;
+                    }
+                    self.write_bytes(b"]")?;
+                }
+
+                self.end_object()?;
+            }
         }
 
         // Reset aggregator state.
@@ -437,7 +619,10 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
     fn visit_start_of_stream(&mut self) -> SerializationResult<()> {
         // Open the root JSON object.
         self.write_bytes(b"{")?;
-        self.frames.push(ObjectFrame { first_field: true });
+        self.frames.push(ObjectFrame {
+            first_field: true,
+            used_keys: std::collections::HashSet::new(),
+        });
         Ok(())
     }
 
@@ -548,7 +733,10 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
 
                 // Start attributes object.
                 self.write_bytes(b"{")?;
-                self.frames.push(ObjectFrame { first_field: true });
+                self.frames.push(ObjectFrame {
+                    first_field: true,
+                    used_keys: std::collections::HashSet::new(),
+                });
 
                 {
                     for attr in &element.attributes {
@@ -591,15 +779,21 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 name: key,
                 kind: ElementValueKind::Object,
                 has_text: false,
+                has_separate_attributes: false,
+                buffered_values: Vec::new(),
             });
         } else {
             // `separate_json_attributes == true` or element has no attributes.
-            if has_json_attributes && self.separate_json_attributes {
+            let wrote_separate_attrs = has_json_attributes && self.separate_json_attributes;
+            if wrote_separate_attrs {
                 // Emit `"<key>_attributes": { ... }` into the parent object.
                 let attr_key = format!("{}_attributes", key);
                 self.write_key(&attr_key)?;
                 self.write_bytes(b"{")?;
-                self.frames.push(ObjectFrame { first_field: true });
+                self.frames.push(ObjectFrame {
+                    first_field: true,
+                    used_keys: std::collections::HashSet::new(),
+                });
 
                 {
                     for attr in &element.attributes {
@@ -638,6 +832,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 name: key,
                 kind: ElementValueKind::Pending,
                 has_text: false,
+                has_separate_attributes: wrote_separate_attrs,
+                buffered_values: Vec::new(),
             });
         }
 
@@ -666,12 +862,40 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
 
             match elem.kind {
                 ElementValueKind::Pending => {
-                    // No text and no children – render as `null`.
-                    self.write_key(&elem.name)?;
-                    self.write_bytes(b"null")?;
+                    // No text and no children – render as `null`, unless we already
+                    // emitted `<name>_attributes` separately (legacy omits the null).
+                    if !elem.has_separate_attributes {
+                        self.write_key(&elem.name)?;
+                        self.write_bytes(b"null")?;
+                    }
                 }
                 ElementValueKind::Scalar => {
-                    // Already fully rendered (`"key": value`).
+                    // Write the buffered scalar value(s) now.
+                    if !elem.buffered_values.is_empty() {
+                        self.write_key(&elem.name)?;
+                        if elem.buffered_values.len() == 1 {
+                            // Single value: preserve original type.
+                            serde_json::to_writer(self.writer_mut(), &elem.buffered_values[0])
+                                .map_err(SerializationError::from)?;
+                        } else {
+                            // Multiple values: concatenate as strings (legacy behavior).
+                            let mut concat = String::new();
+                            for v in &elem.buffered_values {
+                                // Convert JSON value back to string for concatenation
+                                match v {
+                                    JsonValue::String(s) => concat.push_str(s),
+                                    JsonValue::Number(n) => concat.push_str(&n.to_string()),
+                                    JsonValue::Bool(b) => {
+                                        concat.push_str(if *b { "true" } else { "false" })
+                                    }
+                                    JsonValue::Null => concat.push_str("null"),
+                                    _ => concat.push_str(&v.to_string()),
+                                }
+                            }
+                            serde_json::to_writer(self.writer_mut(), &concat)
+                                .map_err(SerializationError::from)?;
+                        }
+                    }
                 }
                 ElementValueKind::Object => {
                     // Close the element's object.
@@ -702,24 +926,36 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         match kind {
             ElementValueKind::Pending => {
                 // First content for this element and it has no attributes:
-                // render as scalar `"key": <value>`.
-                let key = self.elements[index].name.clone();
-                self.write_key(&key)?;
-                self.write_cow_binxml_value(value)?;
+                // buffer the value (we'll write on close to support concatenation).
+                let json_value: JsonValue = match value {
+                    Cow::Borrowed(v) => JsonValue::from(v),
+                    Cow::Owned(v) => JsonValue::from(&v),
+                };
+                self.elements[index].buffered_values.push(json_value);
                 self.elements[index].kind = ElementValueKind::Scalar;
             }
             ElementValueKind::Scalar => {
-                // Multiple character nodes for a scalar element are unusual in
-                // real EVTX data. We approximate the behaviour of the regular
-                // JSON output by concatenating string representations.
-                //
-                // To keep this simple and allocation-light, we just ignore
-                // additional character nodes here – they are not expected in
-                // the typical Windows Event Log schema that this crate targets.
-                let _ = value;
+                // Multiple character nodes: add to the buffer.
+                // On close, we'll concatenate string representations to match legacy.
+                let json_value: JsonValue = match value {
+                    Cow::Borrowed(v) => JsonValue::from(v),
+                    Cow::Owned(v) => JsonValue::from(&v),
+                };
+                self.elements[index].buffered_values.push(json_value);
             }
             ElementValueKind::Object => {
                 // Elements with attributes: we store text under a `#text` key.
+                // In separate_json_attributes mode, skip null #text values.
+                if self.elements[index].has_separate_attributes {
+                    let is_null = matches!(
+                        &value,
+                        Cow::Borrowed(BinXmlValue::NullType) | Cow::Owned(BinXmlValue::NullType)
+                    );
+                    if is_null {
+                        return Ok(());
+                    }
+                }
+
                 // For the streaming implementation we only support a single
                 // `#text` value; multiple text nodes for the same element are
                 // not expected in real EVTX data.

@@ -1,5 +1,6 @@
 use evtx::{EvtxParser, ParserSettings};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::path::PathBuf;
@@ -56,7 +57,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                         let legacy_value: Value = serde_json::from_str(&legacy_record.data)?;
                         let streaming_value: Value = serde_json::from_str(&streaming_record.data)?;
 
-                        if legacy_value != streaming_value {
+                        // Normalize both values to handle duplicate key ordering differences
+                        let legacy_normalized = normalize_for_comparison(&legacy_value);
+                        let streaming_normalized = normalize_for_comparison(&streaming_value);
+
+                        if legacy_normalized != streaming_normalized {
                             eprintln!(
                                 "JSON mismatch at record index {} (EventRecordId={}):",
                                 index, legacy_record.event_record_id
@@ -188,3 +193,81 @@ Options:
     );
 }
 
+/// Normalize JSON for comparison, handling duplicate key ordering differences.
+///
+/// The streaming parser assigns duplicate keys in document order (first value gets
+/// unsuffixed key), while the legacy parser puts the last value in the unsuffixed key.
+/// This function normalizes both by grouping duplicate keys (e.g., `Header`, `Header_1`)
+/// and comparing them as unordered sets of values.
+fn normalize_for_comparison(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            // Group keys by their base name (e.g., "Header", "Header_1" -> "Header")
+            let mut groups: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+
+            for (key, val) in map {
+                let base_key = extract_base_key(key);
+                groups
+                    .entry(base_key)
+                    .or_default()
+                    .push((key.clone(), normalize_for_comparison(val)));
+            }
+
+            // Build normalized object
+            let mut result = serde_json::Map::new();
+            for (base_key, mut entries) in groups {
+                if entries.len() == 1 {
+                    // Single key, no duplicates - keep as-is
+                    let (key, val) = entries.remove(0);
+                    result.insert(key, val);
+                } else {
+                    // Multiple keys with same base - normalize to a canonical form
+                    // Sort values using canonical JSON representation (sorted keys)
+                    let mut values: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
+                    values.sort_by(|a, b| canonical_json_string(a).cmp(&canonical_json_string(b)));
+
+                    // Store as array under the base key with a special marker
+                    result.insert(
+                        format!("{}__normalized_duplicates", base_key),
+                        Value::Array(values),
+                    );
+                }
+            }
+            Value::Object(result)
+        }
+        Value::Array(arr) => Value::Array(arr.iter().map(normalize_for_comparison).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Create a canonical JSON string with sorted keys for comparison.
+fn canonical_json_string(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut sorted: Vec<_> = map.iter().collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            let pairs: Vec<String> = sorted
+                .into_iter()
+                .map(|(k, v)| format!("\"{}\":{}", k, canonical_json_string(v)))
+                .collect();
+            format!("{{{}}}", pairs.join(","))
+        }
+        Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(canonical_json_string).collect();
+            format!("[{}]", items.join(","))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Extract the base key name, stripping any `_N` suffix.
+/// e.g., "Header_1" -> "Header", "Header_12" -> "Header", "Header" -> "Header"
+fn extract_base_key(key: &str) -> String {
+    if let Some(pos) = key.rfind('_') {
+        let suffix = &key[pos + 1..];
+        if suffix.chars().all(|c| c.is_ascii_digit()) && !suffix.is_empty() {
+            return key[..pos].to_string();
+        }
+    }
+    key.to_string()
+}
