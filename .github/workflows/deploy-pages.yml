@@ -27,11 +27,9 @@ jobs:
           bun-version: latest
 
       - name: Set up Rust toolchain (stable) with wasm target
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: wasm32-unknown-unknown
-          override: true
+          targets: wasm32-unknown-unknown
 
       - name: Install & cache wasm-pack
         uses: jetli/wasm-pack-action@v0.4.0
