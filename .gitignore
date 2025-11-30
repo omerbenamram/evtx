@@ -17,6 +17,7 @@ evtx-wasm/evtx-viewer/public/pkg
 profile/*
 binaries/*
 benchmarks/*
+scripts/FlameGraph
 .PRE_PATH
 
 # Local-only fixtures (e.g. PE/CRIM blobs for WEVT_TEMPLATE work). Keep out of git.
