@@ -18,7 +18,7 @@ use crate::{
     model::{deserialized::*, raw::*},
 };
 
-use crate::evtx_chunk::EvtxChunk;
+use bumpalo::Bump;
 use encoding::EncodingRef;
 
 use std::io::Cursor;
@@ -26,7 +26,8 @@ use std::mem;
 
 pub struct IterTokens<'a> {
     cursor: Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
+    data_len: usize,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
@@ -37,7 +38,7 @@ pub struct IterTokens<'a> {
 pub struct BinXmlDeserializer<'a> {
     data: &'a [u8],
     offset: u64,
-    chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     // if called from substitution token with value type: Binary XML (0x21)
     is_inside_substitution: bool,
     ansi_codec: EncodingRef,
@@ -47,14 +48,14 @@ impl<'a> BinXmlDeserializer<'a> {
     pub fn init(
         data: &'a [u8],
         start_offset: u64,
-        chunk: Option<&'a EvtxChunk<'a>>,
+        arena: &'a Bump,
         is_inside_substitution: bool,
         ansi_codec: EncodingRef,
     ) -> Self {
         BinXmlDeserializer {
             data,
             offset: start_offset,
-            chunk,
+            arena,
             is_inside_substitution,
             ansi_codec,
         }
@@ -63,7 +64,7 @@ impl<'a> BinXmlDeserializer<'a> {
     /// Returns a tuple of the tokens.
     pub fn read_binxml_fragment(
         cursor: &mut Cursor<&'a [u8]>,
-        chunk: Option<&'a EvtxChunk<'a>>,
+        arena: &'a Bump,
         data_size: Option<u32>,
         is_inside_substitution: bool,
         ansi_codec: EncodingRef,
@@ -73,7 +74,7 @@ impl<'a> BinXmlDeserializer<'a> {
         let de = BinXmlDeserializer::init(
             cursor.get_ref(),
             offset,
-            chunk,
+            arena,
             is_inside_substitution,
             ansi_codec,
         );
@@ -99,11 +100,13 @@ impl<'a> BinXmlDeserializer<'a> {
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
         let mut cursor = Cursor::new(self.data);
+        let data_len = self.data.len();
         cursor.seek(SeekFrom::Start(self.offset))?;
 
         Ok(IterTokens {
             cursor,
-            chunk: self.chunk,
+            arena: self.arena,
+            data_len,
             data_size,
             data_read_so_far: 0,
             eof: false,
@@ -137,7 +140,7 @@ impl<'a> IterTokens<'a> {
                 Ok(BinXMLDeserializedTokens::OpenStartElement(
                     read_open_start_element(
                         cursor,
-                        self.chunk,
+                        self.data_len,
                         token_information.has_attributes,
                         self.is_inside_substitution,
                     )?,
@@ -147,7 +150,7 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
+                BinXmlValue::from_binxml_stream(cursor, self.arena, None, self.ansi_codec)?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
                 Ok(BinXMLDeserializedTokens::Attribute(read_attribute(cursor)?))
@@ -170,7 +173,7 @@ impl<'a> IterTokens<'a> {
                 read_processing_instruction_data(cursor)?,
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template(cursor, self.chunk, self.ansi_codec)?,
+                read_template(cursor, self.arena, self.ansi_codec)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution_descriptor(cursor, false)?,

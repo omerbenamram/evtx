@@ -16,12 +16,12 @@ use log::{error, trace, warn};
 use std::io::Seek;
 use std::io::SeekFrom;
 
-use crate::evtx_chunk::EvtxChunk;
+use bumpalo::Bump;
 use encoding::EncodingRef;
 
 pub fn read_template<'a>(
     cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     ansi_codec: EncodingRef,
 ) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
@@ -75,7 +75,7 @@ pub fn read_template<'a>(
         let value = BinXmlValue::deserialize_value_type(
             &descriptor.value_type,
             cursor,
-            chunk,
+            arena,
             Some(descriptor.size),
             ansi_codec,
         )?;
@@ -98,10 +98,10 @@ pub fn read_template<'a>(
             let diff = expected_position as i128 - current_position as i128;
             // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
             // Sometimes however the log will contain a lot of zero fields.
-            warn!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                  current_position,
-                  expected_position,
-                  &descriptor);
+            warn!(
+                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                current_position, expected_position, &descriptor
+            );
 
             match u64::try_from(diff) {
                 Ok(u64_diff) => {
@@ -138,7 +138,7 @@ pub fn read_template_definition_header(
 
 pub fn read_template_definition<'a>(
     cursor: &mut Cursor<&'a [u8]>,
-    chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     ansi_codec: EncodingRef,
 ) -> Result<BinXMLTemplateDefinition<'a>> {
     let header = read_template_definition_header(cursor)?;
@@ -151,7 +151,7 @@ pub fn read_template_definition<'a>(
 
     let template = match BinXmlDeserializer::read_binxml_fragment(
         cursor,
-        chunk,
+        arena,
         Some(header.data_size),
         false,
         ansi_codec,
@@ -161,7 +161,7 @@ pub fn read_template_definition<'a>(
             return Err(DeserializationError::FailedToDeserializeTemplate {
                 template_id: header.guid,
                 source: Box::new(e),
-            })
+            });
         }
     };
 
@@ -249,7 +249,7 @@ pub fn read_substitution_descriptor(
 
 pub fn read_open_start_element(
     cursor: &mut Cursor<&[u8]>,
-    chunk: Option<&EvtxChunk>,
+    data_len: usize,
     has_attributes: bool,
     is_substitution: bool,
 ) -> Result<BinXMLOpenStartElement> {
@@ -268,8 +268,7 @@ pub fn read_open_start_element(
 
         trace!(
             "\t Dependency Identifier - `0x{:04x} ({})`",
-            _dependency_identifier,
-            _dependency_identifier
+            _dependency_identifier, _dependency_identifier
         );
     }
 
@@ -278,9 +277,7 @@ pub fn read_open_start_element(
     // This is a heuristic, sometimes `dependency_identifier` is not present even though it should have been.
     // This will result in interpreting garbage bytes as the data size.
     // We try to recover from this situation by rolling back the cursor and trying again, without reading the `dependency_identifier`.
-    if let Some(c) = chunk
-        && data_size >= c.data.len() as u32
-    {
+    if data_size >= data_len as u32 {
         warn!(
             "Detected a case where `dependency_identifier` should not have been read. \
              Trying to read again without it."
@@ -292,7 +289,7 @@ pub fn read_open_start_element(
                 cursor,
             )
         })?;
-        return read_open_start_element(cursor, chunk, has_attributes, true);
+        return read_open_start_element(cursor, data_len, has_attributes, true);
     }
 
     trace!("\t Data Size - {}", data_size);

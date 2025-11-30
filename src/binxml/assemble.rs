@@ -271,7 +271,7 @@ fn expand_template<'a>(
 
         let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
         let template_def =
-            read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
+            read_template_definition(&mut cursor, chunk.arena, chunk.settings.get_ansi_codec())?;
 
         for token in template_def.tokens {
             if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
@@ -446,7 +446,7 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
                 let template_def = read_template_definition(
                     &mut cursor,
-                    Some(chunk),
+                    chunk.arena,
                     chunk.settings.get_ansi_codec(),
                 )?;
                 // For templates not in cache, expand them first then visit

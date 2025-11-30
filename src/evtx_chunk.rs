@@ -4,6 +4,7 @@ use crate::err::{
 
 use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
 
+use bumpalo::Bump;
 use log::{debug, info, trace};
 use std::{
     io::Cursor,
@@ -59,6 +60,9 @@ pub struct EvtxChunkHeader {
 pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
+    /// Arena allocator for per-chunk allocations.
+    /// Provides O(1) allocation and O(1) mass deallocation when chunk is dropped.
+    pub arena: Bump,
 }
 
 impl EvtxChunkData {
@@ -68,7 +72,14 @@ impl EvtxChunkData {
         let mut cursor = Cursor::new(data.as_slice());
         let header = EvtxChunkHeader::from_reader(&mut cursor)?;
 
-        let chunk = EvtxChunkData { header, data };
+        // Arena with 64KB initial capacity - typical chunk processing needs
+        let arena = Bump::with_capacity(64 * 1024);
+
+        let chunk = EvtxChunkData {
+            header,
+            data,
+            arena,
+        };
         if validate_checksum && !chunk.validate_checksum() {
             // TODO: return checksum here.
             return Err(ChunkError::InvalidChunkChecksum {
@@ -82,7 +93,13 @@ impl EvtxChunkData {
 
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
+        EvtxChunk::new(&self.data, &self.header, &self.arena, Arc::clone(&settings))
+    }
+
+    /// Reset the arena for reuse between chunk processing cycles.
+    /// This allows the same EvtxChunkData to be reused with fresh arena memory.
+    pub fn reset_arena(&mut self) {
+        self.arena.reset();
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -161,6 +178,9 @@ pub struct EvtxChunk<'chunk> {
     pub header: &'chunk EvtxChunkHeader,
     pub string_cache: StringCache,
     pub template_table: TemplateCache<'chunk>,
+    /// Arena allocator for temporary allocations during parsing.
+    /// Allocations are O(1) and freed atomically when chunk is dropped.
+    pub arena: &'chunk Bump,
 
     pub settings: Arc<ParserSettings>,
 }
@@ -170,6 +190,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
+        arena: &'chunk Bump,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
         let _cursor = Cursor::new(data);
@@ -179,16 +200,21 @@ impl<'chunk> EvtxChunk<'chunk> {
             .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
 
         info!("Initializing template cache");
-        let template_table =
-            TemplateCache::populate(data, &header.template_offsets, settings.get_ansi_codec())
-                .map_err(|e| ChunkError::FailedToBuildTemplateCache {
-                    message: e.to_string(),
-                    source: Box::new(e),
-                })?;
+        let template_table = TemplateCache::populate(
+            data,
+            &header.template_offsets,
+            arena,
+            settings.get_ansi_codec(),
+        )
+        .map_err(|e| ChunkError::FailedToBuildTemplateCache {
+            message: e.to_string(),
+            source: Box::new(e),
+        })?;
 
         Ok(EvtxChunk {
             header,
             data,
+            arena,
             string_cache,
             template_table,
             settings,
@@ -278,7 +304,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let deserializer = BinXmlDeserializer::init(
             self.chunk.data,
             self.offset_from_chunk_start + cursor.position(),
-            Some(self.chunk),
+            self.chunk.arena,
             false,
             self.settings.get_ansi_codec(),
         );
