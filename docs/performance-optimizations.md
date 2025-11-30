@@ -4,21 +4,51 @@ This document details the performance optimizations applied to the Rust EVTX par
 
 ## Summary
 
-| Optimization | Individual Speedup | Cumulative Time |
-|--------------|-------------------|-----------------|
-| Baseline (master) | — | 194.9 ms |
-| ASCII Fast Path | ~5% faster | ~185 ms |
-| Hashbrown HashMap | ~1% faster | ~183 ms |
-| Direct JSON Writing | ~4% faster | 132.4 ms |
-| **Total Improvement** | **1.47x faster** | **132.4 ms** |
+| Optimization | Individual Speedup |
+|--------------|-------------------|
+| ASCII Fast Path | ~5% faster |
+| Direct JSON Writing | ~4% faster |
 
-**Note**: The Zig parser runs at 43.1 ms, still ~3.5x faster. The remaining gap is due to architectural differences (two-stage IR, arena allocators, SIMD) that would require more extensive refactoring.
+**Current benchmark** (single-threaded, security_big_sample.evtx):
+- Rust: **574 ms**
+- Zig: **166 ms**
+- Gap: **Zig is 3.46x faster**
+
+The remaining gap is due to **architectural differences** identified via profiling.
+
+---
+
+## Profiling Analysis (Current State)
+
+Flamegraph profiling using macOS `sample` + FlameGraph perl scripts:
+
+```
+Top leaf functions (by samples):
+  56  _xzm_free                    ─┐
+  48  _xzm_xzone_malloc_tiny        │ Memory allocation: ~170 samples (29%)
+  17  _xzm_xzone_malloc             │
+  15  _free                         │
+  14  _malloc_zone_malloc          ─┘
+  38  _platform_memmove            ── Copying (from clones): 38 samples (6%)
+  36  stream_expand_token          ─┐
+  18  _expand_templates             │ Template expansion: 54 samples (9%)
+  34  SipHash::write               ── HashMap hashing: 34 samples (6%)
+  16  read_utf16_string            ── String conversion: 16 samples (3%)
+  16  BinXmlValue::from            ── serde_json conversion: 16 samples (3%)
+```
+
+**Key insight**: The #1 bottleneck is **memory allocation/deallocation** (~29% of CPU time).
+
+This is fundamentally architectural:
+- Rust clones `BinXMLDeserializedTokens` during template expansion
+- Each clone allocates memory for `Vec<>` and `String` fields
+- Zig uses arena allocation (no individual malloc/free calls)
 
 ---
 
 ## Optimization 1: ASCII Fast Path for UTF-16 to UTF-8 Conversion
 
-**File**: `src/utils/binxml_utils.rs`  
+**File**: `src/utils/binxml_utils.rs`
 **Speedup**: ~5% faster
 
 ### The Problem
@@ -87,54 +117,9 @@ Speedup: 1.05x (5% faster)
 
 ---
 
-## Optimization 2: Hashbrown HashMap for Caches
+## Optimization 2: Direct JSON String Writing
 
-**Files**: `src/string_cache.rs`, `src/template_cache.rs`  
-**Speedup**: ~1% faster (within margin of error)
-
-### The Problem
-
-The string and template caches used `std::collections::HashMap`:
-
-```rust
-use std::collections::HashMap;
-
-pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
-pub struct TemplateCache<'chunk>(HashMap<ChunkOffset, CachedTemplate<'chunk>>);
-```
-
-### The Solution
-
-Switch to `hashbrown::HashMap` which is already a dependency with the `inline-more` feature:
-
-```rust
-use hashbrown::HashMap;
-
-pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
-pub struct TemplateCache<'chunk>(HashMap<ChunkOffset, CachedTemplate<'chunk>>);
-```
-
-### Why It's Faster
-
-- `hashbrown` uses SwissTable algorithm (same as Rust 1.36+ std HashMap, but with more aggressive inlining)
-- `inline-more` feature enables additional inlining for hot paths
-- Better cache locality for small maps
-
-### Benchmark
-
-```
-Before: 135.4 ms ± 4.1 ms
-After:  134.0 ms ± 9.1 ms
-Speedup: 1.01x (~1% faster, within noise)
-```
-
-**Note**: The improvement is marginal because cache lookups were not a major bottleneck. The original std HashMap in Rust 1.36+ already uses hashbrown internally.
-
----
-
-## Optimization 3: Direct JSON String Writing
-
-**File**: `src/json_stream_output.rs`  
+**File**: `src/json_stream_output.rs`
 **Speedup**: ~4% faster
 
 ### The Problem
@@ -145,7 +130,7 @@ The streaming JSON output used `serde_json::to_writer` for all string serializat
 fn write_key(&mut self, key: &str) -> SerializationResult<()> {
     self.write_comma_if_needed()?;
     let unique_key = self.reserve_unique_key(key);
-    
+
     // Overhead: serde_json parsing, escaping, buffering
     serde_json::to_writer(self.writer_mut(), &unique_key)?;
     self.write_bytes(b":")
@@ -179,7 +164,7 @@ fn write_json_string_ncname(&mut self, s: &str) -> SerializationResult<()> {
 fn write_key(&mut self, key: &str) -> SerializationResult<()> {
     self.write_comma_if_needed()?;
     let unique_key = self.reserve_unique_key(key);
-    
+
     // Direct write: no escaping needed for NCName
     self.write_json_string_ncname(&unique_key)?;
     self.write_bytes(b":")
@@ -213,63 +198,86 @@ Speedup: 1.04x (4% faster)
 
 ---
 
-## Total Impact
+## Current Benchmark
 
-### Final Comparison vs Master
-
-```
-Benchmark: security_big_sample.evtx (JSON output)
-
-Master:    194.9 ms ± 9.0 ms
-Optimized: 132.4 ms ± 4.9 ms
-
-Speedup: 1.47x (47% faster)
-```
-
-### Comparison with Zig Parser
+Single-threaded JSON output on `security_big_sample.evtx` (30 MB):
 
 ```
-Zig:       43.1 ms ± 3.1 ms
-Rust:     132.4 ms ± 4.9 ms
+Rust:  574 ms ± 5 ms
+Zig:   166 ms ± 12 ms
 
-Gap: Zig is 3.07x faster (reduced from ~5x)
+Gap: Zig is 3.46x faster
+```
+
+Multi-threaded:
+```
+Rust:  273 ms (8 threads)
+Zig:   ~50 ms (estimated)
 ```
 
 ---
 
-## Remaining Opportunities
+## Remaining Opportunities (Architectural Changes Required)
 
-The Zig parser is still ~3x faster due to architectural differences:
+The Zig parser is ~3.5x faster due to fundamental architectural differences:
 
-### 1. Two-Stage IR with Clone+Resolve (Zig: 1.65x faster)
-- Zig caches templates as IR with `Placeholder` nodes
-- Instantiation clones the tree structure (memcpy-like) and resolves placeholders
-- Rust clones entire token trees including strings and vectors
+### 1. Arena Allocator (~29% of CPU time)
 
-### 2. Arena Allocator with Per-Chunk Reset
-- Zig uses arena allocation for all chunk processing
-- Atomic deallocation when moving to next chunk
-- Would require `bumpalo` crate and significant refactoring
+**Problem**: Profiling shows 170+ samples in malloc/free - the #1 bottleneck.
 
-### 3. SIMD String Processing
-- Zig uses SIMD for strings >= 16 characters
-- Checks 16 bytes at once for ASCII/escape characters
-- Could be implemented with `std::simd` (nightly) or manual intrinsics
+**Zig approach**:
+- Uses arena allocation (`std.heap.ArenaAllocator`) for all chunk processing
+- Allocations are bump-pointer (O(1), no metadata)
+- Atomic deallocation: just reset the bump pointer when done with chunk
+- No individual `free()` calls
 
-### 4. Pre-converted UTF-8 Name Storage
-- Zig stores element/attribute names as pre-converted UTF-8 in IR
-- Renderers just copy bytes directly
-- Rust uses `Cow<BinXmlName>` with potential conversion overhead
+**Rust solution**: Use `bumpalo` crate for per-chunk allocations. Requires:
+- Modifying `EvtxChunk` to hold an arena
+- Changing token types to allocate from arena
+- Resetting arena between chunks
+
+### 2. Reference-Based Template Expansion (~15% of CPU time)
+
+**Problem**: Rust clones `BinXMLDeserializedTokens` for every token during template expansion.
+
+```rust
+// Current: clones for every token
+stream_expand_token(val.clone(), chunk, ...)?;
+stream_expand_token(other.clone(), chunk, ...)?;
+```
+
+**Zig approach**:
+- Templates stored as IR with `Placeholder` nodes
+- Instantiation clones just the tree structure (cheap memcpy)
+- Actual data (strings, etc.) is shared via arena references
+
+**Rust solution**: Change `stream_expand_token` to take `&BinXMLDeserializedTokens<'a>` instead of owned value. Requires careful lifetime management.
+
+### 3. Reduce HashMap Usage (~6% of CPU time)
+
+**Problem**: `reserve_unique_key` does HashSet lookups for every JSON key to detect duplicates.
+
+**Observation**: Most JSON objects have < 20 keys. A linear scan of a `SmallVec` would be faster than hashing for small N.
+
+### 4. SIMD String Processing (~3% of CPU time)
+
+**Problem**: UTF-16 to UTF-8 conversion is still 16 samples despite ASCII fast path.
+
+**Zig approach**: SIMD for strings >= 16 code units, processing 8 characters at once.
+
+**Rust solution**: Use `simdutf` or `encoding_rs` crate for bulk conversion.
 
 ---
 
 ## Conclusion
 
-These optimizations reduced execution time by **47%** with minimal code changes:
-- ASCII fast path: ~5%
-- Hashbrown: ~1%
-- Direct JSON writing: ~4%
-- (Combined effect + cache warming): 47% total
+The low-hanging fruit (ASCII fast path, direct JSON writing) gave ~10% improvement total.
 
-The remaining 3x gap with Zig requires deeper architectural changes to the template expansion and memory allocation systems.
+The remaining 3.5x gap requires **architectural changes**:
+1. Arena allocator (biggest impact, most invasive)
+2. Reference-based template expansion
+3. Smaller data structures for key deduplication
+4. SIMD string conversion
+
+These changes would require significant refactoring of the core data structures.
 
