@@ -6,8 +6,8 @@ use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::utils::ByteCursor;
 
 use encoding::EncodingRef;
+use hashbrown::HashMap;
 use log::trace;
-use std::collections::HashMap;
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
