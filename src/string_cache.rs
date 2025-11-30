@@ -3,8 +3,8 @@ use crate::binxml::name::{BinXmlName, BinXmlNameLink};
 use crate::err::DeserializationResult;
 use crate::utils::ByteCursor;
 
-use hashbrown::HashMap;
 use log::trace;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
