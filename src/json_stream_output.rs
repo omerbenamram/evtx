@@ -144,9 +144,9 @@ impl<W: Write> JsonStreamOutput<W> {
     #[allow(dead_code)]
     fn write_json_string_escaped(&mut self, s: &str) -> SerializationResult<()> {
         // Fast path: check if escaping is needed
-        let needs_escape = s.bytes().any(|b| {
-            matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0..=0x1F)
-        });
+        let needs_escape = s
+            .bytes()
+            .any(|b| matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0..=0x1F));
 
         if !needs_escape {
             return self.write_json_string_ncname(s);
@@ -401,6 +401,44 @@ impl<W: Write> JsonStreamOutput<W> {
         // Reset aggregator state.
         self.data_owner_depth = None;
         self.data_inside_element = false;
+        Ok(())
+    }
+
+    /// Helper to handle entity reference strings without needing arena for BinXmlValue
+    fn handle_entity_string(&mut self, s: &str) -> SerializationResult<()> {
+        // Aggregated `<EventData><Data>...</Data>...</EventData>` case.
+        if let Some(owner_depth) = self.data_owner_depth {
+            let current_depth = self.elements.len();
+            if self.data_inside_element && current_depth == owner_depth {
+                self.write_json_string_escaped(s)?;
+                return Ok(());
+            }
+        }
+
+        let Some(index) = self.elements.len().checked_sub(1) else {
+            return Ok(());
+        };
+
+        let kind = self.elements[index].kind;
+        let json_value = JsonValue::String(s.to_string());
+
+        match kind {
+            ElementValueKind::Pending => {
+                self.elements[index].buffered_values.push(json_value);
+                self.elements[index].kind = ElementValueKind::Scalar;
+            }
+            ElementValueKind::Scalar => {
+                self.elements[index].buffered_values.push(json_value);
+            }
+            ElementValueKind::Object => {
+                if self.elements[index].has_separate_attributes && s.is_empty() {
+                    return Ok(());
+                }
+                self.elements[index].buffered_values.push(json_value);
+                self.elements[index].has_text = true;
+            }
+        }
+
         Ok(())
     }
 }
@@ -814,8 +852,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         let xml_event = BytesText::from_escaped(&entity_ref);
         match xml_event.unescape() {
             Ok(escaped) => {
-                let as_string = escaped.to_string();
-                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))
+                // Directly handle string without creating BinXmlValue (which would need arena)
+                self.handle_entity_string(escaped.as_ref())
             }
             Err(_) => Err(SerializationError::JsonStructureError {
                 message: format!("Unterminated XML Entity {}", entity_ref),
@@ -843,6 +881,8 @@ mod tests {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::model::xml::{XmlAttribute, XmlElement};
     use crate::{BinXmlOutput, JsonOutput, ParserSettings};
+    use bumpalo::Bump;
+    use bumpalo::collections::String as BumpString;
     use pretty_assertions::assert_eq;
     use quick_xml::Reader;
     use quick_xml::events::{BytesStart, Event};
@@ -852,7 +892,7 @@ mod tests {
         String::from_utf8(bytes.to_vec()).expect("UTF8 Input")
     }
 
-    fn event_to_element(event: BytesStart) -> XmlElement {
+    fn event_to_element<'a>(event: BytesStart, arena: &'a Bump) -> XmlElement<'a> {
         let mut attrs = vec![];
 
         for attr in event.attributes() {
@@ -860,7 +900,10 @@ mod tests {
             attrs.push(XmlAttribute {
                 name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
                 // We have to compromise here and assume all values are strings.
-                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
+                value: Cow::Owned(BinXmlValue::StringType(BumpString::from_str_in(
+                    &bytes_to_string(&attr.value),
+                    arena,
+                ))),
             });
         }
 
@@ -874,6 +917,7 @@ mod tests {
 
     /// Converts an XML string to JSON using the legacy `JsonOutput`.
     fn xml_to_json_legacy(xml: &str, settings: &ParserSettings) -> String {
+        let arena = Bump::new();
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
@@ -886,7 +930,7 @@ mod tests {
             match reader.read_event() {
                 Ok(event) => match event {
                     Event::Start(start) => {
-                        let elem = event_to_element(start);
+                        let elem = event_to_element(start, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Open start element");
@@ -897,16 +941,16 @@ mod tests {
                         output.visit_close_element(&elem).expect("Close element");
                     }
                     Event::Empty(empty) => {
-                        let elem = event_to_element(empty);
+                        let elem = event_to_element(empty, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Empty Open start element");
                         output.visit_close_element(&elem).expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                            BumpString::from_str_in(&bytes_to_string(text.as_ref()), &arena),
+                        )))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),
@@ -927,6 +971,7 @@ mod tests {
 
     /// Converts an XML string to JSON using the streaming `JsonStreamOutput`.
     fn xml_to_json_streaming(xml: &str, settings: &ParserSettings) -> String {
+        let arena = Bump::new();
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
@@ -940,7 +985,7 @@ mod tests {
             match reader.read_event() {
                 Ok(event) => match event {
                     Event::Start(start) => {
-                        let elem = event_to_element(start);
+                        let elem = event_to_element(start, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Open start element");
@@ -951,16 +996,16 @@ mod tests {
                         output.visit_close_element(&elem).expect("Close element");
                     }
                     Event::Empty(empty) => {
-                        let elem = event_to_element(empty);
+                        let elem = event_to_element(empty, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Empty Open start element");
                         output.visit_close_element(&elem).expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                            BumpString::from_str_in(&bytes_to_string(text.as_ref()), &arena),
+                        )))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),
@@ -1117,6 +1162,8 @@ mod tests {
     fn test_multiple_character_nodes_concatenation() {
         use crate::model::xml::XmlElement;
 
+        let arena = Bump::new();
+
         // Test by directly calling the visitor methods to simulate multiple character nodes
         let settings = ParserSettings::new().num_threads(1);
 
@@ -1134,10 +1181,14 @@ mod tests {
         legacy_output.visit_open_start_element(&event_elem).unwrap();
         legacy_output.visit_open_start_element(&msg_elem).unwrap();
         legacy_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part1", &arena),
+            )))
             .unwrap();
         legacy_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part2", &arena),
+            )))
             .unwrap();
         legacy_output.visit_close_element(&msg_elem).unwrap();
         legacy_output.visit_close_element(&event_elem).unwrap();
@@ -1155,10 +1206,14 @@ mod tests {
             .visit_open_start_element(&msg_elem)
             .unwrap();
         streaming_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part1", &arena),
+            )))
             .unwrap();
         streaming_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part2", &arena),
+            )))
             .unwrap();
         streaming_output.visit_close_element(&msg_elem).unwrap();
         streaming_output.visit_close_element(&event_elem).unwrap();

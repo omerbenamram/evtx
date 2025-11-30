@@ -5,6 +5,7 @@ use crate::ChunkOffset;
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::utils::ByteCursor;
 
+use bumpalo::Bump;
 use encoding::EncodingRef;
 use log::trace;
 use std::collections::HashMap;
@@ -22,6 +23,7 @@ impl<'chunk> TemplateCache<'chunk> {
     pub fn populate(
         data: &'chunk [u8],
         offsets: &[ChunkOffset],
+        arena: &'chunk Bump,
         ansi_codec: EncodingRef,
     ) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
