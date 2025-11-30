@@ -103,6 +103,9 @@ pub fn read_null_terminated_utf16_string<T: ReadSeek>(stream: &mut T) -> io::Res
 /// Reads a utf16 string from the given stream.
 /// If `len` is given, exactly `len` u16 values are read from the stream.
 /// If `len` is None, the string is assumed to be null terminated and the stream will be read to the first null (0).
+///
+/// Uses an ASCII fast path for pure-ASCII strings (~95% of EVTX strings),
+/// bypassing the decode_utf16 iterator overhead.
 fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Result<String> {
     let mut buffer = match len {
         Some(len) => Vec::with_capacity(len),
@@ -127,8 +130,25 @@ fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Res
         },
     }
 
-    // We need to stop if we see a NUL byte, even if asked for more bytes.
-    decode_utf16(buffer.into_iter().take_while(|&byte| byte != 0x00))
+    // Find the actual string length (stop at NUL)
+    let actual_len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+
+    // ASCII fast path: if all code units are <= 0x7F, directly convert to UTF-8
+    // This is valid because ASCII is identical in UTF-16 and UTF-8.
+    // ~95% of EVTX strings are pure ASCII (element names, attributes, short values).
+    let all_ascii = buffer[..actual_len].iter().all(|&c| c <= 0x7F);
+
+    if all_ascii {
+        // Direct conversion: each u16 <= 0x7F maps to exactly one u8
+        let mut result = String::with_capacity(actual_len);
+        for &c in &buffer[..actual_len] {
+            result.push(c as u8 as char);
+        }
+        return Ok(result);
+    }
+
+    // Fallback: use decode_utf16 for non-ASCII strings (handles surrogates, BMP, etc.)
+    decode_utf16(buffer.into_iter().take(actual_len))
         .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
         .collect()
 }

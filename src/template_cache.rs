@@ -5,9 +5,9 @@ use crate::ChunkOffset;
 use crate::model::deserialized::BinXMLTemplateDefinition;
 
 use encoding::EncodingRef;
+use hashbrown::HashMap;
 use log::trace;
 use std::borrow::BorrowMut;
-use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;

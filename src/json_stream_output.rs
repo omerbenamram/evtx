@@ -129,6 +129,52 @@ impl<W: Write> JsonStreamOutput<W> {
             .map_err(SerializationError::from)
     }
 
+    /// Write a JSON string directly without escaping.
+    /// Only safe for NCName strings (XML element/attribute names) which don't contain
+    /// characters that need JSON escaping (no quotes, backslashes, control chars).
+    #[inline]
+    fn write_json_string_ncname(&mut self, s: &str) -> SerializationResult<()> {
+        self.write_bytes(b"\"")?;
+        self.write_bytes(s.as_bytes())?;
+        self.write_bytes(b"\"")
+    }
+
+    /// Write a JSON string with proper escaping for special characters.
+    /// Uses a fast path for strings that don't need escaping.
+    #[allow(dead_code)]
+    fn write_json_string_escaped(&mut self, s: &str) -> SerializationResult<()> {
+        // Fast path: check if escaping is needed
+        let needs_escape = s.bytes().any(|b| {
+            matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0..=0x1F)
+        });
+
+        if !needs_escape {
+            return self.write_json_string_ncname(s);
+        }
+
+        // Slow path: escape special characters
+        self.write_bytes(b"\"")?;
+        for c in s.chars() {
+            match c {
+                '"' => self.write_bytes(b"\\\"")?,
+                '\\' => self.write_bytes(b"\\\\")?,
+                '\n' => self.write_bytes(b"\\n")?,
+                '\r' => self.write_bytes(b"\\r")?,
+                '\t' => self.write_bytes(b"\\t")?,
+                c if c.is_control() => {
+                    write!(self.writer_mut(), "\\u{:04x}", c as u32)
+                        .map_err(SerializationError::from)?;
+                }
+                c => {
+                    let mut buf = [0u8; 4];
+                    let encoded = c.encode_utf8(&mut buf);
+                    self.write_bytes(encoded.as_bytes())?;
+                }
+            }
+        }
+        self.write_bytes(b"\"")
+    }
+
     fn current_frame_mut(&mut self) -> &mut ObjectFrame {
         self.frames
             .last_mut()
@@ -178,14 +224,16 @@ impl<W: Write> JsonStreamOutput<W> {
         // Check for duplicate keys and find a unique name
         let unique_key = self.reserve_unique_key(key);
 
-        serde_json::to_writer(self.writer_mut(), &unique_key).map_err(SerializationError::from)?;
+        // Keys derived from XML NCName don't need escaping
+        self.write_json_string_ncname(&unique_key)?;
         self.write_bytes(b":")
     }
 
     /// Write a pre-reserved key directly (no duplicate checking needed).
     fn write_reserved_key(&mut self, key: &str) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
-        serde_json::to_writer(self.writer_mut(), key).map_err(SerializationError::from)?;
+        // Keys derived from XML NCName don't need escaping
+        self.write_json_string_ncname(key)?;
         self.write_bytes(b":")
     }
 
@@ -471,9 +519,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 if !first_field {
                     self.write_bytes(b",")?;
                 }
-                serde_json::to_writer(self.writer_mut(), "#attributes")
-                    .map_err(SerializationError::from)?;
-                self.write_bytes(b":")?;
+                // "#attributes" is a fixed ASCII key, no escaping needed
+                self.write_bytes(b"\"#attributes\":")?;
 
                 // Start attributes object.
                 self.write_bytes(b"{")?;
@@ -507,8 +554,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         if !is_first {
                             self.write_bytes(b",")?;
                         }
-                        serde_json::to_writer(self.writer_mut(), attr_key)
-                            .map_err(SerializationError::from)?;
+                        // Attribute keys are XML NCName, no escaping needed
+                        self.write_json_string_ncname(attr_key)?;
                         self.write_bytes(b":")?;
                         serde_json::to_writer(self.writer_mut(), &json_value)
                             .map_err(SerializationError::from)?;
@@ -563,8 +610,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         if !is_first {
                             self.write_bytes(b",")?;
                         }
-                        serde_json::to_writer(self.writer_mut(), attr_name)
-                            .map_err(SerializationError::from)?;
+                        // Attribute names are XML NCName, no escaping needed
+                        self.write_json_string_ncname(attr_name)?;
                         self.write_bytes(b":")?;
                         serde_json::to_writer(self.writer_mut(), &json_value)
                             .map_err(SerializationError::from)?;
@@ -671,9 +718,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         if !is_first {
                             self.write_bytes(b",")?;
                         }
-                        serde_json::to_writer(self.writer_mut(), "#text")
-                            .map_err(SerializationError::from)?;
-                        self.write_bytes(b":")?;
+                        // "#text" is a fixed ASCII key, no escaping needed
+                        self.write_bytes(b"\"#text\":")?;
 
                         if elem.buffered_values.len() == 1 {
                             // Single value: write directly.
