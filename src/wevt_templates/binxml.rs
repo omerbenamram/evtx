@@ -10,6 +10,7 @@
 //! - MS-EVEN6 (BinXml `Name` structure and NameHash)
 
 use encoding::EncodingRef;
+use bumpalo::Bump;
 
 pub(super) const TEMP_BINXML_OFFSET: usize = 40;
 
@@ -22,6 +23,7 @@ pub(super) const TEMP_BINXML_OFFSET: usize = 40;
 /// BinXML fragment (starting at offset 40 from the beginning of `TEMP`).
 pub fn parse_temp_binxml_fragment<'a>(
     temp_bytes: &'a [u8],
+    arena: &'a Bump,
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<(
     Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>,
@@ -44,6 +46,7 @@ pub fn parse_temp_binxml_fragment<'a>(
         binxml,
         0,
         None,
+        arena,
         true,
         ansi_codec,
         BinXmlNameEncoding::WevtInline,
@@ -69,6 +72,7 @@ pub fn parse_temp_binxml_fragment<'a>(
 /// Returns `(tokens, bytes_consumed)` where `bytes_consumed` is the number of bytes read from `binxml`.
 pub fn parse_wevt_binxml_fragment<'a>(
     binxml: &'a [u8],
+    arena: &'a Bump,
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<(
     Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>,
@@ -82,6 +86,7 @@ pub fn parse_wevt_binxml_fragment<'a>(
         binxml,
         0,
         None,
+        arena,
         true,
         ansi_codec,
         BinXmlNameEncoding::WevtInline,

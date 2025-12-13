@@ -1,6 +1,7 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::utils::ByteCursor;
 
+use bumpalo::Bump;
 use log::trace;
 
 use crate::binxml::name::BinXmlNameEncoding;
@@ -22,6 +23,7 @@ use std::io::Cursor;
 pub struct IterTokens<'a> {
     cursor: ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
@@ -38,6 +40,7 @@ pub struct BinXmlDeserializer<'a> {
     data: &'a [u8],
     offset: u64,
     chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     /// Whether element start headers include the dependency identifier (u16).
     has_dep_id: bool,
     ansi_codec: EncodingRef,
@@ -49,6 +52,7 @@ impl<'a> BinXmlDeserializer<'a> {
         data: &'a [u8],
         start_offset: u64,
         chunk: Option<&'a EvtxChunk<'a>>,
+        arena: &'a Bump,
         has_dep_id: bool,
         ansi_codec: EncodingRef,
     ) -> Self {
@@ -56,6 +60,7 @@ impl<'a> BinXmlDeserializer<'a> {
             data,
             offset: start_offset,
             chunk,
+            arena,
             has_dep_id,
             ansi_codec,
             name_encoding: BinXmlNameEncoding::Offset,
@@ -66,6 +71,7 @@ impl<'a> BinXmlDeserializer<'a> {
         data: &'a [u8],
         start_offset: u64,
         chunk: Option<&'a EvtxChunk<'a>>,
+        arena: &'a Bump,
         has_dep_id: bool,
         ansi_codec: EncodingRef,
         name_encoding: BinXmlNameEncoding,
@@ -74,6 +80,7 @@ impl<'a> BinXmlDeserializer<'a> {
             data,
             offset: start_offset,
             chunk,
+            arena,
             has_dep_id,
             ansi_codec,
             name_encoding,
@@ -84,13 +91,14 @@ impl<'a> BinXmlDeserializer<'a> {
     pub fn read_binxml_fragment(
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
+        arena: &'a Bump,
         data_size: Option<u32>,
         has_dep_id: bool,
         ansi_codec: EncodingRef,
     ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
         let offset = cursor.position();
 
-        let de = BinXmlDeserializer::init(cursor.get_ref(), offset, chunk, has_dep_id, ansi_codec);
+        let de = BinXmlDeserializer::init(cursor.get_ref(), offset, chunk, arena, has_dep_id, ansi_codec);
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size)?;
@@ -128,6 +136,7 @@ impl<'a> BinXmlDeserializer<'a> {
         Ok(IterTokens {
             cursor,
             chunk: self.chunk,
+            arena: self.arena,
             data_size,
             data_read_so_far: 0,
             eof: false,
@@ -176,7 +185,7 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_cursor(cursor, self.chunk, None, self.ansi_codec)?,
+                BinXmlValue::from_binxml_cursor(cursor, self.chunk, self.arena, None, self.ansi_codec)?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
                 Ok(BinXMLDeserializedTokens::Attribute(read_attribute_cursor(
@@ -202,7 +211,7 @@ impl<'a> IterTokens<'a> {
                 read_processing_instruction_data_cursor(cursor)?,
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template_cursor(cursor, self.chunk, self.ansi_codec)?,
+                read_template_cursor(cursor, self.chunk, self.arena, self.ansi_codec)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution_descriptor_cursor(cursor, false)?,
@@ -376,10 +385,12 @@ mod tests {
         // CloseEmptyElement + EndOfStream
         buf.extend_from_slice(&[0x03, 0x00]);
 
+        let arena = Bump::new();
         let de = BinXmlDeserializer::init_with_name_encoding(
             &buf,
             0,
             None,
+            &arena,
             true,
             encoding::all::WINDOWS_1252,
             BinXmlNameEncoding::WevtInline,
@@ -430,10 +441,12 @@ mod tests {
 
         buf.extend_from_slice(&[0x03, 0x00]); // CloseEmptyElement + EndOfStream
 
+        let arena = Bump::new();
         let de = BinXmlDeserializer::init_with_name_encoding(
             &buf,
             0,
             None,
+            &arena,
             true,
             encoding::all::WINDOWS_1252,
             BinXmlNameEncoding::WevtInline,

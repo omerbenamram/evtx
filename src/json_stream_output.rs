@@ -141,7 +141,6 @@ impl<W: Write> JsonStreamOutput<W> {
 
     /// Write a JSON string with proper escaping for special characters.
     /// Uses a fast path for strings that don't need escaping.
-    #[allow(dead_code)]
     fn write_json_string_escaped(&mut self, s: &str) -> SerializationResult<()> {
         // Fast path: check if escaping is needed
         let needs_escape = s
@@ -173,6 +172,231 @@ impl<W: Write> JsonStreamOutput<W> {
             }
         }
         self.write_bytes(b"\"")
+    }
+
+    /// Write a BinXmlValue directly to JSON output without creating intermediate JsonValue.
+    /// This is the zero-allocation path for value serialization.
+    fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+        match value {
+            BinXmlValue::NullType => self.write_bytes(b"null"),
+            BinXmlValue::StringType(s) => self.write_json_string_escaped(s.as_str()),
+            BinXmlValue::AnsiStringType(s) => self.write_json_string_escaped(s.as_str()),
+            BinXmlValue::Int8Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt8Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Int16Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt16Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Int32Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt32Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Int64Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt64Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Real32Type(n) => {
+                let mut buf = ryu::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Real64Type(n) => {
+                let mut buf = ryu::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::BoolType(b) => self.write_bytes(if *b { b"true" } else { b"false" }),
+            BinXmlValue::BinaryType(bytes) => {
+                self.write_bytes(b"\"")?;
+                for byte in *bytes {
+                    write!(self.writer_mut(), "{:02X}", byte).map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"\"")
+            }
+            BinXmlValue::GuidType(guid) => {
+                // Use Guid's Display impl, write as JSON string
+                write!(self.writer_mut(), "\"{}\"", guid).map_err(SerializationError::from)
+            }
+            BinXmlValue::SizeTType(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => {
+                // Format as ISO 8601 with microseconds
+                write!(
+                    self.writer_mut(),
+                    "\"{}\"",
+                    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                )
+                .map_err(SerializationError::from)
+            }
+            BinXmlValue::SidType(sid) => {
+                self.write_bytes(b"\"")?;
+                write!(self.writer_mut(), "{}", sid).map_err(SerializationError::from)?;
+                self.write_bytes(b"\"")
+            }
+            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => {
+                self.write_json_string_escaped(s.as_str())
+            }
+            BinXmlValue::EvtHandle | BinXmlValue::EvtXml => self.write_bytes(b"null"),
+            // Arrays
+            BinXmlValue::StringArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, s) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_json_string_escaped(s.as_str())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::Int8ArrayType(arr) => self.write_int_array(arr.iter().map(|n| *n as i64)),
+            BinXmlValue::UInt8ArrayType(arr) => {
+                self.write_uint_array(arr.iter().map(|n| *n as u64))
+            }
+            BinXmlValue::Int16ArrayType(arr) => self.write_int_array(arr.iter().map(|n| *n as i64)),
+            BinXmlValue::UInt16ArrayType(arr) => {
+                self.write_uint_array(arr.iter().map(|n| *n as u64))
+            }
+            BinXmlValue::Int32ArrayType(arr) => self.write_int_array(arr.iter().map(|n| *n as i64)),
+            BinXmlValue::UInt32ArrayType(arr) => {
+                self.write_uint_array(arr.iter().map(|n| *n as u64))
+            }
+            BinXmlValue::Int64ArrayType(arr) => self.write_int_array(arr.iter().copied()),
+            BinXmlValue::UInt64ArrayType(arr) => self.write_uint_array(arr.iter().copied()),
+            BinXmlValue::Real32ArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, n) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    let mut buf = ryu::Buffer::new();
+                    self.write_bytes(buf.format(*n).as_bytes())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::Real64ArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, n) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    let mut buf = ryu::Buffer::new();
+                    self.write_bytes(buf.format(*n).as_bytes())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::BoolArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, b) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_bytes(if *b { b"true" } else { b"false" })?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::GuidArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, guid) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    write!(self.writer_mut(), "\"{}\"", guid).map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::FileTimeArrayType(arr) | BinXmlValue::SysTimeArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, dt) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    write!(
+                        self.writer_mut(),
+                        "\"{}\"",
+                        dt.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                    )
+                    .map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::SidArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, sid) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_bytes(b"\"")?;
+                    write!(self.writer_mut(), "{}", sid).map_err(SerializationError::from)?;
+                    self.write_bytes(b"\"")?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::HexInt32ArrayType(arr) | BinXmlValue::HexInt64ArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, s) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_json_string_escaped(s.as_str())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::AnsiStringArrayType
+            | BinXmlValue::BinaryArrayType
+            | BinXmlValue::SizeTArrayType
+            | BinXmlValue::EvtArrayHandle
+            | BinXmlValue::BinXmlArrayType
+            | BinXmlValue::EvtXmlArrayType => self.write_bytes(b"null"),
+            BinXmlValue::BinXmlType(_) => self.write_bytes(b"null"),
+        }
+    }
+
+    /// Helper for writing integer arrays
+    fn write_int_array(&mut self, iter: impl Iterator<Item = i64>) -> SerializationResult<()> {
+        self.write_bytes(b"[")?;
+        let mut buf = itoa::Buffer::new();
+        let mut first = true;
+        for n in iter {
+            if !first {
+                self.write_bytes(b",")?;
+            }
+            first = false;
+            self.write_bytes(buf.format(n).as_bytes())?;
+        }
+        self.write_bytes(b"]")
+    }
+
+    /// Helper for writing unsigned integer arrays
+    fn write_uint_array(&mut self, iter: impl Iterator<Item = u64>) -> SerializationResult<()> {
+        self.write_bytes(b"[")?;
+        let mut buf = itoa::Buffer::new();
+        let mut first = true;
+        for n in iter {
+            if !first {
+                self.write_bytes(b",")?;
+            }
+            first = false;
+            self.write_bytes(buf.format(n).as_bytes())?;
+        }
+        self.write_bytes(b"]")
     }
 
     fn current_frame_mut(&mut self) -> &mut ObjectFrame {
@@ -529,8 +753,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         let mut has_json_attributes = false;
         if !is_data {
             for attr in &element.attributes {
-                let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
-                if !json_value.is_null() {
+                if !attr.value.is_null() {
                     has_json_attributes = true;
                     break;
                 }
@@ -576,8 +799,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                             continue;
                         }
 
-                        let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
-                        if json_value.is_null() {
+                        if attr.value.is_null() {
                             continue;
                         }
 
@@ -595,8 +817,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         // Attribute keys are XML NCName, no escaping needed
                         self.write_json_string_ncname(attr_key)?;
                         self.write_bytes(b":")?;
-                        serde_json::to_writer(self.writer_mut(), &json_value)
-                            .map_err(SerializationError::from)?;
+                        self.write_binxml_value(attr.value.as_ref())?;
                     }
                 }
 
@@ -632,8 +853,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 {
                     for attr in &element.attributes {
                         let attr_name = attr.name.as_str();
-                        let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
-                        if json_value.is_null() {
+                        if attr.value.is_null() {
                             continue;
                         }
 
@@ -651,8 +871,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         // Attribute names are XML NCName, no escaping needed
                         self.write_json_string_ncname(attr_name)?;
                         self.write_bytes(b":")?;
-                        serde_json::to_writer(self.writer_mut(), &json_value)
-                            .map_err(SerializationError::from)?;
+                        self.write_binxml_value(attr.value.as_ref())?;
                     }
                 }
 

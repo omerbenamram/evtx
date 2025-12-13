@@ -13,6 +13,7 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use log::{error, trace, warn};
 
 use crate::evtx_chunk::EvtxChunk;
+use bumpalo::Bump;
 use encoding::EncodingRef;
 
 fn with_cursor<'a, T>(
@@ -29,6 +30,7 @@ fn with_cursor<'a, T>(
 pub(crate) fn read_template_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     ansi_codec: EncodingRef,
 ) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
@@ -85,6 +87,7 @@ pub(crate) fn read_template_cursor<'a>(
             &descriptor.value_type,
             cursor,
             chunk,
+            arena,
             Some(descriptor.size),
             ansi_codec,
         )?;
@@ -155,6 +158,7 @@ fn read_template_definition_header_cursor(
 pub(crate) fn read_template_definition_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
+    arena: &'a Bump,
     ansi_codec: EncodingRef,
 ) -> Result<BinXMLTemplateDefinition<'a>> {
     let header = read_template_definition_header_cursor(cursor)?;
@@ -166,7 +170,14 @@ pub(crate) fn read_template_definition_cursor<'a>(
     );
 
     let template = match with_cursor(cursor, |c| {
-        BinXmlDeserializer::read_binxml_fragment(c, chunk, Some(header.data_size), true, ansi_codec)
+        BinXmlDeserializer::read_binxml_fragment(
+            c,
+            chunk,
+            arena,
+            Some(header.data_size),
+            true,
+            ansi_codec,
+        )
     }) {
         Ok(tokens) => BinXMLTemplateDefinition { header, tokens },
         Err(e) => {

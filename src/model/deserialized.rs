@@ -5,7 +5,7 @@ use crate::ChunkOffset;
 use std::fmt::{self, Formatter};
 use winstructs::guid::Guid;
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum BinXMLDeserializedTokens<'a> {
     FragmentHeader(BinXMLFragmentHeader),
     TemplateInstance(BinXmlTemplateRef<'a>),
@@ -56,7 +56,7 @@ impl fmt::Display for BinXmlTemplateDefinitionHeader {
     }
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BinXMLTemplateDefinition<'a> {
     pub header: BinXmlTemplateDefinitionHeader,
     pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
@@ -67,7 +67,7 @@ pub struct BinXmlEntityReference {
     pub name: BinXmlNameRef,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct BinXmlTemplateRef<'a> {
     pub template_id: u32,
     pub template_def_offset: ChunkOffset,

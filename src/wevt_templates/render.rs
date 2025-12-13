@@ -22,6 +22,7 @@ pub fn render_temp_to_xml(
     temp_bytes: &[u8],
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
+    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
@@ -39,7 +40,8 @@ pub fn render_temp_to_xml(
     }
 
     let binxml = &temp_bytes[TEMP_BINXML_OFFSET..];
-    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -224,6 +226,7 @@ pub fn render_temp_to_xml_with_substitution_values(
     substitution_values: &[String],
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
+    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
@@ -241,7 +244,8 @@ pub fn render_temp_to_xml_with_substitution_values(
     }
 
     let binxml = &temp_bytes[TEMP_BINXML_OFFSET..];
-    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -428,6 +432,7 @@ pub fn render_template_definition_to_xml(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
+    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
@@ -437,7 +442,8 @@ pub fn render_template_definition_to_xml(
     use std::borrow::Cow;
 
     let binxml = template.binxml;
-    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -633,6 +639,7 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     substitution_values: &[String],
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
+    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
@@ -642,7 +649,8 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     use std::borrow::Cow;
 
     let binxml = template.binxml;
-    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],

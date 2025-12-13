@@ -267,6 +267,7 @@ fn expand_template<'a>(
         let template_def = read_template_definition_cursor(
             &mut cursor,
             Some(chunk),
+            chunk.arena,
             chunk.settings.get_ansi_codec(),
         )?;
 
@@ -444,6 +445,7 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                 let template_def = read_template_definition_cursor(
                     &mut cursor,
                     Some(chunk),
+                    chunk.arena,
                     chunk.settings.get_ansi_codec(),
                 )?;
                 // For templates not in cache, expand them first then visit

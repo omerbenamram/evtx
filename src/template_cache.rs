@@ -33,7 +33,8 @@ impl<'chunk> TemplateCache<'chunk> {
 
             loop {
                 let table_offset = cursor.pos() as ChunkOffset;
-                let definition = read_template_definition_cursor(&mut cursor, None, ansi_codec)?;
+                let definition =
+                    read_template_definition_cursor(&mut cursor, None, arena, ansi_codec)?;
                 let next_template_offset = definition.header.next_template_offset;
 
                 cache.insert(table_offset, definition);

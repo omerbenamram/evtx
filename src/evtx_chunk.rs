@@ -337,6 +337,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.chunk.data,
             record_start + EVTX_RECORD_HEADER_SIZE as u64,
             Some(self.chunk),
+            self.chunk.arena,
             false,
             self.settings.get_ansi_codec(),
         );

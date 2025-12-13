@@ -5,7 +5,7 @@ use crate::err::EvtxError;
 use log::error;
 use std::borrow::Cow;
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum XmlModel<'a> {
     OpenElement(XmlElement<'a>),
     CloseElement,
@@ -59,7 +59,7 @@ impl<'a> XmlElementBuilder<'a> {
             Some(_) => {
                 return Err(EvtxError::FailedToCreateRecordModel(
                     "invalid state, there should not be a value",
-                ))
+                ));
             }
         }
 
@@ -109,13 +109,13 @@ impl<'a> XmlPIBuilder<'a> {
     }
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct XmlAttribute<'a> {
     pub name: Cow<'a, BinXmlName>,
     pub value: Cow<'a, BinXmlValue<'a>>,
 }
 
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct XmlElement<'a> {
     pub name: Cow<'a, BinXmlName>,
     pub attributes: Vec<XmlAttribute<'a>>,
