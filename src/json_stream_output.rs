@@ -5,6 +5,8 @@ use crate::xml_output::BinXmlOutput;
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
+use chrono::{Datelike, Timelike};
+use hashbrown::HashSet;
 use quick_xml::events::BytesText;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -46,7 +48,7 @@ struct ObjectFrame {
     /// Whether we've already written any field in this object.
     first_field: bool,
     /// Keys already used in this object (for duplicate key handling).
-    used_keys: std::collections::HashSet<String>,
+    used_keys: HashSet<String>,
 }
 
 pub struct JsonStreamOutput<W: Write> {
@@ -238,11 +240,18 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.write_bytes(buf.format(*n).as_bytes())
             }
             BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => {
-                // Format as ISO 8601 with microseconds
+                // Fast ISO-8601 with microseconds (avoids strftime parser overhead):
+                // YYYY-MM-DDTHH:MM:SS.ffffffZ
                 write!(
                     self.writer_mut(),
-                    "\"{}\"",
-                    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                    "\"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z\"",
+                    dt.year(),
+                    dt.month(),
+                    dt.day(),
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second(),
+                    dt.timestamp_subsec_micros()
                 )
                 .map_err(SerializationError::from)
             }
@@ -445,11 +454,29 @@ impl<W: Write> JsonStreamOutput<W> {
     fn write_key(&mut self, key: &str) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
 
-        // Check for duplicate keys and find a unique name
-        let unique_key = self.reserve_unique_key(key);
+        // Fast path: avoid allocating a second String for the common case.
+        // Reserve the key in the set, but write from `&str` directly.
+        let frame = self
+            .frames
+            .last_mut()
+            .expect("no current JSON object frame");
 
-        // Keys derived from XML NCName don't need escaping
-        self.write_json_string_ncname(&unique_key)?;
+        if frame.used_keys.insert(key.to_owned()) {
+            // Keys derived from XML NCName don't need escaping
+            self.write_json_string_ncname(key)?;
+        } else {
+            // Find next available suffix.
+            let mut suffix = 1;
+            loop {
+                let candidate = format!("{}_{}", key, suffix);
+                if !frame.used_keys.contains(&candidate) {
+                    frame.used_keys.insert(candidate.clone());
+                    self.write_json_string_ncname(&candidate)?;
+                    break;
+                }
+                suffix += 1;
+            }
+        }
         self.write_bytes(b":")
     }
 
@@ -467,7 +494,8 @@ impl<W: Write> JsonStreamOutput<W> {
         self.write_bytes(b"{")?;
         self.frames.push(ObjectFrame {
             first_field: true,
-            used_keys: std::collections::HashSet::new(),
+            // Heuristic: nested objects tend to have a moderate number of keys.
+            used_keys: HashSet::with_capacity(32),
         });
         Ok(())
     }
@@ -505,7 +533,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::with_capacity(32),
                 });
 
                 self.elements[parent_index].kind = ElementValueKind::Object;
@@ -525,7 +553,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::with_capacity(32),
                 });
 
                 // Write the buffered text as #text if not in separate mode
@@ -673,7 +701,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         self.write_bytes(b"{")?;
         self.frames.push(ObjectFrame {
             first_field: true,
-            used_keys: std::collections::HashSet::new(),
+            // Root objects can have many keys; pre-reserve to reduce rehashing.
+            used_keys: HashSet::with_capacity(128),
         });
         Ok(())
     }
@@ -787,7 +816,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::new(),
                 });
 
                 {
@@ -847,7 +876,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::new(),
                 });
 
                 {

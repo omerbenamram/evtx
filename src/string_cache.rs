@@ -2,9 +2,9 @@ use crate::ChunkOffset;
 use crate::binxml::name::{BinXmlName, BinXmlNameLink};
 use crate::err::DeserializationResult;
 
+use hashbrown::HashMap;
 use log::trace;
 use std::borrow::BorrowMut;
-use std::collections::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
 #[derive(Debug)]
@@ -12,7 +12,8 @@ pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
 
 impl StringCache {
     pub fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
-        let mut cache = HashMap::new();
+        // Offsets can contain many duplicates / zeros; reserve a minimal baseline.
+        let mut cache = HashMap::with_capacity(offsets.len());
         let mut cursor = Cursor::new(data);
         let cursor_ref = cursor.borrow_mut();
 

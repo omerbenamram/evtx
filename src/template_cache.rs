@@ -8,7 +8,7 @@ use bumpalo::Bump;
 use encoding::EncodingRef;
 use log::trace;
 use std::borrow::BorrowMut;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::io::{Cursor, Seek, SeekFrom};
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
@@ -27,7 +27,9 @@ impl<'chunk> TemplateCache<'chunk> {
         arena: &'chunk Bump,
         ansi_codec: EncodingRef,
     ) -> DeserializationResult<Self> {
-        let mut cache = HashMap::new();
+        // Reserve a minimal baseline; actual number of cached templates may be higher
+        // due to chained template buckets.
+        let mut cache = HashMap::with_capacity(offsets.len());
         let mut cursor = Cursor::new(data);
         let cursor_ref = cursor.borrow_mut();
 
