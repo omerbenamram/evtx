@@ -26,7 +26,9 @@ impl<'chunk> TemplateCache<'chunk> {
         arena: &'chunk Bump,
         ansi_codec: EncodingRef,
     ) -> DeserializationResult<Self> {
-        let mut cache = HashMap::new();
+        // Reserve a minimal baseline; actual number of cached templates may be higher
+        // due to chained template buckets.
+        let mut cache = HashMap::with_capacity(offsets.len());
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             let mut cursor = ByteCursor::with_pos(data, *offset as usize)?;
