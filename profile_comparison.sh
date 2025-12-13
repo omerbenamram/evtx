@@ -34,6 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${ZIG_BINARY:=$HOME/Workspace/zig-evtx/zig-out/bin/evtx_dump_zig}"
 : "${ZIG_PROJECT:=$HOME/Workspace/zig-evtx}"
 : "${TOP_LEAVES_N:=20}"
+: "${TOP_LEAVES_WEIGHT:=cpu}" # cpu | samples | wall
 
 RUST_BINARY="$SCRIPT_DIR/target/release/evtx_dump"
 
@@ -53,9 +54,9 @@ print_top_leaves_table() {
     fi
 
     echo ""
-    echo -e "${BLUE}=== Top leaf functions (${label}) ===${NC}"
+    echo -e "${BLUE}=== Top leaf functions (${label}, ${TOP_LEAVES_WEIGHT}) ===${NC}"
 
-    python3 - "$profile_json" "$syms_json" "$TOP_LEAVES_N" <<'PY'
+    python3 - "$profile_json" "$syms_json" "$TOP_LEAVES_N" "$TOP_LEAVES_WEIGHT" <<'PY'
 import bisect
 import json
 import sys
@@ -63,6 +64,7 @@ import sys
 profile_path = sys.argv[1]
 syms_path = sys.argv[2]
 top_n = int(sys.argv[3])
+weight_mode = (sys.argv[4] if len(sys.argv) > 4 else "cpu").strip().lower()
 
 def load_json(path: str):
     with open(path, "rb") as f:
@@ -147,7 +149,9 @@ total = 0
 for thread in (profile.get("threads") or []):
     samples = thread.get("samples") or {}
     stacks = samples.get("stack") or []
-    weights = samples.get("weight")
+    sample_weights = samples.get("weight")
+    cpu_deltas = samples.get("threadCPUDelta")
+    wall_deltas = samples.get("timeDeltas")
 
     stack_table = thread.get("stackTable") or {}
     frame_table = thread.get("frameTable") or {}
@@ -181,9 +185,20 @@ for thread in (profile.get("threads") or []):
                 lib_index = resource_lib[resource_id]
 
         w = 1
-        if isinstance(weights, list) and idx < len(weights):
+        if weight_mode == "cpu" and isinstance(cpu_deltas, list) and idx < len(cpu_deltas):
             try:
-                w = int(weights[idx])
+                w = int(cpu_deltas[idx])
+            except Exception:
+                w = 0
+        elif weight_mode == "wall" and isinstance(wall_deltas, list) and idx < len(wall_deltas):
+            # timeDeltas is in ms (float). Keep as ms*1000 integer so output formatting is consistent.
+            try:
+                w = int(float(wall_deltas[idx]) * 1000.0)
+            except Exception:
+                w = 0
+        elif isinstance(sample_weights, list) and idx < len(sample_weights):
+            try:
+                w = int(sample_weights[idx])
             except Exception:
                 w = 1
 
@@ -193,11 +208,26 @@ for thread in (profile.get("threads") or []):
 
 items = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
-print("| # | Samples | % | Leaf |")
+if weight_mode == "cpu":
+    header = "CPU ms"
+    divisor = 1000.0  # µs -> ms
+elif weight_mode == "wall":
+    header = "Wall ms"
+    divisor = 1000.0  # (ms*1000) -> ms
+else:
+    header = "Samples"
+    divisor = 1.0
+
+print(f"| # | {header} | % | Leaf |")
 print("| -: | --: | --: | --- |")
 for i, (name, count) in enumerate(items, start=1):
     pct = (count / total * 100.0) if total else 0.0
-    print(f"| {i} | {count} | {pct:5.1f}% | {name} |")
+    v = count / divisor
+    if divisor == 1.0:
+        v_str = str(int(v))
+    else:
+        v_str = f"{v:,.1f}"
+    print(f"| {i} | {v_str} | {pct:5.1f}% | {name} |")
 PY
 }
 
