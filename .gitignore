@@ -25,3 +25,4 @@ samples_local/
 
 # Local vendor checkouts (for format research / patching upstream).
 external/
+profile_results/*
