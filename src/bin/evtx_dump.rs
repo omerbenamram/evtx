@@ -33,12 +33,21 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum JsonParserKind {
+    /// Original JSON path: builds a full `serde_json::Value` per record.
+    Legacy,
+    /// Streaming JSON path: writes JSON directly to the output writer.
+    Streaming,
+}
+
 struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
+    json_parser: JsonParserKind,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
     /// When set, only the specified events (offseted reltaive to file) will be outputted.
@@ -61,6 +70,15 @@ impl EvtxDump {
             "xml" => EvtxOutputFormat::XML,
             "json" | "jsonl" => EvtxOutputFormat::JSON,
             _ => EvtxOutputFormat::XML,
+        };
+
+        let json_parser = match matches
+            .get_one::<String>("json-parser")
+            .map(|s| s.as_str())
+        {
+            Some("legacy") => JsonParserKind::Legacy,
+            Some("streaming") | None => JsonParserKind::Streaming,
+            _ => JsonParserKind::Streaming,
         };
 
         let no_indent = match (
@@ -161,6 +179,7 @@ impl EvtxDump {
             show_record_number: !no_show_record_number,
             output_format,
             output,
+            json_parser,
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
@@ -184,9 +203,18 @@ impl EvtxDump {
                 }
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json() {
-                    self.dump_record(record)?
-                }
+                match self.json_parser {
+                    JsonParserKind::Streaming => {
+                        for record in parser.records_json_stream() {
+                            self.dump_record(record)?
+                        }
+                    }
+                    JsonParserKind::Legacy => {
+                        for record in parser.records_json() {
+                            self.dump_record(record)?
+                        }
+                    }
+                };
             }
         };
 
@@ -386,6 +414,13 @@ fn main() -> Result<()> {
                      "json"  - prints JSON output.
                      "jsonl" - (jsonlines) same as json with --no-indent --dont-show-record-number
                 "#)),
+        )
+        .arg(
+            Arg::new("json-parser")
+                .long("json-parser")
+                .value_parser(["legacy", "streaming"])
+                .default_value("streaming")
+                .help("Select JSON parser implementation: legacy (tree-based) or streaming"),
         )
         .arg(
             Arg::new("output-target")

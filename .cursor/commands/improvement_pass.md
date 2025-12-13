@@ -34,15 +34,15 @@ hyperfine -w 10 -r 20 \
   | tee "benchmarks/benchmark_pre_${TAG}.txt"
 
 # Optional: PRE flamegraph for this pass's main scenario
-sudo make flamegraph-prod \
+sudo TAG="$TAG" make flamegraph-prod \
   FLAME_FILE="samples/security_big_sample.evtx" \
   DURATION=30 \
   FORMAT=json \
   BIN="$PRE"
 
-mv profile/flamegraph.svg "profile/flamegraph_${TAG}_${TS}_pre.svg" || true
-cp profile/top_leaf.txt "profile/top_leaf_${TAG}_${TS}_pre.txt" || true
-cp profile/top_titles.txt "profile/top_titles_${TAG}_${TS}_pre.txt" || true
+mv "profile/flamegraph_${TAG}.svg" "profile/flamegraph_${TAG}_${TS}_pre.svg" || true
+cp "profile/top_leaf_${TAG}.txt" "profile/top_leaf_${TAG}_${TS}_pre.txt" || true
+cp "profile/top_titles_${TAG}.txt" "profile/top_titles_${TAG}_${TS}_pre.txt" || true
 ```
 
 - **Use the PRE benchmark + flamegraph** to:
@@ -104,12 +104,12 @@ hyperfine -w 10 -r 20 \
   | tee "/workspace/benchmarks/benchmark_pair_${TAG}_${TS}.txt"
 
 # POST flamegraph for the same scenario
-OUT_DIR=/workspace/profile_post FORMAT=jsonl DURATION=30 \
-  /workspace/scripts/flamegraph_prod.sh "$POST"
+OUT_DIR=/workspace/profile_post FORMAT=json DURATION=30 BIN="$POST" \
+  /workspace/scripts/flamegraph_prod.sh
 
-mv /workspace/profile/flamegraph.svg "/workspace/profile_post/flamegraph_${TAG}_${TS}_post.svg" || true
-cp /workspace/profile/top_leaf.txt "/workspace/profile_post/top_leaf_${TAG}_${TS}_post.txt" || true
-cp /workspace/profile/top_titles.txt "/workspace/profile_post/top_titles_${TAG}_${TS}_post.txt" || true
+mv "/workspace/profile_post/flamegraph_${TAG}.svg" "/workspace/profile_post/flamegraph_${TAG}_${TS}_post.svg" || true
+cp "/workspace/profile_post/top_leaf_${TAG}.txt" "/workspace/profile_post/top_leaf_${TAG}_${TS}_post.txt" || true
+cp "/workspace/profile_post/top_titles_${TAG}.txt" "/workspace/profile_post/top_titles_${TAG}_${TS}_post.txt" || true
 
 echo "PRE:  $PRE"
 echo "POST: $POST"

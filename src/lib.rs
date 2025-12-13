@@ -15,6 +15,7 @@ pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
 pub use json_output::JsonOutput;
+pub use json_stream_output::JsonStreamOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
 
 pub mod binxml;
@@ -30,6 +31,7 @@ mod template_cache;
 mod utils;
 
 mod json_output;
+mod json_stream_output;
 mod xml_output;
 
 pub type ChunkOffset = u32;
