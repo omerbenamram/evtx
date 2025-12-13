@@ -36,6 +36,8 @@ indoc = { version = "2", optional = true }
 serde = "1"
 serde_json = { version = "1", features = ["preserve_order"]}
 bumpalo = { version = "3", features = ["collections"] }
+itoa = "1"
+ryu = "1"
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
