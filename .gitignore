@@ -19,5 +19,4 @@ binaries/*
 benchmarks/*
 scripts/FlameGraph
 .PRE_PATH
-
 profile_results/*
