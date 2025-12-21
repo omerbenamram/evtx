@@ -55,7 +55,7 @@ multithreading = ["rayon"]
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1.2.1"
 criterion = "0.5.1"
-assert_cmd = "2.0.4"
+assert_cmd = "2.1.1"
 predicates = "3.1"
 env_logger = "0.11.0"
 tempfile = "3.3.0"

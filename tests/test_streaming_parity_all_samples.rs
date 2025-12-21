@@ -30,8 +30,7 @@ fn evtx_samples() -> Vec<PathBuf> {
 fn run_compare(path: &Path, extra_args: &[&str]) {
     // `compare_streaming_legacy` prints detailed mismatch context; the test harness
     // only needs to assert success/failure.
-    let mut cmd = Command::cargo_bin("compare_streaming_legacy")
-        .expect("failed to find compare_streaming_legacy binary");
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("compare_streaming_legacy"));
 
     for arg in extra_args {
         cmd.arg(arg);
