@@ -3,6 +3,7 @@ mod fixtures;
 use fixtures::*;
 
 use assert_cmd::prelude::*;
+use evtx::EvtxParser;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::process::Command;
@@ -69,4 +70,53 @@ fn test_it_overwrites_file_anyways_if_passed_flag() {
         !expected.is_empty(),
         "Expected output to be printed to file"
     )
+}
+
+#[test]
+fn it_supports_stdin_input_with_dash() {
+    let sample = regular_sample();
+
+    // Pick a single record id to keep CLI output small/deterministic.
+    let record_id = {
+        let mut parser = EvtxParser::from_path(&sample).unwrap();
+        parser
+            .records()
+            .filter_map(|r| r.ok())
+            .next()
+            .expect("sample should contain at least one parsable record")
+            .event_record_id
+            .to_string()
+    };
+
+    let mut cmd_file = Command::new(assert_cmd::cargo_bin!("evtx_dump"));
+    cmd_file.args([
+        "-o",
+        "jsonl",
+        "--events",
+        &record_id,
+        sample.to_str().unwrap(),
+    ]);
+    let out_file = cmd_file.output().unwrap();
+    assert!(
+        out_file.status.success(),
+        "expected file-input run to succeed"
+    );
+    assert!(
+        !out_file.stdout.is_empty(),
+        "expected file-input run to produce output"
+    );
+
+    let stdin_file = File::open(&sample).unwrap();
+    let mut cmd_stdin = Command::new(assert_cmd::cargo_bin!("evtx_dump"));
+    cmd_stdin.args(["-o", "jsonl", "--events", &record_id, "-"]);
+    cmd_stdin.stdin(stdin_file);
+    let out_stdin = cmd_stdin.output().unwrap();
+    assert!(
+        out_stdin.status.success(),
+        "expected stdin-input run to succeed"
+    );
+    assert_eq!(
+        out_stdin.stdout, out_file.stdout,
+        "stdin and file input should produce identical output for the selected record"
+    );
 }
