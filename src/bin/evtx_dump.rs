@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use anyhow::{bail, format_err, Context, Result};
+use anyhow::{Context, Result, bail, format_err};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
@@ -11,10 +11,11 @@ use evtx::err::Result as EvtxResult;
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use tempfile::tempfile;
 
 #[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
 use tikv_jemallocator::Jemalloc;
@@ -72,10 +73,7 @@ impl EvtxDump {
             _ => EvtxOutputFormat::XML,
         };
 
-        let json_parser = match matches
-            .get_one::<String>("json-parser")
-            .map(|s| s.as_str())
-        {
+        let json_parser = match matches.get_one::<String>("json-parser").map(|s| s.as_str()) {
             Some("legacy") => JsonParserKind::Legacy,
             Some("streaming") | None => JsonParserKind::Streaming,
             _ => JsonParserKind::Streaming,
@@ -122,7 +120,9 @@ impl EvtxDump {
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
             (true, number) => number,
             (false, _) => {
-                eprintln!("turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator");
+                eprintln!(
+                    "turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator"
+                );
                 1
             }
         };
@@ -130,9 +130,7 @@ impl EvtxDump {
         let validate_checksums = matches.get_flag("validate-checksums");
         let stop_after_error = matches.get_flag("stop-after-one-error");
 
-        let event_ranges = matches
-            .get_one::<&String>("event-ranges")
-            .map(|s| Ranges::from_str(s).expect("used validator"));
+        let event_ranges = matches.get_one::<Ranges>("event-ranges").cloned();
 
         let verbosity_level = match matches.get_count("verbose") {
             0 => None,
@@ -192,8 +190,8 @@ impl EvtxDump {
             eprintln!("{:?}", err);
         }
 
-        let mut parser = EvtxParser::from_path(&self.input)
-            .with_context(|| format!("Failed to open evtx file at: {}", &self.input.display()))
+        let mut parser = self
+            .open_parser()
             .map(|parser| parser.with_configuration(self.parser_settings.clone()))?;
 
         match self.output_format {
@@ -219,6 +217,42 @@ impl EvtxDump {
         };
 
         Ok(())
+    }
+
+    fn open_parser(&self) -> Result<EvtxParser<File>> {
+        if Self::is_stdin_input(&self.input) {
+            let mut tmp =
+                tempfile().context("Failed to create temporary file for stdin buffering")?;
+
+            let mut stdin = io::stdin().lock();
+            let bytes_copied =
+                io::copy(&mut stdin, &mut tmp).context("Failed to read EVTX data from stdin")?;
+
+            if bytes_copied == 0 {
+                bail!("No input received on stdin");
+            }
+
+            tmp.seek(SeekFrom::Start(0))
+                .context("Failed to rewind stdin buffer")?;
+
+            EvtxParser::from_read_seek(tmp).context("Failed to parse EVTX data from stdin")
+        } else {
+            EvtxParser::from_path(&self.input)
+                .with_context(|| format!("Failed to open evtx file at: {}", &self.input.display()))
+        }
+    }
+
+    fn is_stdin_input(path: &Path) -> bool {
+        if path.as_os_str() == "-" {
+            return true;
+        }
+
+        // Common Unix aliases for stdin.
+        // Note: we intentionally accept these even if stdin is seekable (e.g. redirected from a file),
+        // since the intent is explicit and buffering is still correct.
+        path == Path::new("/dev/stdin")
+            || path == Path::new("/dev/fd/0")
+            || path == Path::new("/proc/self/fd/0")
     }
 
     /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
@@ -309,6 +343,7 @@ impl EvtxDump {
     }
 }
 
+#[derive(Clone)]
 struct Ranges(Vec<RangeInclusive<usize>>);
 
 impl Ranges {
@@ -367,10 +402,8 @@ impl FromStr for Ranges {
     }
 }
 
-fn matches_ranges(value: &str) -> Result<(), String> {
-    Ranges::from_str(value)
-        .map_err(|e| e.to_string())
-        .map(|_| ())
+fn matches_ranges(value: &str) -> Result<Ranges, String> {
+    Ranges::from_str(value).map_err(|e| e.to_string())
 }
 
 #[test]
@@ -392,7 +425,11 @@ fn main() -> Result<()> {
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
-        .arg(Arg::new("INPUT").required(true))
+        .arg(
+            Arg::new("INPUT")
+                .required(true)
+                .help("Input EVTX file path, or '-' to read from stdin."),
+        )
         .arg(
             Arg::new("num-threads")
                 .short('t')
