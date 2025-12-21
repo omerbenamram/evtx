@@ -2,7 +2,9 @@ mod fixtures;
 
 #[cfg(feature = "wevt_templates")]
 mod wevt_templates {
-    use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
+    use evtx::wevt_templates::{
+        ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -20,6 +22,44 @@ mod wevt_templates {
         assert_eq!(r.resource, ResourceIdentifier::Id(1));
         assert_eq!(r.lang_id, 1033);
         assert_eq!(r.data.as_slice(), MINIMAL_RESOURCE_DATA);
+    }
+
+    #[test]
+    fn it_finds_temp_entries_in_a_synthetic_ttbl_blob() {
+        // Minimal TTBL with a single TEMP entry (no BinXML payload).
+        //
+        // TTBL header: sig + size + count
+        // TEMP header: sig + size + id1 + id2 + offset + unk + guid
+        let guid_bytes: [u8; 16] = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00,
+        ];
+        let temp_size: u32 = 40;
+        let ttbl_size: u32 = 12 + temp_size;
+
+        let mut blob = Vec::with_capacity(ttbl_size as usize);
+        blob.extend_from_slice(b"TTBL");
+        blob.extend_from_slice(&ttbl_size.to_le_bytes());
+        blob.extend_from_slice(&1u32.to_le_bytes()); // count
+
+        blob.extend_from_slice(b"TEMP");
+        blob.extend_from_slice(&temp_size.to_le_bytes());
+        blob.extend_from_slice(&7u32.to_le_bytes()); // id_1
+        blob.extend_from_slice(&7u32.to_le_bytes()); // id_2
+        blob.extend_from_slice(&0x1234u32.to_le_bytes()); // offset
+        blob.extend_from_slice(&0x9u32.to_le_bytes()); // unk
+        blob.extend_from_slice(&guid_bytes);
+
+        let temps = extract_temp_templates_from_wevt_blob(&blob);
+        assert_eq!(temps.len(), 1);
+        let t = &temps[0];
+        assert_eq!(t.ttbl_offset, 0);
+        assert_eq!(t.temp_offset, 12);
+        assert_eq!(t.temp_size, temp_size);
+        assert_eq!(t.header.id_1, 7);
+        assert_eq!(t.header.id_2, 7);
+        assert_eq!(t.header.offset, 0x1234);
+        assert_eq!(t.header.unk, 0x9);
     }
 
     #[test]
@@ -123,6 +163,13 @@ mod wevt_templates {
         assert!(
             r.data.windows(4).any(|w| w == b"TEMP"),
             "expected embedded TEMP marker"
+        );
+
+        let temps = extract_temp_templates_from_wevt_blob(&r.data);
+        assert_eq!(
+            temps.len(),
+            46,
+            "expected stable template count for Willi sample"
         );
     }
 }

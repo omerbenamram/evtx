@@ -588,7 +588,13 @@ fn main() -> Result<()> {
                         .long("overwrite")
                         .action(ArgAction::SetTrue)
                         .help("Overwrite output files if they already exist."),
-                ),
+                )
+                .arg(
+                    Arg::new("split-ttbl")
+                        .long("split-ttbl")
+                        .action(ArgAction::SetTrue)
+                        .help("Also split extracted WEVT_TEMPLATE blobs into TTBL/TEMP entries and write each TEMP to <output-dir>/temp/."),
+                )
         )
         .get_matches();
 
@@ -623,6 +629,23 @@ struct ExtractWevtTemplatesOutputLine {
     size: usize,
 }
 
+#[cfg(feature = "wevt_templates")]
+#[derive(Debug, Serialize)]
+struct ExtractWevtTempOutputLine {
+    source: String,
+    resource: ResourceIdJson,
+    lang_id: u32,
+    ttbl_offset: u32,
+    temp_offset: u32,
+    temp_size: u32,
+    id_1: u32,
+    id_2: u32,
+    offset: u32,
+    unk: u32,
+    guid: String,
+    output_path: String,
+}
+
 fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
     #[cfg(feature = "wevt_templates")]
     {
@@ -642,7 +665,9 @@ fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
 
 #[cfg(feature = "wevt_templates")]
 fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
-    use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
+    use evtx::wevt_templates::{
+        ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
+    };
     use std::collections::HashSet;
 
     let output_dir = PathBuf::from(
@@ -658,6 +683,7 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
     })?;
 
     let overwrite = matches.get_flag("overwrite");
+    let split_ttbl = matches.get_flag("split-ttbl");
     let recursive = matches.get_flag("recursive");
 
     let allowed_exts: HashSet<String> = matches
@@ -777,6 +803,79 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
             };
 
             println!("{}", serde_json::to_string(&line)?);
+
+            if split_ttbl {
+                let templates_dir = output_dir.join("temp");
+                fs::create_dir_all(&templates_dir).with_context(|| {
+                    format!(
+                        "failed to create TEMP output dir `{}`",
+                        templates_dir.to_string_lossy()
+                    )
+                })?;
+
+                let temps = extract_temp_templates_from_wevt_blob(&res.data);
+                for (idx, t) in temps.iter().enumerate() {
+                    let temp_off = t.temp_offset as usize;
+                    let temp_end = temp_off.saturating_add(t.temp_size as usize);
+                    if temp_end > res.data.len() {
+                        error_count += 1;
+                        eprintln!(
+                            "TEMP slice out of bounds for `{}` (temp_offset={}, temp_size={})",
+                            source_str, t.temp_offset, t.temp_size
+                        );
+                        continue;
+                    }
+
+                    let guid_display = format!("{}", t.header.guid);
+                    let guid_file = sanitize_component(&guid_display);
+                    let out_name = format!(
+                        "{base}.{hash:08x}.wevt_template.{res_id}.lang_{lang}.temp_{idx:04}.{guid}.bin",
+                        base = path
+                            .file_name()
+                            .map(|s| s.to_string_lossy())
+                            .unwrap_or_else(|| "unknown".into()),
+                        hash = source_hash,
+                        res_id = resource_id_str,
+                        lang = res.lang_id,
+                        idx = idx,
+                        guid = guid_file,
+                    );
+
+                    let temp_path = templates_dir.join(out_name);
+                    if temp_path.exists() && !overwrite {
+                        continue;
+                    }
+
+                    if let Err(e) = fs::write(&temp_path, &res.data[temp_off..temp_end]) {
+                        error_count += 1;
+                        eprintln!(
+                            "failed to write `{}`: {e}",
+                            temp_path.to_string_lossy()
+                        );
+                        continue;
+                    }
+
+                    let temp_line = ExtractWevtTempOutputLine {
+                        source: source_str.clone(),
+                        resource: match &res.resource {
+                            ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
+                            ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+                        },
+                        lang_id: res.lang_id,
+                        ttbl_offset: t.ttbl_offset,
+                        temp_offset: t.temp_offset,
+                        temp_size: t.temp_size,
+                        id_1: t.header.id_1,
+                        id_2: t.header.id_2,
+                        offset: t.header.offset,
+                        unk: t.header.unk,
+                        guid: guid_display,
+                        output_path: temp_path.to_string_lossy().to_string(),
+                    };
+
+                    println!("{}", serde_json::to_string(&temp_line)?);
+                }
+            }
         }
     }
 

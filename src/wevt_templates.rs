@@ -4,6 +4,7 @@
 //! (see `omerbenamram/evtx` issue #103).
 
 use thiserror::Error;
+use winstructs::guid::Guid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceIdentifier {
@@ -19,6 +20,31 @@ pub struct WevtTemplateResource {
     pub lang_id: u32,
     /// Raw resource bytes (typically starts with `CRIM|K\0\0`).
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WevtTempTemplateHeader {
+    /// First u32 after `TEMP.size` (often equals `id_2`).
+    pub id_1: u32,
+    /// Second u32 after `TEMP.size` (often equals `id_1`).
+    pub id_2: u32,
+    /// Third u32 after `TEMP.size` (meaning currently unknown).
+    pub offset: u32,
+    /// Fourth u32 after `TEMP.size` (meaning currently unknown).
+    pub unk: u32,
+    /// Template GUID.
+    pub guid: Guid,
+}
+
+#[derive(Debug, Clone)]
+pub struct WevtTempTemplateRef {
+    /// Offset of the containing `TTBL` within the resource blob.
+    pub ttbl_offset: u32,
+    /// Offset of this `TEMP` structure within the resource blob.
+    pub temp_offset: u32,
+    /// Total size of this `TEMP` structure, in bytes.
+    pub temp_size: u32,
+    pub header: WevtTempTemplateHeader,
 }
 
 #[derive(Debug, Error)]
@@ -473,6 +499,116 @@ pub fn extract_wevt_template_resources(
     }
 
     Ok(out)
+}
+
+/// Best-effort parser for `TTBL`/`TEMP` structures within a `WEVT_TEMPLATE` resource blob.
+///
+/// Many real-world blobs contain multiple `TTBL` sections. This function finds all parseable
+/// `TTBL` sections and returns references to all `TEMP` entries contained within them.
+///
+/// This does **not** parse the BinXML payload yet; it focuses on structural discovery and
+/// stable identifiers (notably `TEMP` GUID and header fields).
+pub fn extract_temp_templates_from_wevt_blob(blob: &[u8]) -> Vec<WevtTempTemplateRef> {
+    let mut out = Vec::new();
+
+    let mut search_from = 0usize;
+    while let Some(ttbl_off) = find_subslice(blob, b"TTBL", search_from) {
+        match parse_ttbl_at(blob, ttbl_off) {
+            Some((ttbl_size, mut templates)) => {
+                out.append(&mut templates);
+                // Skip past the TTBL section we just parsed to avoid quadratic behavior.
+                search_from = ttbl_off.saturating_add(ttbl_size);
+            }
+            None => {
+                // Not a valid TTBL, keep searching.
+                search_from = ttbl_off.saturating_add(4);
+            }
+        }
+    }
+
+    out
+}
+
+fn parse_ttbl_at(blob: &[u8], ttbl_off: usize) -> Option<(usize, Vec<WevtTempTemplateRef>)> {
+    // TTBL header: signature (4) + size (4) + count (4)
+    if ttbl_off + 12 > blob.len() {
+        return None;
+    }
+    if &blob[ttbl_off..ttbl_off + 4] != b"TTBL" {
+        return None;
+    }
+
+    let ttbl_size = read_u32(blob, ttbl_off + 4)? as usize;
+    let count = read_u32(blob, ttbl_off + 8)? as usize;
+
+    if ttbl_size < 12 {
+        return None;
+    }
+    let ttbl_end = ttbl_off.checked_add(ttbl_size)?;
+    if ttbl_end > blob.len() {
+        return None;
+    }
+
+    let mut templates = Vec::with_capacity(count);
+
+    let mut cur = ttbl_off + 12;
+    for _ in 0..count {
+        if cur + 40 > ttbl_end {
+            return None;
+        }
+        if &blob[cur..cur + 4] != b"TEMP" {
+            return None;
+        }
+
+        let temp_size = read_u32(blob, cur + 4)? as usize;
+        if temp_size < 40 {
+            return None;
+        }
+        let temp_end = cur.checked_add(temp_size)?;
+        if temp_end > ttbl_end {
+            return None;
+        }
+
+        let id_1 = read_u32(blob, cur + 8)?;
+        let id_2 = read_u32(blob, cur + 12)?;
+        let offset = read_u32(blob, cur + 16)?;
+        let unk = read_u32(blob, cur + 20)?;
+        let guid = read_guid(blob, cur + 24)?;
+
+        templates.push(WevtTempTemplateRef {
+            ttbl_offset: ttbl_off as u32,
+            temp_offset: cur as u32,
+            temp_size: temp_size as u32,
+            header: WevtTempTemplateHeader {
+                id_1,
+                id_2,
+                offset,
+                unk,
+                guid,
+            },
+        });
+
+        cur = temp_end;
+    }
+
+    // Allow TTBL to contain trailing bytes/padding, but it must at least cover all temps.
+    Some((ttbl_size, templates))
+}
+
+fn read_guid(buf: &[u8], offset: usize) -> Option<Guid> {
+    let bytes = buf.get(offset..offset + 16)?;
+    let mut cursor = std::io::Cursor::new(bytes);
+    Guid::from_reader(&mut cursor).ok()
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    haystack
+        .get(from..)
+        .and_then(|s| s.windows(needle.len()).position(|w| w == needle))
+        .map(|pos| from + pos)
 }
 
 fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {
