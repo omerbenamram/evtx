@@ -1,0 +1,11 @@
+{
+  "setup-worktree-unix": [
+    "bash .cursor/setup-worktree-unix.sh"
+  ],
+  "setup-worktree-windows": [
+    "powershell -NoProfile -ExecutionPolicy Bypass -File .cursor/setup-worktree-windows.ps1"
+  ],
+  "setup-worktree": [
+    "echo 'Worktree setup: define setup-worktree-unix and/or setup-worktree-windows for best results.'"
+  ]
+}
