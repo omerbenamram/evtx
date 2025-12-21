@@ -649,7 +649,7 @@ struct ExtractWevtTempOutputLine {
 fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
     #[cfg(feature = "wevt_templates")]
     {
-        return run_extract_wevt_templates_impl(matches);
+        run_extract_wevt_templates_impl(matches)
     }
 
     #[cfg(not(feature = "wevt_templates"))]

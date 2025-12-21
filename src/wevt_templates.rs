@@ -331,7 +331,7 @@ struct ResourceNodeEntry {
 impl ResourceNodeEntry {
     fn read(rsrc: &ResourceSection<'_>, offset: usize) -> Result<Self, WevtTemplateExtractError> {
         Ok(ResourceNodeEntry {
-            id: rsrc.read_u32(offset + 0)?,
+            id: rsrc.read_u32(offset)?,
             offset: rsrc.read_u32(offset + 4)?,
         })
     }
@@ -408,11 +408,10 @@ impl ResourceNode {
             if !entry.has_name() {
                 continue;
             }
-            if let ResourceIdentifier::Name(n) = entry.identifier(rsrc)? {
-                if n == name {
-                    return Ok(Some(entry.child(rsrc)?));
-                }
-            }
+            match entry.identifier(rsrc)? {
+                ResourceIdentifier::Name(n) if n == name => return Ok(Some(entry.child(rsrc)?)),
+                _ => {}
+            };
         }
         Ok(None)
     }
@@ -443,7 +442,7 @@ struct ResourceDataDescriptor {
 impl ResourceDataDescriptor {
     fn read(rsrc: &ResourceSection<'_>, offset: usize) -> Result<Self, WevtTemplateExtractError> {
         Ok(ResourceDataDescriptor {
-            rva: rsrc.read_u32(offset + 0)?,
+            rva: rsrc.read_u32(offset)?,
             size: rsrc.read_u32(offset + 4)?,
         })
     }

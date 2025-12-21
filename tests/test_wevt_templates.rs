@@ -15,7 +15,8 @@ mod wevt_templates {
 
     #[test]
     fn it_extracts_wevt_template_from_minimal_synthetic_pe() {
-        let resources = extract_wevt_template_resources(MINIMAL_PE).expect("extract should succeed");
+        let resources =
+            extract_wevt_template_resources(MINIMAL_PE).expect("extract should succeed");
         assert_eq!(resources.len(), 1);
 
         let r = &resources[0];
