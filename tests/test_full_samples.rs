@@ -128,19 +128,19 @@ fn test_dirty_sample_with_a_chunk_past_zeros() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic() {
-    test_full_sample(sample_with_a_bad_chunk_magic(), 270, 5)
+    test_full_sample(sample_with_a_bad_chunk_magic(), 270, 2)
 }
 
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_token() {
     // Contains an unparsable record
-    test_full_sample(sample_binxml_with_incomplete_sid(), 6, 1)
+    test_full_sample(sample_binxml_with_incomplete_sid(), 6, 0)
 }
 
 #[test]
 fn test_dirty_sample_binxml_with_incomplete_template() {
     // Contains an unparsable record
-    test_full_sample(sample_binxml_with_incomplete_template(), 17, 1)
+    test_full_sample(sample_binxml_with_incomplete_template(), 17, 0)
 }
 
 #[test]

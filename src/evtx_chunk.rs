@@ -239,20 +239,51 @@ impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.exhausted
-            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
-        {
+        // Be resilient to corrupted chunk headers: `free_space_offset` is user-controlled data
+        // coming from the EVTX stream, and may point past the end of the chunk.
+        let effective_free_space_offset = u64::from(self.chunk.header.free_space_offset)
+            .min(self.chunk.data.len().try_into().unwrap_or(u64::MAX));
+
+        if self.exhausted || self.offset_from_chunk_start >= effective_free_space_offset {
             return None;
         }
 
-        let mut cursor = Cursor::new(&self.chunk.data[self.offset_from_chunk_start as usize..]);
+        let start = self.offset_from_chunk_start as usize;
+        if start >= self.chunk.data.len() {
+            // Avoid panicking on an out-of-bounds slice if the header is corrupted.
+            self.exhausted = true;
+            return None;
+        }
+
+        let remaining = &self.chunk.data[start..];
+        if remaining.len() < 4 {
+            // Not enough bytes for the record header magic, treat as end-of-chunk.
+            self.exhausted = true;
+            return None;
+        }
+
+        let mut cursor = Cursor::new(remaining);
 
         let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
             Ok(record_header) => record_header,
+            Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
+                // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
+                // In such cases we may attempt to parse the chunk slack area, which is typically
+                // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
+                // emitting an error (see issue #197).
+                if magic == [0, 0, 0, 0] {
+                    self.exhausted = true;
+                    return None;
+                }
+
+                self.exhausted = true;
+                return Some(Err(EvtxError::DeserializationError(
+                    DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
+                )));
+            }
             Err(err) => {
                 // We currently do not try to recover after an invalid record.
                 self.exhausted = true;
-
                 return Some(Err(EvtxError::DeserializationError(err)));
             }
         };
@@ -448,5 +479,42 @@ mod tests {
 
         let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
         assert!(chunk.validate_checksum());
+    }
+
+    #[test]
+    fn test_iter_ends_cleanly_when_chunk_header_offsets_are_too_large() {
+        ensure_env_logger_initialized();
+
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let chunk_data =
+            evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
+
+        // Parse once to get a baseline count.
+        let mut baseline = EvtxChunkData::new(chunk_data.clone(), false).unwrap();
+        let settings = Arc::new(ParserSettings::new());
+        let baseline_count = {
+            let mut chunk = baseline.parse(Arc::clone(&settings)).unwrap();
+            chunk
+                .iter()
+                .try_fold(0usize, |acc, record| record.map(|_| acc + 1))
+                .unwrap()
+        };
+
+        // Now simulate a broken chunk header like in issue #197: `last_event_record_id` and
+        // `free_space_offset` are larger than the actual number of records/data.
+        let mut corrupted = EvtxChunkData::new(chunk_data, false).unwrap();
+        corrupted.header.last_event_record_id =
+            corrupted.header.last_event_record_id.saturating_add(100);
+        corrupted.header.free_space_offset = EVTX_CHUNK_SIZE as u32;
+
+        let corrupted_count = {
+            let mut chunk = corrupted.parse(settings).unwrap();
+            chunk
+                .iter()
+                .try_fold(0usize, |acc, record| record.map(|_| acc + 1))
+                .unwrap()
+        };
+
+        assert_eq!(corrupted_count, baseline_count);
     }
 }
