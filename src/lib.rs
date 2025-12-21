@@ -13,7 +13,7 @@ extern crate bitflags;
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
 pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
-pub use evtx_record::{EvtxRecord, EvtxRecordHeader, SerializedEvtxRecord};
+pub use evtx_record::{EvtxRecord, EvtxRecordHeader, RecordId, SerializedEvtxRecord};
 pub use json_output::JsonOutput;
 pub use json_stream_output::JsonStreamOutput;
 pub use xml_output::{BinXmlOutput, XmlOutput};
