@@ -10,6 +10,8 @@ use encoding::types::Encoding;
 use evtx::err::Result as EvtxResult;
 use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
+#[cfg(feature = "wevt_templates")]
+use serde::Serialize;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::ops::RangeInclusive;
@@ -427,8 +429,8 @@ fn main() -> Result<()> {
         .about("Utility to parse EVTX files")
         .arg(
             Arg::new("INPUT")
-                .required(true)
-                .help("Input EVTX file path, or '-' to read from stdin."),
+                .required(false)
+                .help("Input EVTX file path, or '-' to read from stdin. Required unless using a subcommand."),
         )
         .arg(
             Arg::new("num-threads")
@@ -532,9 +534,343 @@ fn main() -> Result<()> {
                 -vv  - debug
                 -vvv - trace
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
-        ).get_matches();
+        )
+        .subcommand(
+            Command::new("extract-wevt-templates")
+                .about("Extract WEVT_TEMPLATE resources from PE files (EXE/DLL)")
+                .long_about(indoc!(r#"
+                    Extract WEVT_TEMPLATE resources from PE files (EXE/DLL).
+
+                    This is intended to support building an offline cache of EVTX templates
+                    (see issue #103), without committing to any database format yet.
+
+                    NOTE: this subcommand is gated behind the `wevt_templates` Cargo feature.
+                "#))
+                .arg(
+                    Arg::new("input")
+                        .long("input")
+                        .short('i')
+                        .action(ArgAction::Append)
+                        .value_name("PATH")
+                        .help("Input PE path (file or directory). Can be passed multiple times."),
+                )
+                .arg(
+                    Arg::new("glob")
+                        .long("glob")
+                        .action(ArgAction::Append)
+                        .value_name("PATTERN")
+                        .help("Glob pattern to expand into input paths (cross-platform). Can be passed multiple times."),
+                )
+                .arg(
+                    Arg::new("recursive")
+                        .long("recursive")
+                        .short('r')
+                        .action(ArgAction::SetTrue)
+                        .help("When an input path is a directory (or a glob matches a directory), recurse into it."),
+                )
+                .arg(
+                    Arg::new("extensions")
+                        .long("extensions")
+                        .value_name("EXTS")
+                        .default_value("exe,dll,sys")
+                        .help("Comma-separated list of allowed file extensions when walking directories (default: exe,dll,sys)."),
+                )
+                .arg(
+                    Arg::new("output-dir")
+                        .long("output-dir")
+                        .short('o')
+                        .required(true)
+                        .value_name("DIR")
+                        .help("Directory to write extracted resources into."),
+                )
+                .arg(
+                    Arg::new("overwrite")
+                        .long("overwrite")
+                        .action(ArgAction::SetTrue)
+                        .help("Overwrite output files if they already exist."),
+                ),
+        )
+        .get_matches();
+
+    if let Some(("extract-wevt-templates", sub_matches)) = matches.subcommand() {
+        return run_extract_wevt_templates(sub_matches);
+    }
+
+    if matches.get_one::<String>("INPUT").is_none() {
+        bail!("Missing INPUT. Provide an EVTX file path, or use a subcommand (try `--help`).");
+    }
 
     EvtxDump::from_cli_matches(&matches)?.run()?;
 
     Ok(())
+}
+
+#[cfg(feature = "wevt_templates")]
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum ResourceIdJson {
+    Id(u32),
+    Name(String),
+}
+
+#[cfg(feature = "wevt_templates")]
+#[derive(Debug, Serialize)]
+struct ExtractWevtTemplatesOutputLine {
+    source: String,
+    resource: ResourceIdJson,
+    lang_id: u32,
+    output_path: String,
+    size: usize,
+}
+
+fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
+    #[cfg(feature = "wevt_templates")]
+    {
+        return run_extract_wevt_templates_impl(matches);
+    }
+
+    #[cfg(not(feature = "wevt_templates"))]
+    {
+        let _ = matches;
+        bail!(
+            "This subcommand requires building with Cargo feature `wevt_templates`.\n\
+             Example:\n\
+               cargo run --features wevt_templates --bin evtx_dump -- extract-wevt-templates ..."
+        );
+    }
+}
+
+#[cfg(feature = "wevt_templates")]
+fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
+    use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
+    use std::collections::HashSet;
+
+    let output_dir = PathBuf::from(
+        matches
+            .get_one::<String>("output-dir")
+            .expect("required argument"),
+    );
+    fs::create_dir_all(&output_dir).with_context(|| {
+        format!(
+            "failed to create output dir `{}`",
+            output_dir.to_string_lossy()
+        )
+    })?;
+
+    let overwrite = matches.get_flag("overwrite");
+    let recursive = matches.get_flag("recursive");
+
+    let allowed_exts: HashSet<String> = matches
+        .get_one::<String>("extensions")
+        .expect("has default")
+        .split(',')
+        .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut inputs: Vec<PathBuf> = vec![];
+
+    if let Some(paths) = matches.get_many::<String>("input") {
+        inputs.extend(paths.map(PathBuf::from));
+    }
+
+    if let Some(patterns) = matches.get_many::<String>("glob") {
+        for pat in patterns {
+            for entry in glob::glob(pat).with_context(|| format!("invalid glob pattern `{pat}`"))? {
+                match entry {
+                    Ok(p) => inputs.push(p),
+                    Err(e) => eprintln!("glob entry error: {e}"),
+                }
+            }
+        }
+    }
+
+    if inputs.is_empty() {
+        bail!("No inputs provided. Use --input and/or --glob.");
+    }
+
+    // Expand directories (optionally recursively) and filter by extension.
+    let mut files = vec![];
+    let mut seen = HashSet::<PathBuf>::new();
+
+    for input in inputs {
+        collect_input_paths(&input, recursive, &allowed_exts, &mut seen, &mut files)?;
+    }
+
+    // Keep output stable-ish.
+    files.sort();
+
+    let mut error_count = 0usize;
+    let mut extracted_count = 0usize;
+
+    for path in files {
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                error_count += 1;
+                eprintln!("failed to read `{}`: {e}", path.to_string_lossy());
+                continue;
+            }
+        };
+
+        let resources = match extract_wevt_template_resources(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                error_count += 1;
+                eprintln!(
+                    "failed to extract WEVT_TEMPLATE from `{}`: {e}",
+                    path.to_string_lossy()
+                );
+                continue;
+            }
+        };
+
+        if resources.is_empty() {
+            continue;
+        }
+
+        let source_str = path.to_string_lossy().to_string();
+        let source_hash = evtx::checksum_ieee(source_str.as_bytes());
+
+        for res in resources {
+            let resource_id_str = match &res.resource {
+                ResourceIdentifier::Id(id) => format!("id_{id}"),
+                ResourceIdentifier::Name(name) => format!("name_{}", sanitize_component(name)),
+            };
+
+            let out_name = format!(
+                "{base}.{hash:08x}.wevt_template.{res_id}.lang_{lang}.bin",
+                base = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy())
+                    .unwrap_or_else(|| "unknown".into()),
+                hash = source_hash,
+                res_id = resource_id_str,
+                lang = res.lang_id
+            );
+
+            let out_path = output_dir.join(out_name);
+
+            if out_path.exists() && !overwrite {
+                continue;
+            }
+
+            if let Err(e) = fs::write(&out_path, &res.data) {
+                error_count += 1;
+                eprintln!("failed to write `{}`: {e}", out_path.to_string_lossy());
+                continue;
+            }
+
+            extracted_count += 1;
+
+            let resource_json = match &res.resource {
+                ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
+                ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+            };
+
+            let line = ExtractWevtTemplatesOutputLine {
+                source: source_str.clone(),
+                resource: resource_json,
+                lang_id: res.lang_id,
+                output_path: out_path.to_string_lossy().to_string(),
+                size: res.data.len(),
+            };
+
+            println!("{}", serde_json::to_string(&line)?);
+        }
+    }
+
+    if error_count > 0 {
+        bail!(
+            "extract-wevt-templates completed with {error_count} error(s) (extracted {extracted_count} resource blob(s))"
+        );
+    }
+
+    eprintln!("extracted {extracted_count} resource blob(s)");
+    Ok(())
+}
+
+#[cfg(feature = "wevt_templates")]
+fn collect_input_paths(
+    input: &Path,
+    recursive: bool,
+    allowed_exts: &std::collections::HashSet<String>,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    out_files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    use std::collections::VecDeque;
+
+    if !input.exists() {
+        return Ok(());
+    }
+
+    if input.is_file() {
+        // For explicit files (or glob matches that are files), do not apply extension filtering.
+        // Users often point to unusual extensions (e.g. `services.exe` renamed to `.gif`).
+        let p = input.to_path_buf();
+        if seen.insert(p.clone()) {
+            out_files.push(p);
+        }
+        return Ok(());
+    }
+
+    if input.is_dir() {
+        if !recursive {
+            // Directory input without recursion is ambiguous; ignore silently.
+            return Ok(());
+        }
+
+        let mut queue = VecDeque::new();
+        queue.push_back(input.to_path_buf());
+
+        while let Some(dir) = queue.pop_front() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    queue.push_back(p);
+                } else if p.is_file()
+                    && should_keep_file(&p, allowed_exts)
+                    && seen.insert(p.clone())
+                {
+                    out_files.push(p);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "wevt_templates")]
+fn should_keep_file(path: &Path, allowed_exts: &std::collections::HashSet<String>) -> bool {
+    let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    allowed_exts.contains(&ext.to_ascii_lowercase())
+}
+
+#[cfg(feature = "wevt_templates")]
+fn sanitize_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_underscore = false;
+    for ch in s.chars() {
+        let keep = ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_';
+        if keep {
+            out.push(ch);
+            last_underscore = false;
+        } else if !last_underscore {
+            out.push('_');
+            last_underscore = true;
+        }
+    }
+    if out.is_empty() {
+        "unnamed".to_string()
+    } else {
+        out
+    }
 }

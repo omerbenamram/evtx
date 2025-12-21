@@ -23,6 +23,8 @@ thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
 hashbrown = { version = "^0.15", features = ["inline-more"] }
+# Optional: used by `evtx_dump extract-wevt-templates` for cross-platform glob expansion.
+glob = { version = "0.3", optional = true }
 # Optional for multithreading.
 rayon = { version = "1", optional = true }
 
@@ -51,6 +53,8 @@ default = ["multithreading", "evtx_dump"]
 fast-alloc = ["tikv-jemallocator", "rpmalloc"]
 evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "tempfile"]
 multithreading = ["rayon"]
+# Enable WEVT_TEMPLATE extraction helpers (used by `evtx_dump extract-wevt-templates`).
+wevt_templates = ["glob"]
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }

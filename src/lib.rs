@@ -22,6 +22,10 @@ pub mod binxml;
 pub mod err;
 pub mod model;
 
+// Optional: PE resource parsing to extract WEVT_TEMPLATE blobs (see issue #103).
+#[cfg(feature = "wevt_templates")]
+pub mod wevt_templates;
+
 mod evtx_chunk;
 mod evtx_file_header;
 mod evtx_parser;

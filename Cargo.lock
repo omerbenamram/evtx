@@ -557,6 +557,7 @@ dependencies = [
  "dialoguer",
  "encoding",
  "env_logger",
+ "glob",
  "hashbrown",
  "indoc",
  "insta",
