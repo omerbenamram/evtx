@@ -13,12 +13,18 @@ mod tests {
     use rexpect::spawn;
     use std::fs::File;
     use std::io::{Read, Write};
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    // These tests rely on pty semantics and can behave flakily when executed concurrently.
+    // Serialize them to ensure stable behavior under the default Rust test runner.
+    static INTERACTIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     // It should behave the same on windows, but interactive testing relies on unix pty internals.
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_it_confirms_before_overwriting_a_file() {
+        let _guard = INTERACTIVE_TEST_LOCK.lock().unwrap();
         let d = tempdir().unwrap();
         let f = d.as_ref().join("test.out");
 
@@ -54,6 +60,7 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_it_confirms_before_overwriting_a_file_and_quits() {
+        let _guard = INTERACTIVE_TEST_LOCK.lock().unwrap();
         let d = tempdir().unwrap();
         let f = d.as_ref().join("test.out");
 
