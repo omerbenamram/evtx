@@ -9,6 +9,7 @@ use crate::binxml::tokens::{
     read_open_start_element, read_processing_instruction_data, read_processing_instruction_target,
 };
 use crate::binxml::value_variant::BinXmlValue;
+use crate::binxml::name::BinXmlNameEncoding;
 
 use crate::{
     binxml::tokens::{
@@ -32,6 +33,7 @@ pub struct IterTokens<'a> {
     eof: bool,
     is_inside_substitution: bool,
     ansi_codec: EncodingRef,
+    name_encoding: BinXmlNameEncoding,
 }
 
 pub struct BinXmlDeserializer<'a> {
@@ -41,6 +43,7 @@ pub struct BinXmlDeserializer<'a> {
     // if called from substitution token with value type: Binary XML (0x21)
     is_inside_substitution: bool,
     ansi_codec: EncodingRef,
+    name_encoding: BinXmlNameEncoding,
 }
 
 impl<'a> BinXmlDeserializer<'a> {
@@ -57,6 +60,25 @@ impl<'a> BinXmlDeserializer<'a> {
             chunk,
             is_inside_substitution,
             ansi_codec,
+            name_encoding: BinXmlNameEncoding::Offset,
+        }
+    }
+
+    pub fn init_with_name_encoding(
+        data: &'a [u8],
+        start_offset: u64,
+        chunk: Option<&'a EvtxChunk<'a>>,
+        is_inside_substitution: bool,
+        ansi_codec: EncodingRef,
+        name_encoding: BinXmlNameEncoding,
+    ) -> Self {
+        BinXmlDeserializer {
+            data,
+            offset: start_offset,
+            chunk,
+            is_inside_substitution,
+            ansi_codec,
+            name_encoding,
         }
     }
 
@@ -109,11 +131,16 @@ impl<'a> BinXmlDeserializer<'a> {
             eof: false,
             is_inside_substitution: self.is_inside_substitution,
             ansi_codec: self.ansi_codec,
+            name_encoding: self.name_encoding,
         })
     }
 }
 
 impl<'a> IterTokens<'a> {
+    pub fn position(&self) -> u64 {
+        self.cursor.position()
+    }
+
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
@@ -140,6 +167,7 @@ impl<'a> IterTokens<'a> {
                         self.chunk,
                         token_information.has_attributes,
                         self.is_inside_substitution,
+                        self.name_encoding,
                     )?,
                 ))
             }
@@ -150,7 +178,10 @@ impl<'a> IterTokens<'a> {
                 BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
-                Ok(BinXMLDeserializedTokens::Attribute(read_attribute(cursor)?))
+                Ok(BinXMLDeserializedTokens::Attribute(read_attribute(
+                    cursor,
+                    self.name_encoding,
+                )?))
             }
             BinXMLRawToken::CDataSection => Err(DeserializationError::UnimplementedToken {
                 name: "CDataSection",
@@ -161,10 +192,10 @@ impl<'a> IterTokens<'a> {
                 offset: cursor.position(),
             }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
-                read_entity_ref(cursor)?,
+                read_entity_ref(cursor, self.name_encoding)?,
             )),
             BinXMLRawToken::ProcessingInstructionTarget => Ok(BinXMLDeserializedTokens::PITarget(
-                read_processing_instruction_target(cursor)?,
+                read_processing_instruction_target(cursor, self.name_encoding)?,
             )),
             BinXMLRawToken::ProcessingInstructionData => Ok(BinXMLDeserializedTokens::PIData(
                 read_processing_instruction_data(cursor)?,
@@ -249,7 +280,9 @@ impl<'a> Iterator for IterTokens<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::BinXmlDeserializer;
     use crate::evtx_chunk::EvtxChunkData;
+    use crate::binxml::name::{BinXmlNameEncoding, read_wevt_inline_name_at};
     use crate::{ensure_env_logger_initialized, ParserSettings};
     use std::sync::Arc;
 
@@ -313,5 +346,59 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_reads_wevt_inline_names() {
+        // Minimal fragment: <EventData/>
+        let mut buf = vec![];
+        // Fragment header (token 0x0f) + version 1.1 + flags 0
+        buf.extend_from_slice(&[0x0f, 0x01, 0x01, 0x00]);
+        // OpenStartElement (0x01)
+        buf.push(0x01);
+        // dependency identifier
+        buf.extend_from_slice(&0xFFFFu16.to_le_bytes());
+        // data size
+        buf.extend_from_slice(&0x10u32.to_le_bytes());
+        // inline name: hash + char_count + utf16 + NUL
+        buf.extend_from_slice(&0x1234u16.to_le_bytes());
+        let name = "EventData";
+        buf.extend_from_slice(&(name.encode_utf16().count() as u16).to_le_bytes());
+        for c in name.encode_utf16() {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // CloseEmptyElement + EndOfStream
+        buf.extend_from_slice(&[0x03, 0x00]);
+
+        let de = BinXmlDeserializer::init_with_name_encoding(
+            &buf,
+            0,
+            None,
+            false,
+            encoding::all::WINDOWS_1252,
+            BinXmlNameEncoding::WevtInline,
+        );
+
+        let mut iterator = de.iter_tokens(None).expect("iter_tokens");
+        let mut tokens = vec![];
+        while let Some(t) = iterator.next() {
+            tokens.push(t.expect("token"));
+        }
+
+        assert!(
+            matches!(tokens.first(), Some(crate::model::deserialized::BinXMLDeserializedTokens::FragmentHeader(_))),
+            "expected FragmentHeader first, got {tokens:?}"
+        );
+
+        let open = tokens.iter().find_map(|t| match t {
+            crate::model::deserialized::BinXMLDeserializedTokens::OpenStartElement(e) => Some(e),
+            _ => None,
+        });
+        let open = open.expect("expected OpenStartElement token");
+
+        let parsed_name = read_wevt_inline_name_at(&buf, open.name.offset)
+            .expect("read_wevt_inline_name_at");
+        assert_eq!(parsed_name.as_str(), name);
     }
 }

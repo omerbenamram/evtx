@@ -18,6 +18,15 @@ pub struct BinXmlName {
     str: String,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BinXmlNameEncoding {
+    /// Standard EVTX encoding where names are referenced by offsets into the chunk string table.
+    Offset,
+    /// WEVT_TEMPLATE / CRIM 5.x encoding where names are stored inline as:
+    /// `u16 name_hash` + `u16 char_count` + `UTF-16LE chars` + `u16 NUL`.
+    WevtInline,
+}
+
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Hash)]
 pub struct BinXmlNameRef {
     pub offset: ChunkOffset,
@@ -80,6 +89,57 @@ impl BinXmlNameRef {
             offset: name_offset,
         })
     }
+
+    pub fn from_stream_with_encoding(
+        cursor: &mut Cursor<&[u8]>,
+        encoding: BinXmlNameEncoding,
+    ) -> Result<Self> {
+        match encoding {
+            BinXmlNameEncoding::Offset => Self::from_stream(cursor),
+            BinXmlNameEncoding::WevtInline => Self::from_stream_wevt_inline(cursor),
+        }
+    }
+
+    fn from_stream_wevt_inline(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+        let name_offset = cursor.position() as ChunkOffset;
+        // hash
+        let _ = try_read!(cursor, u16, "wevt_inline_name_hash")?;
+        // character count
+        let char_count = try_read!(cursor, u16, "wevt_inline_name_character_count")?;
+
+        let string_bytes = u64::from(char_count) * 2;
+        let nul_bytes = 2_u64;
+        let start_of_string = cursor.position();
+
+        try_seek!(
+            cursor,
+            start_of_string + string_bytes + nul_bytes,
+            "Skip WEVT inline name"
+        )?;
+
+        Ok(BinXmlNameRef { offset: name_offset })
+    }
+}
+
+/// Resolve a WEVT inline name at the given offset.
+///
+/// The offset should point to the start of the inline name structure, i.e. the `name_hash` field.
+#[cfg(any(test, feature = "wevt_templates"))]
+pub(crate) fn read_wevt_inline_name_at(data: &[u8], offset: ChunkOffset) -> Result<BinXmlName> {
+    let mut cursor = Cursor::new(data);
+    let cursor_ref = &mut cursor;
+    try_seek!(cursor_ref, offset, "Seek WEVT inline name")?;
+
+    let _ = try_read!(cursor_ref, u16, "wevt_inline_name_hash")?;
+    let name =
+        try_read!(
+            cursor_ref,
+            len_prefixed_utf_16_str_nul_terminated,
+            "wevt_inline_name"
+        )?
+            .unwrap_or_default();
+
+    Ok(BinXmlName { str: name })
 }
 
 impl BinXmlName {

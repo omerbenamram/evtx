@@ -595,6 +595,12 @@ fn main() -> Result<()> {
                         .action(ArgAction::SetTrue)
                         .help("Also split extracted WEVT_TEMPLATE blobs into TTBL/TEMP entries and write each TEMP to <output-dir>/temp/."),
                 )
+                .arg(
+                    Arg::new("dump-temp-xml")
+                        .long("dump-temp-xml")
+                        .action(ArgAction::SetTrue)
+                        .help("Also render each TEMP BinXML fragment to XML and write to <output-dir>/temp_xml/ (best-effort)."),
+                )
         )
         .get_matches();
 
@@ -646,6 +652,17 @@ struct ExtractWevtTempOutputLine {
     output_path: String,
 }
 
+#[cfg(feature = "wevt_templates")]
+#[derive(Debug, Serialize)]
+struct ExtractWevtTempXmlOutputLine {
+    source: String,
+    resource: ResourceIdJson,
+    lang_id: u32,
+    temp_index: usize,
+    guid: String,
+    output_path: String,
+}
+
 fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
     #[cfg(feature = "wevt_templates")]
     {
@@ -667,6 +684,7 @@ fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
 fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
     use evtx::wevt_templates::{
         ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
+        render_temp_to_xml,
     };
     use std::collections::HashSet;
 
@@ -684,6 +702,7 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
 
     let overwrite = matches.get_flag("overwrite");
     let split_ttbl = matches.get_flag("split-ttbl");
+    let dump_temp_xml = matches.get_flag("dump-temp-xml");
     let recursive = matches.get_flag("recursive");
 
     let allowed_exts: HashSet<String> = matches
@@ -804,14 +823,27 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
 
             println!("{}", serde_json::to_string(&line)?);
 
-            if split_ttbl {
+            if split_ttbl || dump_temp_xml {
                 let templates_dir = output_dir.join("temp");
-                fs::create_dir_all(&templates_dir).with_context(|| {
-                    format!(
-                        "failed to create TEMP output dir `{}`",
-                        templates_dir.to_string_lossy()
-                    )
-                })?;
+                let templates_xml_dir = output_dir.join("temp_xml");
+
+                if split_ttbl {
+                    fs::create_dir_all(&templates_dir).with_context(|| {
+                        format!(
+                            "failed to create TEMP output dir `{}`",
+                            templates_dir.to_string_lossy()
+                        )
+                    })?;
+                }
+
+                if dump_temp_xml {
+                    fs::create_dir_all(&templates_xml_dir).with_context(|| {
+                        format!(
+                            "failed to create TEMP XML output dir `{}`",
+                            templates_xml_dir.to_string_lossy()
+                        )
+                    })?;
+                }
 
                 let temps = extract_temp_templates_from_wevt_blob(&res.data);
                 for (idx, t) in temps.iter().enumerate() {
@@ -826,54 +858,109 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
                         continue;
                     }
 
+                    let temp_bytes = &res.data[temp_off..temp_end];
+
                     let guid_display = format!("{}", t.header.guid);
                     let guid_file = sanitize_component(&guid_display);
-                    let out_name = format!(
-                        "{base}.{hash:08x}.wevt_template.{res_id}.lang_{lang}.temp_{idx:04}.{guid}.bin",
-                        base = path
-                            .file_name()
-                            .map(|s| s.to_string_lossy())
-                            .unwrap_or_else(|| "unknown".into()),
-                        hash = source_hash,
-                        res_id = resource_id_str,
-                        lang = res.lang_id,
-                        idx = idx,
-                        guid = guid_file,
-                    );
 
-                    let temp_path = templates_dir.join(out_name);
-                    if temp_path.exists() && !overwrite {
-                        continue;
-                    }
-
-                    if let Err(e) = fs::write(&temp_path, &res.data[temp_off..temp_end]) {
-                        error_count += 1;
-                        eprintln!(
-                            "failed to write `{}`: {e}",
-                            temp_path.to_string_lossy()
+                    if split_ttbl {
+                        let out_name = format!(
+                            "{base}.{hash:08x}.wevt_template.{res_id}.lang_{lang}.temp_{idx:04}.{guid}.bin",
+                            base = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy())
+                                .unwrap_or_else(|| "unknown".into()),
+                            hash = source_hash,
+                            res_id = resource_id_str,
+                            lang = res.lang_id,
+                            idx = idx,
+                            guid = guid_file,
                         );
-                        continue;
+
+                        let temp_path = templates_dir.join(out_name);
+                        if !(temp_path.exists() && !overwrite) {
+                            if let Err(e) = fs::write(&temp_path, temp_bytes) {
+                                error_count += 1;
+                                eprintln!(
+                                    "failed to write `{}`: {e}",
+                                    temp_path.to_string_lossy()
+                                );
+                                continue;
+                            }
+                        }
+
+                        let temp_line = ExtractWevtTempOutputLine {
+                            source: source_str.clone(),
+                            resource: match &res.resource {
+                                ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
+                                ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+                            },
+                            lang_id: res.lang_id,
+                            ttbl_offset: t.ttbl_offset,
+                            temp_offset: t.temp_offset,
+                            temp_size: t.temp_size,
+                            id_1: t.header.id_1,
+                            id_2: t.header.id_2,
+                            offset: t.header.offset,
+                            unk: t.header.unk,
+                            guid: guid_display.clone(),
+                            output_path: temp_path.to_string_lossy().to_string(),
+                        };
+
+                        println!("{}", serde_json::to_string(&temp_line)?);
                     }
 
-                    let temp_line = ExtractWevtTempOutputLine {
-                        source: source_str.clone(),
-                        resource: match &res.resource {
-                            ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
-                            ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
-                        },
-                        lang_id: res.lang_id,
-                        ttbl_offset: t.ttbl_offset,
-                        temp_offset: t.temp_offset,
-                        temp_size: t.temp_size,
-                        id_1: t.header.id_1,
-                        id_2: t.header.id_2,
-                        offset: t.header.offset,
-                        unk: t.header.unk,
-                        guid: guid_display,
-                        output_path: temp_path.to_string_lossy().to_string(),
-                    };
+                    if dump_temp_xml {
+                        let xml_name = format!(
+                            "{base}.{hash:08x}.wevt_template.{res_id}.lang_{lang}.temp_{idx:04}.{guid}.xml",
+                            base = path
+                                .file_name()
+                                .map(|s| s.to_string_lossy())
+                                .unwrap_or_else(|| "unknown".into()),
+                            hash = source_hash,
+                            res_id = resource_id_str,
+                            lang = res.lang_id,
+                            idx = idx,
+                            guid = guid_file,
+                        );
+                        let xml_path = templates_xml_dir.join(xml_name);
 
-                    println!("{}", serde_json::to_string(&temp_line)?);
+                        if !(xml_path.exists() && !overwrite) {
+                            match render_temp_to_xml(temp_bytes, encoding::all::WINDOWS_1252) {
+                                Ok(xml) => {
+                                    if let Err(e) = fs::write(&xml_path, xml.as_bytes()) {
+                                        error_count += 1;
+                                        eprintln!(
+                                            "failed to write `{}`: {e}",
+                                            xml_path.to_string_lossy()
+                                        );
+                                        continue;
+                                    }
+                                }
+                                Err(e) => {
+                                    error_count += 1;
+                                    eprintln!(
+                                        "failed to render TEMP XML for `{}` (temp_index={}, guid={}): {e}",
+                                        source_str, idx, guid_display
+                                    );
+                                    continue;
+                                }
+                            }
+                        }
+
+                        let xml_line = ExtractWevtTempXmlOutputLine {
+                            source: source_str.clone(),
+                            resource: match &res.resource {
+                                ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
+                                ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+                            },
+                            lang_id: res.lang_id,
+                            temp_index: idx,
+                            guid: guid_display,
+                            output_path: xml_path.to_string_lossy().to_string(),
+                        };
+                        println!("{}", serde_json::to_string(&xml_line)?);
+                    }
                 }
             }
         }

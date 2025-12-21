@@ -7,7 +7,7 @@ use crate::model::deserialized::*;
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::name::BinXmlNameRef;
+use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::read_len_prefixed_utf16_string;
 
@@ -168,17 +168,23 @@ pub fn read_template_definition<'a>(
     Ok(template)
 }
 
-pub fn read_entity_ref(cursor: &mut Cursor<&[u8]>) -> Result<BinXmlEntityReference> {
+pub fn read_entity_ref(
+    cursor: &mut Cursor<&[u8]>,
+    name_encoding: BinXmlNameEncoding,
+) -> Result<BinXmlEntityReference> {
     trace!("Offset `0x{:08x}` - EntityReference", cursor.position());
-    let name = BinXmlNameRef::from_stream(cursor)?;
+    let name = BinXmlNameRef::from_stream_with_encoding(cursor, name_encoding)?;
     trace!("\t name: {:?}", name);
 
     Ok(BinXmlEntityReference { name })
 }
 
-pub fn read_attribute(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLAttribute> {
+pub fn read_attribute(
+    cursor: &mut Cursor<&[u8]>,
+    name_encoding: BinXmlNameEncoding,
+) -> Result<BinXMLAttribute> {
     trace!("Offset `0x{:08x}` - Attribute", cursor.position());
-    let name = BinXmlNameRef::from_stream(cursor)?;
+    let name = BinXmlNameRef::from_stream_with_encoding(cursor, name_encoding)?;
 
     Ok(BinXMLAttribute { name })
 }
@@ -197,13 +203,14 @@ pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragment
 
 pub fn read_processing_instruction_target(
     cursor: &mut Cursor<&[u8]>,
+    name_encoding: BinXmlNameEncoding,
 ) -> Result<BinXMLProcessingInstructionTarget> {
     trace!(
         "Offset `0x{:08x}` - ProcessingInstructionTarget",
         cursor.position(),
     );
 
-    let name = BinXmlNameRef::from_stream(cursor)?;
+    let name = BinXmlNameRef::from_stream_with_encoding(cursor, name_encoding)?;
     trace!("\tPITarget Name - {:?}", name);
     Ok(BinXMLProcessingInstructionTarget { name })
 }
@@ -252,6 +259,7 @@ pub fn read_open_start_element(
     chunk: Option<&EvtxChunk>,
     has_attributes: bool,
     is_substitution: bool,
+    name_encoding: BinXmlNameEncoding,
 ) -> Result<BinXMLOpenStartElement> {
     trace!(
         "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, is_substitution={}>",
@@ -292,11 +300,11 @@ pub fn read_open_start_element(
                 cursor,
             )
         })?;
-        return read_open_start_element(cursor, chunk, has_attributes, true);
+        return read_open_start_element(cursor, chunk, has_attributes, true, name_encoding);
     }
 
     trace!("\t Data Size - {}", data_size);
-    let name = BinXmlNameRef::from_stream(cursor)?;
+    let name = BinXmlNameRef::from_stream_with_encoding(cursor, name_encoding)?;
     trace!("\t Name - {:?}", name);
 
     let _attribute_list_data_size = if has_attributes {
