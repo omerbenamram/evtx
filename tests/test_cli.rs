@@ -11,6 +11,7 @@ use tempfile::tempdir;
 
 #[test]
 fn it_respects_directory_output() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
     let d = tempdir().unwrap();
     let f = d.as_ref().join("test.out");
 
@@ -35,6 +36,7 @@ fn it_respects_directory_output() {
 
 #[test]
 fn test_it_refuses_to_overwrite_directory() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
     let d = tempdir().unwrap();
 
     let sample = regular_sample();
@@ -46,6 +48,7 @@ fn test_it_refuses_to_overwrite_directory() {
 
 #[test]
 fn test_it_overwrites_file_anyways_if_passed_flag() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
     let d = tempdir().unwrap();
     let f = d.as_ref().join("test.out");
 
@@ -74,6 +77,7 @@ fn test_it_overwrites_file_anyways_if_passed_flag() {
 
 #[test]
 fn it_supports_stdin_input_with_dash() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
     let sample = regular_sample();
 
     // Pick a single record id to keep CLI output small/deterministic.

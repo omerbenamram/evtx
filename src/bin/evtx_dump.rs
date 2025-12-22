@@ -535,8 +535,8 @@ fn main() -> Result<()> {
                 -vvv - trace
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
         )
-        .subcommand(
-            Command::new("extract-wevt-templates")
+        .subcommand({
+            let cmd = Command::new("extract-wevt-templates")
                 .about("Extract WEVT_TEMPLATE resources from PE files (EXE/DLL)")
                 .long_about(indoc!(r#"
                     Extract WEVT_TEMPLATE resources from PE files (EXE/DLL).
@@ -588,7 +588,10 @@ fn main() -> Result<()> {
                         .long("overwrite")
                         .action(ArgAction::SetTrue)
                         .help("Overwrite output files if they already exist."),
-                )
+                );
+
+            #[cfg(feature = "wevt_templates")]
+            let cmd = cmd
                 .arg(
                     Arg::new("split-ttbl")
                         .long("split-ttbl")
@@ -599,9 +602,23 @@ fn main() -> Result<()> {
                     Arg::new("dump-temp-xml")
                         .long("dump-temp-xml")
                         .action(ArgAction::SetTrue)
-                        .help("Also render each TEMP BinXML fragment to XML and write to <output-dir>/temp_xml/ (best-effort)."),
+                        .help("Also render each TEMP BinXML fragment to XML and write to <output-dir>/temp_xml/."),
                 )
-        )
+                .arg(
+                    Arg::new("dump-events")
+                        .long("dump-events")
+                        .action(ArgAction::SetTrue)
+                        .help("Dump EVNT event definitions (including template_offset join keys) as JSONL."),
+                )
+                .arg(
+                    Arg::new("dump-items")
+                        .long("dump-items")
+                        .action(ArgAction::SetTrue)
+                        .help("Dump TEMP template item descriptors/names as JSONL."),
+                );
+
+            cmd
+        })
         .get_matches();
 
     if let Some(("extract-wevt-templates", sub_matches)) = matches.subcommand() {
@@ -618,7 +635,7 @@ fn main() -> Result<()> {
 }
 
 #[cfg(feature = "wevt_templates")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 enum ResourceIdJson {
     Id(u32),
@@ -644,10 +661,10 @@ struct ExtractWevtTempOutputLine {
     ttbl_offset: u32,
     temp_offset: u32,
     temp_size: u32,
-    id_1: u32,
-    id_2: u32,
-    offset: u32,
-    unk: u32,
+    item_descriptor_count: u32,
+    item_name_count: u32,
+    template_items_offset: u32,
+    event_type: u32,
     guid: String,
     output_path: String,
 }
@@ -661,6 +678,47 @@ struct ExtractWevtTempXmlOutputLine {
     temp_index: usize,
     guid: String,
     output_path: String,
+}
+
+#[cfg(feature = "wevt_templates")]
+#[derive(Debug, Serialize)]
+struct ExtractWevtEventOutputLine {
+    source: String,
+    resource: ResourceIdJson,
+    lang_id: u32,
+    provider_guid: String,
+    event_index: usize,
+    event_id: u16,
+    version: u8,
+    channel: u8,
+    level: u8,
+    opcode: u8,
+    task: u16,
+    keywords: u64,
+    message_identifier: u32,
+    template_offset: Option<u32>,
+    template_guid: Option<String>,
+}
+
+#[cfg(feature = "wevt_templates")]
+#[derive(Debug, Serialize)]
+struct ExtractWevtTemplateItemOutputLine {
+    source: String,
+    resource: ResourceIdJson,
+    lang_id: u32,
+    ttbl_offset: u32,
+    template_offset: u32,
+    template_guid: String,
+    item_index: usize,
+    name: Option<String>,
+    input_type: u8,
+    output_type: u8,
+    count: u16,
+    length: u16,
+    name_offset: u32,
+    unknown1: u32,
+    unknown3: u16,
+    unknown4: u32,
 }
 
 fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
@@ -682,10 +740,10 @@ fn run_extract_wevt_templates(matches: &ArgMatches) -> Result<()> {
 
 #[cfg(feature = "wevt_templates")]
 fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
-    use evtx::wevt_templates::{
-        ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
-        render_temp_to_xml,
-    };
+    use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
+
+    use evtx::wevt_templates::manifest::CrimManifest;
+    use evtx::wevt_templates::render_template_definition_to_xml;
     use std::collections::HashSet;
 
     let output_dir = PathBuf::from(
@@ -701,9 +759,15 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
     })?;
 
     let overwrite = matches.get_flag("overwrite");
-    let split_ttbl = matches.get_flag("split-ttbl");
-    let dump_temp_xml = matches.get_flag("dump-temp-xml");
     let recursive = matches.get_flag("recursive");
+
+    let split_ttbl = matches.get_flag("split-ttbl");
+
+    let dump_temp_xml = matches.get_flag("dump-temp-xml");
+
+    let dump_events = matches.get_flag("dump-events");
+
+    let dump_items = matches.get_flag("dump-items");
 
     let allowed_exts: HashSet<String> = matches
         .get_one::<String>("extensions")
@@ -823,7 +887,7 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
 
             println!("{}", serde_json::to_string(&line)?);
 
-            if split_ttbl || dump_temp_xml {
+            if split_ttbl || dump_temp_xml || dump_events || dump_items {
                 let templates_dir = output_dir.join("temp");
                 let templates_xml_dir = output_dir.join("temp_xml");
 
@@ -845,22 +909,117 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
                     })?;
                 }
 
-                let temps = extract_temp_templates_from_wevt_blob(&res.data);
-                for (idx, t) in temps.iter().enumerate() {
-                    let temp_off = t.temp_offset as usize;
-                    let temp_end = temp_off.saturating_add(t.temp_size as usize);
+                let manifest = match CrimManifest::parse(&res.data) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error_count += 1;
+                        eprintln!(
+                            "failed to parse CRIM/WEVT manifest in `{}`: {e}",
+                            source_str
+                        );
+                        continue;
+                    }
+                };
+
+                let resource_json_for_records = match &res.resource {
+                    ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
+                    ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+                };
+
+                if dump_events {
+                    for provider in &manifest.providers {
+                        let provider_guid = format!("{}", provider.guid);
+                        if let Some(evnt) = provider.wevt.elements.events.as_ref() {
+                            for (event_index, ev) in evnt.events.iter().enumerate() {
+                                let template_guid = ev
+                                    .template_offset
+                                    .and_then(|off| provider.template_by_offset(off))
+                                    .map(|t| format!("{}", t.guid));
+
+                                let line = ExtractWevtEventOutputLine {
+                                    source: source_str.clone(),
+                                    resource: resource_json_for_records.clone(),
+                                    lang_id: res.lang_id,
+                                    provider_guid: provider_guid.clone(),
+                                    event_index,
+                                    event_id: ev.identifier,
+                                    version: ev.version,
+                                    channel: ev.channel,
+                                    level: ev.level,
+                                    opcode: ev.opcode,
+                                    task: ev.task,
+                                    keywords: ev.keywords,
+                                    message_identifier: ev.message_identifier,
+                                    template_offset: ev.template_offset,
+                                    template_guid,
+                                };
+
+                                println!("{}", serde_json::to_string(&line)?);
+                            }
+                        }
+                    }
+                }
+
+                if dump_items {
+                    for provider in &manifest.providers {
+                        if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
+                            for tpl in &ttbl.templates {
+                                let template_guid = format!("{}", tpl.guid);
+                                for (item_index, item) in tpl.items.iter().enumerate() {
+                                    let line = ExtractWevtTemplateItemOutputLine {
+                                        source: source_str.clone(),
+                                        resource: resource_json_for_records.clone(),
+                                        lang_id: res.lang_id,
+                                        ttbl_offset: ttbl.offset,
+                                        template_offset: tpl.offset,
+                                        template_guid: template_guid.clone(),
+                                        item_index,
+                                        name: item.name.clone(),
+                                        input_type: item.input_type,
+                                        output_type: item.output_type,
+                                        count: item.count,
+                                        length: item.length,
+                                        name_offset: item.name_offset,
+                                        unknown1: item.unknown1,
+                                        unknown3: item.unknown3,
+                                        unknown4: item.unknown4,
+                                    };
+                                    println!("{}", serde_json::to_string(&line)?);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Keep ordering stable-ish by sorting by template offset.
+                let mut templates: Vec<(
+                    u32,
+                    &evtx::wevt_templates::manifest::TemplateDefinition<'_>,
+                )> = vec![];
+                for provider in &manifest.providers {
+                    if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
+                        for tpl in &ttbl.templates {
+                            templates.push((ttbl.offset, tpl));
+                        }
+                    }
+                }
+                templates.sort_by_key(|(ttbl_off, tpl)| (tpl.offset, *ttbl_off));
+
+                for (idx, (ttbl_offset, tpl)) in templates.iter().enumerate() {
+                    let temp_off = tpl.offset as usize;
+                    let temp_end = temp_off.saturating_add(tpl.size as usize);
                     if temp_end > res.data.len() {
                         error_count += 1;
                         eprintln!(
                             "TEMP slice out of bounds for `{}` (temp_offset={}, temp_size={})",
-                            source_str, t.temp_offset, t.temp_size
+                            source_str, tpl.offset, tpl.size
                         );
                         continue;
                     }
 
                     let temp_bytes = &res.data[temp_off..temp_end];
 
-                    let guid_display = format!("{}", t.header.guid);
+                    let guid_display = format!("{}", tpl.guid);
                     let guid_file = sanitize_component(&guid_display);
 
                     if split_ttbl {
@@ -878,14 +1037,17 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
                         );
 
                         let temp_path = templates_dir.join(out_name);
-                        if !(temp_path.exists() && !overwrite) {
-                            if let Err(e) = fs::write(&temp_path, temp_bytes) {
-                                error_count += 1;
-                                eprintln!(
-                                    "failed to write `{}`: {e}",
-                                    temp_path.to_string_lossy()
-                                );
-                                continue;
+                        if overwrite || !temp_path.exists() {
+                            match fs::write(&temp_path, temp_bytes) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    error_count += 1;
+                                    eprintln!(
+                                        "failed to write `{}`: {e}",
+                                        temp_path.to_string_lossy()
+                                    );
+                                    continue;
+                                }
                             }
                         }
 
@@ -893,16 +1055,18 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
                             source: source_str.clone(),
                             resource: match &res.resource {
                                 ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
-                                ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+                                ResourceIdentifier::Name(name) => {
+                                    ResourceIdJson::Name(name.clone())
+                                }
                             },
                             lang_id: res.lang_id,
-                            ttbl_offset: t.ttbl_offset,
-                            temp_offset: t.temp_offset,
-                            temp_size: t.temp_size,
-                            id_1: t.header.id_1,
-                            id_2: t.header.id_2,
-                            offset: t.header.offset,
-                            unk: t.header.unk,
+                            ttbl_offset: *ttbl_offset,
+                            temp_offset: tpl.offset,
+                            temp_size: tpl.size,
+                            item_descriptor_count: tpl.item_descriptor_count,
+                            item_name_count: tpl.item_name_count,
+                            template_items_offset: tpl.template_items_offset,
+                            event_type: tpl.event_type,
                             guid: guid_display.clone(),
                             output_path: temp_path.to_string_lossy().to_string(),
                         };
@@ -925,8 +1089,11 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
                         );
                         let xml_path = templates_xml_dir.join(xml_name);
 
-                        if !(xml_path.exists() && !overwrite) {
-                            match render_temp_to_xml(temp_bytes, encoding::all::WINDOWS_1252) {
+                        if overwrite || !xml_path.exists() {
+                            match render_template_definition_to_xml(
+                                tpl,
+                                encoding::all::WINDOWS_1252,
+                            ) {
                                 Ok(xml) => {
                                     if let Err(e) = fs::write(&xml_path, xml.as_bytes()) {
                                         error_count += 1;
@@ -952,7 +1119,9 @@ fn run_extract_wevt_templates_impl(matches: &ArgMatches) -> Result<()> {
                             source: source_str.clone(),
                             resource: match &res.resource {
                                 ResourceIdentifier::Id(id) => ResourceIdJson::Id(*id),
-                                ResourceIdentifier::Name(name) => ResourceIdJson::Name(name.clone()),
+                                ResourceIdentifier::Name(name) => {
+                                    ResourceIdJson::Name(name.clone())
+                                }
                             },
                             lang_id: res.lang_id,
                             temp_index: idx,

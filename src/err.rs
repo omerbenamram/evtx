@@ -127,6 +127,18 @@ pub enum DeserializationError {
     )]
     InvalidValueVariant { value: u8, offset: u64 },
 
+    #[error(
+        "Offset 0x{offset:08x}: WEVT inline name hash mismatch (expected 0x{expected:04x}, found 0x{found:04x})"
+    )]
+    WevtInlineNameHashMismatch {
+        expected: u16,
+        found: u16,
+        offset: u64,
+    },
+
+    #[error("Offset 0x{offset:08x}: WEVT inline name missing NUL terminator (found 0x{found:04x})")]
+    WevtInlineNameMissingNulTerminator { found: u16, offset: u64 },
+
     #[error("An out-of-range date, invalid month and/or day")]
     InvalidDateTimeError,
 

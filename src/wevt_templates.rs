@@ -3,9 +3,11 @@
 //! This is primarily intended to support building an offline cache of EVTX templates
 //! (see `omerbenamram/evtx` issue #103).
 
+use encoding::EncodingRef;
 use thiserror::Error;
 use winstructs::guid::Guid;
-use encoding::EncodingRef;
+
+pub mod manifest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceIdentifier {
@@ -23,16 +25,23 @@ pub struct WevtTemplateResource {
     pub data: Vec<u8>,
 }
 
+// === Parsing of WEVT_TEMPLATE payloads (CRIM/WEVT/TTBL/TEMP) ===
+//
+// Primary references:
+// - MS-EVEN6 BinXml grammar (inline names): `Name = NameHash NameNumChars NullTerminatedUnicodeString`
+//   and token layouts for OpenStartElement/Attribute/EntityRef/PITarget.
+// - libfwevt docs: "Windows Event manifest binary format" (WEVT_TEMPLATE / CRIM / WEVT / TTBL / TEMP layouts).
+
 #[derive(Debug, Clone)]
 pub struct WevtTempTemplateHeader {
-    /// First u32 after `TEMP.size` (often equals `id_2`).
-    pub id_1: u32,
-    /// Second u32 after `TEMP.size` (often equals `id_1`).
-    pub id_2: u32,
-    /// Third u32 after `TEMP.size` (meaning currently unknown).
-    pub offset: u32,
-    /// Fourth u32 after `TEMP.size` (meaning currently unknown).
-    pub unk: u32,
+    /// Number of template item descriptors.
+    pub item_descriptor_count: u32,
+    /// Number of template item names.
+    pub item_name_count: u32,
+    /// Template items offset (relative to the start of the CRIM blob).
+    pub template_items_offset: u32,
+    /// Unknown; libfwevt suggests this correlates with the template kind (e.g. EventData vs UserData).
+    pub event_type: u32,
     /// Template GUID.
     pub guid: Guid,
 }
@@ -501,98 +510,41 @@ pub fn extract_wevt_template_resources(
     Ok(out)
 }
 
-/// Best-effort parser for `TTBL`/`TEMP` structures within a `WEVT_TEMPLATE` resource blob.
+/// Research-only parser for `TTBL`/`TEMP` structures within a `WEVT_TEMPLATE` resource blob.
 ///
 /// Many real-world blobs contain multiple `TTBL` sections. This function finds all parseable
 /// `TTBL` sections and returns references to all `TEMP` entries contained within them.
 ///
-/// This does **not** parse the BinXML payload yet; it focuses on structural discovery and
-/// stable identifiers (notably `TEMP` GUID and header fields).
-pub fn extract_temp_templates_from_wevt_blob(blob: &[u8]) -> Vec<WevtTempTemplateRef> {
+/// This uses the CRIM/WEVT provider element directory to locate `TTBL` elements, and then parses
+/// the `TTBL`/`TEMP` structures.
+pub fn extract_temp_templates_from_wevt_blob(
+    blob: &[u8],
+) -> Result<Vec<WevtTempTemplateRef>, crate::wevt_templates::manifest::WevtManifestError> {
     let mut out = Vec::new();
 
-    let mut search_from = 0usize;
-    while let Some(ttbl_off) = find_subslice(blob, b"TTBL", search_from) {
-        match parse_ttbl_at(blob, ttbl_off) {
-            Some((ttbl_size, mut templates)) => {
-                out.append(&mut templates);
-                // Skip past the TTBL section we just parsed to avoid quadratic behavior.
-                search_from = ttbl_off.saturating_add(ttbl_size);
-            }
-            None => {
-                // Not a valid TTBL, keep searching.
-                search_from = ttbl_off.saturating_add(4);
-            }
+    let manifest = crate::wevt_templates::manifest::CrimManifest::parse(blob)?;
+
+    for provider in &manifest.providers {
+        let Some(ttbl) = provider.wevt.elements.templates.as_ref() else {
+            continue;
+        };
+        for tpl in &ttbl.templates {
+            out.push(WevtTempTemplateRef {
+                ttbl_offset: ttbl.offset,
+                temp_offset: tpl.offset,
+                temp_size: tpl.size,
+                header: WevtTempTemplateHeader {
+                    item_descriptor_count: tpl.item_descriptor_count,
+                    item_name_count: tpl.item_name_count,
+                    template_items_offset: tpl.template_items_offset,
+                    event_type: tpl.event_type,
+                    guid: tpl.guid.clone(),
+                },
+            });
         }
     }
 
-    out
-}
-
-fn parse_ttbl_at(blob: &[u8], ttbl_off: usize) -> Option<(usize, Vec<WevtTempTemplateRef>)> {
-    // TTBL header: signature (4) + size (4) + count (4)
-    if ttbl_off + 12 > blob.len() {
-        return None;
-    }
-    if &blob[ttbl_off..ttbl_off + 4] != b"TTBL" {
-        return None;
-    }
-
-    let ttbl_size = read_u32(blob, ttbl_off + 4)? as usize;
-    let count = read_u32(blob, ttbl_off + 8)? as usize;
-
-    if ttbl_size < 12 {
-        return None;
-    }
-    let ttbl_end = ttbl_off.checked_add(ttbl_size)?;
-    if ttbl_end > blob.len() {
-        return None;
-    }
-
-    let mut templates = Vec::with_capacity(count);
-
-    let mut cur = ttbl_off + 12;
-    for _ in 0..count {
-        if cur + 40 > ttbl_end {
-            return None;
-        }
-        if &blob[cur..cur + 4] != b"TEMP" {
-            return None;
-        }
-
-        let temp_size = read_u32(blob, cur + 4)? as usize;
-        if temp_size < 40 {
-            return None;
-        }
-        let temp_end = cur.checked_add(temp_size)?;
-        if temp_end > ttbl_end {
-            return None;
-        }
-
-        let id_1 = read_u32(blob, cur + 8)?;
-        let id_2 = read_u32(blob, cur + 12)?;
-        let offset = read_u32(blob, cur + 16)?;
-        let unk = read_u32(blob, cur + 20)?;
-        let guid = read_guid(blob, cur + 24)?;
-
-        templates.push(WevtTempTemplateRef {
-            ttbl_offset: ttbl_off as u32,
-            temp_offset: cur as u32,
-            temp_size: temp_size as u32,
-            header: WevtTempTemplateHeader {
-                id_1,
-                id_2,
-                offset,
-                unk,
-                guid,
-            },
-        });
-
-        cur = temp_end;
-    }
-
-    // Allow TTBL to contain trailing bytes/padding, but it must at least cover all temps.
-    Some((ttbl_size, templates))
+    Ok(out)
 }
 
 const TEMP_BINXML_OFFSET: usize = 40;
@@ -604,7 +556,10 @@ const TEMP_BINXML_OFFSET: usize = 40;
 pub fn parse_temp_binxml_fragment<'a>(
     temp_bytes: &'a [u8],
     ansi_codec: EncodingRef,
-) -> crate::err::Result<(Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>, u32)> {
+) -> crate::err::Result<(
+    Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>,
+    u32,
+)> {
     use crate::binxml::deserializer::BinXmlDeserializer;
     use crate::binxml::name::BinXmlNameEncoding;
     use crate::err::EvtxError;
@@ -629,7 +584,7 @@ pub fn parse_temp_binxml_fragment<'a>(
 
     let mut iterator = de.iter_tokens(None)?;
     let mut tokens = vec![];
-    while let Some(t) = iterator.next() {
+    for t in iterator.by_ref() {
         tokens.push(t?);
     }
 
@@ -639,14 +594,52 @@ pub fn parse_temp_binxml_fragment<'a>(
     Ok((tokens, bytes_consumed))
 }
 
-/// Best-effort conversion of a `TEMP` entry to an XML string (with placeholders for substitutions).
-pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> crate::err::Result<String> {
+/// Parse a WEVT_TEMPLATE BinXML fragment (inline-name encoding).
+///
+/// Returns `(tokens, bytes_consumed)` where `bytes_consumed` is the number of bytes read from `binxml`.
+pub fn parse_wevt_binxml_fragment<'a>(
+    binxml: &'a [u8],
+    ansi_codec: EncodingRef,
+) -> crate::err::Result<(
+    Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>,
+    u32,
+)> {
+    use crate::binxml::deserializer::BinXmlDeserializer;
+    use crate::binxml::name::BinXmlNameEncoding;
+    use crate::err::EvtxError;
+
+    let de = BinXmlDeserializer::init_with_name_encoding(
+        binxml,
+        0,
+        None,
+        false,
+        ansi_codec,
+        BinXmlNameEncoding::WevtInline,
+    );
+
+    let mut iterator = de.iter_tokens(None)?;
+    let mut tokens = vec![];
+    for t in iterator.by_ref() {
+        tokens.push(t?);
+    }
+
+    let bytes_consumed = u32::try_from(iterator.position())
+        .map_err(|_| EvtxError::calculation_error("BinXML fragment too large".to_string()))?;
+
+    Ok((tokens, bytes_consumed))
+}
+
+/// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
+pub fn render_temp_to_xml(
+    temp_bytes: &[u8],
+    ansi_codec: EncodingRef,
+) -> crate::err::Result<String> {
+    use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
-    use crate::ParserSettings;
     use std::borrow::Cow;
 
     if temp_bytes.len() < TEMP_BINXML_OFFSET {
@@ -664,7 +657,10 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> crate::
         binxml: &'a [u8],
         name_ref: &crate::binxml::name::BinXmlNameRef,
     ) -> Result<Cow<'a, crate::binxml::name::BinXmlName>> {
-        Ok(Cow::Owned(read_wevt_inline_name_at(binxml, name_ref.offset)?))
+        Ok(Cow::Owned(read_wevt_inline_name_at(
+            binxml,
+            name_ref.offset,
+        )?))
     }
 
     // Build a record model similar to `binxml::assemble::create_record_model`,
@@ -696,7 +692,9 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> crate::
                 };
             }
             crate::model::deserialized::BinXMLDeserializedTokens::CDATASection => {
-                return Err(EvtxError::FailedToCreateRecordModel("Unimplemented - CDATA"));
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Unimplemented - CDATA",
+                ));
             }
             crate::model::deserialized::BinXMLDeserializedTokens::CharRef => {
                 return Err(EvtxError::FailedToCreateRecordModel(
@@ -768,22 +766,23 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> crate::
                 builder.name(resolve_name(binxml, &elem.name)?);
                 current_element = Some(builder);
             }
-            crate::model::deserialized::BinXMLDeserializedTokens::Value(value) => match current_element
-            {
-                None => match value {
-                    BinXmlValue::EvtXml => {
-                        return Err(EvtxError::FailedToCreateRecordModel(
-                            "Unexpected EvtXml in WEVT TEMP BinXML",
-                        ));
+            crate::model::deserialized::BinXMLDeserializedTokens::Value(value) => {
+                match current_element {
+                    None => match value {
+                        BinXmlValue::EvtXml => {
+                            return Err(EvtxError::FailedToCreateRecordModel(
+                                "Unexpected EvtXml in WEVT TEMP BinXML",
+                            ));
+                        }
+                        _ => {
+                            model.push(XmlModel::Value(Cow::Owned(value)));
+                        }
+                    },
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Owned(value))?;
                     }
-                    _ => {
-                        model.push(XmlModel::Value(Cow::Owned(value)));
-                    }
-                },
-                Some(ref mut builder) => {
-                    builder.attribute_value(Cow::Owned(value))?;
                 }
-            },
+            }
         }
     }
 
@@ -821,24 +820,204 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> crate::
 
     output.visit_end_of_stream()?;
 
-    String::from_utf8(output.into_writer())
-        .map_err(|e| EvtxError::calculation_error(e.to_string()))
+    String::from_utf8(output.into_writer()).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
-fn read_guid(buf: &[u8], offset: usize) -> Option<Guid> {
-    let bytes = buf.get(offset..offset + 16)?;
-    let mut cursor = std::io::Cursor::new(bytes);
-    Guid::from_reader(&mut cursor).ok()
-}
+/// Render a parsed template definition to XML.
+///
+/// Compared to `render_temp_to_xml`, this variant can annotate substitutions using the parsed
+/// template item descriptors/names (from the CRIM blob).
+pub fn render_template_definition_to_xml(
+    template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
+    ansi_codec: EncodingRef,
+) -> crate::err::Result<String> {
+    use crate::ParserSettings;
+    use crate::binxml::name::read_wevt_inline_name_at;
+    use crate::binxml::value_variant::BinXmlValue;
+    use crate::err::{EvtxError, Result};
+    use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
+    use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use std::borrow::Cow;
 
-fn find_subslice(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
-    if needle.is_empty() {
-        return None;
+    let binxml = template.binxml;
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+
+    fn resolve_name<'a>(
+        binxml: &'a [u8],
+        name_ref: &crate::binxml::name::BinXmlNameRef,
+    ) -> Result<Cow<'a, crate::binxml::name::BinXmlName>> {
+        Ok(Cow::Owned(read_wevt_inline_name_at(
+            binxml,
+            name_ref.offset,
+        )?))
     }
-    haystack
-        .get(from..)
-        .and_then(|s| s.windows(needle.len()).position(|w| w == needle))
-        .map(|pos| from + pos)
+
+    let mut current_element: Option<XmlElementBuilder> = None;
+    let mut current_pi: Option<XmlPIBuilder> = None;
+    let mut model: Vec<XmlModel> = Vec::with_capacity(tokens.len());
+
+    for token in tokens {
+        match token {
+            crate::model::deserialized::BinXMLDeserializedTokens::FragmentHeader(_) => {}
+            crate::model::deserialized::BinXMLDeserializedTokens::TemplateInstance(_) => {
+                return Err(EvtxError::Unimplemented {
+                    name: "TemplateInstance inside WEVT TEMP BinXML".to_string(),
+                });
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::AttributeList => {}
+            crate::model::deserialized::BinXMLDeserializedTokens::CloseElement => {
+                model.push(XmlModel::CloseElement);
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::CloseStartElement => {
+                match current_element.take() {
+                    None => {
+                        return Err(EvtxError::FailedToCreateRecordModel(
+                            "close start - Bad parser state",
+                        ));
+                    }
+                    Some(builder) => model.push(XmlModel::OpenElement(builder.finish()?)),
+                };
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::CDATASection => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Unimplemented - CDATA",
+                ));
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::CharRef => {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "Unimplemented - CharacterReference",
+                ));
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::EntityRef(ref entity) => {
+                model.push(XmlModel::EntityRef(resolve_name(binxml, &entity.name)?))
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::PITarget(ref name) => {
+                let mut builder = XmlPIBuilder::new();
+                builder.name(resolve_name(binxml, &name.name)?);
+                current_pi = Some(builder);
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::PIData(data) => {
+                match current_pi.take() {
+                    None => {
+                        return Err(EvtxError::FailedToCreateRecordModel(
+                            "PI Data without PI target - Bad parser state",
+                        ));
+                    }
+                    Some(mut builder) => {
+                        builder.data(Cow::Owned(data));
+                        model.push(builder.finish());
+                    }
+                }
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::Substitution(sub) => {
+                let idx = sub.substitution_index as usize;
+                let mut placeholder = format!("{{sub:{idx}}}");
+
+                if let Some(name) = template
+                    .items
+                    .get(idx)
+                    .and_then(|item| item.name.as_deref())
+                {
+                    placeholder = format!("{{sub:{idx}:{name}}}");
+                }
+
+                let value = BinXmlValue::StringType(placeholder);
+                match current_element {
+                    None => model.push(XmlModel::Value(Cow::Owned(value))),
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Owned(value))?;
+                    }
+                }
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::EndOfStream => {
+                model.push(XmlModel::EndOfStream)
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::StartOfStream => {
+                model.push(XmlModel::StartOfStream)
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::CloseEmptyElement => {
+                match current_element.take() {
+                    None => {
+                        return Err(EvtxError::FailedToCreateRecordModel(
+                            "close empty - Bad parser state",
+                        ));
+                    }
+                    Some(builder) => {
+                        model.push(XmlModel::OpenElement(builder.finish()?));
+                        model.push(XmlModel::CloseElement);
+                    }
+                };
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::Attribute(ref attr) => {
+                if current_element.is_none() {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "attribute - Bad parser state",
+                    ));
+                }
+                if let Some(builder) = current_element.as_mut() {
+                    builder.attribute_name(resolve_name(binxml, &attr.name)?)
+                }
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::OpenStartElement(ref elem) => {
+                let mut builder = XmlElementBuilder::new();
+                builder.name(resolve_name(binxml, &elem.name)?);
+                current_element = Some(builder);
+            }
+            crate::model::deserialized::BinXMLDeserializedTokens::Value(value) => {
+                match current_element {
+                    None => match value {
+                        BinXmlValue::EvtXml => {
+                            return Err(EvtxError::FailedToCreateRecordModel(
+                                "Unexpected EvtXml in WEVT TEMP BinXML",
+                            ));
+                        }
+                        _ => {
+                            model.push(XmlModel::Value(Cow::Owned(value)));
+                        }
+                    },
+                    Some(ref mut builder) => {
+                        builder.attribute_value(Cow::Owned(value))?;
+                    }
+                }
+            }
+        }
+    }
+
+    let settings = ParserSettings::default().ansi_codec(ansi_codec);
+    let mut output = XmlOutput::with_writer(Vec::new(), &settings);
+
+    output.visit_start_of_stream()?;
+    let mut stack: Vec<XmlElement> = Vec::new();
+
+    for owned_token in model {
+        match owned_token {
+            XmlModel::OpenElement(open_element) => {
+                stack.push(open_element);
+                output.visit_open_start_element(stack.last().ok_or({
+                    EvtxError::FailedToCreateRecordModel(
+                        "Invalid parser state - expected stack to be non-empty",
+                    )
+                })?)?;
+            }
+            XmlModel::CloseElement => {
+                let close_element = stack.pop().ok_or({
+                    EvtxError::FailedToCreateRecordModel(
+                        "Invalid parser state - expected stack to be non-empty",
+                    )
+                })?;
+                output.visit_close_element(&close_element)?
+            }
+            XmlModel::Value(s) => output.visit_characters(s)?,
+            XmlModel::EndOfStream => {}
+            XmlModel::StartOfStream => {}
+            XmlModel::PI(pi) => output.visit_processing_instruction(&pi)?,
+            XmlModel::EntityRef(entity) => output.visit_entity_reference(&entity)?,
+        };
+    }
+
+    output.visit_end_of_stream()?;
+
+    String::from_utf8(output.into_writer()).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
 fn read_u16(buf: &[u8], offset: usize) -> Option<u16> {

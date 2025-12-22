@@ -21,3 +21,6 @@ benchmarks/*
 
 # Local-only fixtures (e.g. PE/CRIM blobs for WEVT_TEMPLATE work). Keep out of git.
 samples_local/
+
+# Local vendor checkouts (for format research / patching upstream).
+external/

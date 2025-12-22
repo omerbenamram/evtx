@@ -361,8 +361,9 @@ mod tests {
         // data size
         buf.extend_from_slice(&0x10u32.to_le_bytes());
         // inline name: hash + char_count + utf16 + NUL
-        buf.extend_from_slice(&0x1234u16.to_le_bytes());
         let name = "EventData";
+        let name_hash = crate::binxml::name::compute_wevt_inline_name_hash_utf16(name.encode_utf16());
+        buf.extend_from_slice(&name_hash.to_le_bytes());
         buf.extend_from_slice(&(name.encode_utf16().count() as u16).to_le_bytes());
         for c in name.encode_utf16() {
             buf.extend_from_slice(&c.to_le_bytes());
@@ -400,5 +401,46 @@ mod tests {
         let parsed_name = read_wevt_inline_name_at(&buf, open.name.offset)
             .expect("read_wevt_inline_name_at");
         assert_eq!(parsed_name.as_str(), name);
+    }
+
+    #[test]
+    fn test_wevt_inline_name_hash_mismatch_is_error() {
+        // Same as `test_reads_wevt_inline_names`, but with an incorrect NameHash.
+        let mut buf = vec![];
+        buf.extend_from_slice(&[0x0f, 0x01, 0x01, 0x00]); // StartOfStream + fragment header
+        buf.push(0x01); // OpenStartElement
+        buf.extend_from_slice(&0xFFFFu16.to_le_bytes()); // dependency identifier
+        buf.extend_from_slice(&0x10u32.to_le_bytes()); // data size
+
+        let name = "EventData";
+        let wrong_hash = 0x1234u16;
+        buf.extend_from_slice(&wrong_hash.to_le_bytes());
+        buf.extend_from_slice(&(name.encode_utf16().count() as u16).to_le_bytes());
+        for c in name.encode_utf16() {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        buf.extend_from_slice(&0u16.to_le_bytes());
+
+        buf.extend_from_slice(&[0x03, 0x00]); // CloseEmptyElement + EndOfStream
+
+        let de = BinXmlDeserializer::init_with_name_encoding(
+            &buf,
+            0,
+            None,
+            false,
+            encoding::all::WINDOWS_1252,
+            BinXmlNameEncoding::WevtInline,
+        );
+
+        let mut iterator = de.iter_tokens(None).expect("iter_tokens");
+        while let Some(t) = iterator.next() {
+            match t {
+                Ok(_) => continue,
+                Err(crate::err::DeserializationError::WevtInlineNameHashMismatch { .. }) => return,
+                Err(e) => panic!("unexpected error: {e:?}"),
+            }
+        }
+
+        panic!("expected WevtInlineNameHashMismatch error");
     }
 }

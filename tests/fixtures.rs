@@ -2,8 +2,13 @@
 use std::path::PathBuf;
 
 use std::sync::Once;
+use std::sync::Mutex;
 
 static LOGGER_INIT: Once = Once::new();
+
+// CLI tests can behave flakily when multiple `evtx_dump` subprocesses run concurrently
+// (especially when using pty-based interaction). Serialize all CLI-spawning tests.
+pub static CLI_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // Rust runs the tests concurrently, so unless we synchronize logging access
 // it will crash when attempting to run `cargo test` with some logging facilities.

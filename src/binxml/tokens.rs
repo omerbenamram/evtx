@@ -98,10 +98,10 @@ pub fn read_template<'a>(
             let diff = expected_position as i128 - current_position as i128;
             // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
             // Sometimes however the log will contain a lot of zero fields.
-            warn!("Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                  current_position,
-                  expected_position,
-                  &descriptor);
+            warn!(
+                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                current_position, expected_position, &descriptor
+            );
 
             match u64::try_from(diff) {
                 Ok(u64_diff) => {
@@ -161,7 +161,7 @@ pub fn read_template_definition<'a>(
             return Err(DeserializationError::FailedToDeserializeTemplate {
                 template_id: header.guid,
                 source: Box::new(e),
-            })
+            });
         }
     };
 
@@ -276,8 +276,7 @@ pub fn read_open_start_element(
 
         trace!(
             "\t Dependency Identifier - `0x{:04x} ({})`",
-            _dependency_identifier,
-            _dependency_identifier
+            _dependency_identifier, _dependency_identifier
         );
     }
 

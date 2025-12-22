@@ -1,3 +1,4 @@
+use crate::err::DeserializationError;
 use crate::err::DeserializationResult as Result;
 
 use crate::ChunkOffset;
@@ -13,6 +14,22 @@ use std::{
 use quick_xml::events::{BytesEnd, BytesStart};
 use std::fmt;
 
+const WEVT_INLINE_NAME_HASH_MULTIPLIER: u32 = 65599;
+
+/// MS-EVEN6 NameHash (low 16 bits of: hash=0; for each UTF-16 code unit: hash = hash*65599 + code_unit).
+#[cfg(test)]
+pub(crate) fn compute_wevt_inline_name_hash_utf16(
+    code_units: impl IntoIterator<Item = u16>,
+) -> u16 {
+    let mut hash: u32 = 0;
+    for cu in code_units {
+        hash = hash
+            .wrapping_mul(WEVT_INLINE_NAME_HASH_MULTIPLIER)
+            .wrapping_add(u32::from(cu));
+    }
+    (hash & 0xffff) as u16
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Hash)]
 pub struct BinXmlName {
     str: String,
@@ -24,6 +41,8 @@ pub enum BinXmlNameEncoding {
     Offset,
     /// WEVT_TEMPLATE / CRIM 5.x encoding where names are stored inline as:
     /// `u16 name_hash` + `u16 char_count` + `UTF-16LE chars` + `u16 NUL`.
+    ///
+    /// Primary reference: MS-EVEN6 (`Name = NameHash NameNumChars NullTerminatedUnicodeString`).
     WevtInline,
 }
 
@@ -102,22 +121,38 @@ impl BinXmlNameRef {
 
     fn from_stream_wevt_inline(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
         let name_offset = cursor.position() as ChunkOffset;
-        // hash
-        let _ = try_read!(cursor, u16, "wevt_inline_name_hash")?;
+        let stored_hash = try_read!(cursor, u16, "wevt_inline_name_hash")?;
         // character count
         let char_count = try_read!(cursor, u16, "wevt_inline_name_character_count")?;
 
-        let string_bytes = u64::from(char_count) * 2;
-        let nul_bytes = 2_u64;
-        let start_of_string = cursor.position();
+        let mut hash: u32 = 0;
+        for _ in 0..char_count {
+            let code_unit = try_read!(cursor, u16, "wevt_inline_name_code_unit")?;
+            hash = hash
+                .wrapping_mul(WEVT_INLINE_NAME_HASH_MULTIPLIER)
+                .wrapping_add(u32::from(code_unit));
+        }
 
-        try_seek!(
-            cursor,
-            start_of_string + string_bytes + nul_bytes,
-            "Skip WEVT inline name"
-        )?;
+        let nul = try_read!(cursor, u16, "wevt_inline_name_nul")?;
+        if nul != 0 {
+            return Err(DeserializationError::WevtInlineNameMissingNulTerminator {
+                found: nul,
+                offset: u64::from(name_offset),
+            });
+        }
 
-        Ok(BinXmlNameRef { offset: name_offset })
+        let expected_hash = (hash & 0xffff) as u16;
+        if stored_hash != expected_hash {
+            return Err(DeserializationError::WevtInlineNameHashMismatch {
+                expected: expected_hash,
+                found: stored_hash,
+                offset: u64::from(name_offset),
+            });
+        }
+
+        Ok(BinXmlNameRef {
+            offset: name_offset,
+        })
     }
 }
 
@@ -131,13 +166,12 @@ pub(crate) fn read_wevt_inline_name_at(data: &[u8], offset: ChunkOffset) -> Resu
     try_seek!(cursor_ref, offset, "Seek WEVT inline name")?;
 
     let _ = try_read!(cursor_ref, u16, "wevt_inline_name_hash")?;
-    let name =
-        try_read!(
-            cursor_ref,
-            len_prefixed_utf_16_str_nul_terminated,
-            "wevt_inline_name"
-        )?
-            .unwrap_or_default();
+    let name = try_read!(
+        cursor_ref,
+        len_prefixed_utf_16_str_nul_terminated,
+        "wevt_inline_name"
+    )?
+    .unwrap_or_default();
 
     Ok(BinXmlName { str: name })
 }
