@@ -89,6 +89,26 @@ Some examples
 
 To force single threaded usage (which will also ensure order), `-t 1` can be passed.
 
+## WEVT_TEMPLATE extraction (offline template cache for carved records)
+
+EVTX records can reference template definitions that live inside provider binaries (EXE/DLL/SYS). If you have records without their original templates (e.g. carved records), you can extract templates ahead of time and build a simple “offline cache”.
+
+This subcommand is gated behind Cargo feature `wevt_templates`:
+
+  - `cargo run --release --features wevt_templates --bin evtx_dump -- extract-wevt-templates --help`
+
+Example (`services.exe` sample from [issue #103](https://github.com/omerbenamram/evtx/issues/103), stored in `samples_local/`):
+
+  - `cargo run --release --features wevt_templates --bin evtx_dump -- extract-wevt-templates --input samples_local/services.exe.gif --output-dir /tmp/wevt_cache --overwrite --split-ttbl --dump-temp-xml --dump-events --dump-items > /tmp/wevt_cache/index.jsonl`
+
+This produces:
+- Raw extracted `WEVT_TEMPLATE` blobs in `/tmp/wevt_cache/`
+- Split `TEMP` entries in `/tmp/wevt_cache/temp/`
+- Rendered template XML skeletons in `/tmp/wevt_cache/temp_xml/`
+- Join rows (provider/event → template GUID) and item metadata in `/tmp/wevt_cache/index.jsonl` (JSONL)
+
+See [`docs/wevt_templates.md`](docs/wevt_templates.md) for the technical writeup and end-to-end workflow.
+
 ## Example usage (as library):
 ```rust
 use evtx::EvtxParser;

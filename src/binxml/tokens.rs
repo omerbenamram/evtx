@@ -27,12 +27,14 @@ pub fn read_template<'a>(
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = try_read!(cursor, u8)?;
-    let _template_id = try_read!(cursor, u32)?;
+    let template_id = try_read!(cursor, u32)?;
     let template_definition_data_offset = try_read!(cursor, u32)?;
+    let mut template_guid: Option<Guid> = None;
 
     // Need to skip over the template data.
     if (cursor.position() as u32) == template_definition_data_offset {
         let template_header = read_template_definition_header(cursor)?;
+        template_guid = Some(template_header.guid.clone());
         try_seek!(
             cursor,
             cursor.position() + u64::from(template_header.data_size),
@@ -114,7 +116,9 @@ pub fn read_template<'a>(
     }
 
     Ok(BinXmlTemplateRef {
+        template_id,
         template_def_offset: template_definition_data_offset,
+        template_guid,
         substitution_array,
     })
 }
