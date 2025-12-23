@@ -109,6 +109,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 #[cfg(feature = "wevt_templates")]
 mod imp {
     use super::*;
+    use crate::wevt_cache;
     use evtx::EvtxParser;
     use evtx::ParserSettings;
     use evtx::binxml::value_variant::BinXmlValue;
@@ -130,6 +131,10 @@ mod imp {
     struct CacheIndex {
         crim_paths: Vec<String>,
         event_to_template_guid: std::collections::HashMap<(String, u16, u8), String>,
+    }
+
+    fn normalize_guid(s: &str) -> String {
+        wevt_cache::normalize_guid(s)
     }
 
     fn parse_resource_id(v: &JsonValue) -> Option<String> {
@@ -213,8 +218,8 @@ mod imp {
                 template_guid,
             ) {
                 out.event_to_template_guid.insert(
-                    (provider_guid.to_string(), event_id, version),
-                    template_guid.to_string(),
+                    (normalize_guid(provider_guid), event_id, version),
+                    normalize_guid(template_guid),
                 );
             }
         }
@@ -327,15 +332,16 @@ mod imp {
 
         // Resolve template guid.
         let template_guid = if let Some(g) = matches.get_one::<String>("template-guid") {
-            g.to_string()
+            normalize_guid(g)
         } else if let (Some(provider_guid), Some(event_id), Some(version)) = (
             matches.get_one::<String>("provider-guid"),
             matches.get_one::<u16>("event-id").copied(),
             matches.get_one::<u8>("version").copied(),
         ) {
+            let key = (normalize_guid(provider_guid), event_id, version);
             cache
                 .event_to_template_guid
-                .get(&(provider_guid.to_string(), event_id, version))
+                .get(&key)
                 .cloned()
                 .ok_or_else(|| {
                     format_err!(
@@ -363,7 +369,7 @@ mod imp {
             for provider in &manifest.providers {
                 if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                     for tpl in &ttbl.templates {
-                        if tpl.guid.to_string().eq_ignore_ascii_case(&template_guid) {
+                        if normalize_guid(&tpl.guid.to_string()) == template_guid {
                             let xml = render_template_definition_to_xml_with_substitution_values(
                                 tpl,
                                 &substitutions,
@@ -399,6 +405,44 @@ mod imp {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::io::Write;
+
+        #[test]
+        fn normalize_guid_strips_braces_and_is_case_insensitive() {
+            let braced = "{12345678-1234-1234-1234-123456789ABC}";
+            let unbraced = "12345678-1234-1234-1234-123456789abc";
+
+            assert_eq!(normalize_guid(braced), unbraced);
+            assert_eq!(normalize_guid(unbraced), unbraced);
+        }
+
+        #[test]
+        fn load_cache_index_normalizes_provider_and_template_guids() -> Result<()> {
+            let mut f = tempfile::NamedTempFile::new().context("tempfile")?;
+            writeln!(
+                f,
+                r#"{{"provider_guid":"{{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}}","event_id":1,"version":2,"template_guid":"{{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}}"}}"#
+            )
+            .context("write jsonl")?;
+
+            let cache = load_cache_index(f.path()).context("load_cache_index")?;
+
+            let key = (
+                normalize_guid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                1u16,
+                2u8,
+            );
+            assert_eq!(
+                cache.event_to_template_guid.get(&key).map(|s| s.as_str()),
+                Some("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+            );
+            Ok(())
+        }
     }
 }
 
