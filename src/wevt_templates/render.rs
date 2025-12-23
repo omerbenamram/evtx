@@ -1,8 +1,23 @@
+//! Rendering helpers for template BinXML.
+//!
+//! Offline template caching needs deterministic, human-readable XML output. These helpers bridge
+//! from the WEVT inline-name BinXML token stream to XML strings, either as a template skeleton
+//! (with `{sub:N}` placeholders) or as a fully rendered fragment once substitution values are
+//! available.
+//!
+//! References:
+//! - `docs/wevt_templates.md` (project notes + curated links)
+//! - MS-EVEN6 (BinXml token grammar + inline names)
+
 use encoding::EncodingRef;
 
-use super::binxml::{parse_temp_binxml_fragment, parse_wevt_binxml_fragment, TEMP_BINXML_OFFSET};
+use super::binxml::{TEMP_BINXML_OFFSET, parse_temp_binxml_fragment, parse_wevt_binxml_fragment};
 
 /// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
+///
+/// `TEMP` is the raw template definition as shipped in provider resources. Rendering it as an
+/// XML *skeleton* is useful for building caches and for debugging, even when you don’t have an
+/// EVTX record’s substitution values.
 pub fn render_temp_to_xml(
     temp_bytes: &[u8],
     ansi_codec: EncodingRef,
@@ -200,6 +215,9 @@ pub fn render_temp_to_xml(
 ///
 /// Compared to `render_temp_to_xml`, this variant can annotate substitutions using the parsed
 /// template item descriptors/names (from the CRIM blob).
+///
+/// Caches and diagnostics benefit from stable, readable placeholders (`{sub:idx:name}`) instead
+/// of only positional ones.
 pub fn render_template_definition_to_xml(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
     ansi_codec: EncodingRef,
@@ -401,6 +419,9 @@ pub fn render_template_definition_to_xml(
 ///
 /// The `substitution_values` are provided as strings and are inserted as text/attribute values.
 /// XML escaping is handled by `XmlOutput`.
+///
+/// Once an offline cache provides the template definition, this function lets tooling render
+/// records end-to-end without access to the original provider binaries.
 pub fn render_template_definition_to_xml_with_substitution_values(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
     substitution_values: &[String],
@@ -589,5 +610,3 @@ pub fn render_template_definition_to_xml_with_substitution_values(
 
     String::from_utf8(output.into_writer()).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
-
-

@@ -6,6 +6,10 @@ use super::error::{Result, WevtManifestError};
 use super::types::*;
 
 impl<'a> CrimManifest<'a> {
+    /// Parse a CRIM manifest blob (the payload stored inside a `WEVT_TEMPLATE` resource).
+    ///
+    /// This is the entrypoint for turning raw bytes into typed structures that can be joined
+    /// against EVTX event metadata (e.g. event→template lookups for offline caches).
     pub fn parse(data: &'a [u8]) -> Result<Self> {
         let header = parse_crim_header(data)?;
         let crim_size_usize =
@@ -75,6 +79,9 @@ impl<'a> CrimManifest<'a> {
     }
 
     /// Build lookup indices to support joining events/templates.
+    ///
+    /// This is primarily used by cache builders and tooling: it yields stable keys for mapping
+    /// provider event definitions to template GUIDs, and for resolving templates by GUID.
     pub fn build_index(&'a self) -> CrimManifestIndex<'a> {
         let mut templates_by_guid: HashMap<String, Vec<&TemplateDefinition<'a>>> = HashMap::new();
         let mut event_to_template_guids: HashMap<EventKey, Vec<Guid>> = HashMap::new();

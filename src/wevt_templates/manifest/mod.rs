@@ -15,6 +15,16 @@
 //!
 //! Note: libfwevt's map parsing is marked TODO; we parse VMAP per spec and keep unknown map
 //! types as raw bytes.
+//!
+//! This module is split into:
+//! - `types`: a typed view of the manifest structures (kept stable for downstream join/render code)
+//! - `parse`: spec-backed parsing and bounds validation
+//! - `error`: a small error enum that makes failures actionable in tests/tooling
+//!
+//! References:
+//! - `docs/wevt_templates.md` (project notes + curated links)
+//! - libfwevt manifest spec doc (CRIM/WEVT/EVNT/TTBL/TEMP)
+//! - MS-EVEN6 (BinXml grammar notes used by template rendering)
 
 mod error;
 mod parse;

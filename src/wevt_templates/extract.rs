@@ -1,3 +1,13 @@
+//! PE resource-directory walker for extracting `WEVT_TEMPLATE` blobs.
+//!
+//! Template definitions are shipped as PE resources (not inside EVTX files), so building an
+//! *offline template cache* requires extracting those blobs without relying on Windows APIs.
+//! This module is a small, bounds-checked parser for the bits of PE/RSRC we need.
+//!
+//! References:
+//! - `docs/wevt_templates.md` (project notes + curated links)
+//! - Microsoft PE/COFF specification (resource directory layout)
+
 use super::error::WevtTemplateExtractError;
 use super::types::{ResourceIdentifier, WevtTemplateResource};
 use super::util::{read_u16, read_u32};
@@ -137,12 +147,14 @@ impl<'a> PeView<'a> {
                 read_u32(bytes, off + 12).ok_or(WevtTemplateExtractError::MalformedPe {
                     message: "missing section virtual_address",
                 })?;
-            let raw_size = read_u32(bytes, off + 16).ok_or(WevtTemplateExtractError::MalformedPe {
-                message: "missing section raw_size",
-            })?;
-            let raw_ptr = read_u32(bytes, off + 20).ok_or(WevtTemplateExtractError::MalformedPe {
-                message: "missing section raw_ptr",
-            })?;
+            let raw_size =
+                read_u32(bytes, off + 16).ok_or(WevtTemplateExtractError::MalformedPe {
+                    message: "missing section raw_size",
+                })?;
+            let raw_ptr =
+                read_u32(bytes, off + 20).ok_or(WevtTemplateExtractError::MalformedPe {
+                    message: "missing section raw_ptr",
+                })?;
 
             sections.push(Section {
                 virtual_address,
@@ -389,6 +401,10 @@ impl ResourceDataDescriptor {
 
 /// Extract `WEVT_TEMPLATE` resource blobs from a PE file.
 ///
+/// `WEVT_TEMPLATE` is where providers store the CRIM/WEVT template metadata needed to render
+/// events offline (e.g. for an on-disk cache, or for CLI tooling like
+/// `evtx_dump extract-wevt-templates`). This function lets us obtain those blobs cross-platform.
+///
 /// Returns an empty vector if the PE has no resources or no `WEVT_TEMPLATE` resources.
 pub fn extract_wevt_template_resources(
     pe_bytes: &[u8],
@@ -434,5 +450,3 @@ pub fn extract_wevt_template_resources(
 
     Ok(out)
 }
-
-

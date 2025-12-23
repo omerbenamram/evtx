@@ -1,7 +1,14 @@
+//! Utilities for enumerating `TTBL`/`TEMP` entries inside a `WEVT_TEMPLATE` blob.
+//!
+//! This is mostly used for indexing/debugging: callers can discover all template definitions
+//! present in a provider resource blob without re-implementing CRIM/WEVT traversal.
+//!
+//! References:
+//! - `docs/wevt_templates.md` (project notes + curated links)
+//! - libfwevt manifest format documentation (CRIM/WEVT/TTBL/TEMP tables)
+
 use super::types::{WevtTempTemplateHeader, WevtTempTemplateRef};
 
-/// Research-only parser for `TTBL`/`TEMP` structures within a `WEVT_TEMPLATE` resource blob.
-///
 /// Many real-world blobs contain multiple `TTBL` sections. This function finds all parseable
 /// `TTBL` sections and returns references to all `TEMP` entries contained within them.
 ///
@@ -36,5 +43,3 @@ pub fn extract_temp_templates_from_wevt_blob(
 
     Ok(out)
 }
-
-

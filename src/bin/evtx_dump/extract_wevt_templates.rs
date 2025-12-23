@@ -238,7 +238,9 @@ mod imp {
 
         if let Some(patterns) = matches.get_many::<String>("glob") {
             for pat in patterns {
-                for entry in glob::glob(pat).with_context(|| format!("invalid glob pattern `{pat}`"))? {
+                for entry in
+                    glob::glob(pat).with_context(|| format!("invalid glob pattern `{pat}`"))?
+                {
                     match entry {
                         Ok(p) => inputs.push(p),
                         Err(e) => eprintln!("glob entry error: {e}"),
@@ -445,8 +447,10 @@ mod imp {
                     }
 
                     // Keep ordering stable-ish by sorting by template offset.
-                    let mut templates: Vec<(u32, &evtx::wevt_templates::manifest::TemplateDefinition<'_>)> =
-                        vec![];
+                    let mut templates: Vec<(
+                        u32,
+                        &evtx::wevt_templates::manifest::TemplateDefinition<'_>,
+                    )> = vec![];
                     for provider in &manifest.providers {
                         if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                             for tpl in &ttbl.templates {
@@ -681,4 +685,3 @@ mod imp {
 
 #[cfg(feature = "wevt_templates")]
 use imp::run_impl;
-

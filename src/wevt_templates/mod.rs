@@ -1,7 +1,20 @@
-//! Extract WEVT_TEMPLATE resources from PE files.
+//! Offline extraction/parsing/rendering of Windows Event Log templates (`WEVT_TEMPLATE`).
 //!
-//! This is primarily intended to support building an offline cache of EVTX templates
-//! (see `omerbenamram/evtx` issue #103).
+//! EVTX records often contain *template instances* (substitution values), while the corresponding
+//! *template definitions* are stored in provider PE resources under the `WEVT_TEMPLATE` type.
+//! This module provides the pieces needed to build an offline cache and render events without
+//! calling Windows APIs.
+//!
+//! The implementation is split into a few focused submodules:
+//! - `extract`: minimal, bounds-checked PE/RSRC parsing to extract `WEVT_TEMPLATE` blobs
+//! - `manifest`: spec-backed parsing of the CRIM/WEVT payload, plus stable join keys
+//! - `binxml` + `render`: decoding/rendering of the WEVT “inline-name” BinXML dialect
+//! - `temp`: helpers for enumerating `TTBL`/`TEMP` entries within a blob (useful for indexing)
+//!
+//! References:
+//! - `docs/wevt_templates.md` (project notes + curated links)
+//! - MS-EVEN6 (BinXml inline names + NameHash)
+//! - libfwevt manifest format documentation / reference implementation
 
 pub mod manifest;
 
@@ -24,5 +37,3 @@ pub use temp::extract_temp_templates_from_wevt_blob;
 pub use types::{
     ResourceIdentifier, WevtTempTemplateHeader, WevtTempTemplateRef, WevtTemplateResource,
 };
-
-
