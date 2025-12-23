@@ -99,9 +99,9 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     {
         let _ = matches;
         bail!(
-            "This subcommand requires building with Cargo feature `wevt_templates`.\n\
+            "This subcommand requires building `evtx_dump` with template support enabled.\n\
              Example:\n\
-               cargo run --features wevt_templates --bin evtx_dump -- apply-wevt-cache ..."
+               cargo run --bin evtx_dump -- apply-wevt-cache ..."
         );
     }
 }

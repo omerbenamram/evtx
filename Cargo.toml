@@ -51,7 +51,7 @@ rpmalloc = { version = "0.2.2", optional = true }
 [features]
 default = ["multithreading", "evtx_dump"]
 fast-alloc = ["tikv-jemallocator", "rpmalloc"]
-evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "tempfile"]
+evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "tempfile", "wevt_templates"]
 multithreading = ["rayon"]
 # Enable WEVT_TEMPLATE extraction helpers (used by `evtx_dump extract-wevt-templates`).
 wevt_templates = ["glob"]

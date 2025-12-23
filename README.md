@@ -89,25 +89,18 @@ Some examples
 
 To force single threaded usage (which will also ensure order), `-t 1` can be passed.
 
-## WEVT_TEMPLATE extraction (offline template cache for carved records)
+## Offline template rendering (WEVT_TEMPLATE)
 
-EVTX records can reference template definitions that live inside provider binaries (EXE/DLL/SYS). If you have records without their original templates (e.g. carved records), you can extract templates ahead of time and build a simple “offline cache”.
+EVTX records can reference template definitions stored in provider binaries (EXE/DLL/SYS). `evtx_dump` can extract those templates into an offline cache and render a record’s BinXML `TemplateInstance` using the cache.
 
-This subcommand is gated behind Cargo feature `wevt_templates`:
+- Build a cache (writes extracted blobs under `/tmp/wevt_cache/` and emits an index JSONL on stdout):
+  - `evtx_dump extract-wevt-templates --input <provider.dll> --output-dir /tmp/wevt_cache --overwrite --dump-events > /tmp/wevt_cache/index.jsonl`
+- Dump a record’s `TemplateInstance` substitution values (JSONL):
+  - `evtx_dump dump-template-instances --input <log.evtx> --record-id <ID> | head -n1`
+- Render that record using the cache + substitutions (XML to stdout):
+  - `evtx_dump apply-wevt-cache --cache-index /tmp/wevt_cache/index.jsonl --template-guid <GUID> --evtx <log.evtx> --record-id <ID>`
 
-  - `cargo run --release --features wevt_templates --bin evtx_dump -- extract-wevt-templates --help`
-
-Example (`services.exe` sample from [issue #103](https://github.com/omerbenamram/evtx/issues/103), stored in `samples_local/`):
-
-  - `cargo run --release --features wevt_templates --bin evtx_dump -- extract-wevt-templates --input samples_local/services.exe.gif --output-dir /tmp/wevt_cache --overwrite --split-ttbl --dump-temp-xml --dump-events --dump-items > /tmp/wevt_cache/index.jsonl`
-
-This produces:
-- Raw extracted `WEVT_TEMPLATE` blobs in `/tmp/wevt_cache/`
-- Split `TEMP` entries in `/tmp/wevt_cache/temp/`
-- Rendered template XML skeletons in `/tmp/wevt_cache/temp_xml/`
-- Join rows (provider/event → template GUID) and item metadata in `/tmp/wevt_cache/index.jsonl` (JSONL)
-
-See [`docs/wevt_templates.md`](docs/wevt_templates.md) for the technical writeup and end-to-end workflow.
+See [`docs/wevt_templates.md`](docs/wevt_templates.md) for details and background (issue #103).
 
 ## Example usage (as library):
 ```rust
