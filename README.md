@@ -91,13 +91,19 @@ To force single threaded usage (which will also ensure order), `-t 1` can be pas
 
 ## Offline template rendering (WEVT_TEMPLATE)
 
-EVTX records can reference template definitions stored in provider binaries (EXE/DLL/SYS). `evtx_dump` can extract those templates into an offline cache and render a record’s BinXML `TemplateInstance` using the cache.
+EVTX records can reference template definitions stored in provider binaries (EXE/DLL/SYS). `evtx_dump` can extract those templates into an offline cache and use them at render time.
+
+**Note:** this functionality requires building `evtx_dump` with the Cargo feature `wevt_templates` (release binaries may already include it).
 
 - Build a cache (writes extracted blobs under `/tmp/wevt_cache/` and emits an index JSONL on stdout):
-  - `evtx_dump extract-wevt-templates --input <provider.dll> --output-dir /tmp/wevt_cache --overwrite --dump-events > /tmp/wevt_cache/index.jsonl`
+  - `evtx_dump extract-wevt-templates --input <provider.dll> --output-dir /tmp/wevt_cache --overwrite > /tmp/wevt_cache/index.jsonl`
+- Dump an EVTX file while using the cache (deterministic rule: only applies when a record fails due to an explicit missing/corrupt template GUID):
+  - `evtx_dump --wevt-cache-index /tmp/wevt_cache/index.jsonl <log.evtx>`
+
+Debugging helpers:
 - Dump a record’s `TemplateInstance` substitution values (JSONL):
   - `evtx_dump dump-template-instances --input <log.evtx> --record-id <ID> | head -n1`
-- Render that record using the cache + substitutions (XML to stdout):
+- Render a specific template GUID with substitutions (XML to stdout):
   - `evtx_dump apply-wevt-cache --cache-index /tmp/wevt_cache/index.jsonl --template-guid <GUID> --evtx <log.evtx> --record-id <ID>`
 
 See [`docs/wevt_templates.md`](docs/wevt_templates.md) for details and background (issue #103).

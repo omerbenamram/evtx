@@ -30,7 +30,8 @@ pub use binxml::{parse_temp_binxml_fragment, parse_wevt_binxml_fragment};
 pub use error::WevtTemplateExtractError;
 pub use extract::extract_wevt_template_resources;
 pub use render::{
-    render_temp_to_xml, render_template_definition_to_xml,
+    render_temp_to_xml, render_temp_to_xml_with_substitution_values,
+    render_template_definition_to_xml,
     render_template_definition_to_xml_with_substitution_values,
 };
 pub use temp::extract_temp_templates_from_wevt_blob;
