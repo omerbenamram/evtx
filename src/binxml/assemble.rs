@@ -211,30 +211,55 @@ fn expand_token_substitution<'a>(
     substitution_descriptor: &TemplateSubstitutionDescriptor,
     chunk: &'a EvtxChunk<'a>,
     stack: &mut Vec<BinXMLDeserializedTokens<'a>>,
+    remaining_uses: &mut [u32],
 ) -> Result<()> {
     if substitution_descriptor.ignore {
         return Ok(());
     }
+    // NOTE: BinXML substitution indices can be referenced multiple times within a template.
+    // We can only move the substitution value on its *last* use; otherwise we must clone.
+    let value = take_or_clone_substitution_value(
+        template,
+        substitution_descriptor.substitution_index,
+        remaining_uses,
+    );
 
-    let value = template
-        .substitution_array
-        .get_mut(substitution_descriptor.substitution_index as usize);
-
-    if let Some(value) = value {
-        let value = mem::replace(
-            value,
-            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
-        );
-        _expand_templates(value, chunk, stack)?;
-    } else {
-        _expand_templates(
-            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
-            chunk,
-            stack,
-        )?;
-    }
+    _expand_templates(value, chunk, stack)?;
 
     Ok(())
+}
+
+fn take_or_clone_substitution_value<'a>(
+    template: &mut BinXmlTemplateRef<'a>,
+    substitution_index: u16,
+    remaining_uses: &mut [u32],
+) -> BinXMLDeserializedTokens<'a> {
+    let idx = substitution_index as usize;
+
+    if idx >= template.substitution_array.len() {
+        return BinXMLDeserializedTokens::Value(BinXmlValue::NullType);
+    }
+    debug_assert!(
+        idx < remaining_uses.len(),
+        "remaining_uses must be sized to substitution_array"
+    );
+
+    let remaining = remaining_uses[idx];
+    debug_assert!(
+        remaining > 0,
+        "remaining_uses for idx {idx} should be > 0 when expanding a substitution"
+    );
+
+    remaining_uses[idx] = remaining.saturating_sub(1);
+
+    if remaining == 1 {
+        mem::replace(
+            &mut template.substitution_array[idx],
+            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
+        )
+    } else {
+        template.substitution_array[idx].clone()
+    }
 }
 
 fn expand_template<'a>(
@@ -246,11 +271,30 @@ fn expand_template<'a>(
         .template_table
         .get_template(template.template_def_offset)
     {
+        let mut remaining_uses = vec![0u32; template.substitution_array.len()];
+        for token in template_def.tokens.iter() {
+            if let BinXMLDeserializedTokens::Substitution(desc) = token {
+                if desc.ignore {
+                    continue;
+                }
+                let idx = desc.substitution_index as usize;
+                if idx < remaining_uses.len() {
+                    remaining_uses[idx] += 1;
+                }
+            }
+        }
+
         // We expect to find all the templates in the template cache.
         // Clone from cache since the cache owns the tokens.
         for token in template_def.tokens.iter() {
             if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-                expand_token_substitution(&mut template, substitution_descriptor, chunk, stack)?;
+                expand_token_substitution(
+                    &mut template,
+                    substitution_descriptor,
+                    chunk,
+                    stack,
+                    &mut remaining_uses,
+                )?;
             } else {
                 _expand_templates(token.clone(), chunk, stack)?;
             }
@@ -271,9 +315,28 @@ fn expand_template<'a>(
             chunk.settings.get_ansi_codec(),
         )?;
 
+        let mut remaining_uses = vec![0u32; template.substitution_array.len()];
+        for token in template_def.tokens.iter() {
+            if let BinXMLDeserializedTokens::Substitution(desc) = token {
+                if desc.ignore {
+                    continue;
+                }
+                let idx = desc.substitution_index as usize;
+                if idx < remaining_uses.len() {
+                    remaining_uses[idx] += 1;
+                }
+            }
+        }
+
         for token in template_def.tokens {
             if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
-                expand_token_substitution(&mut template, &substitution_descriptor, chunk, stack)?;
+                expand_token_substitution(
+                    &mut template,
+                    &substitution_descriptor,
+                    chunk,
+                    stack,
+                    &mut remaining_uses,
+                )?;
             } else {
                 _expand_templates(token, chunk, stack)?;
             }
@@ -565,8 +628,11 @@ fn stream_expand_token_ref<'a, T: BinXmlOutput>(
 }
 
 /// Expand a template instance inline during streaming.
-/// This takes ownership of substitution values (no cloning needed) and only clones
-/// template tokens from cache (which are mostly cheap - just u32 offsets).
+/// This expands substitution tokens inline.
+///
+/// We *move* substitution values on their last use and *clone* them for earlier uses when a
+/// template references the same substitution index multiple times (the BinXML format permits
+/// this).
 fn stream_expand_template<'a, T: BinXmlOutput>(
     template: &mut BinXmlTemplateRef<'a>,
     chunk: &'a EvtxChunk<'a>,
@@ -579,38 +645,44 @@ fn stream_expand_template<'a, T: BinXmlOutput>(
         .template_table
         .get_template(template.template_def_offset)
     {
+        let mut remaining_uses = vec![0u32; template.substitution_array.len()];
+        for t in template_def.tokens.iter() {
+            if let BinXMLDeserializedTokens::Substitution(desc) = t {
+                if desc.ignore {
+                    continue;
+                }
+                let idx = desc.substitution_index as usize;
+                if idx < remaining_uses.len() {
+                    remaining_uses[idx] += 1;
+                }
+            }
+        }
+
         for t in template_def.tokens.iter() {
             match t {
                 BinXMLDeserializedTokens::Substitution(desc) => {
                     if desc.ignore {
                         continue;
                     }
-                    // OPTIMIZATION: Move substitution value instead of cloning
-                    // Each substitution is only used once, so we can take ownership
-                    if let Some(val) = template
-                        .substitution_array
-                        .get_mut(desc.substitution_index as usize)
-                    {
-                        let owned_val = mem::replace(
-                            val,
-                            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
-                        );
-                        stream_expand_token(
-                            owned_val,
-                            chunk,
-                            visitor,
-                            element_stack,
-                            current_element,
-                            current_pi,
-                        )?;
-                    } else {
-                        visitor.visit_characters(Cow::Owned(BinXmlValue::NullType))?;
-                    }
+                    // Move the substitution value only on its last use. If the template
+                    // references the same substitution index multiple times, earlier uses must
+                    // clone to preserve correctness.
+                    let token = take_or_clone_substitution_value(
+                        template,
+                        desc.substitution_index,
+                        &mut remaining_uses,
+                    );
+
+                    stream_expand_token(
+                        token,
+                        chunk,
+                        visitor,
+                        element_stack,
+                        current_element,
+                        current_pi,
+                    )?;
                 }
-                // Template tokens from cache must be cloned, but most are trivially cheap:
-                // - OpenStartElement, Attribute: contain BinXmlNameRef (just u32)
-                // - CloseStartElement, CloseElement, etc: no data
-                // - Value: expensive but rare in templates (data is in substitutions)
+                // Template definition tokens from cache are handled by reference (no cloning).
                 other => stream_expand_token_ref(
                     other,
                     chunk,
@@ -634,6 +706,19 @@ fn stream_expand_template<'a, T: BinXmlOutput>(
             chunk.arena,
             chunk.settings.get_ansi_codec(),
         )?;
+        let mut remaining_uses = vec![0u32; template.substitution_array.len()];
+        for t in template_def.tokens.iter() {
+            if let BinXMLDeserializedTokens::Substitution(desc) = t {
+                if desc.ignore {
+                    continue;
+                }
+                let idx = desc.substitution_index as usize;
+                if idx < remaining_uses.len() {
+                    remaining_uses[idx] += 1;
+                }
+            }
+        }
+
         // For templates read directly, we own the tokens, so iterate them
         for t in template_def.tokens {
             match t {
@@ -641,25 +726,20 @@ fn stream_expand_template<'a, T: BinXmlOutput>(
                     if desc.ignore {
                         continue;
                     }
-                    if let Some(val) = template
-                        .substitution_array
-                        .get_mut(desc.substitution_index as usize)
-                    {
-                        let owned_val = mem::replace(
-                            val,
-                            BinXMLDeserializedTokens::Value(BinXmlValue::NullType),
-                        );
-                        stream_expand_token(
-                            owned_val,
-                            chunk,
-                            visitor,
-                            element_stack,
-                            current_element,
-                            current_pi,
-                        )?;
-                    } else {
-                        visitor.visit_characters(Cow::Owned(BinXmlValue::NullType))?;
-                    }
+                    let token = take_or_clone_substitution_value(
+                        template,
+                        desc.substitution_index,
+                        &mut remaining_uses,
+                    );
+
+                    stream_expand_token(
+                        token,
+                        chunk,
+                        visitor,
+                        element_stack,
+                        current_element,
+                        current_pi,
+                    )?;
                 }
                 other => stream_expand_token(
                     other,
@@ -682,7 +762,7 @@ pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
 ) -> Result<()> {
     // OPTIMIZATION: Process tokens directly without pre-expanding templates.
     // Template expansion happens inline in stream_expand_token/stream_expand_template,
-    // which allows us to move substitution values instead of cloning them.
+    // which allows us to move substitution values (on their last use) instead of always cloning.
     visitor.visit_start_of_stream()?;
     let mut element_stack: Vec<XmlElement<'a>> = Vec::new();
     let mut current_element: Option<XmlElementBuilder<'a>> = None;
@@ -699,4 +779,52 @@ pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
     }
     visitor.visit_end_of_stream()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bumpalo::Bump;
+    use bumpalo::collections::String as BumpString;
+
+    #[test]
+    fn repeated_template_substitution_index_preserves_value() {
+        let arena = Bump::new();
+        let s = BumpString::from_str_in("hello", &arena);
+
+        let mut template = BinXmlTemplateRef {
+            template_id: 0,
+            template_def_offset: 0,
+            template_guid: None,
+            substitution_array: vec![BinXMLDeserializedTokens::Value(BinXmlValue::StringType(s))],
+        };
+
+        // Simulate a template definition that references substitution index 0 twice.
+        let mut remaining_uses = vec![2u32];
+
+        let first = take_or_clone_substitution_value(&mut template, 0u16, &mut remaining_uses);
+        let second = take_or_clone_substitution_value(&mut template, 0u16, &mut remaining_uses);
+
+        assert_eq!(remaining_uses[0], 0);
+
+        match first {
+            BinXMLDeserializedTokens::Value(BinXmlValue::StringType(s)) => {
+                assert_eq!(s.as_str(), "hello")
+            }
+            other => panic!("expected StringType, got {other:?}"),
+        }
+
+        match second {
+            BinXMLDeserializedTokens::Value(BinXmlValue::StringType(s)) => {
+                assert_eq!(s.as_str(), "hello")
+            }
+            other => panic!("expected StringType, got {other:?}"),
+        }
+
+        // The last use moves the value out; leaving NullType behind is fine (no further uses).
+        assert!(matches!(
+            template.substitution_array[0],
+            BinXMLDeserializedTokens::Value(BinXmlValue::NullType)
+        ));
+    }
 }
