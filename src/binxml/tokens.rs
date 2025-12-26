@@ -180,6 +180,74 @@ pub(crate) fn read_template_definition_cursor<'a>(
     Ok(template)
 }
 
+/// Strictly read a `TemplateDefinitionHeader` at a known offset in an EVTX chunk buffer.
+///
+/// This does **not** scan for signatures or guess offsets. It only succeeds when the bytes at the
+/// provided `offset` look like a valid template definition header followed by a BinXML fragment
+/// header (`StartOfStream` + version tuple). This is used by higher-level "offline WEVT cache"
+/// logic to match a record's `TemplateInstance` to a template GUID without fully deserializing the
+/// template.
+pub(crate) fn try_read_template_definition_header_at(
+    chunk_data: &[u8],
+    offset: u32,
+) -> Result<BinXmlTemplateDefinitionHeader> {
+    let off = offset as usize;
+    let mut cursor = ByteCursor::with_pos(chunk_data, off)?;
+
+    // Read the header using the canonical parser.
+    let header = read_template_definition_header_cursor(&mut cursor)?;
+
+    // Validate next_template_offset is either:
+    // - 0 (end of list)
+    // - equal to itself (observed termination sentinel)
+    // - a forward in-chunk offset
+    if header.next_template_offset != 0 && header.next_template_offset != offset {
+        if header.next_template_offset <= offset {
+            return Err(DeserializationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "template next_template_offset is not forward",
+            )));
+        }
+        if (header.next_template_offset as usize) >= chunk_data.len() {
+            return Err(DeserializationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "template next_template_offset out of bounds",
+            )));
+        }
+    }
+
+    // We should now be positioned immediately after the template header.
+    let data_size_usize = header.data_size as usize;
+    if data_size_usize < 4 {
+        return Err(DeserializationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "template data_size too small",
+        )));
+    }
+
+    // Ensure the full template fragment range is in-bounds (strict; we do not accept a header that
+    // points past the chunk end).
+    let data_start = cursor.pos();
+    let data_end = data_start.saturating_add(data_size_usize);
+    if data_end > chunk_data.len() {
+        return Err(DeserializationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "template data_size out of bounds",
+        )));
+    }
+
+    // Verify BinXML fragment header: StartOfStream (0x0f) + major/minor/flags.
+    let frag = cursor.take_bytes(4, "template fragment header")?;
+    if frag[0] != 0x0f || frag[1] != 0x01 || frag[2] != 0x01 {
+        return Err(DeserializationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "template does not start with BinXML fragment header (StartOfStream 1.1)",
+        )));
+    }
+
+    Ok(header)
+}
+
 pub(crate) fn read_entity_ref_cursor(
     cursor: &mut ByteCursor<'_>,
     name_encoding: BinXmlNameEncoding,

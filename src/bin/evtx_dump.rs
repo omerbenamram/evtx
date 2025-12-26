@@ -24,10 +24,6 @@ mod dump_template_instances;
 #[path = "evtx_dump/extract_wevt_templates.rs"]
 mod extract_wevt_templates;
 
-#[cfg(feature = "wevt_templates")]
-#[path = "evtx_dump/wevt_cache.rs"]
-mod wevt_cache;
-
 #[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -65,7 +61,7 @@ struct EvtxDump {
     /// When set, only the specified events (offseted reltaive to file) will be outputted.
     ranges: Option<Ranges>,
     #[cfg(feature = "wevt_templates")]
-    wevt_cache: Option<std::sync::Arc<wevt_cache::WevtCache>>,
+    wevt_cache: Option<std::sync::Arc<evtx::wevt_templates::WevtCache>>,
 }
 
 impl EvtxDump {
@@ -182,7 +178,7 @@ impl EvtxDump {
         #[cfg(feature = "wevt_templates")]
         let wevt_cache = matches
             .get_one::<String>("wevt-cache-index")
-            .map(|p| wevt_cache::WevtCache::load(p).map(std::sync::Arc::new))
+            .map(|p| evtx::wevt_templates::WevtCache::load(p).map(std::sync::Arc::new))
             .transpose()?;
 
         Ok(EvtxDump {
@@ -221,7 +217,7 @@ impl EvtxDump {
                 if let Some(cache) = self.wevt_cache.clone() {
                     let iter = parser.serialized_records(move |record_res| {
                         record_res
-                            .and_then(|record| render_record_xml_with_wevt_cache(record, &cache))
+                            .and_then(|record| record.into_xml_with_wevt_cache(cache.as_ref()))
                     });
                     for record in iter {
                         self.dump_record(record)?
@@ -242,10 +238,9 @@ impl EvtxDump {
                     JsonParserKind::Streaming => {
                         #[cfg(feature = "wevt_templates")]
                         if let Some(cache) = self.wevt_cache.clone() {
-                            let indent = self.parser_settings.should_indent();
                             let iter = parser.serialized_records(move |record_res| {
                                 record_res.and_then(|record| {
-                                    render_record_json_with_wevt_cache(record, &cache, indent, true)
+                                    record.into_json_stream_with_wevt_cache(cache.as_ref())
                                 })
                             });
                             for record in iter {
@@ -265,12 +260,9 @@ impl EvtxDump {
                     JsonParserKind::Legacy => {
                         #[cfg(feature = "wevt_templates")]
                         if let Some(cache) = self.wevt_cache.clone() {
-                            let indent = self.parser_settings.should_indent();
                             let iter = parser.serialized_records(move |record_res| {
                                 record_res.and_then(|record| {
-                                    render_record_json_with_wevt_cache(
-                                        record, &cache, indent, false,
-                                    )
+                                    record.into_json_with_wevt_cache(cache.as_ref())
                                 })
                             });
                             for record in iter {
@@ -644,244 +636,4 @@ fn main() -> Result<()> {
     EvtxDump::from_cli_matches(&matches)?.run()?;
 
     Ok(())
-}
-
-#[cfg(feature = "wevt_templates")]
-fn extract_template_guid_from_error(err: &evtx::err::EvtxError) -> Option<String> {
-    use evtx::err::{DeserializationError, EvtxError};
-    match err {
-        EvtxError::FailedToParseRecord { source, .. } => extract_template_guid_from_error(source),
-        EvtxError::DeserializationError(DeserializationError::FailedToDeserializeTemplate {
-            template_id,
-            ..
-        }) => Some(template_id.to_string()),
-        _ => None,
-    }
-}
-
-#[cfg(feature = "wevt_templates")]
-fn binxml_value_to_string_lossy(value: &evtx::binxml::value_variant::BinXmlValue<'_>) -> String {
-    use evtx::binxml::value_variant::BinXmlValue;
-    match value {
-        BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => String::new(),
-        _ => value.as_cow_str().into_owned(),
-    }
-}
-
-#[cfg(feature = "wevt_templates")]
-fn substitutions_from_template_instance<'a>(
-    tpl: &evtx::model::deserialized::BinXmlTemplateRef<'a>,
-) -> Vec<String> {
-    use evtx::model::deserialized::BinXMLDeserializedTokens;
-    tpl.substitution_array
-        .iter()
-        .map(|t| match t {
-            BinXMLDeserializedTokens::Value(v) => binxml_value_to_string_lossy(v),
-            _ => String::new(),
-        })
-        .collect()
-}
-
-#[cfg(feature = "wevt_templates")]
-fn resolve_template_guid_from_record<'a>(
-    record: &evtx::EvtxRecord<'a>,
-    tpl: &evtx::model::deserialized::BinXmlTemplateRef<'a>,
-) -> Option<String> {
-    if let Some(g) = tpl.template_guid.as_ref() {
-        return Some(g.to_string());
-    }
-
-    record
-        .chunk
-        .template_table
-        .get_template(tpl.template_def_offset)
-        .map(|def| def.header.guid.to_string())
-}
-
-#[cfg(feature = "wevt_templates")]
-struct TemplateInstanceInfo {
-    /// Normalized GUID (lowercased, braces stripped) if we can resolve it.
-    guid: Option<String>,
-    substitutions: Vec<String>,
-}
-
-#[cfg(feature = "wevt_templates")]
-fn collect_template_instances<'a>(record: &evtx::EvtxRecord<'a>) -> Vec<TemplateInstanceInfo> {
-    use evtx::model::deserialized::BinXMLDeserializedTokens;
-    let mut out = Vec::new();
-
-    for t in &record.tokens {
-        let BinXMLDeserializedTokens::TemplateInstance(tpl) = t else {
-            continue;
-        };
-
-        let guid =
-            resolve_template_guid_from_record(record, tpl).map(|g| wevt_cache::normalize_guid(&g));
-        let substitutions = substitutions_from_template_instance(tpl);
-
-        out.push(TemplateInstanceInfo {
-            guid,
-            substitutions,
-        });
-    }
-
-    out
-}
-
-#[cfg(feature = "wevt_templates")]
-fn select_template_instance_for_guid<'a>(
-    instances: &'a [TemplateInstanceInfo],
-    guid: &str,
-) -> Option<&'a TemplateInstanceInfo> {
-    let want = wevt_cache::normalize_guid(guid);
-
-    match instances.len() {
-        0 => None,
-        1 => Some(&instances[0]),
-        _ => {
-            let matches: Vec<&TemplateInstanceInfo> = instances
-                .iter()
-                .filter(|i| i.guid.as_ref().is_some_and(|g| g == &want))
-                .collect();
-
-            if matches.len() == 1 {
-                Some(matches[0])
-            } else {
-                None
-            }
-        }
-    }
-}
-
-#[cfg(feature = "wevt_templates")]
-/// Render a record as XML, using the EVTX’s embedded templates first.
-///
-/// If rendering fails *specifically because a template definition cannot be deserialized* and the
-/// error contains a concrete template GUID, we will deterministically attempt to render the record
-/// using the provided offline WEVT cache:
-/// - We only use the cache when the error is `FailedToDeserializeTemplate { template_id: GUID }`.
-/// - We only proceed when we can unambiguously select the matching `TemplateInstance` substitution
-///   array for that GUID (single instance, or a unique GUID match among multiple instances).
-/// - Otherwise we return the original error unchanged.
-fn render_record_xml_with_wevt_cache<'a>(
-    record: evtx::EvtxRecord<'a>,
-    cache: &std::sync::Arc<wevt_cache::WevtCache>,
-) -> evtx::err::Result<SerializedEvtxRecord<String>> {
-    let record_id = record.event_record_id;
-    let timestamp = record.timestamp;
-    let instances = collect_template_instances(&record);
-
-    match record.into_xml() {
-        Ok(r) => Ok(r),
-        Err(e) => {
-            // Deterministic rule: only attempt cache rendering when the failure explicitly
-            // indicates a template GUID (i.e. template deserialization failure).
-            let Some(guid) = extract_template_guid_from_error(&e) else {
-                return Err(e);
-            };
-
-            let Some(tpl) = select_template_instance_for_guid(&instances, &guid) else {
-                return Err(e);
-            };
-            let subs = &tpl.substitutions;
-
-            match cache.render_by_template_guid(&guid, subs) {
-                Ok(xml_fragment) => {
-                    log::info!(
-                        "wevt-cache used: record_id={} template_guid={}",
-                        record_id,
-                        guid
-                    );
-                    Ok(SerializedEvtxRecord {
-                        event_record_id: record_id,
-                        timestamp,
-                        data: xml_fragment,
-                    })
-                }
-                Err(render_err) => {
-                    eprintln!(
-                        "wevt-cache render failed for record {} template_guid={}: {render_err}",
-                        record_id, guid
-                    );
-                    Err(e)
-                }
-            }
-        }
-    }
-}
-
-#[cfg(feature = "wevt_templates")]
-/// Render a record as JSON, using the EVTX’s embedded templates first.
-///
-/// This follows the same deterministic WEVT-cache rule as `render_record_xml_with_wevt_cache`:
-/// only on an explicit template-GUID deserialization failure and only with an unambiguous
-/// `TemplateInstance` substitution array.
-///
-/// When the cache is used, the JSON output is a synthetic object that contains the rendered XML
-/// fragment under `xml` (and includes metadata fields like `template_guid` and `record_id`).
-fn render_record_json_with_wevt_cache<'a>(
-    record: evtx::EvtxRecord<'a>,
-    cache: &std::sync::Arc<wevt_cache::WevtCache>,
-    indent: bool,
-    use_streaming_json: bool,
-) -> evtx::err::Result<SerializedEvtxRecord<String>> {
-    let record_id = record.event_record_id;
-    let timestamp = record.timestamp;
-    let instances = collect_template_instances(&record);
-
-    let normal = if use_streaming_json {
-        record.into_json_stream()
-    } else {
-        record.into_json()
-    };
-
-    match normal {
-        Ok(r) => Ok(r),
-        Err(e) => {
-            let Some(guid) = extract_template_guid_from_error(&e) else {
-                return Err(e);
-            };
-            let Some(tpl) = select_template_instance_for_guid(&instances, &guid) else {
-                return Err(e);
-            };
-            let subs = &tpl.substitutions;
-
-            match cache.render_by_template_guid(&guid, subs) {
-                Ok(xml_fragment) => {
-                    log::info!(
-                        "wevt-cache used: record_id={} template_guid={}",
-                        record_id,
-                        guid
-                    );
-                    let v = serde_json::json!({
-                        "_wevt_cache_used": true,
-                        "template_guid": guid,
-                        "record_id": record_id,
-                        "timestamp": timestamp.to_rfc3339(),
-                        "xml": xml_fragment,
-                    });
-
-                    let data = if indent {
-                        serde_json::to_string_pretty(&v)
-                            .map_err(evtx::err::SerializationError::from)?
-                    } else {
-                        serde_json::to_string(&v).map_err(evtx::err::SerializationError::from)?
-                    };
-
-                    Ok(SerializedEvtxRecord {
-                        event_record_id: record_id,
-                        timestamp,
-                        data,
-                    })
-                }
-                Err(render_err) => {
-                    eprintln!(
-                        "wevt-cache render failed for record {} template_guid={}: {render_err}",
-                        record_id, guid
-                    );
-                    Err(e)
-                }
-            }
-        }
-    }
 }

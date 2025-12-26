@@ -109,7 +109,6 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 #[cfg(feature = "wevt_templates")]
 mod imp {
     use super::*;
-    use crate::wevt_cache;
     use evtx::EvtxParser;
     use evtx::ParserSettings;
     use evtx::binxml::value_variant::BinXmlValue;
@@ -134,7 +133,7 @@ mod imp {
     }
 
     fn normalize_guid(s: &str) -> String {
-        wevt_cache::normalize_guid(s)
+        evtx::wevt_templates::normalize_guid(s)
     }
 
     fn parse_resource_id(v: &JsonValue) -> Option<String> {
