@@ -1470,12 +1470,9 @@ mod wevt_templates_research {
             if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                 for tpl in &ttbl.templates {
                     arena.reset();
-                    let _ = parse_wevt_binxml_fragment(
-                        tpl.binxml,
-                        &arena,
-                        encoding::all::WINDOWS_1252,
-                    )
-                        .expect("BinXML parse should succeed");
+                    let _ =
+                        parse_wevt_binxml_fragment(tpl.binxml, &arena, encoding::all::WINDOWS_1252)
+                            .expect("BinXML parse should succeed");
                     parsed_templates += 1;
                 }
             }

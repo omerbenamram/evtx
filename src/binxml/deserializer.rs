@@ -98,7 +98,14 @@ impl<'a> BinXmlDeserializer<'a> {
     ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
         let offset = cursor.position();
 
-        let de = BinXmlDeserializer::init(cursor.get_ref(), offset, chunk, arena, has_dep_id, ansi_codec);
+        let de = BinXmlDeserializer::init(
+            cursor.get_ref(),
+            offset,
+            chunk,
+            arena,
+            has_dep_id,
+            ansi_codec,
+        );
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size)?;
@@ -185,7 +192,13 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_cursor(cursor, self.chunk, self.arena, None, self.ansi_codec)?,
+                BinXmlValue::from_binxml_cursor(
+                    cursor,
+                    self.chunk,
+                    self.arena,
+                    None,
+                    self.ansi_codec,
+                )?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
                 Ok(BinXMLDeserializedTokens::Attribute(read_attribute_cursor(

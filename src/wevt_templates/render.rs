@@ -22,13 +22,13 @@ pub fn render_temp_to_xml(
     temp_bytes: &[u8],
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
-    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     if temp_bytes.len() < TEMP_BINXML_OFFSET {
@@ -114,9 +114,10 @@ pub fn render_temp_to_xml(
             }
             crate::model::deserialized::BinXMLDeserializedTokens::Substitution(sub) => {
                 let placeholder = format!("{{sub:{}}}", sub.substitution_index);
-                let value = BinXmlValue::StringType(
-                    bumpalo::collections::String::from_str_in(&placeholder, &arena),
-                );
+                let value = BinXmlValue::StringType(bumpalo::collections::String::from_str_in(
+                    &placeholder,
+                    &arena,
+                ));
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
                     Some(ref mut builder) => {
@@ -228,13 +229,13 @@ pub fn render_temp_to_xml_with_substitution_values(
     substitution_values: &[String],
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
-    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     if temp_bytes.len() < TEMP_BINXML_OFFSET {
@@ -420,8 +421,7 @@ pub fn render_temp_to_xml_with_substitution_values(
 
     output.visit_end_of_stream()?;
 
-    String::from_utf8(output.into_writer())
-        .map_err(|e| EvtxError::calculation_error(e.to_string()))
+    String::from_utf8(output.into_writer()).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
 /// Render a parsed template definition to XML.
@@ -435,13 +435,13 @@ pub fn render_template_definition_to_xml(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
-    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     let binxml = template.binxml;
@@ -527,9 +527,10 @@ pub fn render_template_definition_to_xml(
                     placeholder = format!("{{sub:{idx}:{name}}}");
                 }
 
-                let value = BinXmlValue::StringType(
-                    bumpalo::collections::String::from_str_in(&placeholder, &arena),
-                );
+                let value = BinXmlValue::StringType(bumpalo::collections::String::from_str_in(
+                    &placeholder,
+                    &arena,
+                ));
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
                     Some(ref mut builder) => {
@@ -644,13 +645,13 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     substitution_values: &[String],
     ansi_codec: EncodingRef,
 ) -> crate::err::Result<String> {
-    use bumpalo::Bump;
     use crate::ParserSettings;
     use crate::binxml::name::read_wevt_inline_name_at;
     use crate::binxml::value_variant::BinXmlValue;
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     let binxml = template.binxml;

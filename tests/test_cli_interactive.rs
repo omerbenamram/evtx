@@ -16,7 +16,11 @@ mod tests {
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
-    fn wait_for_file_len_at_least(path: &std::path::Path, min_len: usize, timeout: Duration) -> usize {
+    fn wait_for_file_len_at_least(
+        path: &std::path::Path,
+        min_len: usize,
+        timeout: Duration,
+    ) -> usize {
         let start = Instant::now();
         loop {
             if let Ok(meta) = std::fs::metadata(path) {
@@ -26,7 +30,9 @@ mod tests {
                 }
             }
             if start.elapsed() >= timeout {
-                let len = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
+                let len = std::fs::metadata(path)
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0);
                 return len;
             }
             std::thread::sleep(Duration::from_millis(25));

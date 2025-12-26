@@ -47,5 +47,3 @@ pub struct WevtTempTemplateRef {
     pub temp_size: u32,
     pub header: WevtTempTemplateHeader,
 }
-
-

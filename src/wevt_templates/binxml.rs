@@ -9,8 +9,8 @@
 //! - `docs/wevt_templates.md` (project notes + curated links)
 //! - MS-EVEN6 (BinXml `Name` structure and NameHash)
 
-use encoding::EncodingRef;
 use bumpalo::Bump;
+use encoding::EncodingRef;
 
 pub(super) const TEMP_BINXML_OFFSET: usize = 40;
 

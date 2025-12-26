@@ -70,11 +70,8 @@ pub(crate) fn read_sid(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Sid
         })?;
 
     let mut c = Cursor::new(remaining);
-    let sid = Sid::from_reader(&mut c).map_err(|e| {
-        DeserializationError::Io(io::Error::new(io::ErrorKind::InvalidData, e))
-    })?;
+    let sid = Sid::from_reader(&mut c)
+        .map_err(|e| DeserializationError::Io(io::Error::new(io::ErrorKind::InvalidData, e)))?;
     cursor.advance(c.position() as usize, "sid")?;
     Ok(sid)
 }
-
-

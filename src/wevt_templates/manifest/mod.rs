@@ -33,5 +33,3 @@ mod util;
 
 pub use error::WevtManifestError;
 pub use types::*;
-
-
