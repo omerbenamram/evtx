@@ -683,11 +683,10 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.elements[index].buffered_values.push(json_value);
             }
             ElementValueKind::Object => {
-                if self.elements[index].has_separate_attributes && s.is_empty() {
-                    return Ok(());
-                }
-                self.elements[index].buffered_values.push(json_value);
-                self.elements[index].has_text = true;
+                // Match legacy `JsonOutput`: once an element has been materialized as an object
+                // (attributes and/or child elements), entity references are ignored.
+                let _ = json_value;
+                return Ok(());
             }
         }
 
@@ -782,7 +781,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         let mut has_json_attributes = false;
         if !is_data {
             for attr in &element.attributes {
-                if !attr.value.is_null() {
+                if !matches!(attr.value.as_ref(), BinXmlValue::NullType) {
                     has_json_attributes = true;
                     break;
                 }
@@ -828,7 +827,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                             continue;
                         }
 
-                        if attr.value.is_null() {
+                        if matches!(attr.value.as_ref(), BinXmlValue::NullType) {
                             continue;
                         }
 
@@ -882,7 +881,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 {
                     for attr in &element.attributes {
                         let attr_name = attr.name.as_str();
-                        if attr.value.is_null() {
+                        if matches!(attr.value.as_ref(), BinXmlValue::NullType) {
                             continue;
                         }
 

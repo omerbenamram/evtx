@@ -554,14 +554,12 @@ impl<'a> BinXmlValue<'a> {
                     "hex32_array",
                     |_off, b| {
                         let v = i32::from_le_bytes(*b);
-                        Ok(Cow::Owned(format!("0x{:x}", v)))
+                        let mut s = BumpString::new_in(arena);
+                        write!(&mut s, "0x{:x}", v).expect("write to bump string");
+                        Ok(s)
                     },
                 )?;
-                let mut out = BumpVec::with_capacity_in(hex_strings.len(), arena);
-                for s in hex_strings {
-                    out.push(Self::alloc_str(s.as_ref(), arena));
-                }
-                BinXmlValue::HexInt32ArrayType(out)
+                BinXmlValue::HexInt32ArrayType(Self::vec_to_bump_vec(hex_strings, arena))
             }
             (BinXmlValueType::HexInt64ArrayType, Some(sz)) => {
                 let hex_strings = cursor.read_sized_vec_aligned::<8, _>(
@@ -569,14 +567,12 @@ impl<'a> BinXmlValue<'a> {
                     "hex64_array",
                     |_off, b| {
                         let v = i64::from_le_bytes(*b);
-                        Ok(Cow::Owned(format!("0x{:x}", v)))
+                        let mut s = BumpString::new_in(arena);
+                        write!(&mut s, "0x{:x}", v).expect("write to bump string");
+                        Ok(s)
                     },
                 )?;
-                let mut out = BumpVec::with_capacity_in(hex_strings.len(), arena);
-                for s in hex_strings {
-                    out.push(Self::alloc_str(s.as_ref(), arena));
-                }
-                BinXmlValue::HexInt64ArrayType(out)
+                BinXmlValue::HexInt64ArrayType(Self::vec_to_bump_vec(hex_strings, arena))
             }
 
             _ => {

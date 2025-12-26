@@ -114,7 +114,9 @@ pub fn render_temp_to_xml(
             }
             crate::model::deserialized::BinXMLDeserializedTokens::Substitution(sub) => {
                 let placeholder = format!("{{sub:{}}}", sub.substitution_index);
-                let value = BinXmlValue::StringType(placeholder);
+                let value = BinXmlValue::StringType(
+                    bumpalo::collections::String::from_str_in(&placeholder, &arena),
+                );
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
                     Some(ref mut builder) => {
@@ -320,7 +322,8 @@ pub fn render_temp_to_xml_with_substitution_values(
                 }
                 let idx = sub.substitution_index as usize;
                 let s = substitution_values.get(idx).cloned().unwrap_or_default();
-                let value = BinXmlValue::StringType(s);
+                let value =
+                    BinXmlValue::StringType(bumpalo::collections::String::from_str_in(&s, &arena));
 
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
@@ -524,7 +527,9 @@ pub fn render_template_definition_to_xml(
                     placeholder = format!("{{sub:{idx}:{name}}}");
                 }
 
-                let value = BinXmlValue::StringType(placeholder);
+                let value = BinXmlValue::StringType(
+                    bumpalo::collections::String::from_str_in(&placeholder, &arena),
+                );
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
                     Some(ref mut builder) => {
@@ -725,7 +730,8 @@ pub fn render_template_definition_to_xml_with_substitution_values(
                 }
                 let idx = sub.substitution_index as usize;
                 let s = substitution_values.get(idx).cloned().unwrap_or_default();
-                let value = BinXmlValue::StringType(s);
+                let value =
+                    BinXmlValue::StringType(bumpalo::collections::String::from_str_in(&s, &arena));
 
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),

@@ -294,6 +294,7 @@ mod tests {
     use crate::binxml::name::{BinXmlNameEncoding, read_wevt_inline_name_at};
     use crate::evtx_chunk::EvtxChunkData;
     use crate::{ParserSettings, ensure_env_logger_initialized};
+    use bumpalo::Bump;
     use std::sync::Arc;
 
     #[test]

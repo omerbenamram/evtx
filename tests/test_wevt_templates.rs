@@ -1465,10 +1465,16 @@ mod wevt_templates_research {
         // NameHash validation (MS-EVEN6) and the current token support.
         let manifest = CrimManifest::parse(&r.data).expect("manifest parse should succeed");
         let mut parsed_templates = 0usize;
+        let mut arena = bumpalo::Bump::new();
         for provider in &manifest.providers {
             if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                 for tpl in &ttbl.templates {
-                    let _ = parse_wevt_binxml_fragment(tpl.binxml, encoding::all::WINDOWS_1252)
+                    arena.reset();
+                    let _ = parse_wevt_binxml_fragment(
+                        tpl.binxml,
+                        &arena,
+                        encoding::all::WINDOWS_1252,
+                    )
                         .expect("BinXML parse should succeed");
                     parsed_templates += 1;
                 }
