@@ -2,14 +2,9 @@ use crate::err::DeserializationError;
 use crate::err::DeserializationResult as Result;
 
 use crate::ChunkOffset;
-pub use byteorder::{LittleEndian, ReadBytesExt};
+use crate::utils::ByteCursor;
 
-use crate::utils::ReadExt;
-
-use std::{
-    fmt::Formatter,
-    io::Cursor,
-};
+use std::{fmt::Formatter, io::Cursor};
 
 use quick_xml::events::{BytesEnd, BytesStart};
 use std::fmt;
@@ -64,9 +59,9 @@ pub(crate) struct BinXmlNameLink {
 }
 
 impl BinXmlNameLink {
-    pub fn from_stream(stream: &mut Cursor<&[u8]>) -> Result<Self> {
-        let next_string = stream.try_u32()?;
-        let name_hash = stream.try_u16_named("name_hash")?;
+    pub(crate) fn from_cursor(cursor: &mut ByteCursor<'_>) -> Result<Self> {
+        let next_string = cursor.u32()?;
+        let name_hash = cursor.u16_named("name_hash")?;
 
         Ok(BinXmlNameLink {
             next_string: if next_string > 0 {
@@ -84,25 +79,34 @@ impl BinXmlNameLink {
 }
 
 impl BinXmlNameRef {
-    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let name_offset = cursor.try_u32_named("name_offset")?;
+    pub(crate) fn from_cursor(cursor: &mut ByteCursor<'_>) -> Result<Self> {
+        let name_offset = cursor.u32_named("name_offset")?;
 
         let position_before_string = cursor.position();
         let need_to_seek = position_before_string == u64::from(name_offset);
 
         if need_to_seek {
-            let _ = BinXmlNameLink::from_stream(cursor)?;
-            let len = cursor.read_u16::<LittleEndian>()?;
+            let _ = BinXmlNameLink::from_cursor(cursor)?;
+            let len = cursor.u16_named("string_table_name_len")?;
 
             let nul_terminator_len = 4;
             let data_size = BinXmlNameLink::data_size() + u32::from(len * 2) + nul_terminator_len;
 
-            cursor.try_seek_abs_named(position_before_string + u64::from(data_size), "Skip string")?;
+            cursor.set_pos_u64(position_before_string + u64::from(data_size), "Skip string")?;
         }
 
         Ok(BinXmlNameRef {
             offset: name_offset,
         })
+    }
+
+    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+        let start = cursor.position() as usize;
+        let buf = *cursor.get_ref();
+        let mut c = ByteCursor::with_pos(buf, start)?;
+        let v = Self::from_cursor(&mut c)?;
+        cursor.set_position(c.position());
+        Ok(v)
     }
 
     pub fn from_stream_with_encoding(
@@ -115,21 +119,31 @@ impl BinXmlNameRef {
         }
     }
 
-    fn from_stream_wevt_inline(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+    pub(crate) fn from_cursor_with_encoding(
+        cursor: &mut ByteCursor<'_>,
+        encoding: BinXmlNameEncoding,
+    ) -> Result<Self> {
+        match encoding {
+            BinXmlNameEncoding::Offset => Self::from_cursor(cursor),
+            BinXmlNameEncoding::WevtInline => Self::from_cursor_wevt_inline(cursor),
+        }
+    }
+
+    fn from_cursor_wevt_inline(cursor: &mut ByteCursor<'_>) -> Result<Self> {
         let name_offset = cursor.position() as ChunkOffset;
-        let stored_hash = cursor.try_u16_named("wevt_inline_name_hash")?;
+        let stored_hash = cursor.u16_named("wevt_inline_name_hash")?;
         // character count
-        let char_count = cursor.try_u16_named("wevt_inline_name_character_count")?;
+        let char_count = cursor.u16_named("wevt_inline_name_character_count")?;
 
         let mut hash: u32 = 0;
         for _ in 0..char_count {
-            let code_unit = cursor.try_u16_named("wevt_inline_name_code_unit")?;
+            let code_unit = cursor.u16_named("wevt_inline_name_code_unit")?;
             hash = hash
                 .wrapping_mul(WEVT_INLINE_NAME_HASH_MULTIPLIER)
                 .wrapping_add(u32::from(code_unit));
         }
 
-        let nul = cursor.try_u16_named("wevt_inline_name_nul")?;
+        let nul = cursor.u16_named("wevt_inline_name_nul")?;
         if nul != 0 {
             return Err(DeserializationError::WevtInlineNameMissingNulTerminator {
                 found: nul,
@@ -150,6 +164,15 @@ impl BinXmlNameRef {
             offset: name_offset,
         })
     }
+
+    fn from_stream_wevt_inline(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
+        let start = cursor.position() as usize;
+        let buf = *cursor.get_ref();
+        let mut c = ByteCursor::with_pos(buf, start)?;
+        let v = Self::from_cursor_wevt_inline(&mut c)?;
+        cursor.set_position(c.position());
+        Ok(v)
+    }
 }
 
 /// Resolve a WEVT inline name at the given offset.
@@ -157,15 +180,11 @@ impl BinXmlNameRef {
 /// The offset should point to the start of the inline name structure, i.e. the `name_hash` field.
 #[cfg(any(test, feature = "wevt_templates"))]
 pub(crate) fn read_wevt_inline_name_at(data: &[u8], offset: ChunkOffset) -> Result<BinXmlName> {
-    let mut cursor = Cursor::new(data);
-    let cursor_ref = &mut cursor;
-    cursor_ref.try_seek_abs_named(u64::from(offset), "Seek WEVT inline name")?;
-
-    let _ = cursor_ref.try_u16_named("wevt_inline_name_hash")?;
-    let name = cursor_ref
-        .try_len_prefixed_utf16_string_nul_terminated_named("wevt_inline_name")?
+    let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
+    let _ = cursor.u16_named("wevt_inline_name_hash")?;
+    let name = cursor
+        .len_prefixed_utf16_string(true, "wevt_inline_name")?
         .unwrap_or_default();
-
     Ok(BinXmlName { str: name })
 }
 
@@ -182,10 +201,18 @@ impl BinXmlName {
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
     pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let name = cursor
-            .try_len_prefixed_utf16_string_nul_terminated_named("name")?
-            .unwrap_or_default();
+        let start = cursor.position() as usize;
+        let buf = *cursor.get_ref();
+        let mut c = ByteCursor::with_pos(buf, start)?;
+        let v = Self::from_cursor(&mut c)?;
+        cursor.set_position(c.position());
+        Ok(v)
+    }
 
+    pub(crate) fn from_cursor(cursor: &mut ByteCursor<'_>) -> Result<Self> {
+        let name = cursor
+            .len_prefixed_utf16_string(true, "name")?
+            .unwrap_or_default();
         Ok(BinXmlName { str: name })
     }
 

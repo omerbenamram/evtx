@@ -1,36 +1,35 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
-use crate::utils::ReadExt;
+use crate::utils::ByteCursor;
 
 use log::trace;
-use std::io::{Seek, SeekFrom};
 
+use crate::binxml::name::BinXmlNameEncoding;
 use crate::binxml::tokens::{
-    read_open_start_element, read_processing_instruction_data, read_processing_instruction_target,
+    read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
+    read_open_start_element_cursor, read_processing_instruction_data_cursor,
+    read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
+    read_template_cursor,
 };
 use crate::binxml::value_variant::BinXmlValue;
-use crate::binxml::name::BinXmlNameEncoding;
 
-use crate::{
-    binxml::tokens::{
-        read_attribute, read_entity_ref, read_fragment_header, read_substitution_descriptor,
-        read_template,
-    },
-    model::{deserialized::*, raw::*},
-};
+use crate::model::{deserialized::*, raw::*};
 
 use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
 
 use std::io::Cursor;
-use std::mem;
 
 pub struct IterTokens<'a> {
-    cursor: Cursor<&'a [u8]>,
+    cursor: ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
     data_size: Option<u32>,
     data_read_so_far: u32,
     eof: bool,
-    is_inside_substitution: bool,
+    /// Whether element start headers include the dependency identifier (u16).
+    ///
+    /// - Template definitions: true
+    /// - Direct record elements and nested BinXML substitution values (0x21): false
+    has_dep_id: bool,
     ansi_codec: EncodingRef,
     name_encoding: BinXmlNameEncoding,
 }
@@ -39,8 +38,8 @@ pub struct BinXmlDeserializer<'a> {
     data: &'a [u8],
     offset: u64,
     chunk: Option<&'a EvtxChunk<'a>>,
-    // if called from substitution token with value type: Binary XML (0x21)
-    is_inside_substitution: bool,
+    /// Whether element start headers include the dependency identifier (u16).
+    has_dep_id: bool,
     ansi_codec: EncodingRef,
     name_encoding: BinXmlNameEncoding,
 }
@@ -50,14 +49,14 @@ impl<'a> BinXmlDeserializer<'a> {
         data: &'a [u8],
         start_offset: u64,
         chunk: Option<&'a EvtxChunk<'a>>,
-        is_inside_substitution: bool,
+        has_dep_id: bool,
         ansi_codec: EncodingRef,
     ) -> Self {
         BinXmlDeserializer {
             data,
             offset: start_offset,
             chunk,
-            is_inside_substitution,
+            has_dep_id,
             ansi_codec,
             name_encoding: BinXmlNameEncoding::Offset,
         }
@@ -67,7 +66,7 @@ impl<'a> BinXmlDeserializer<'a> {
         data: &'a [u8],
         start_offset: u64,
         chunk: Option<&'a EvtxChunk<'a>>,
-        is_inside_substitution: bool,
+        has_dep_id: bool,
         ansi_codec: EncodingRef,
         name_encoding: BinXmlNameEncoding,
     ) -> Self {
@@ -75,7 +74,7 @@ impl<'a> BinXmlDeserializer<'a> {
             data,
             offset: start_offset,
             chunk,
-            is_inside_substitution,
+            has_dep_id,
             ansi_codec,
             name_encoding,
         }
@@ -86,41 +85,45 @@ impl<'a> BinXmlDeserializer<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         chunk: Option<&'a EvtxChunk<'a>>,
         data_size: Option<u32>,
-        is_inside_substitution: bool,
+        has_dep_id: bool,
         ansi_codec: EncodingRef,
     ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
         let offset = cursor.position();
 
-        let de = BinXmlDeserializer::init(
-            cursor.get_ref(),
-            offset,
-            chunk,
-            is_inside_substitution,
-            ansi_codec,
-        );
+        let de = BinXmlDeserializer::init(cursor.get_ref(), offset, chunk, has_dep_id, ansi_codec);
 
         let mut tokens = vec![];
         let mut iterator = de.iter_tokens(data_size)?;
 
         loop {
             let token = iterator.next();
-            match token { Some(t) => {
-                tokens.push(t?);
-            } _ => {
-                break;
-            }}
+            match token {
+                Some(t) => {
+                    tokens.push(t?);
+                }
+                _ => {
+                    break;
+                }
+            }
         }
 
-        let seek_ahead = iterator.cursor.position() - offset;
-        cursor.seek(SeekFrom::Current(seek_ahead as i64))?;
+        // `IterTokens` holds an absolute position in the original slice.
+        cursor.set_position(iterator.position());
 
         Ok(tokens)
     }
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
-        let mut cursor = Cursor::new(self.data);
-        cursor.seek(SeekFrom::Start(self.offset))?;
+        let cursor = ByteCursor::with_pos(
+            self.data,
+            usize::try_from(self.offset).map_err(|_| DeserializationError::Truncated {
+                what: "BinXmlDeserializer.offset",
+                offset: self.offset,
+                need: 0,
+                have: 0,
+            })?,
+        )?;
 
         Ok(IterTokens {
             cursor,
@@ -128,7 +131,7 @@ impl<'a> BinXmlDeserializer<'a> {
             data_size,
             data_read_so_far: 0,
             eof: false,
-            is_inside_substitution: self.is_inside_substitution,
+            has_dep_id: self.has_dep_id,
             ansi_codec: self.ansi_codec,
             name_encoding: self.name_encoding,
         })
@@ -142,8 +145,8 @@ impl<'a> IterTokens<'a> {
 
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
-    fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
-        let token = cursor.try_u8()?;
+    fn read_next_token(&self, cursor: &mut ByteCursor<'a>) -> Result<BinXMLRawToken> {
+        let token = cursor.u8()?;
 
         BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
             value: token,
@@ -153,7 +156,7 @@ impl<'a> IterTokens<'a> {
 
     fn visit_token(
         &self,
-        cursor: &mut Cursor<&'a [u8]>,
+        cursor: &mut ByteCursor<'a>,
         raw_token: BinXMLRawToken,
     ) -> Result<BinXMLDeserializedTokens<'a>> {
         match raw_token {
@@ -161,11 +164,10 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::OpenStartElement(token_information) => {
                 // Debug print inside
                 Ok(BinXMLDeserializedTokens::OpenStartElement(
-                    read_open_start_element(
+                    read_open_start_element_cursor(
                         cursor,
-                        self.chunk,
                         token_information.has_attributes,
-                        self.is_inside_substitution,
+                        self.has_dep_id,
                         self.name_encoding,
                     )?,
                 ))
@@ -174,10 +176,10 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_stream(cursor, self.chunk, None, self.ansi_codec)?,
+                BinXmlValue::from_binxml_cursor(cursor, self.chunk, None, self.ansi_codec)?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
-                Ok(BinXMLDeserializedTokens::Attribute(read_attribute(
+                Ok(BinXMLDeserializedTokens::Attribute(read_attribute_cursor(
                     cursor,
                     self.name_encoding,
                 )?))
@@ -191,25 +193,25 @@ impl<'a> IterTokens<'a> {
                 offset: cursor.position(),
             }),
             BinXMLRawToken::EntityReference => Ok(BinXMLDeserializedTokens::EntityRef(
-                read_entity_ref(cursor, self.name_encoding)?,
+                read_entity_ref_cursor(cursor, self.name_encoding)?,
             )),
             BinXMLRawToken::ProcessingInstructionTarget => Ok(BinXMLDeserializedTokens::PITarget(
-                read_processing_instruction_target(cursor, self.name_encoding)?,
+                read_processing_instruction_target_cursor(cursor, self.name_encoding)?,
             )),
             BinXMLRawToken::ProcessingInstructionData => Ok(BinXMLDeserializedTokens::PIData(
-                read_processing_instruction_data(cursor)?,
+                read_processing_instruction_data_cursor(cursor)?,
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template(cursor, self.chunk, self.ansi_codec)?,
+                read_template_cursor(cursor, self.chunk, self.ansi_codec)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
-                read_substitution_descriptor(cursor, false)?,
+                read_substitution_descriptor_cursor(cursor, false)?,
             )),
             BinXMLRawToken::ConditionalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
-                read_substitution_descriptor(cursor, true)?,
+                read_substitution_descriptor_cursor(cursor, true)?,
             )),
             BinXMLRawToken::StartOfStream => Ok(BinXMLDeserializedTokens::FragmentHeader(
-                read_fragment_header(cursor)?,
+                read_fragment_header_cursor(cursor)?,
             )),
         }
     }
@@ -217,7 +219,7 @@ impl<'a> IterTokens<'a> {
 
 impl<'a> IterTokens<'a> {
     fn inner_next(&mut self) -> Option<Result<BinXMLDeserializedTokens<'a>>> {
-        let mut cursor = self.cursor.clone();
+        let mut cursor = self.cursor;
         let offset_from_chunk_start = cursor.position();
 
         trace!(
@@ -263,7 +265,7 @@ impl<'a> IterTokens<'a> {
         let total_read = cursor.position() - offset_from_chunk_start;
         self.data_read_so_far += total_read as u32;
 
-        mem::swap(&mut self.cursor, &mut cursor);
+        self.cursor = cursor;
         yield_value
     }
 }
@@ -280,9 +282,9 @@ impl<'a> Iterator for IterTokens<'a> {
 #[cfg(test)]
 mod tests {
     use super::BinXmlDeserializer;
-    use crate::evtx_chunk::EvtxChunkData;
     use crate::binxml::name::{BinXmlNameEncoding, read_wevt_inline_name_at};
-    use crate::{ensure_env_logger_initialized, ParserSettings};
+    use crate::evtx_chunk::EvtxChunkData;
+    use crate::{ParserSettings, ensure_env_logger_initialized};
     use std::sync::Arc;
 
     #[test]
@@ -313,13 +315,15 @@ mod tests {
         let records = evtx_chunk.iter();
 
         for record in records.take(100) {
-            assert!(!record
-                .unwrap()
-                .into_xml()
-                .unwrap()
-                .data
-                .chars()
-                .any(|c| c == '\0'))
+            assert!(
+                !record
+                    .unwrap()
+                    .into_xml()
+                    .unwrap()
+                    .data
+                    .chars()
+                    .any(|c| c == '\0')
+            )
         }
     }
 
@@ -361,7 +365,8 @@ mod tests {
         buf.extend_from_slice(&0x10u32.to_le_bytes());
         // inline name: hash + char_count + utf16 + NUL
         let name = "EventData";
-        let name_hash = crate::binxml::name::compute_wevt_inline_name_hash_utf16(name.encode_utf16());
+        let name_hash =
+            crate::binxml::name::compute_wevt_inline_name_hash_utf16(name.encode_utf16());
         buf.extend_from_slice(&name_hash.to_le_bytes());
         buf.extend_from_slice(&(name.encode_utf16().count() as u16).to_le_bytes());
         for c in name.encode_utf16() {
@@ -375,7 +380,7 @@ mod tests {
             &buf,
             0,
             None,
-            false,
+            true,
             encoding::all::WINDOWS_1252,
             BinXmlNameEncoding::WevtInline,
         );
@@ -387,7 +392,10 @@ mod tests {
         }
 
         assert!(
-            matches!(tokens.first(), Some(crate::model::deserialized::BinXMLDeserializedTokens::FragmentHeader(_))),
+            matches!(
+                tokens.first(),
+                Some(crate::model::deserialized::BinXMLDeserializedTokens::FragmentHeader(_))
+            ),
             "expected FragmentHeader first, got {tokens:?}"
         );
 
@@ -397,8 +405,8 @@ mod tests {
         });
         let open = open.expect("expected OpenStartElement token");
 
-        let parsed_name = read_wevt_inline_name_at(&buf, open.name.offset)
-            .expect("read_wevt_inline_name_at");
+        let parsed_name =
+            read_wevt_inline_name_at(&buf, open.name.offset).expect("read_wevt_inline_name_at");
         assert_eq!(parsed_name.as_str(), name);
     }
 
@@ -426,7 +434,7 @@ mod tests {
             &buf,
             0,
             None,
-            false,
+            true,
             encoding::all::WINDOWS_1252,
             BinXmlNameEncoding::WevtInline,
         );

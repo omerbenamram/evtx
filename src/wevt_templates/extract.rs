@@ -12,8 +12,7 @@ use super::error::WevtTemplateExtractError;
 use super::types::{ResourceIdentifier, WevtTemplateResource};
 use crate::utils::bytes;
 
-use goblin::pe::header;
-use goblin::pe::options::ParseOptions;
+use goblin::pe::options::{ParseMode, ParseOptions};
 use goblin::pe::resource::{ImageResourceDirectory, ResourceDataEntry, ResourceEntry};
 use goblin::pe::section_table::SectionTable;
 
@@ -197,21 +196,21 @@ fn parse_resource_data_entry(
 pub fn extract_wevt_template_resources(
     pe_bytes: &[u8],
 ) -> Result<Vec<WevtTemplateResource>, WevtTemplateExtractError> {
-    // Note: We intentionally avoid `goblin::pe::PE::parse*` here.
-    //
-    // `PE::parse` eagerly parses multiple data directories (including resources) and will hard-fail
-    // on some synthetic/minimal fixtures where those directories are "valid enough" for our use
-    // but violate stricter PE invariants (e.g. `FileAlignment == 0`).
-    //
-    // We only need:
-    // - the header (to locate the resource data directory)
-    // - the section table (to map RVAs to file offsets)
-    let header =
-        header::Header::parse(pe_bytes).map_err(|_| WevtTemplateExtractError::InvalidPe {
-            message: "failed to parse PE via goblin",
-        })?;
+    let mut opts = ParseOptions::default();
+    // We only need sections + data directories; parsing TLS/certificates is wasted work here.
+    opts.parse_tls_data = false;
+    opts.parse_attribute_certificates = false;
+    // Prefer permissive mode: we want template extraction to succeed even if unrelated tables
+    // (imports/debug/etc) are slightly malformed.
+    opts.parse_mode = ParseMode::Permissive;
 
-    let Some(optional_header) = header.optional_header else {
+    let pe = goblin::pe::PE::parse_with_opts(pe_bytes, &opts).map_err(|_| {
+        WevtTemplateExtractError::InvalidPe {
+            message: "failed to parse PE via goblin",
+        }
+    })?;
+
+    let Some(optional_header) = pe.header.optional_header else {
         return Err(WevtTemplateExtractError::InvalidPe {
             message: "missing optional header",
         });
@@ -226,19 +225,7 @@ pub fn extract_wevt_template_resources(
     }
 
     let file_alignment = optional_header.windows_fields.file_alignment;
-    let opts = ParseOptions::default();
-
-    let optional_header_offset = header.dos_header.pe_pointer as usize
-        + header::SIZEOF_PE_MAGIC
-        + header::SIZEOF_COFF_HEADER;
-    let mut sections_offset =
-        optional_header_offset + header.coff_header.size_of_optional_header as usize;
-    let sections = header
-        .coff_header
-        .sections(pe_bytes, &mut sections_offset)
-        .map_err(|_| WevtTemplateExtractError::MalformedPe {
-            message: "failed to parse section headers",
-        })?;
+    let sections = pe.sections;
 
     let rsrc_offset = rva_to_file_offset(
         &sections,

@@ -1,15 +1,13 @@
-use crate::binxml::tokens::read_template_definition;
+use crate::binxml::tokens::read_template_definition_cursor;
 use crate::err::DeserializationResult;
 
 use crate::ChunkOffset;
 use crate::model::deserialized::BinXMLTemplateDefinition;
-use crate::utils::ReadExt;
+use crate::utils::ByteCursor;
 
 use encoding::EncodingRef;
 use log::trace;
-use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::io::Cursor;
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
@@ -27,15 +25,13 @@ impl<'chunk> TemplateCache<'chunk> {
         ansi_codec: EncodingRef,
     ) -> DeserializationResult<Self> {
         let mut cache = HashMap::new();
-        let mut cursor = Cursor::new(data);
-        let cursor_ref = cursor.borrow_mut();
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            cursor_ref.try_seek_abs_named(u64::from(*offset), "first template")?;
+            let mut cursor = ByteCursor::with_pos(data, *offset as usize)?;
 
             loop {
-                let table_offset = cursor_ref.position() as ChunkOffset;
-                let definition = read_template_definition(cursor_ref, None, ansi_codec)?;
+                let table_offset = cursor.pos() as ChunkOffset;
+                let definition = read_template_definition_cursor(&mut cursor, None, ansi_codec)?;
                 let next_template_offset = definition.header.next_template_offset;
 
                 cache.insert(table_offset, definition);
@@ -46,7 +42,7 @@ impl<'chunk> TemplateCache<'chunk> {
                     break;
                 }
 
-                cursor_ref.try_seek_abs_named(u64::from(next_template_offset), "next template")?;
+                cursor.set_pos(next_template_offset as usize, "next template")?;
             }
         }
 

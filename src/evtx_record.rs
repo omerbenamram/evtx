@@ -5,10 +5,10 @@ use crate::err::{
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::utils::bytes;
+use crate::utils::windows::filetime_to_datetime;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
 
-use chrono::Duration;
 use chrono::prelude::*;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -53,12 +53,7 @@ impl EvtxRecordHeader {
         let record_id = bytes::read_u64_le_r(buf, offset + 8, "record.event_record_id")?;
         let filetime = bytes::read_u64_le_r(buf, offset + 16, "record.filetime")?;
 
-        // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`).
-        let naive = NaiveDate::from_ymd_opt(1601, 1, 1)
-            .and_then(|x| x.and_hms_nano_opt(0, 0, 0, 0))
-            .expect("filetime epoch should be valid")
-            + Duration::microseconds((filetime / 10) as i64);
-        let timestamp = Utc.from_utc_datetime(&naive);
+        let timestamp = filetime_to_datetime(filetime);
 
         Ok(EvtxRecordHeader {
             data_size: size,

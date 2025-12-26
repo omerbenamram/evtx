@@ -44,7 +44,7 @@ pub fn parse_temp_binxml_fragment<'a>(
         binxml,
         0,
         None,
-        false,
+        true,
         ansi_codec,
         BinXmlNameEncoding::WevtInline,
     );
@@ -82,7 +82,7 @@ pub fn parse_wevt_binxml_fragment<'a>(
         binxml,
         0,
         None,
-        false,
+        true,
         ansi_codec,
         BinXmlNameEncoding::WevtInline,
     );
