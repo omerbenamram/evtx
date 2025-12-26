@@ -99,11 +99,11 @@ pub enum DeserializationError {
         source: WrappedIoError,
     },
 
-    #[error("An expected I/O error has occurred")]
-    UnexpectedIoError(#[from] WrappedIoError),
+    #[error(transparent)]
+    IoWithContext(#[from] WrappedIoError),
 
-    #[error("An expected I/O error has occurred")]
-    IoError(#[from] io::Error),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 
     /// An extra layer of error indirection to keep template GUID.
     #[error("Failed to deserialize template `{template_id}`")]

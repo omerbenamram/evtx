@@ -205,7 +205,7 @@ impl<'a> ByteCursor<'a> {
             });
         }
         if (size_usize % ELEM_BYTES) != 0 {
-            return Err(DeserializationError::IoError(io::Error::new(
+            return Err(DeserializationError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "{what}: misaligned sized array (size_bytes={size_usize}, elem_bytes={ELEM_BYTES}) at offset {}",
@@ -230,7 +230,7 @@ impl<'a> ByteCursor<'a> {
 
     #[inline]
     fn invalid_data(what: &'static str, offset: u64) -> DeserializationError {
-        DeserializationError::IoError(io::Error::new(
+        DeserializationError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{what} at offset {offset}: invalid data"),
         ))

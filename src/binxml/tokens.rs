@@ -136,7 +136,7 @@ fn read_template_definition_header_cursor(
     let next_template_offset = cursor.u32_named("next_template_offset")?;
     let guid_bytes = cursor.take_bytes(16, "template_guid")?;
     let template_guid = Guid::from_buffer(guid_bytes).map_err(|_| {
-        DeserializationError::IoError(std::io::Error::new(
+        DeserializationError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "invalid GUID",
         ))

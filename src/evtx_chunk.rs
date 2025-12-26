@@ -259,34 +259,35 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             return None;
         }
 
-        let record_header = match EvtxRecordHeader::from_bytes_at(self.chunk.data, record_start_usize) {
-            Ok(record_header) => record_header,
-            Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
-                // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
-                // In such cases we may attempt to parse the chunk slack area, which is typically
-                // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
-                // emitting an error (see issue #197).
-                if magic == [0, 0, 0, 0] {
+        let record_header =
+            match EvtxRecordHeader::from_bytes_at(self.chunk.data, record_start_usize) {
+                Ok(record_header) => record_header,
+                Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
+                    // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
+                    // In such cases we may attempt to parse the chunk slack area, which is typically
+                    // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
+                    // emitting an error (see issue #197).
+                    if magic == [0, 0, 0, 0] {
+                        self.exhausted = true;
+                        return None;
+                    }
+
+                    self.exhausted = true;
+                    return Some(Err(EvtxError::DeserializationError(
+                        DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
+                    )));
+                }
+                Err(DeserializationError::Truncated { .. }) => {
+                    // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
                     self.exhausted = true;
                     return None;
                 }
-
-                self.exhausted = true;
-                return Some(Err(EvtxError::DeserializationError(
-                    DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
-                )));
-            }
-            Err(DeserializationError::Truncated { .. }) => {
-                // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
-                self.exhausted = true;
-                return None;
-            }
-            Err(err) => {
-                // We currently do not try to recover after an invalid record.
-                self.exhausted = true;
-                return Some(Err(EvtxError::DeserializationError(err)));
-            }
-        };
+                Err(err) => {
+                    // We currently do not try to recover after an invalid record.
+                    self.exhausted = true;
+                    return Some(Err(EvtxError::DeserializationError(err)));
+                }
+            };
 
         info!("Record id - {}", record_header.event_record_id);
         debug!("Record header - {:?}", record_header);
