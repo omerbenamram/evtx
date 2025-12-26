@@ -65,8 +65,8 @@ impl<'a> CrimManifest<'a> {
         let mut providers = Vec::with_capacity(provider_count);
         for i in 0..provider_count {
             let desc_off = providers_off + i * provider_desc_size;
-            let guid = read_guid(data, desc_off)?;
-            let provider_off = read_u32(data, desc_off + 16)?;
+            let guid = read_guid_named(data, desc_off, "CRIM.provider.guid")?;
+            let provider_off = read_u32_named(data, desc_off + 16, "CRIM.provider.offset")?;
 
             let provider = parse_provider(data, guid, provider_off)?;
             providers.push(provider);
@@ -134,7 +134,7 @@ impl<'a> CrimManifest<'a> {
 }
 
 fn parse_crim_header(data: &[u8]) -> Result<CrimHeader> {
-    let sig = read_sig(data, 0)?;
+    let sig = read_sig_named(data, 0, "CRIM signature")?;
     if sig != *b"CRIM" {
         return Err(WevtManifestError::InvalidSignature {
             offset: 0,
@@ -143,10 +143,10 @@ fn parse_crim_header(data: &[u8]) -> Result<CrimHeader> {
         });
     }
 
-    let size = read_u32(data, 4)?;
-    let major_version = read_u16(data, 8)?;
-    let minor_version = read_u16(data, 10)?;
-    let provider_count = read_u32(data, 12)?;
+    let size = read_u32_named(data, 4, "CRIM.size")?;
+    let major_version = read_u16_named(data, 8, "CRIM.major_version")?;
+    let minor_version = read_u16_named(data, 10, "CRIM.minor_version")?;
+    let provider_count = read_u32_named(data, 12, "CRIM.provider_count")?;
 
     if size < 16 {
         return Err(WevtManifestError::SizeOutOfBounds {
@@ -169,7 +169,7 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
     // Need at least 20 bytes for WEVT header.
     require_len(crim, provider_off_usize, 20, "WEVT header")?;
 
-    let sig = read_sig(crim, provider_off_usize)?;
+    let sig = read_sig_named(crim, provider_off_usize, "WEVT signature")?;
     if sig != *b"WEVT" {
         return Err(WevtManifestError::InvalidSignature {
             offset: provider_off,
@@ -178,10 +178,12 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
         });
     }
 
-    let size = read_u32(crim, provider_off_usize + 4)?;
-    let message_identifier_raw = read_u32(crim, provider_off_usize + 8)?;
-    let descriptor_count = read_u32(crim, provider_off_usize + 12)?;
-    let unknown2_count = read_u32(crim, provider_off_usize + 16)?;
+    let size = read_u32_named(crim, provider_off_usize + 4, "WEVT.size")?;
+    let message_identifier_raw =
+        read_u32_named(crim, provider_off_usize + 8, "WEVT.message_identifier")?;
+    let descriptor_count =
+        read_u32_named(crim, provider_off_usize + 12, "WEVT.number_of_descriptors")?;
+    let unknown2_count = read_u32_named(crim, provider_off_usize + 16, "WEVT.number_of_unknown2")?;
 
     let message_identifier = if message_identifier_raw == 0xffffffff {
         None
@@ -210,11 +212,11 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
     let mut element_descriptors = Vec::with_capacity(desc_count_usize);
     for i in 0..desc_count_usize {
         let off = desc_off + i * 8;
-        let element_offset = read_u32(crim, off)?;
-        let unknown = read_u32(crim, off + 4)?;
+        let element_offset = read_u32_named(crim, off, "WEVT.descriptor.element_offset")?;
+        let unknown = read_u32_named(crim, off + 4, "WEVT.descriptor.unknown")?;
         let element_off_usize = u32_to_usize(element_offset, "WEVT element offset", crim.len())?;
         require_len(crim, element_off_usize, 4, "WEVT element signature")?;
-        let signature = read_sig(crim, element_off_usize)?;
+        let signature = read_sig_named(crim, element_off_usize, "WEVT element signature")?;
         element_descriptors.push(ProviderElementDescriptor {
             element_offset,
             unknown,
@@ -243,7 +245,7 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
     let mut unknown2 = Vec::with_capacity(unknown2_count_usize);
     for i in 0..unknown2_count_usize {
         let off = unknown2_off + i * 4;
-        unknown2.push(read_u32(crim, off)?);
+        unknown2.push(read_u32_named(crim, off, "WEVT.unknown2")?);
     }
 
     let elements = parse_provider_elements(crim, &element_descriptors)?;
@@ -298,7 +300,7 @@ fn parse_provider_elements<'a>(
                 // Unknown element: try to read size (offset+4) and capture the region.
                 let off = u32_to_usize(d.element_offset, "provider element offset", crim.len())?;
                 if off + 8 <= crim.len() {
-                    let size = read_u32(crim, off + 4)?;
+                    let size = read_u32_named(crim, off + 4, "provider element size")?;
                     let end = u32_to_usize(
                         d.element_offset.saturating_add(size),
                         "unknown element end",
@@ -329,7 +331,7 @@ fn parse_provider_elements<'a>(
 fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
     let off_usize = u32_to_usize(off, "CHAN offset", crim.len())?;
     require_len(crim, off_usize, 12, "CHAN header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "CHAN signature")?;
     if sig != *b"CHAN" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -337,8 +339,8 @@ fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
+    let size = read_u32_named(crim, off_usize + 4, "CHAN.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "CHAN.count")?;
 
     let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
         what: "CHAN.count",
@@ -386,10 +388,10 @@ fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
     let mut channels = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let d_off = defs_off + i * 16;
-        let identifier = read_u32(crim, d_off)?;
-        let name_offset = read_u32(crim, d_off + 4)?;
-        let unknown = read_u32(crim, d_off + 8)?;
-        let msg_raw = read_u32(crim, d_off + 12)?;
+        let identifier = read_u32_named(crim, d_off, "CHAN.identifier")?;
+        let name_offset = read_u32_named(crim, d_off + 4, "CHAN.name_offset")?;
+        let unknown = read_u32_named(crim, d_off + 8, "CHAN.unknown")?;
+        let msg_raw = read_u32_named(crim, d_off + 12, "CHAN.message_identifier")?;
         let message_identifier = if msg_raw == 0xffffffff {
             None
         } else {
@@ -419,7 +421,7 @@ fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
 fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
     let off_usize = u32_to_usize(off, "EVNT offset", crim.len())?;
     require_len(crim, off_usize, 16, "EVNT header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "EVNT signature")?;
     if sig != *b"EVNT" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -427,9 +429,9 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
-    let unknown = read_u32(crim, off_usize + 12)?;
+    let size = read_u32_named(crim, off_usize + 4, "EVNT.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "EVNT.count")?;
+    let unknown = read_u32_named(crim, off_usize + 12, "EVNT.unknown")?;
 
     let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
         what: "EVNT.count",
@@ -478,21 +480,21 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
     let mut events = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let e_off = events_off + i * 48;
-        let identifier = read_u16(crim, e_off)?;
-        let version = read_u8(crim, e_off + 2)?;
-        let channel = read_u8(crim, e_off + 3)?;
-        let level = read_u8(crim, e_off + 4)?;
-        let opcode = read_u8(crim, e_off + 5)?;
-        let task = read_u16(crim, e_off + 6)?;
-        let keywords = read_u64(crim, e_off + 8)?;
-        let message_identifier = read_u32(crim, e_off + 16)?;
-        let template_offset_raw = read_u32(crim, e_off + 20)?;
-        let opcode_offset_raw = read_u32(crim, e_off + 24)?;
-        let level_offset_raw = read_u32(crim, e_off + 28)?;
-        let task_offset_raw = read_u32(crim, e_off + 32)?;
-        let unknown_count = read_u32(crim, e_off + 36)?;
-        let unknown_offset = read_u32(crim, e_off + 40)?;
-        let flags = read_u32(crim, e_off + 44)?;
+        let identifier = read_u16_named(crim, e_off, "EVNT.event.identifier")?;
+        let version = read_u8_named(crim, e_off + 2, "EVNT.event.version")?;
+        let channel = read_u8_named(crim, e_off + 3, "EVNT.event.channel")?;
+        let level = read_u8_named(crim, e_off + 4, "EVNT.event.level")?;
+        let opcode = read_u8_named(crim, e_off + 5, "EVNT.event.opcode")?;
+        let task = read_u16_named(crim, e_off + 6, "EVNT.event.task")?;
+        let keywords = read_u64_named(crim, e_off + 8, "EVNT.event.keywords")?;
+        let message_identifier = read_u32_named(crim, e_off + 16, "EVNT.event.message_identifier")?;
+        let template_offset_raw = read_u32_named(crim, e_off + 20, "EVNT.event.template_offset")?;
+        let opcode_offset_raw = read_u32_named(crim, e_off + 24, "EVNT.event.opcode_offset")?;
+        let level_offset_raw = read_u32_named(crim, e_off + 28, "EVNT.event.level_offset")?;
+        let task_offset_raw = read_u32_named(crim, e_off + 32, "EVNT.event.task_offset")?;
+        let unknown_count = read_u32_named(crim, e_off + 36, "EVNT.event.unknown_count")?;
+        let unknown_offset = read_u32_named(crim, e_off + 40, "EVNT.event.unknown_offset")?;
+        let flags = read_u32_named(crim, e_off + 44, "EVNT.event.flags")?;
 
         events.push(EventDefinition {
             identifier,
@@ -547,7 +549,7 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
 fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
     let off_usize = u32_to_usize(off, "KEYW offset", crim.len())?;
     require_len(crim, off_usize, 12, "KEYW header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "KEYW signature")?;
     if sig != *b"KEYW" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -555,8 +557,8 @@ fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
+    let size = read_u32_named(crim, off_usize + 4, "KEYW.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "KEYW.count")?;
 
     let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
         what: "KEYW.count",
@@ -604,9 +606,9 @@ fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
     let mut keywords = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let d_off = defs_off + i * 16;
-        let identifier = read_u64(crim, d_off)?;
-        let msg_raw = read_u32(crim, d_off + 8)?;
-        let data_offset = read_u32(crim, d_off + 12)?;
+        let identifier = read_u64_named(crim, d_off, "KEYW.identifier")?;
+        let msg_raw = read_u32_named(crim, d_off + 8, "KEYW.message_identifier")?;
+        let data_offset = read_u32_named(crim, d_off + 12, "KEYW.data_offset")?;
         let message_identifier = if msg_raw == 0xffffffff {
             None
         } else {
@@ -635,7 +637,7 @@ fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
 fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
     let off_usize = u32_to_usize(off, "LEVL offset", crim.len())?;
     require_len(crim, off_usize, 12, "LEVL header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "LEVL signature")?;
     if sig != *b"LEVL" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -643,8 +645,8 @@ fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
+    let size = read_u32_named(crim, off_usize + 4, "LEVL.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "LEVL.count")?;
 
     let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
         what: "LEVL.count",
@@ -691,9 +693,9 @@ fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
     let mut levels = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let d_off = defs_off + i * 12;
-        let identifier = read_u32(crim, d_off)?;
-        let msg_raw = read_u32(crim, d_off + 4)?;
-        let data_offset = read_u32(crim, d_off + 8)?;
+        let identifier = read_u32_named(crim, d_off, "LEVL.identifier")?;
+        let msg_raw = read_u32_named(crim, d_off + 4, "LEVL.message_identifier")?;
+        let data_offset = read_u32_named(crim, d_off + 8, "LEVL.data_offset")?;
         let message_identifier = if msg_raw == 0xffffffff {
             None
         } else {
@@ -722,7 +724,7 @@ fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
 fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
     let off_usize = u32_to_usize(off, "OPCO offset", crim.len())?;
     require_len(crim, off_usize, 12, "OPCO header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "OPCO signature")?;
     if sig != *b"OPCO" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -730,8 +732,8 @@ fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
+    let size = read_u32_named(crim, off_usize + 4, "OPCO.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "OPCO.count")?;
 
     let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
         what: "OPCO.count",
@@ -778,9 +780,9 @@ fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
     let mut opcodes = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let d_off = defs_off + i * 12;
-        let identifier = read_u32(crim, d_off)?;
-        let msg_raw = read_u32(crim, d_off + 4)?;
-        let data_offset = read_u32(crim, d_off + 8)?;
+        let identifier = read_u32_named(crim, d_off, "OPCO.identifier")?;
+        let msg_raw = read_u32_named(crim, d_off + 4, "OPCO.message_identifier")?;
+        let data_offset = read_u32_named(crim, d_off + 8, "OPCO.data_offset")?;
         let message_identifier = if msg_raw == 0xffffffff {
             None
         } else {
@@ -809,7 +811,7 @@ fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
 fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
     let off_usize = u32_to_usize(off, "TASK offset", crim.len())?;
     require_len(crim, off_usize, 12, "TASK header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "TASK signature")?;
     if sig != *b"TASK" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -817,8 +819,8 @@ fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
+    let size = read_u32_named(crim, off_usize + 4, "TASK.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "TASK.count")?;
 
     let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
         what: "TASK.count",
@@ -865,10 +867,10 @@ fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
     let mut tasks = Vec::with_capacity(count_usize);
     for i in 0..count_usize {
         let d_off = defs_off + i * 28;
-        let identifier = read_u32(crim, d_off)?;
-        let msg_raw = read_u32(crim, d_off + 4)?;
-        let mui_identifier = read_guid(crim, d_off + 8)?;
-        let data_offset = read_u32(crim, d_off + 24)?;
+        let identifier = read_u32_named(crim, d_off, "TASK.identifier")?;
+        let msg_raw = read_u32_named(crim, d_off + 4, "TASK.message_identifier")?;
+        let mui_identifier = read_guid_named(crim, d_off + 8, "TASK.mui_identifier")?;
+        let data_offset = read_u32_named(crim, d_off + 24, "TASK.data_offset")?;
         let message_identifier = if msg_raw == 0xffffffff {
             None
         } else {
@@ -898,7 +900,7 @@ fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
 fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
     let off_usize = u32_to_usize(off, "TTBL offset", crim.len())?;
     require_len(crim, off_usize, 12, "TTBL header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "TTBL signature")?;
     if sig != *b"TTBL" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -906,8 +908,8 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
+    let size = read_u32_named(crim, off_usize + 4, "TTBL.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "TTBL.count")?;
     let end = if size == 0 {
         // libfwevt accepts size==0 and parses by `count` and per-template sizes.
         crim.len()
@@ -940,7 +942,7 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
                 have: end.saturating_sub(cur),
             });
         }
-        let temp_sig = read_sig(crim, cur)?;
+        let temp_sig = read_sig_named(crim, cur, "TEMP signature")?;
         if temp_sig != *b"TEMP" {
             return Err(WevtManifestError::InvalidSignature {
                 offset: usize_to_u32(cur),
@@ -948,7 +950,7 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
                 found: temp_sig,
             });
         }
-        let temp_size = read_u32(crim, cur + 4)?;
+        let temp_size = read_u32_named(crim, cur + 4, "TEMP.size")?;
         if temp_size < 40 {
             return Err(WevtManifestError::SizeOutOfBounds {
                 what: "TEMP.size",
@@ -959,11 +961,11 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
         let temp_end = checked_end(end, usize_to_u32(cur), temp_size, "TEMP.size")?;
         let temp_off_u32 = usize_to_u32(cur);
 
-        let item_descriptor_count = read_u32(crim, cur + 8)?;
-        let item_name_count = read_u32(crim, cur + 12)?;
-        let template_items_offset = read_u32(crim, cur + 16)?;
-        let event_type = read_u32(crim, cur + 20)?;
-        let guid = read_guid(crim, cur + 24)?;
+        let item_descriptor_count = read_u32_named(crim, cur + 8, "TEMP.item_descriptor_count")?;
+        let item_name_count = read_u32_named(crim, cur + 12, "TEMP.item_name_count")?;
+        let template_items_offset = read_u32_named(crim, cur + 16, "TEMP.template_items_offset")?;
+        let event_type = read_u32_named(crim, cur + 20, "TEMP.event_type")?;
+        let guid = read_guid_named(crim, cur + 24, "TEMP.guid")?;
 
         // libfwevt notes: if number_of_descriptors (and number_of_names) is 0, the template_items_offset
         // is either 0 or points to the end of the template. Treat non-zero name count in this case as invalid.
@@ -1118,14 +1120,14 @@ fn parse_template_items(
 
     for i in 0..count_usize {
         let d_off = rel_usize + i * 20;
-        let unknown1 = read_u32(template, d_off)?;
-        let input_type = read_u8(template, d_off + 4)?;
-        let output_type = read_u8(template, d_off + 5)?;
-        let unknown3 = read_u16(template, d_off + 6)?;
-        let unknown4 = read_u32(template, d_off + 8)?;
-        let count = read_u16(template, d_off + 12)?;
-        let length = read_u16(template, d_off + 14)?;
-        let name_offset = read_u32(template, d_off + 16)?;
+        let unknown1 = read_u32_named(template, d_off, "TEMP.item.unknown1")?;
+        let input_type = read_u8_named(template, d_off + 4, "TEMP.item.input_type")?;
+        let output_type = read_u8_named(template, d_off + 5, "TEMP.item.output_type")?;
+        let unknown3 = read_u16_named(template, d_off + 6, "TEMP.item.unknown3")?;
+        let unknown4 = read_u32_named(template, d_off + 8, "TEMP.item.unknown4")?;
+        let count = read_u16_named(template, d_off + 12, "TEMP.item.count")?;
+        let length = read_u16_named(template, d_off + 14, "TEMP.item.length")?;
+        let name_offset = read_u32_named(template, d_off + 16, "TEMP.item.name_offset")?;
 
         if name_offset != 0 {
             if name_offset < template_off_abs {
@@ -1189,7 +1191,7 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     // Maps parsing in libfwevt is TODO; we implement VMAP per spec and keep others opaque.
     let off_usize = u32_to_usize(off, "MAPS offset", crim.len())?;
     require_len(crim, off_usize, 16, "MAPS header")?;
-    let sig = read_sig(crim, off_usize)?;
+    let sig = read_sig_named(crim, off_usize, "MAPS signature")?;
     if sig != *b"MAPS" {
         return Err(WevtManifestError::InvalidSignature {
             offset: off,
@@ -1197,9 +1199,9 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
             found: sig,
         });
     }
-    let size = read_u32(crim, off_usize + 4)?;
-    let count = read_u32(crim, off_usize + 8)?;
-    let first_map_offset = read_u32(crim, off_usize + 12)?;
+    let size = read_u32_named(crim, off_usize + 4, "MAPS.size")?;
+    let count = read_u32_named(crim, off_usize + 8, "MAPS.count")?;
+    let first_map_offset = read_u32_named(crim, off_usize + 12, "MAPS.first_map_offset")?;
     let end = if size == 0 {
         // libfwevt accepts size==0 and parses by offsets/count.
         crim.len()
@@ -1243,7 +1245,7 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
         });
     }
     for i in 0..count_usize.saturating_sub(1) {
-        let o = read_u32(crim, offs_array_off + i * 4)?;
+        let o = read_u32_named(crim, offs_array_off + i * 4, "MAPS.map_offset")?;
         map_offsets.push(o);
     }
 
@@ -1259,7 +1261,7 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
                 have: crim.len().saturating_sub(map_off_usize),
             });
         }
-        let sig = read_sig(crim, map_off_usize)?;
+        let sig = read_sig_named(crim, map_off_usize, "MAPS map signature")?;
         let next_off = map_offsets
             .get(i + 1)
             .copied()
@@ -1323,9 +1325,9 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
             have: map_slice.len(),
         });
     }
-    let size = read_u32(map_slice, 4)?;
-    let map_string_offset = read_u32(map_slice, 8)?;
-    let entry_count = read_u32(map_slice, 12)?;
+    let size = read_u32_named(map_slice, 4, "VMAP.size")?;
+    let map_string_offset = read_u32_named(map_slice, 8, "VMAP.map_string_offset")?;
+    let entry_count = read_u32_named(map_slice, 12, "VMAP.entry_count")?;
 
     let size_usize = usize::try_from(size).map_err(|_| WevtManifestError::SizeOutOfBounds {
         what: "VMAP.size",
@@ -1366,8 +1368,8 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
     let mut entries = Vec::with_capacity(entry_count_usize);
     for i in 0..entry_count_usize {
         let e_off = 16 + i * 8;
-        let identifier = read_u32(map_slice, e_off)?;
-        let msg_raw = read_u32(map_slice, e_off + 4)?;
+        let identifier = read_u32_named(map_slice, e_off, "VMAP.entry.identifier")?;
+        let msg_raw = read_u32_named(map_slice, e_off + 4, "VMAP.entry.message_identifier")?;
         let message_identifier = if msg_raw == 0xffffffff {
             None
         } else {

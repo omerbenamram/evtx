@@ -40,8 +40,9 @@ pub enum WevtManifestError {
 
     #[error("invalid utf-16 string for {what} at offset {offset}")]
     InvalidUtf16String { what: &'static str, offset: u32 },
+
+    #[error("invalid GUID for {what} at offset {offset}")]
+    InvalidGuid { what: &'static str, offset: u32 },
 }
 
 pub(super) type Result<T> = std::result::Result<T, WevtManifestError>;
-
-

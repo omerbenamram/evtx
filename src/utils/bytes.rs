@@ -31,7 +31,8 @@ use crate::err::DeserializationError;
 ///
 /// Returns `None` if the range is out of bounds.
 pub(crate) fn read_array<const N: usize>(buf: &[u8], offset: usize) -> Option<[u8; N]> {
-    let bytes: [u8; N] = buf.get(offset..offset + N)?.try_into().ok()?;
+    let end = offset.checked_add(N)?;
+    let bytes: [u8; N] = buf.get(offset..end)?.try_into().ok()?;
     Some(bytes)
 }
 
