@@ -6,6 +6,7 @@ use crate::model::deserialized::{
 };
 use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::xml_output::BinXmlOutput;
+use crate::utils::ReadExt;
 use log::{debug, trace, warn};
 use std::borrow::{BorrowMut, Cow};
 
@@ -198,10 +199,9 @@ fn expand_string_ref<'a>(
         None => {
             let mut cursor = Cursor::new(chunk.data);
             let cursor_ref = cursor.borrow_mut();
-            try_seek!(
-                cursor_ref,
-                string_ref.offset + BINXML_NAME_LINK_SIZE,
-                "Cache missed string"
+            cursor_ref.try_seek_abs_named(
+                u64::from(string_ref.offset + BINXML_NAME_LINK_SIZE),
+                "Cache missed string",
             )?;
 
             let string = BinXmlName::from_stream(cursor_ref)?;

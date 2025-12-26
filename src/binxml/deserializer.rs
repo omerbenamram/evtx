@@ -1,6 +1,5 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
-
-use byteorder::ReadBytesExt;
+use crate::utils::ReadExt;
 
 use log::trace;
 use std::io::{Seek, SeekFrom};
@@ -144,7 +143,7 @@ impl<'a> IterTokens<'a> {
     /// Reads the next token from the stream, will return error if failed to read from the stream for some reason,
     /// or if reading random bytes (usually because of a bug in the code).
     fn read_next_token(&self, cursor: &mut Cursor<&'a [u8]>) -> Result<BinXMLRawToken> {
-        let token = try_read!(cursor, u8)?;
+        let token = cursor.try_u8()?;
 
         BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
             value: token,

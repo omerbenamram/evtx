@@ -1,6 +1,5 @@
 use crate::err::{DeserializationError, DeserializationResult as Result, WrappedIoError};
 
-pub use byteorder::ReadBytesExt;
 use winstructs::guid::Guid;
 
 use crate::model::deserialized::*;
@@ -9,7 +8,7 @@ use std::io::Cursor;
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
-use crate::utils::read_len_prefixed_utf16_string;
+use crate::utils::ReadExt;
 
 use log::{error, trace, warn};
 
@@ -26,29 +25,28 @@ pub fn read_template<'a>(
 ) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
-    let _ = try_read!(cursor, u8)?;
-    let template_id = try_read!(cursor, u32)?;
-    let template_definition_data_offset = try_read!(cursor, u32)?;
+    let _ = cursor.try_u8()?;
+    let template_id = cursor.try_u32()?;
+    let template_definition_data_offset = cursor.try_u32()?;
     let mut template_guid: Option<Guid> = None;
 
     // Need to skip over the template data.
     if (cursor.position() as u32) == template_definition_data_offset {
         let template_header = read_template_definition_header(cursor)?;
         template_guid = Some(template_header.guid.clone());
-        try_seek!(
-            cursor,
+        cursor.try_seek_abs_named(
             cursor.position() + u64::from(template_header.data_size),
-            "Skip cached template"
+            "Skip cached template",
         )?;
     }
 
-    let number_of_substitutions = try_read!(cursor, u32)?;
+    let number_of_substitutions = cursor.try_u32()?;
 
     let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
 
     for _ in 0..number_of_substitutions {
-        let size = try_read!(cursor, u16)?;
-        let value_type_token = try_read!(cursor, u8)?;
+        let size = cursor.try_u16()?;
+        let value_type_token = cursor.try_u8()?;
 
         let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
             DeserializationError::InvalidValueVariant {
@@ -58,7 +56,7 @@ pub fn read_template<'a>(
         )?;
 
         // Empty
-        let _ = try_read!(cursor, u8)?;
+        let _ = cursor.try_u8()?;
 
         value_descriptors.push(TemplateValueDescriptor { size, value_type })
     }
@@ -86,10 +84,9 @@ pub fn read_template<'a>(
         // NullType can mean deleted substitution (and data need to be skipped)
         if value == BinXmlValue::NullType {
             trace!("\t Skipping `NullType` descriptor");
-            try_seek!(
-                cursor,
+            cursor.try_seek_abs_named(
                 cursor.position() + u64::from(descriptor.size),
-                "NullType Descriptor"
+                "NullType Descriptor",
             )?;
         }
 
@@ -107,7 +104,7 @@ pub fn read_template<'a>(
 
             match u64::try_from(diff) {
                 Ok(u64_diff) => {
-                    try_seek!(cursor, current_position + u64_diff, "Broken record")?;
+                    cursor.try_seek_abs_named(current_position + u64_diff, "Broken record")?;
                 }
                 Err(_) => error!("Broken record"),
             }
@@ -127,11 +124,11 @@ pub fn read_template_definition_header(
     cursor: &mut Cursor<&[u8]>,
 ) -> Result<BinXmlTemplateDefinitionHeader> {
     // If any of these fail we cannot reliably report the template information in error.
-    let next_template_offset = try_read!(cursor, u32, "next_template_offset")?;
-    let template_guid = try_read!(cursor, guid, "template_guid")?;
+    let next_template_offset = cursor.try_u32_named("next_template_offset")?;
+    let template_guid = cursor.try_guid_named("template_guid")?;
     // Data size includes the fragment header, element and end of file token;
     // except for the first 33 bytes of the template definition (above)
-    let data_size = try_read!(cursor, u32, "template_data_size")?;
+    let data_size = cursor.try_u32_named("template_data_size")?;
 
     Ok(BinXmlTemplateDefinitionHeader {
         next_template_offset,
@@ -195,9 +192,9 @@ pub fn read_attribute(
 
 pub fn read_fragment_header(cursor: &mut Cursor<&[u8]>) -> Result<BinXMLFragmentHeader> {
     trace!("Offset `0x{:08x}` - FragmentHeader", cursor.position());
-    let major_version = try_read!(cursor, u8, "fragment_header_major_version")?;
-    let minor_version = try_read!(cursor, u8, "fragment_header_minor_version")?;
-    let flags = try_read!(cursor, u8, "fragment_header_flags")?;
+    let major_version = cursor.try_u8_named("fragment_header_major_version")?;
+    let minor_version = cursor.try_u8_named("fragment_header_minor_version")?;
+    let flags = cursor.try_u8_named("fragment_header_flags")?;
     Ok(BinXMLFragmentHeader {
         major_version,
         minor_version,
@@ -225,7 +222,9 @@ pub fn read_processing_instruction_data(cursor: &mut Cursor<&[u8]>) -> Result<St
         cursor.position(),
     );
 
-    let data = try_read!(cursor, len_prefixed_utf_16_str, "pi_data")?.unwrap_or_default();
+    let data = cursor
+        .try_len_prefixed_utf16_string_named("pi_data")?
+        .unwrap_or_default();
     trace!("PIData - {}", data,);
     Ok(data)
 }
@@ -239,8 +238,8 @@ pub fn read_substitution_descriptor(
         cursor.position(),
         optional
     );
-    let substitution_index = try_read!(cursor, u16)?;
-    let value_type_token = try_read!(cursor, u8)?;
+    let substitution_index = cursor.try_u16()?;
+    let value_type_token = cursor.try_u8()?;
 
     let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
         DeserializationError::InvalidValueVariant {
@@ -276,7 +275,7 @@ pub fn read_open_start_element(
     // The dependency identifier is not present when the element start is used in a substitution token.
     if !is_substitution {
         let _dependency_identifier =
-            try_read!(cursor, u16, "open_start_element_dependency_identifier")?;
+            cursor.try_u16_named("open_start_element_dependency_identifier")?;
 
         trace!(
             "\t Dependency Identifier - `0x{:04x} ({})`",
@@ -284,7 +283,7 @@ pub fn read_open_start_element(
         );
     }
 
-    let data_size = try_read!(cursor, u32, "open_start_element_data_size")?;
+    let data_size = cursor.try_u32_named("open_start_element_data_size")?;
 
     // This is a heuristic, sometimes `dependency_identifier` is not present even though it should have been.
     // This will result in interpreting garbage bytes as the data size.
@@ -311,7 +310,7 @@ pub fn read_open_start_element(
     trace!("\t Name - {:?}", name);
 
     let _attribute_list_data_size = if has_attributes {
-        try_read!(cursor, u32, "open_start_element_attribute_list_data_size")?
+        cursor.try_u32_named("open_start_element_attribute_list_data_size")?
     } else {
         0
     };

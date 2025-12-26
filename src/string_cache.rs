@@ -1,11 +1,12 @@
 use crate::ChunkOffset;
 use crate::binxml::name::{BinXmlName, BinXmlNameLink};
 use crate::err::DeserializationResult;
+use crate::utils::ReadExt;
 
 use log::trace;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::Cursor;
 
 #[derive(Debug)]
 pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
@@ -17,7 +18,7 @@ impl StringCache {
         let cursor_ref = cursor.borrow_mut();
 
         for &offset in offsets.iter().filter(|&&offset| offset > 0) {
-            try_seek!(cursor_ref, offset, "first xml string")?;
+            cursor_ref.try_seek_abs_named(u64::from(offset), "first xml string")?;
 
             loop {
                 let string_position = cursor_ref.position() as ChunkOffset;
@@ -33,7 +34,7 @@ impl StringCache {
                         if offset == string_position {
                             break;
                         }
-                        try_seek!(cursor_ref, offset, "next xml string")?;
+                        cursor_ref.try_seek_abs_named(u64::from(offset), "next xml string")?;
                     }
                     None => break,
                 }

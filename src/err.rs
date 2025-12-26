@@ -127,6 +127,14 @@ pub enum DeserializationError {
     )]
     InvalidValueVariant { value: u8, offset: u64 },
 
+    #[error("buffer too small for {what} at offset {offset} (need {need} bytes, have {have})")]
+    Truncated {
+        what: &'static str,
+        offset: u64,
+        need: usize,
+        have: usize,
+    },
+
     #[error(
         "Offset 0x{offset:08x}: WEVT inline name hash mismatch (expected 0x{expected:04x}, found 0x{found:04x})"
     )]

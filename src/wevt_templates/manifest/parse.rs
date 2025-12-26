@@ -4,6 +4,7 @@ use winstructs::guid::Guid;
 
 use super::error::{Result, WevtManifestError};
 use super::types::*;
+use super::util::*;
 
 impl<'a> CrimManifest<'a> {
     /// Parse a CRIM manifest blob (the payload stored inside a `WEVT_TEMPLATE` resource).
@@ -1158,7 +1159,9 @@ fn parse_template_items(
 
     // libfwevt’s reader relies on a boundary between descriptors and names; enforce that at least
     // the first name (if present) starts after the descriptor table.
-    if let Some(min_name_rel) = min_name_rel && min_name_rel < descriptor_end {
+    if let Some(min_name_rel) = min_name_rel
+        && min_name_rel < descriptor_end
+    {
         return Err(WevtManifestError::OffsetOutOfBounds {
             what: "template item name_offset overlaps descriptor table",
             offset: template_off_abs.saturating_add(min_name_rel as u32),
@@ -1397,165 +1400,3 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
         trailing,
     })
 }
-
-fn read_sized_utf16_string(buf: &[u8], offset: u32, what: &'static str) -> Result<String> {
-    let off_usize = u32_to_usize(offset, what, buf.len())?;
-    require_len(buf, off_usize, 4, what)?;
-    let size = read_u32(buf, off_usize)?;
-    if size < 4 {
-        return Err(WevtManifestError::SizeOutOfBounds { what, offset, size });
-    }
-    let size_usize = usize::try_from(size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-        what,
-        offset,
-        size,
-    })?;
-    require_len(buf, off_usize, size_usize, what)?;
-    let bytes = &buf[off_usize + 4..off_usize + size_usize];
-    decode_utf16_z(bytes, what, offset)
-}
-
-fn decode_utf16_z(bytes: &[u8], what: &'static str, offset: u32) -> Result<String> {
-    // Decode UTF-16LE until NUL (0x0000) or end.
-    if !bytes.len().is_multiple_of(2) {
-        return Err(WevtManifestError::InvalidUtf16String { what, offset });
-    }
-    let mut u16s = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        u16s.push(u16::from_le_bytes([chunk[0], chunk[1]]));
-    }
-    let end = u16s.iter().position(|&c| c == 0).unwrap_or(u16s.len());
-    String::from_utf16(&u16s[..end])
-        .map_err(|_| WevtManifestError::InvalidUtf16String { what, offset })
-}
-
-fn read_sig(buf: &[u8], offset: usize) -> Result<[u8; 4]> {
-    let b = buf
-        .get(offset..offset + 4)
-        .ok_or(WevtManifestError::Truncated {
-            what: "signature",
-            offset: usize_to_u32(offset),
-            need: 4,
-            have: buf.len().saturating_sub(offset),
-        })?;
-    Ok([b[0], b[1], b[2], b[3]])
-}
-
-fn read_u8(buf: &[u8], offset: usize) -> Result<u8> {
-    buf.get(offset)
-        .copied()
-        .ok_or(WevtManifestError::Truncated {
-            what: "u8",
-            offset: usize_to_u32(offset),
-            need: 1,
-            have: buf.len().saturating_sub(offset),
-        })
-}
-
-fn read_u16(buf: &[u8], offset: usize) -> Result<u16> {
-    let b = buf
-        .get(offset..offset + 2)
-        .ok_or(WevtManifestError::Truncated {
-            what: "u16",
-            offset: usize_to_u32(offset),
-            need: 2,
-            have: buf.len().saturating_sub(offset),
-        })?;
-    Ok(u16::from_le_bytes([b[0], b[1]]))
-}
-
-fn read_u32(buf: &[u8], offset: usize) -> Result<u32> {
-    let b = buf
-        .get(offset..offset + 4)
-        .ok_or(WevtManifestError::Truncated {
-            what: "u32",
-            offset: usize_to_u32(offset),
-            need: 4,
-            have: buf.len().saturating_sub(offset),
-        })?;
-    Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-}
-
-fn read_u64(buf: &[u8], offset: usize) -> Result<u64> {
-    let b = buf
-        .get(offset..offset + 8)
-        .ok_or(WevtManifestError::Truncated {
-            what: "u64",
-            offset: usize_to_u32(offset),
-            need: 8,
-            have: buf.len().saturating_sub(offset),
-        })?;
-    Ok(u64::from_le_bytes([
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-    ]))
-}
-
-fn read_guid(buf: &[u8], offset: usize) -> Result<Guid> {
-    let bytes = buf
-        .get(offset..offset + 16)
-        .ok_or(WevtManifestError::Truncated {
-            what: "GUID",
-            offset: usize_to_u32(offset),
-            need: 16,
-            have: buf.len().saturating_sub(offset),
-        })?;
-    let mut cursor = std::io::Cursor::new(bytes);
-    Guid::from_reader(&mut cursor).map_err(|_| WevtManifestError::InvalidUtf16String {
-        what: "GUID",
-        offset: usize_to_u32(offset),
-    })
-}
-
-fn u32_to_usize(offset: u32, what: &'static str, len: usize) -> Result<usize> {
-    let off = usize::try_from(offset).map_err(|_| WevtManifestError::OffsetOutOfBounds {
-        what,
-        offset,
-        len,
-    })?;
-    if off > len {
-        return Err(WevtManifestError::OffsetOutOfBounds { what, offset, len });
-    }
-    Ok(off)
-}
-
-fn usize_to_u32(v: usize) -> u32 {
-    u32::try_from(v).unwrap_or(u32::MAX)
-}
-
-fn require_len(buf: &[u8], off: usize, need: usize, what: &'static str) -> Result<()> {
-    if off > buf.len() || buf.len().saturating_sub(off) < need {
-        return Err(WevtManifestError::Truncated {
-            what,
-            offset: usize_to_u32(off),
-            need,
-            have: buf.len().saturating_sub(off),
-        });
-    }
-    Ok(())
-}
-
-fn checked_end(len: usize, off: u32, size: u32, what: &'static str) -> Result<usize> {
-    let off_usize = u32_to_usize(off, what, len)?;
-    let size_usize = usize::try_from(size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-        what,
-        offset: off,
-        size,
-    })?;
-    let end = off_usize
-        .checked_add(size_usize)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what,
-            offset: off,
-            size,
-        })?;
-    if end > len {
-        return Err(WevtManifestError::SizeOutOfBounds {
-            what,
-            offset: off,
-            size,
-        });
-    }
-    Ok(end)
-}
-
-

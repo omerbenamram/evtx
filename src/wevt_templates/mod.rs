@@ -24,7 +24,6 @@ mod extract;
 mod render;
 mod temp;
 mod types;
-mod util;
 
 pub use binxml::{parse_temp_binxml_fragment, parse_wevt_binxml_fragment};
 pub use error::WevtTemplateExtractError;

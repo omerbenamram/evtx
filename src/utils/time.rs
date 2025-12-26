@@ -1,18 +1,18 @@
 use crate::err::{DeserializationError, DeserializationResult};
 
 use crate::evtx_parser::ReadSeek;
-use byteorder::ReadBytesExt;
+use crate::utils::ReadExt;
 use chrono::prelude::*;
 
 pub fn read_systemtime<R: ReadSeek>(r: &mut R) -> DeserializationResult<DateTime<Utc>> {
-    let year = i32::from(try_read!(r, u16)?);
-    let month = u32::from(try_read!(r, u16)?);
-    let _day_of_week = try_read!(r, u16)?;
-    let day = u32::from(try_read!(r, u16)?);
-    let hour = u32::from(try_read!(r, u16)?);
-    let minute = u32::from(try_read!(r, u16)?);
-    let second = u32::from(try_read!(r, u16)?);
-    let milliseconds = u32::from(try_read!(r, u16)?);
+    let year = i32::from(r.try_u16()?);
+    let month = u32::from(r.try_u16()?);
+    let _day_of_week = r.try_u16()?;
+    let day = u32::from(r.try_u16()?);
+    let hour = u32::from(r.try_u16()?);
+    let minute = u32::from(r.try_u16()?);
+    let second = u32::from(r.try_u16()?);
+    let milliseconds = u32::from(r.try_u16()?);
 
     // The entire value is unset. By convention, use the "1601-01-01T00:00:00.0000000Z" timestamp.
     if year == 0

@@ -2,20 +2,17 @@ use crate::err::{
     ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError,
 };
 
-use crate::evtx_record::{EvtxRecord, EvtxRecordHeader};
+use crate::evtx_record::{EVTX_RECORD_HEADER_SIZE, EvtxRecord, EvtxRecordHeader};
+use crate::utils::bytes;
 
 use log::{debug, info, trace};
-use std::{
-    io::Cursor,
-    io::{Read, Seek, SeekFrom},
-};
+use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
 use crate::{ParserSettings, checksum_ieee};
 
-use byteorder::{LittleEndian, ReadBytesExt};
 use std::sync::Arc;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
@@ -65,8 +62,7 @@ impl EvtxChunkData {
     /// Construct a new chunk from the given data.
     /// Note that even when validate_checksum is set to false, the header magic is still checked.
     pub fn new(data: Vec<u8>, validate_checksum: bool) -> EvtxChunkResult<Self> {
-        let mut cursor = Cursor::new(data.as_slice());
-        let header = EvtxChunkHeader::from_reader(&mut cursor)?;
+        let header = EvtxChunkHeader::from_bytes(&data)?;
 
         let chunk = EvtxChunkData { header, data };
         if validate_checksum && !chunk.validate_checksum() {
@@ -248,23 +244,22 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             return None;
         }
 
-        let start = self.offset_from_chunk_start as usize;
-        if start >= self.chunk.data.len() {
+        let record_start = self.offset_from_chunk_start;
+        let record_start_usize = record_start as usize;
+
+        if record_start_usize >= self.chunk.data.len() {
             // Avoid panicking on an out-of-bounds slice if the header is corrupted.
             self.exhausted = true;
             return None;
         }
 
-        let remaining = &self.chunk.data[start..];
-        if remaining.len() < 4 {
+        if self.chunk.data.len() - record_start_usize < 4 {
             // Not enough bytes for the record header magic, treat as end-of-chunk.
             self.exhausted = true;
             return None;
         }
 
-        let mut cursor = Cursor::new(remaining);
-
-        let record_header = match EvtxRecordHeader::from_reader(&mut cursor) {
+        let record_header = match EvtxRecordHeader::from_bytes_at(self.chunk.data, record_start_usize) {
             Ok(record_header) => record_header,
             Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
                 // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
@@ -280,6 +275,11 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 return Some(Err(EvtxError::DeserializationError(
                     DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
                 )));
+            }
+            Err(DeserializationError::Truncated { .. }) => {
+                // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
+                self.exhausted = true;
+                return None;
             }
             Err(err) => {
                 // We currently do not try to recover after an invalid record.
@@ -308,7 +308,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         // We avoid creating new references so that `BinXmlDeserializer` can still generate 'a data.
         let deserializer = BinXmlDeserializer::init(
             self.chunk.data,
-            self.offset_from_chunk_start + cursor.position(),
+            record_start + EVTX_RECORD_HEADER_SIZE as u64,
             Some(self.chunk),
             false,
             self.settings.get_ansi_codec(),
@@ -355,37 +355,38 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 }
 
 impl EvtxChunkHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxChunkHeader> {
-        let mut magic = [0_u8; 8];
-        input.take(8).read_exact(&mut magic)?;
+    pub fn from_bytes(data: &[u8]) -> DeserializationResult<EvtxChunkHeader> {
+        // We only parse the fixed header prefix; the rest of the chunk may be shorter in some
+        // corrupted cases, but the header itself must be present.
+        let _ = bytes::slice_r(data, 0, EVTX_CHUNK_HEADER_SIZE, "EVTX chunk header")?;
+
+        let magic = bytes::read_array_r::<8>(data, 0, "chunk header magic")?;
 
         if &magic != b"ElfChnk\x00" {
             return Err(DeserializationError::InvalidEvtxChunkMagic { magic });
         }
 
-        let first_event_record_number = try_read!(input, u64)?;
-        let last_event_record_number = try_read!(input, u64)?;
-        let first_event_record_id = try_read!(input, u64)?;
-        let last_event_record_id = try_read!(input, u64)?;
+        let first_event_record_number =
+            bytes::read_u64_le_r(data, 8, "chunk.first_event_record_number")?;
+        let last_event_record_number =
+            bytes::read_u64_le_r(data, 16, "chunk.last_event_record_number")?;
+        let first_event_record_id = bytes::read_u64_le_r(data, 24, "chunk.first_event_record_id")?;
+        let last_event_record_id = bytes::read_u64_le_r(data, 32, "chunk.last_event_record_id")?;
 
-        let header_size = try_read!(input, u32)?;
-        let last_event_record_data_offset = try_read!(input, u32)?;
-        let free_space_offset = try_read!(input, u32)?;
-        let events_checksum = try_read!(input, u32)?;
+        let header_size = bytes::read_u32_le_r(data, 40, "chunk.header_size")?;
+        let last_event_record_data_offset =
+            bytes::read_u32_le_r(data, 44, "chunk.last_event_record_data_offset")?;
+        let free_space_offset = bytes::read_u32_le_r(data, 48, "chunk.free_space_offset")?;
+        let events_checksum = bytes::read_u32_le_r(data, 52, "chunk.events_checksum")?;
 
-        // Reserved
-        input.seek(SeekFrom::Current(64))?;
-
-        let raw_flags = try_read!(input, u32)?;
+        let raw_flags = bytes::read_u32_le_r(data, 120, "chunk.flags")?;
         let flags = ChunkFlags::from_bits_truncate(raw_flags);
 
-        let header_chunk_checksum = try_read!(input, u32)?;
+        let header_chunk_checksum = bytes::read_u32_le_r(data, 124, "chunk.header_chunk_checksum")?;
 
-        let mut strings_offsets = vec![0_u32; 64];
-        input.read_u32_into::<LittleEndian>(&mut strings_offsets)?;
-
-        let mut template_offsets = vec![0_u32; 32];
-        input.read_u32_into::<LittleEndian>(&mut template_offsets)?;
+        // Offsets arrays: fixed sizes (64 + 32 u32s).
+        let strings_offsets = bytes::read_u32_vec_le_r(data, 128, 64, "chunk.strings_offsets")?;
+        let template_offsets = bytes::read_u32_vec_le_r(data, 384, 32, "chunk.template_offsets")?;
 
         Ok(EvtxChunkHeader {
             first_event_record_number,
@@ -401,6 +402,16 @@ impl EvtxChunkHeader {
             template_offsets,
             strings_offsets,
         })
+    }
+
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxChunkHeader> {
+        let start = input.position() as usize;
+        let buf = input.get_ref();
+        let slice = bytes::slice_r(buf, start, EVTX_CHUNK_HEADER_SIZE, "EVTX chunk header")?;
+
+        let header = Self::from_bytes(slice)?;
+        input.set_position((start + EVTX_CHUNK_HEADER_SIZE) as u64);
+        Ok(header)
     }
 }
 

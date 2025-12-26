@@ -3,12 +3,13 @@ use crate::err::DeserializationResult;
 
 use crate::ChunkOffset;
 use crate::model::deserialized::BinXMLTemplateDefinition;
+use crate::utils::ReadExt;
 
 use encoding::EncodingRef;
 use log::trace;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::Cursor;
 
 pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
 
@@ -30,7 +31,7 @@ impl<'chunk> TemplateCache<'chunk> {
         let cursor_ref = cursor.borrow_mut();
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
-            try_seek!(cursor_ref, offset, "first template")?;
+            cursor_ref.try_seek_abs_named(u64::from(*offset), "first template")?;
 
             loop {
                 let table_offset = cursor_ref.position() as ChunkOffset;
@@ -45,7 +46,7 @@ impl<'chunk> TemplateCache<'chunk> {
                     break;
                 }
 
-                try_seek!(cursor_ref, next_template_offset, "next template")?;
+                cursor_ref.try_seek_abs_named(u64::from(next_template_offset), "next template")?;
             }
         }
 

@@ -7,7 +7,6 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use encoding::{DecoderTrap, EncodingRef, decode};
 use log::trace;
-use std::char::decode_utf16;
 use std::error::Error as StdErr;
 use std::io::{self, Error, ErrorKind};
 
@@ -127,8 +126,6 @@ fn read_utf16_string<T: ReadSeek>(stream: &mut T, len: Option<usize>) -> io::Res
         },
     }
 
-    // We need to stop if we see a NUL byte, even if asked for more bytes.
-    decode_utf16(buffer.into_iter().take_while(|&byte| byte != 0x00))
-        .map(|r| r.map_err(|_e| Error::from(ErrorKind::InvalidData)))
-        .collect()
+    crate::utils::decode_utf16_units_z(&buffer)
+        .map_err(|_e| Error::from(ErrorKind::InvalidData))
 }

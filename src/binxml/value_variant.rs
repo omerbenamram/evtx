@@ -8,10 +8,8 @@ use crate::binxml::deserializer::BinXmlDeserializer;
 use winstructs::guid::Guid;
 
 use crate::model::deserialized::BinXMLDeserializedTokens;
-use crate::utils::{
-    read_ansi_encoded_string, read_len_prefixed_utf16_string, read_null_terminated_utf16_string,
-    read_systemtime, read_utf16_by_size,
-};
+use crate::utils::{read_ansi_encoded_string, read_utf16_by_size};
+use crate::utils::ReadExt;
 use chrono::{DateTime, Utc};
 use log::trace;
 use serde_json::{json, Value};
@@ -194,7 +192,7 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
-        let value_type_token = try_read!(cursor, u8)?;
+        let value_type_token = cursor.try_u8()?;
 
         let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
             DeserializationError::InvalidValueVariant {
@@ -236,7 +234,9 @@ impl<'a> BinXmlValue<'a> {
                     .unwrap_or_else(|| "".to_owned()),
             ),
             (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
-                try_read!(cursor, len_prefixed_utf_16_str, "<string_value>")?.unwrap_or_default(),
+                cursor
+                    .try_len_prefixed_utf16_string_named("<string_value>")?
+                    .unwrap_or_default(),
             ),
             (BinXmlValueType::AnsiStringType, Some(sz)) => BinXmlValue::AnsiStringType(Cow::Owned(
                 read_ansi_encoded_string(cursor, u64::from(sz), ansi_codec)?
@@ -250,23 +250,23 @@ impl<'a> BinXmlValue<'a> {
                     offset: cursor.position(),
                 })
             }
-            (BinXmlValueType::Int8Type, _) => BinXmlValue::Int8Type(try_read!(cursor, i8)?),
-            (BinXmlValueType::UInt8Type, _) => BinXmlValue::UInt8Type(try_read!(cursor, u8)?),
-            (BinXmlValueType::Int16Type, _) => BinXmlValue::Int16Type(try_read!(cursor, i16)?),
-            (BinXmlValueType::UInt16Type, _) => BinXmlValue::UInt16Type(try_read!(cursor, u16)?),
-            (BinXmlValueType::Int32Type, _) => BinXmlValue::Int32Type(try_read!(cursor, i32)?),
-            (BinXmlValueType::UInt32Type, _) => BinXmlValue::UInt32Type(try_read!(cursor, u32)?),
-            (BinXmlValueType::Int64Type, _) => BinXmlValue::Int64Type(try_read!(cursor, i64)?),
-            (BinXmlValueType::UInt64Type, _) => BinXmlValue::UInt64Type(try_read!(cursor, u64)?),
-            (BinXmlValueType::Real32Type, _) => BinXmlValue::Real32Type(try_read!(cursor, f32)?),
-            (BinXmlValueType::Real64Type, _) => BinXmlValue::Real64Type(try_read!(cursor, f64)?),
-            (BinXmlValueType::BoolType, _) => BinXmlValue::BoolType(try_read!(cursor, bool)?),
-            (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(try_read!(cursor, guid)?),
+            (BinXmlValueType::Int8Type, _) => BinXmlValue::Int8Type(cursor.try_i8()?),
+            (BinXmlValueType::UInt8Type, _) => BinXmlValue::UInt8Type(cursor.try_u8()?),
+            (BinXmlValueType::Int16Type, _) => BinXmlValue::Int16Type(cursor.try_i16()?),
+            (BinXmlValueType::UInt16Type, _) => BinXmlValue::UInt16Type(cursor.try_u16()?),
+            (BinXmlValueType::Int32Type, _) => BinXmlValue::Int32Type(cursor.try_i32()?),
+            (BinXmlValueType::UInt32Type, _) => BinXmlValue::UInt32Type(cursor.try_u32()?),
+            (BinXmlValueType::Int64Type, _) => BinXmlValue::Int64Type(cursor.try_i64()?),
+            (BinXmlValueType::UInt64Type, _) => BinXmlValue::UInt64Type(cursor.try_u64()?),
+            (BinXmlValueType::Real32Type, _) => BinXmlValue::Real32Type(cursor.try_f32()?),
+            (BinXmlValueType::Real64Type, _) => BinXmlValue::Real64Type(cursor.try_f64()?),
+            (BinXmlValueType::BoolType, _) => BinXmlValue::BoolType(cursor.try_bool()?),
+            (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(cursor.try_guid()?),
             (BinXmlValueType::SizeTType, Some(4)) => {
-                BinXmlValue::HexInt32Type(try_read!(cursor, hex32)?)
+                BinXmlValue::HexInt32Type(cursor.try_hex32()?)
             }
             (BinXmlValueType::SizeTType, Some(8)) => {
-                BinXmlValue::HexInt64Type(try_read!(cursor, hex64)?)
+                BinXmlValue::HexInt64Type(cursor.try_hex64()?)
             }
             (BinXmlValueType::SizeTType, _) => {
                 return Err(DeserializationError::UnimplementedValueVariant {
@@ -276,17 +276,17 @@ impl<'a> BinXmlValue<'a> {
                 })
             }
             (BinXmlValueType::FileTimeType, _) => {
-                BinXmlValue::FileTimeType(try_read!(cursor, filetime)?)
+                BinXmlValue::FileTimeType(cursor.try_filetime()?)
             }
             (BinXmlValueType::SysTimeType, _) => {
-                BinXmlValue::SysTimeType(try_read!(cursor, systime)?)
+                BinXmlValue::SysTimeType(cursor.try_systime()?)
             }
-            (BinXmlValueType::SidType, _) => BinXmlValue::SidType(try_read!(cursor, sid)?),
+            (BinXmlValueType::SidType, _) => BinXmlValue::SidType(cursor.try_sid()?),
             (BinXmlValueType::HexInt32Type, _) => {
-                BinXmlValue::HexInt32Type(try_read!(cursor, hex32)?)
+                BinXmlValue::HexInt32Type(cursor.try_hex32()?)
             }
             (BinXmlValueType::HexInt64Type, _) => {
-                BinXmlValue::HexInt64Type(try_read!(cursor, hex64)?)
+                BinXmlValue::HexInt64Type(cursor.try_hex64()?)
             }
             (BinXmlValueType::BinXmlType, None) => {
                 let tokens = BinXmlDeserializer::read_binxml_fragment(
@@ -323,11 +323,11 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::BinaryType(bytes)
             }
             // The array types are always sized.
-            (BinXmlValueType::StringArrayType, Some(sz)) => BinXmlValue::StringArrayType(
-                try_read_sized_array!(cursor, null_terminated_utf_16_str, sz),
-            ),
+            (BinXmlValueType::StringArrayType, Some(sz)) => {
+                BinXmlValue::StringArrayType(cursor.try_read_sized_null_terminated_utf16_string_array(sz)?)
+            }
             (BinXmlValueType::Int8ArrayType, Some(sz)) => {
-                BinXmlValue::Int8ArrayType(try_read_sized_array!(cursor, i8, sz))
+                BinXmlValue::Int8ArrayType(cursor.try_read_sized_i8_array(sz)?)
             }
             (BinXmlValueType::UInt8ArrayType, Some(sz)) => {
                 let mut data = vec![0; sz as usize];
@@ -342,49 +342,49 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::UInt8ArrayType(data)
             }
             (BinXmlValueType::Int16ArrayType, Some(sz)) => {
-                BinXmlValue::Int16ArrayType(try_read_sized_array!(cursor, i16, sz))
+                BinXmlValue::Int16ArrayType(cursor.try_read_sized_i16_array(sz)?)
             }
             (BinXmlValueType::UInt16ArrayType, Some(sz)) => {
-                BinXmlValue::UInt16ArrayType(try_read_sized_array!(cursor, u16, sz))
+                BinXmlValue::UInt16ArrayType(cursor.try_read_sized_u16_array(sz)?)
             }
             (BinXmlValueType::Int32ArrayType, Some(sz)) => {
-                BinXmlValue::Int32ArrayType(try_read_sized_array!(cursor, i32, sz))
+                BinXmlValue::Int32ArrayType(cursor.try_read_sized_i32_array(sz)?)
             }
             (BinXmlValueType::UInt32ArrayType, Some(sz)) => {
-                BinXmlValue::UInt32ArrayType(try_read_sized_array!(cursor, u32, sz))
+                BinXmlValue::UInt32ArrayType(cursor.try_read_sized_u32_array(sz)?)
             }
             (BinXmlValueType::Int64ArrayType, Some(sz)) => {
-                BinXmlValue::Int64ArrayType(try_read_sized_array!(cursor, i64, sz))
+                BinXmlValue::Int64ArrayType(cursor.try_read_sized_i64_array(sz)?)
             }
             (BinXmlValueType::UInt64ArrayType, Some(sz)) => {
-                BinXmlValue::UInt64ArrayType(try_read_sized_array!(cursor, u64, sz))
+                BinXmlValue::UInt64ArrayType(cursor.try_read_sized_u64_array(sz)?)
             }
             (BinXmlValueType::Real32ArrayType, Some(sz)) => {
-                BinXmlValue::Real32ArrayType(try_read_sized_array!(cursor, f32, sz))
+                BinXmlValue::Real32ArrayType(cursor.try_read_sized_f32_array(sz)?)
             }
             (BinXmlValueType::Real64ArrayType, Some(sz)) => {
-                BinXmlValue::Real64ArrayType(try_read_sized_array!(cursor, f64, sz))
+                BinXmlValue::Real64ArrayType(cursor.try_read_sized_f64_array(sz)?)
             }
             (BinXmlValueType::BoolArrayType, Some(sz)) => {
-                BinXmlValue::BoolArrayType(try_read_sized_array!(cursor, bool, sz))
+                BinXmlValue::BoolArrayType(cursor.try_read_sized_bool_array(sz)?)
             }
             (BinXmlValueType::GuidArrayType, Some(sz)) => {
-                BinXmlValue::GuidArrayType(try_read_sized_array!(cursor, guid, sz))
+                BinXmlValue::GuidArrayType(cursor.try_read_sized_guid_array(sz)?)
             }
             (BinXmlValueType::FileTimeArrayType, Some(sz)) => {
-                BinXmlValue::FileTimeArrayType(try_read_sized_array!(cursor, filetime, sz))
+                BinXmlValue::FileTimeArrayType(cursor.try_read_sized_filetime_array(sz)?)
             }
             (BinXmlValueType::SysTimeArrayType, Some(sz)) => {
-                BinXmlValue::SysTimeArrayType(try_read_sized_array!(cursor, systime, sz))
+                BinXmlValue::SysTimeArrayType(cursor.try_read_sized_systime_array(sz)?)
             }
             (BinXmlValueType::SidArrayType, Some(sz)) => {
-                BinXmlValue::SidArrayType(try_read_sized_array!(cursor, sid, sz))
+                BinXmlValue::SidArrayType(cursor.try_read_sized_sid_array(sz)?)
             }
             (BinXmlValueType::HexInt32ArrayType, Some(sz)) => {
-                BinXmlValue::HexInt32ArrayType(try_read_sized_array!(cursor, hex32, sz))
+                BinXmlValue::HexInt32ArrayType(cursor.try_read_sized_hex32_array(sz)?)
             }
             (BinXmlValueType::HexInt64ArrayType, Some(sz)) => {
-                BinXmlValue::HexInt64ArrayType(try_read_sized_array!(cursor, hex64, sz))
+                BinXmlValue::HexInt64ArrayType(cursor.try_read_sized_hex64_array(sz)?)
             }
 
             _ => {

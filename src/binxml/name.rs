@@ -4,11 +4,11 @@ use crate::err::DeserializationResult as Result;
 use crate::ChunkOffset;
 pub use byteorder::{LittleEndian, ReadBytesExt};
 
-use crate::utils::read_len_prefixed_utf16_string;
+use crate::utils::ReadExt;
 
 use std::{
     fmt::Formatter,
-    io::{Cursor, Seek, SeekFrom},
+    io::Cursor,
 };
 
 use quick_xml::events::{BytesEnd, BytesStart};
@@ -65,8 +65,8 @@ pub(crate) struct BinXmlNameLink {
 
 impl BinXmlNameLink {
     pub fn from_stream(stream: &mut Cursor<&[u8]>) -> Result<Self> {
-        let next_string = try_read!(stream, u32)?;
-        let name_hash = try_read!(stream, u16, "name_hash")?;
+        let next_string = stream.try_u32()?;
+        let name_hash = stream.try_u16_named("name_hash")?;
 
         Ok(BinXmlNameLink {
             next_string: if next_string > 0 {
@@ -85,7 +85,7 @@ impl BinXmlNameLink {
 
 impl BinXmlNameRef {
     pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let name_offset = try_read!(cursor, u32, "name_offset")?;
+        let name_offset = cursor.try_u32_named("name_offset")?;
 
         let position_before_string = cursor.position();
         let need_to_seek = position_before_string == u64::from(name_offset);
@@ -97,11 +97,7 @@ impl BinXmlNameRef {
             let nul_terminator_len = 4;
             let data_size = BinXmlNameLink::data_size() + u32::from(len * 2) + nul_terminator_len;
 
-            try_seek!(
-                cursor,
-                position_before_string + u64::from(data_size),
-                "Skip string"
-            )?;
+            cursor.try_seek_abs_named(position_before_string + u64::from(data_size), "Skip string")?;
         }
 
         Ok(BinXmlNameRef {
@@ -121,19 +117,19 @@ impl BinXmlNameRef {
 
     fn from_stream_wevt_inline(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
         let name_offset = cursor.position() as ChunkOffset;
-        let stored_hash = try_read!(cursor, u16, "wevt_inline_name_hash")?;
+        let stored_hash = cursor.try_u16_named("wevt_inline_name_hash")?;
         // character count
-        let char_count = try_read!(cursor, u16, "wevt_inline_name_character_count")?;
+        let char_count = cursor.try_u16_named("wevt_inline_name_character_count")?;
 
         let mut hash: u32 = 0;
         for _ in 0..char_count {
-            let code_unit = try_read!(cursor, u16, "wevt_inline_name_code_unit")?;
+            let code_unit = cursor.try_u16_named("wevt_inline_name_code_unit")?;
             hash = hash
                 .wrapping_mul(WEVT_INLINE_NAME_HASH_MULTIPLIER)
                 .wrapping_add(u32::from(code_unit));
         }
 
-        let nul = try_read!(cursor, u16, "wevt_inline_name_nul")?;
+        let nul = cursor.try_u16_named("wevt_inline_name_nul")?;
         if nul != 0 {
             return Err(DeserializationError::WevtInlineNameMissingNulTerminator {
                 found: nul,
@@ -163,15 +159,12 @@ impl BinXmlNameRef {
 pub(crate) fn read_wevt_inline_name_at(data: &[u8], offset: ChunkOffset) -> Result<BinXmlName> {
     let mut cursor = Cursor::new(data);
     let cursor_ref = &mut cursor;
-    try_seek!(cursor_ref, offset, "Seek WEVT inline name")?;
+    cursor_ref.try_seek_abs_named(u64::from(offset), "Seek WEVT inline name")?;
 
-    let _ = try_read!(cursor_ref, u16, "wevt_inline_name_hash")?;
-    let name = try_read!(
-        cursor_ref,
-        len_prefixed_utf_16_str_nul_terminated,
-        "wevt_inline_name"
-    )?
-    .unwrap_or_default();
+    let _ = cursor_ref.try_u16_named("wevt_inline_name_hash")?;
+    let name = cursor_ref
+        .try_len_prefixed_utf16_string_nul_terminated_named("wevt_inline_name")?
+        .unwrap_or_default();
 
     Ok(BinXmlName { str: name })
 }
@@ -189,8 +182,9 @@ impl BinXmlName {
 
     /// Reads a tuple of (String, Hash, Offset) from a stream.
     pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let name =
-            try_read!(cursor, len_prefixed_utf_16_str_nul_terminated, "name")?.unwrap_or_default();
+        let name = cursor
+            .try_len_prefixed_utf16_string_nul_terminated_named("name")?
+            .unwrap_or_default();
 
         Ok(BinXmlName { str: name })
     }
