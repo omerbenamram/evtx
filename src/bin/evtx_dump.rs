@@ -17,6 +17,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tempfile::tempfile;
 
+#[path = "evtx_dump/apply_wevt_cache.rs"]
+mod apply_wevt_cache;
+#[path = "evtx_dump/dump_template_instances.rs"]
+mod dump_template_instances;
+#[path = "evtx_dump/extract_wevt_templates.rs"]
+mod extract_wevt_templates;
+
 #[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -53,6 +60,8 @@ struct EvtxDump {
     stop_after_error: bool,
     /// When set, only the specified events (offseted reltaive to file) will be outputted.
     ranges: Option<Ranges>,
+    #[cfg(feature = "wevt_templates")]
+    wevt_cache: Option<std::sync::Arc<evtx::wevt_templates::WevtCache>>,
 }
 
 impl EvtxDump {
@@ -166,6 +175,12 @@ impl EvtxDump {
             Box::new(BufWriter::new(io::stdout()))
         };
 
+        #[cfg(feature = "wevt_templates")]
+        let wevt_cache = matches
+            .get_one::<String>("wevt-cache-index")
+            .map(|p| evtx::wevt_templates::WevtCache::load(p).map(std::sync::Arc::new))
+            .transpose()?;
+
         Ok(EvtxDump {
             parser_settings: ParserSettings::new()
                 .num_threads(num_threads.try_into().expect("u32 -> usize"))
@@ -181,6 +196,8 @@ impl EvtxDump {
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
+            #[cfg(feature = "wevt_templates")]
+            wevt_cache,
         })
     }
 
@@ -196,6 +213,22 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
+                #[cfg(feature = "wevt_templates")]
+                if let Some(cache) = self.wevt_cache.clone() {
+                    let iter = parser.serialized_records(move |record_res| {
+                        record_res
+                            .and_then(|record| record.into_xml_with_wevt_cache(cache.as_ref()))
+                    });
+                    for record in iter {
+                        self.dump_record(record)?
+                    }
+                } else {
+                    for record in parser.records() {
+                        self.dump_record(record)?
+                    }
+                }
+
+                #[cfg(not(feature = "wevt_templates"))]
                 for record in parser.records() {
                     self.dump_record(record)?
                 }
@@ -203,11 +236,45 @@ impl EvtxDump {
             EvtxOutputFormat::JSON => {
                 match self.json_parser {
                     JsonParserKind::Streaming => {
+                        #[cfg(feature = "wevt_templates")]
+                        if let Some(cache) = self.wevt_cache.clone() {
+                            let iter = parser.serialized_records(move |record_res| {
+                                record_res.and_then(|record| {
+                                    record.into_json_stream_with_wevt_cache(cache.as_ref())
+                                })
+                            });
+                            for record in iter {
+                                self.dump_record(record)?
+                            }
+                        } else {
+                            for record in parser.records_json_stream() {
+                                self.dump_record(record)?
+                            }
+                        }
+
+                        #[cfg(not(feature = "wevt_templates"))]
                         for record in parser.records_json_stream() {
                             self.dump_record(record)?
                         }
                     }
                     JsonParserKind::Legacy => {
+                        #[cfg(feature = "wevt_templates")]
+                        if let Some(cache) = self.wevt_cache.clone() {
+                            let iter = parser.serialized_records(move |record_res| {
+                                record_res.and_then(|record| {
+                                    record.into_json_with_wevt_cache(cache.as_ref())
+                                })
+                            });
+                            for record in iter {
+                                self.dump_record(record)?
+                            }
+                        } else {
+                            for record in parser.records_json() {
+                                self.dump_record(record)?
+                            }
+                        }
+
+                        #[cfg(not(feature = "wevt_templates"))]
                         for record in parser.records_json() {
                             self.dump_record(record)?
                         }
@@ -421,14 +488,14 @@ fn main() -> Result<()> {
         .map(|e| e.name())
         .collect::<Vec<&'static str>>();
 
-    let matches = Command::new("EVTX Parser")
+    let cmd = Command::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
         .about("Utility to parse EVTX files")
         .arg(
             Arg::new("INPUT")
-                .required(true)
-                .help("Input EVTX file path, or '-' to read from stdin."),
+                .required(false)
+                .help("Input EVTX file path, or '-' to read from stdin. Required unless using a subcommand."),
         )
         .arg(
             Arg::new("num-threads")
@@ -516,7 +583,19 @@ fn main() -> Result<()> {
                 .value_parser(all_encoings)
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
-        )
+        );
+
+    // Optional: when provided, use an offline WEVT template cache as a fallback for records
+    // whose embedded EVTX templates are missing/corrupt (common in carved/dirty logs).
+    #[cfg(feature = "wevt_templates")]
+    let cmd = cmd.arg(
+        Arg::new("wevt-cache-index")
+            .long("wevt-cache-index")
+            .value_name("INDEX_JSONL")
+            .help("Path to a WEVT template cache index JSONL (from `extract-wevt-templates`). When set, evtx_dump will try to render records using this cache if the embedded EVTX template expansion fails."),
+    );
+
+    let matches = cmd
         .arg(
             Arg::new("stop-after-one-error")
                 .long("stop-after-one-error")
@@ -532,7 +611,27 @@ fn main() -> Result<()> {
                 -vv  - debug
                 -vvv - trace
             NOTE: trace output is only available in debug builds, as it is extremely verbose."#))
-        ).get_matches();
+        )
+        .subcommand(extract_wevt_templates::command())
+        .subcommand(dump_template_instances::command())
+        .subcommand(apply_wevt_cache::command())
+        .get_matches();
+
+    if let Some(("extract-wevt-templates", sub_matches)) = matches.subcommand() {
+        return extract_wevt_templates::run(sub_matches);
+    }
+
+    if let Some(("dump-template-instances", sub_matches)) = matches.subcommand() {
+        return dump_template_instances::run(sub_matches);
+    }
+
+    if let Some(("apply-wevt-cache", sub_matches)) = matches.subcommand() {
+        return apply_wevt_cache::run(sub_matches);
+    }
+
+    if matches.get_one::<String>("INPUT").is_none() {
+        bail!("Missing INPUT. Provide an EVTX file path, or use a subcommand (try `--help`).");
+    }
 
     EvtxDump::from_cli_matches(&matches)?.run()?;
 

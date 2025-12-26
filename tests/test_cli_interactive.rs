@@ -13,18 +13,31 @@ mod tests {
     use rexpect::spawn;
     use std::fs::File;
     use std::io::{Read, Write};
-    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
-    // These tests rely on pty semantics and can behave flakily when executed concurrently.
-    // Serialize them to ensure stable behavior under the default Rust test runner.
-    static INTERACTIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
+    fn wait_for_file_len_at_least(path: &std::path::Path, min_len: usize, timeout: Duration) -> usize {
+        let start = Instant::now();
+        loop {
+            if let Ok(meta) = std::fs::metadata(path) {
+                let len = meta.len() as usize;
+                if len >= min_len {
+                    return len;
+                }
+            }
+            if start.elapsed() >= timeout {
+                let len = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
+                return len;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
 
     // It should behave the same on windows, but interactive testing relies on unix pty internals.
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_it_confirms_before_overwriting_a_file() {
-        let _guard = INTERACTIVE_TEST_LOCK.lock().unwrap();
+        let _guard = CLI_TEST_LOCK.lock().unwrap();
         let d = tempdir().unwrap();
         let f = d.as_ref().join("test.out");
 
@@ -45,22 +58,16 @@ mod tests {
             .unwrap();
         p.send_line("y").unwrap();
         p.flush().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        // .expect_eof doesn't work any more :(
 
-        let mut expected = vec![];
-
-        File::open(&f).unwrap().read_to_end(&mut expected).unwrap();
-        assert!(
-            expected.len() > 100,
-            "Expected output to be printed to file"
-        )
+        // Wait for the file to be overwritten. Under load, parsing can take longer than 100ms.
+        let len = wait_for_file_len_at_least(&f, 100, Duration::from_secs(10));
+        assert!(len >= 100, "Expected output to be printed to file");
     }
 
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn test_it_confirms_before_overwriting_a_file_and_quits() {
-        let _guard = INTERACTIVE_TEST_LOCK.lock().unwrap();
+        let _guard = CLI_TEST_LOCK.lock().unwrap();
         let d = tempdir().unwrap();
         let f = d.as_ref().join("test.out");
 
@@ -80,14 +87,16 @@ mod tests {
         p.exp_regex(r#"Are you sure you want to override.*"#)
             .unwrap();
         p.send_line("n").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        p.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
 
         let mut expected = vec![];
 
         File::open(&f).unwrap().read_to_end(&mut expected).unwrap();
-        assert!(
-            !expected.len() > 100,
-            "Expected output to be printed to file"
-        )
+        assert_eq!(
+            expected.as_slice(),
+            b"I'm a file!",
+            "Expected output file to remain unchanged"
+        );
     }
 }

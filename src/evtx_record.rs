@@ -4,15 +4,18 @@ use crate::err::{
 };
 use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
+use crate::utils::bytes;
+use crate::utils::windows::filetime_to_datetime;
 use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
 
-use byteorder::ReadBytesExt;
 use chrono::prelude::*;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::sync::Arc;
 
 pub type RecordId = u64;
+
+pub(crate) const EVTX_RECORD_HEADER_SIZE: usize = 24;
 
 #[derive(Debug, Clone)]
 pub struct EvtxRecord<'a> {
@@ -38,17 +41,19 @@ pub struct SerializedEvtxRecord<T> {
 }
 
 impl EvtxRecordHeader {
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxRecordHeader> {
-        let mut magic = [0_u8; 4];
-        input.take(4).read_exact(&mut magic)?;
+    pub fn from_bytes_at(buf: &[u8], offset: usize) -> DeserializationResult<EvtxRecordHeader> {
+        let _ = bytes::slice_r(buf, offset, EVTX_RECORD_HEADER_SIZE, "EVTX record header")?;
 
+        let magic = bytes::read_array_r::<4>(buf, offset, "record header magic")?;
         if &magic != b"\x2a\x2a\x00\x00" {
             return Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic });
         }
 
-        let size = try_read!(input, u32)?;
-        let record_id = try_read!(input, u64)?;
-        let timestamp = try_read!(input, filetime)?;
+        let size = bytes::read_u32_le_r(buf, offset + 4, "record.data_size")?;
+        let record_id = bytes::read_u64_le_r(buf, offset + 8, "record.event_record_id")?;
+        let filetime = bytes::read_u64_le_r(buf, offset + 16, "record.filetime")?;
+
+        let timestamp = filetime_to_datetime(filetime);
 
         Ok(EvtxRecordHeader {
             data_size: size,
@@ -57,10 +62,22 @@ impl EvtxRecordHeader {
         })
     }
 
+    pub fn from_bytes(buf: &[u8]) -> DeserializationResult<EvtxRecordHeader> {
+        Self::from_bytes_at(buf, 0)
+    }
+
+    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxRecordHeader> {
+        let start = input.position() as usize;
+        let buf = input.get_ref();
+        let header = Self::from_bytes_at(buf, start)?;
+        input.set_position((start + EVTX_RECORD_HEADER_SIZE) as u64);
+        Ok(header)
+    }
+
     pub fn record_data_size(&self) -> Result<u32> {
         // 24 - record header size
         // 4 - copy of size record size
-        let decal = 24 + 4;
+        let decal = EVTX_RECORD_HEADER_SIZE as u32 + 4;
         if self.data_size < decal {
             return Err(EvtxError::InvalidDataSize {
                 length: self.data_size,

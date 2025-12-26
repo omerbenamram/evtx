@@ -1,7 +1,7 @@
 use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
+use crate::utils::bytes;
 
-use byteorder::ReadBytesExt;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct EvtxFileHeader {
@@ -29,50 +29,52 @@ bitflags! {
 }
 
 impl EvtxFileHeader {
-    pub fn from_stream<T: Read + Seek>(stream: &mut T) -> DeserializationResult<EvtxFileHeader> {
-        let mut magic = [0_u8; 8];
-        stream.take(8).read_exact(&mut magic).map_err(|e| {
-            WrappedIoError::io_error_with_message(e, "failed to read file_header magic", stream)
-        })?;
+    pub fn from_bytes(data: &[u8]) -> DeserializationResult<EvtxFileHeader> {
+        // We only need the fixed 128-byte header prefix (the full header block is 4096 bytes).
+        let _ = bytes::slice_r(data, 0, 128, "EVTX file header")?;
 
+        let magic = bytes::read_array_r::<8>(data, 0, "file header magic")?;
         if &magic != b"ElfFile\x00" {
             return Err(DeserializationError::InvalidEvtxFileHeaderMagic { magic });
         }
 
-        let oldest_chunk = try_read!(stream, u64, "file_header_oldest_chunk")?;
-        let current_chunk_num = try_read!(stream, u64, "file_header_current_chunk_num")?;
-        let next_record_num = try_read!(stream, u64, "file_header_next_record_num")?;
-        let header_size = try_read!(stream, u32, "file_header_header_size")?;
-        let minor_version = try_read!(stream, u16, "file_header_minor_version")?;
-        let major_version = try_read!(stream, u16, "file_header_major_version")?;
-        let header_block_size = try_read!(stream, u16, "file_header_header_block_size")?;
-        let chunk_count = try_read!(stream, u16, "file_header_chunk_count")?;
+        let oldest_chunk = bytes::read_u64_le_r(data, 8, "file_header_oldest_chunk")?;
+        let current_chunk_num = bytes::read_u64_le_r(data, 16, "file_header_current_chunk_num")?;
+        let next_record_num = bytes::read_u64_le_r(data, 24, "file_header_next_record_num")?;
+        let header_size = bytes::read_u32_le_r(data, 32, "file_header_header_size")?;
+        let minor_version = bytes::read_u16_le_r(data, 36, "file_header_minor_version")?;
+        let major_version = bytes::read_u16_le_r(data, 38, "file_header_major_version")?;
+        let header_block_size = bytes::read_u16_le_r(data, 40, "file_header_header_block_size")?;
+        let chunk_count = bytes::read_u16_le_r(data, 42, "file_header_chunk_count")?;
 
-        // unused
-        stream.seek(SeekFrom::Current(76)).map_err(|e| {
-            WrappedIoError::io_error_with_message(e, "failed to seek in file_header", stream)
-        })?;
-
-        let raw_flags = try_read!(stream, u32, "file_header_flags")?;
+        let raw_flags = bytes::read_u32_le_r(data, 120, "file_header_flags")?;
         let flags = HeaderFlags::from_bits_truncate(raw_flags);
-        let checksum = try_read!(stream, u32, "file_header_checksum")?;
-        // unused
-        stream.seek(SeekFrom::Current(4096 - 128)).map_err(|e| {
-            WrappedIoError::io_error_with_message(e, "failed to seek in file_header", stream)
-        })?;
+        let checksum = bytes::read_u32_le_r(data, 124, "file_header_checksum")?;
 
         Ok(EvtxFileHeader {
             first_chunk_number: oldest_chunk,
             last_chunk_number: current_chunk_num,
             next_record_id: next_record_num,
-            header_block_size,
+            header_size,
             minor_version,
             major_version,
-            header_size,
+            header_block_size,
             chunk_count,
             flags,
             checksum,
         })
+    }
+
+    pub fn from_stream<T: Read + Seek>(stream: &mut T) -> DeserializationResult<EvtxFileHeader> {
+        let mut header_block = [0_u8; crate::evtx_parser::EVTX_FILE_HEADER_SIZE];
+        stream.read_exact(&mut header_block).map_err(|e| {
+            WrappedIoError::io_error_with_message(
+                e,
+                "failed to read EVTX file header block",
+                stream,
+            )
+        })?;
+        Self::from_bytes(&header_block)
     }
 }
 

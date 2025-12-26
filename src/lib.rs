@@ -3,10 +3,6 @@
 #![allow(clippy::upper_case_acronyms)]
 // Don't allow dbg! prints in release.
 #![cfg_attr(not(debug_assertions), deny(clippy::dbg_macro))]
-// This needs to come first!
-#[macro_use]
-mod macros;
-
 #[macro_use]
 extern crate bitflags;
 
@@ -21,6 +17,10 @@ pub use xml_output::{BinXmlOutput, XmlOutput};
 pub mod binxml;
 pub mod err;
 pub mod model;
+
+// Optional: PE resource parsing to extract WEVT_TEMPLATE blobs (see issue #103).
+#[cfg(feature = "wevt_templates")]
+pub mod wevt_templates;
 
 mod evtx_chunk;
 mod evtx_file_header;

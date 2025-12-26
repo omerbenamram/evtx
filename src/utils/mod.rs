@@ -1,10 +1,11 @@
-mod binxml_utils;
+pub(crate) mod byte_cursor;
+pub(crate) mod bytes;
 pub(super) mod hexdump;
-mod time;
+mod parse_error;
+pub(crate) mod utf16;
+pub(crate) mod windows;
 
-pub use self::binxml_utils::{
-    read_ansi_encoded_string, read_len_prefixed_utf16_string, read_null_terminated_utf16_string,
-    read_utf16_by_size,
-};
+pub(crate) use self::byte_cursor::ByteCursor;
 pub use self::hexdump::dump_stream;
-pub use self::time::read_systemtime;
+pub(crate) use self::parse_error::invalid_data;
+pub(crate) use self::utf16::{decode_utf16_units_z, decode_utf16le_bytes_z};

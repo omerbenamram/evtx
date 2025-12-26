@@ -99,11 +99,11 @@ pub enum DeserializationError {
         source: WrappedIoError,
     },
 
-    #[error("An expected I/O error has occurred")]
-    UnexpectedIoError(#[from] WrappedIoError),
+    #[error(transparent)]
+    IoWithContext(#[from] WrappedIoError),
 
-    #[error("An expected I/O error has occurred")]
-    RemoveMe(#[from] io::Error),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 
     /// An extra layer of error indirection to keep template GUID.
     #[error("Failed to deserialize template `{template_id}`")]
@@ -126,6 +126,26 @@ pub enum DeserializationError {
         "Offset 0x{offset:08x}: Tried to read an invalid byte `0x{value:2x}` as binxml value variant"
     )]
     InvalidValueVariant { value: u8, offset: u64 },
+
+    #[error("buffer too small for {what} at offset {offset} (need {need} bytes, have {have})")]
+    Truncated {
+        what: &'static str,
+        offset: u64,
+        need: usize,
+        have: usize,
+    },
+
+    #[error(
+        "Offset 0x{offset:08x}: WEVT inline name hash mismatch (expected 0x{expected:04x}, found 0x{found:04x})"
+    )]
+    WevtInlineNameHashMismatch {
+        expected: u16,
+        found: u16,
+        offset: u64,
+    },
+
+    #[error("Offset 0x{offset:08x}: WEVT inline name missing NUL terminator (found 0x{found:04x})")]
+    WevtInlineNameMissingNulTerminator { found: u16, offset: u64 },
 
     #[error("An out-of-range date, invalid month and/or day")]
     InvalidDateTimeError,

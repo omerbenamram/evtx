@@ -15,10 +15,10 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
 
     // Test streaming JSON parser
     for r in parser.records_json_stream() {
-        if r.is_ok() {
+        if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
-                println!("{}", r.unwrap().data);
+                println!("{}", r.data);
             }
         } else {
             actual_err_count += 1;
@@ -40,10 +40,10 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
     parser = parser.with_configuration(separate_json_attributes);
 
     for r in parser.records_json_stream() {
-        if r.is_ok() {
+        if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
-                println!("{}", r.unwrap().data);
+                println!("{}", r.data);
             }
         } else {
             actual_err_count += 1;

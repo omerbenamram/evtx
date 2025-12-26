@@ -5,16 +5,16 @@ use crate::model::deserialized::{
     BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
 };
 use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
+use crate::utils::ByteCursor;
 use crate::xml_output::BinXmlOutput;
 use log::{debug, trace, warn};
-use std::borrow::{BorrowMut, Cow};
+use std::borrow::Cow;
 
 use std::mem;
 
 use crate::EvtxChunk;
 use crate::binxml::name::{BinXmlName, BinXmlNameRef};
-use crate::binxml::tokens::read_template_definition;
-use std::io::{Cursor, Seek, SeekFrom};
+use crate::binxml::tokens::read_template_definition_cursor;
 
 pub fn parse_tokens<'a, T: BinXmlOutput>(
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
@@ -196,15 +196,11 @@ fn expand_string_ref<'a>(
     match chunk.string_cache.get_cached_string(string_ref.offset) {
         Some(s) => Ok(Cow::Borrowed(s)),
         None => {
-            let mut cursor = Cursor::new(chunk.data);
-            let cursor_ref = cursor.borrow_mut();
-            try_seek!(
-                cursor_ref,
-                string_ref.offset + BINXML_NAME_LINK_SIZE,
-                "Cache missed string"
+            let name_off = string_ref.offset.checked_add(BINXML_NAME_LINK_SIZE).ok_or(
+                EvtxError::FailedToCreateRecordModel("string table offset overflow"),
             )?;
-
-            let string = BinXmlName::from_stream(cursor_ref)?;
+            let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
+            let string = BinXmlName::from_cursor(&mut cursor)?;
             Ok(Cow::Owned(string))
         }
     }
@@ -267,11 +263,12 @@ fn expand_template<'a>(
             template.template_def_offset
         );
 
-        let mut cursor = Cursor::new(chunk.data);
-
-        let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
-        let template_def =
-            read_template_definition(&mut cursor, Some(chunk), chunk.settings.get_ansi_codec())?;
+        let mut cursor = ByteCursor::with_pos(chunk.data, template.template_def_offset as usize)?;
+        let template_def = read_template_definition_cursor(
+            &mut cursor,
+            Some(chunk),
+            chunk.settings.get_ansi_codec(),
+        )?;
 
         for token in template_def.tokens {
             if let BinXMLDeserializedTokens::Substitution(substitution_descriptor) = token {
@@ -442,9 +439,9 @@ fn stream_expand_token<'a, T: BinXmlOutput>(
                     }
                 }
             } else {
-                let mut cursor = Cursor::new(chunk.data);
-                let _ = cursor.seek(SeekFrom::Start(u64::from(template.template_def_offset)));
-                let template_def = read_template_definition(
+                let mut cursor =
+                    ByteCursor::with_pos(chunk.data, template.template_def_offset as usize)?;
+                let template_def = read_template_definition_cursor(
                     &mut cursor,
                     Some(chunk),
                     chunk.settings.get_ansi_codec(),

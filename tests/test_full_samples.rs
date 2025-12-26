@@ -14,10 +14,10 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
     let mut actual_err_count = 0;
 
     for r in parser.records() {
-        if r.is_ok() {
+        if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
-                println!("{}", r.unwrap().data);
+                println!("{}", r.data);
             }
         } else {
             actual_err_count += 1;
@@ -33,10 +33,10 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
     let mut actual_err_count = 0;
 
     for r in parser.records_json() {
-        if r.is_ok() {
+        if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
-                println!("{}", r.unwrap().data);
+                println!("{}", r.data);
             }
         } else {
             actual_err_count += 1;
@@ -54,10 +54,10 @@ fn test_full_sample(path: impl AsRef<Path>, ok_count: usize, err_count: usize) {
     parser = parser.with_configuration(seperate_json_attributes);
 
     for r in parser.records_json() {
-        if r.is_ok() {
+        if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
-                println!("{}", r.unwrap().data);
+                println!("{}", r.data);
             }
         } else {
             actual_err_count += 1;

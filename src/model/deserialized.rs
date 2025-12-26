@@ -69,7 +69,12 @@ pub struct BinXmlEntityReference {
 
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub struct BinXmlTemplateRef<'a> {
+    pub template_id: u32,
     pub template_def_offset: ChunkOffset,
+    /// When the template definition header is embedded inline in the record's TemplateInstance,
+    /// we can read the template GUID directly. Otherwise, the GUID lives in the template
+    /// definition referenced by `template_def_offset` (typically in the chunk template table).
+    pub template_guid: Option<Guid>,
     pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
 }
 
