@@ -8,7 +8,7 @@ use indoc::indoc;
 use encoding::all::encodings;
 use encoding::types::Encoding;
 use evtx::err::Result as EvtxResult;
-use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
+use evtx::{EvtxParser, JsonStreamOutput, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -247,14 +247,27 @@ impl EvtxDump {
                                 self.dump_record(record)?
                             }
                         } else {
-                            for record in parser.records_json_stream() {
-                                self.dump_record(record)?
+                            // Fast path for the canonical perf workload (`-t 1`): reuse a single
+                            // `JsonStreamOutput<Vec<u8>>` buffer across records to avoid per-record
+                            // Vec allocations + buffer growth churn.
+                            if *self.parser_settings.get_num_threads() == 1 {
+                                self.dump_json_streaming_single_thread(&mut parser)?;
+                            } else {
+                                for record in parser.records_json_stream() {
+                                    self.dump_record(record)?
+                                }
                             }
                         }
 
                         #[cfg(not(feature = "wevt_templates"))]
-                        for record in parser.records_json_stream() {
-                            self.dump_record(record)?
+                        {
+                            if *self.parser_settings.get_num_threads() == 1 {
+                                self.dump_json_streaming_single_thread(&mut parser)?;
+                            } else {
+                                for record in parser.records_json_stream() {
+                                    self.dump_record(record)?
+                                }
+                            }
                         }
                     }
                     JsonParserKind::Legacy => {
@@ -282,6 +295,84 @@ impl EvtxDump {
                 };
             }
         };
+
+        Ok(())
+    }
+
+    fn dump_json_streaming_single_thread(&mut self, parser: &mut EvtxParser<File>) -> Result<()> {
+        let settings = std::sync::Arc::new(self.parser_settings.clone());
+
+        // Keep and reuse the JSON output buffer across records.
+        let mut scratch = JsonStreamOutput::with_writer(
+            Vec::<u8>::with_capacity(16 * 1024),
+            &self.parser_settings,
+        );
+
+        for chunk_res in parser.chunks() {
+            let mut chunk_data = match chunk_res {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{:?}", format_err!(e));
+                    if self.stop_after_error {
+                        std::process::exit(1);
+                    }
+                    continue;
+                }
+            };
+
+            let mut chunk = match chunk_data.parse(std::sync::Arc::clone(&settings)) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{:?}", format_err!(e));
+                    if self.stop_after_error {
+                        std::process::exit(1);
+                    }
+                    continue;
+                }
+            };
+
+            for record_res in chunk.iter() {
+                let record = match record_res {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("{:?}", format_err!(e));
+                        if self.stop_after_error {
+                            std::process::exit(1);
+                        }
+                        continue;
+                    }
+                };
+
+                let range_filter = if let Some(ranges) = &self.ranges {
+                    ranges.contains(&(record.event_record_id as usize))
+                } else {
+                    true
+                };
+
+                if !range_filter {
+                    continue;
+                }
+
+                if self.show_record_number {
+                    writeln!(self.output, "Record {}", record.event_record_id)?;
+                }
+
+                let capacity_hint = record.tokens.len().saturating_mul(64);
+                scratch.clear_buffer();
+                scratch.reserve_buffer(capacity_hint);
+
+                if let Err(e) = record.write_json_stream(&mut scratch) {
+                    eprintln!("{:?}", format_err!(e));
+                    if self.stop_after_error {
+                        std::process::exit(1);
+                    }
+                    continue;
+                }
+
+                self.output.write_all(scratch.buffer())?;
+                self.output.write_all(b"\n")?;
+            }
+        }
 
         Ok(())
     }
