@@ -69,8 +69,6 @@ struct NameCountEntry {
 struct UniqueKeyTable {
     /// All keys that have been emitted (including suffixed forms).
     used: Vec<Arc<str>>,
-    /// Cached pointers for fast pointer-equality scans (kept in sync with `used`).
-    used_ptrs: Vec<*const str>,
     /// Per-base counters to generate `base_1`, `base_2`, ... without rescanning from 1.
     base_counts: Vec<NameCountEntry>,
 }
@@ -80,7 +78,6 @@ impl UniqueKeyTable {
         let cap = capacity.max(1);
         UniqueKeyTable {
             used: Vec::with_capacity(cap),
-            used_ptrs: Vec::with_capacity(cap),
             base_counts: Vec::with_capacity(cap.min(MAX_UNIQUE_NAMES)),
         }
     }
@@ -88,22 +85,20 @@ impl UniqueKeyTable {
     #[inline]
     fn clear(&mut self) {
         self.used.clear();
-        self.used_ptrs.clear();
         self.base_counts.clear();
     }
 
     #[inline]
     fn reserve(&mut self, additional: usize) {
         self.used.reserve(additional);
-        self.used_ptrs.reserve(additional);
         self.base_counts.reserve(additional.min(MAX_UNIQUE_NAMES));
     }
 
     #[inline]
     fn contains_ptr(&self, ptr: *const str) -> bool {
         // Manual loop tends to compile smaller/faster than iterator combinators here.
-        for &p in &self.used_ptrs {
-            if std::ptr::addr_eq(p, ptr) {
+        for k in &self.used {
+            if std::ptr::addr_eq(Arc::as_ptr(k), ptr) {
                 return true;
             }
         }
@@ -127,7 +122,6 @@ impl UniqueKeyTable {
         if !self.contains_ptr(base_ptr) {
             let idx = self.used.len();
             self.used.push(base);
-            self.used_ptrs.push(base_ptr);
             self.base_counts.push(NameCountEntry {
                 base_ptr,
                 next_suffix: 1,
@@ -150,7 +144,6 @@ impl UniqueKeyTable {
             if !self.contains_ptr(candidate_ptr) {
                 let idx = self.used.len();
                 self.used.push(candidate);
-                self.used_ptrs.push(candidate_ptr);
 
                 if let Some(i) = entry_idx {
                     self.base_counts[i].next_suffix = suffix;
