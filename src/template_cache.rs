@@ -10,10 +10,146 @@ use encoding::EncodingRef;
 use log::trace;
 use std::collections::HashMap;
 
-pub type CachedTemplate<'chunk> = BinXMLTemplateDefinition<'chunk>;
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum CompiledTemplateOp {
+    FragmentHeader,
+    AttributeList,
+    OpenStartElement { name_offset: ChunkOffset },
+    Attribute { name_offset: ChunkOffset },
+    CloseStartElement,
+    CloseEmptyElement,
+    CloseElement,
+    Value { token_index: u32 },
+    EntityRef { name_offset: ChunkOffset },
+    PITarget { name_offset: ChunkOffset },
+    PIData { token_index: u32 },
+    StartOfStream,
+    EndOfStream,
+    Substitution {
+        substitution_index: u16,
+        ignore: bool,
+    },
+    /// A token we don't have a specialized compiled representation for.
+    /// Consumers should fall back to the generic token path using `definition.tokens[token_index]`.
+    Unsupported { token_index: u32 },
+}
+
+/// Precompiled representation of a template definition for fast streaming expansion.
+///
+/// Key idea: avoid rescanning the template tokens for substitution counts on every
+/// `TemplateInstance`. We compute `substitution_use_counts` once per template definition.
+#[derive(Debug)]
+pub(crate) struct CompiledTemplateDefinition {
+    pub(crate) ops: Vec<CompiledTemplateOp>,
+    /// Index by `substitution_index` (0-based) -> number of times referenced in the template.
+    pub(crate) substitution_use_counts: Vec<u32>,
+}
+
+impl CompiledTemplateDefinition {
+    fn compile(template: &BinXMLTemplateDefinition<'_>) -> Self {
+        let mut ops = Vec::with_capacity(template.tokens.len());
+        let mut counts: Vec<u32> = Vec::new();
+
+        for (i, t) in template.tokens.iter().enumerate() {
+            match t {
+                crate::model::deserialized::BinXMLDeserializedTokens::FragmentHeader(_) => {
+                    ops.push(CompiledTemplateOp::FragmentHeader);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::AttributeList => {
+                    ops.push(CompiledTemplateOp::AttributeList);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::OpenStartElement(elem) => {
+                    ops.push(CompiledTemplateOp::OpenStartElement {
+                        name_offset: elem.name.offset,
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::Attribute(attr) => {
+                    ops.push(CompiledTemplateOp::Attribute {
+                        name_offset: attr.name.offset,
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::CloseStartElement => {
+                    ops.push(CompiledTemplateOp::CloseStartElement);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::CloseEmptyElement => {
+                    ops.push(CompiledTemplateOp::CloseEmptyElement);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::CloseElement => {
+                    ops.push(CompiledTemplateOp::CloseElement);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::Value(_) => {
+                    ops.push(CompiledTemplateOp::Value {
+                        token_index: u32::try_from(i)
+                            .unwrap_or_else(|_| panic!("template token index overflow")),
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::EntityRef(entity) => {
+                    ops.push(CompiledTemplateOp::EntityRef {
+                        name_offset: entity.name.offset,
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::PITarget(name) => {
+                    ops.push(CompiledTemplateOp::PITarget {
+                        name_offset: name.name.offset,
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::PIData(_) => {
+                    ops.push(CompiledTemplateOp::PIData {
+                        token_index: u32::try_from(i)
+                            .unwrap_or_else(|_| panic!("template token index overflow")),
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::StartOfStream => {
+                    ops.push(CompiledTemplateOp::StartOfStream);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::EndOfStream => {
+                    ops.push(CompiledTemplateOp::EndOfStream);
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::Substitution(desc) => {
+                    ops.push(CompiledTemplateOp::Substitution {
+                        substitution_index: desc.substitution_index,
+                        ignore: desc.ignore,
+                    });
+
+                    if !desc.ignore {
+                        let idx = desc.substitution_index as usize;
+                        if idx >= counts.len() {
+                            counts.resize(idx + 1, 0);
+                        }
+                        counts[idx] = counts[idx].saturating_add(1);
+                    }
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::TemplateInstance(_) => {
+                    ops.push(CompiledTemplateOp::Unsupported {
+                        token_index: u32::try_from(i)
+                            .unwrap_or_else(|_| panic!("template token index overflow")),
+                    });
+                }
+                crate::model::deserialized::BinXMLDeserializedTokens::CDATASection
+                | crate::model::deserialized::BinXMLDeserializedTokens::CharRef => {
+                    ops.push(CompiledTemplateOp::Unsupported {
+                        token_index: u32::try_from(i)
+                            .unwrap_or_else(|_| panic!("template token index overflow")),
+                    });
+                }
+            }
+        }
+
+        CompiledTemplateDefinition {
+            ops,
+            substitution_use_counts: counts,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct CachedTemplateEntry<'chunk> {
+    pub(crate) definition: BinXMLTemplateDefinition<'chunk>,
+    pub(crate) compiled: CompiledTemplateDefinition,
+}
 
 #[derive(Debug, Default)]
-pub struct TemplateCache<'chunk>(HashMap<ChunkOffset, CachedTemplate<'chunk>>);
+pub struct TemplateCache<'chunk>(HashMap<ChunkOffset, CachedTemplateEntry<'chunk>>);
 
 impl<'chunk> TemplateCache<'chunk> {
     pub fn new() -> Self {
@@ -39,7 +175,14 @@ impl<'chunk> TemplateCache<'chunk> {
                     read_template_definition_cursor(&mut cursor, None, arena, ansi_codec)?;
                 let next_template_offset = definition.header.next_template_offset;
 
-                cache.insert(table_offset, definition);
+                let compiled = CompiledTemplateDefinition::compile(&definition);
+                cache.insert(
+                    table_offset,
+                    CachedTemplateEntry {
+                        definition,
+                        compiled,
+                    },
+                );
 
                 trace!("Next template will be at {}", next_template_offset);
 
@@ -54,8 +197,19 @@ impl<'chunk> TemplateCache<'chunk> {
         Ok(TemplateCache(cache))
     }
 
-    pub fn get_template(&self, offset: ChunkOffset) -> Option<&CachedTemplate<'chunk>> {
+    pub(crate) fn get_entry(&self, offset: ChunkOffset) -> Option<&CachedTemplateEntry<'chunk>> {
         self.0.get(&offset)
+    }
+
+    pub fn get_template(&self, offset: ChunkOffset) -> Option<&BinXMLTemplateDefinition<'chunk>> {
+        self.get_entry(offset).map(|e| &e.definition)
+    }
+
+    pub(crate) fn get_compiled(
+        &self,
+        offset: ChunkOffset,
+    ) -> Option<&CompiledTemplateDefinition> {
+        self.get_entry(offset).map(|e| &e.compiled)
     }
 
     pub fn len(&self) -> usize {
