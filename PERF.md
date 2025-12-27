@@ -175,6 +175,31 @@ Artifacts (copied into this repo, ignored by git):
 
 ---
 
+## Rust vs Zig snapshot (macOS, 2025-12-27, H2)
+
+W1 (JSONL, `-t 1`, output suppressed), built from this branch and `~/Workspace/zig-evtx`:
+- **Rust (fast-alloc, H2)**: mean **253.3 ms** ± 7.3 ms (min 244.5 ms)
+- **Zig (ReleaseFast --no-checks)**: mean **176.8 ms** ± 3.4 ms (min 172.4 ms)
+- **gap**: Zig is **~1.43× faster**
+
+Artifacts (ignored by git):
+- `target/perf/rust_vs_zig_macos_h2_20251227_194318/hyperfine_rust_vs_zig_t1.json`
+- `target/perf/rust_vs_zig_macos_h2_20251227_194318/samply_rust_t1.profile.json.gz` + `.syms.json`
+- `target/perf/rust_vs_zig_macos_h2_20251227_194318/samply_zig_t1.profile.json.gz` + `.syms.json`
+- Extracted tables:
+  - `.../top_leaves_rust_cpu.md`, `.../leaf_callers_rust.md`, `.../top_inclusive_rust_cpu.md`
+  - `.../top_leaves_zig_cpu.md`, `.../leaf_callers_zig.md`, `.../top_inclusive_zig_cpu.md`
+
+Notes (what the profiles suggest to do next):
+- Rust’s top leaf/self costs now cluster around:
+  - template instance value decoding: `read_template_cursor` + `BinXmlValue::deserialize_value_type_cursor` + UTF-16 decode
+  - remaining `serde_json` fallback paths in `JsonStreamOutput` (`Value::from`, `serialize_str`)
+  - large residual `_platform_memmove` (callers include key writing + serde_json string serialization + UTF-16→String)
+- Zig spends most of its time in:
+  - `render_json.writeElementBodyJson` + `util_string.writeUtf16LeJsonEscaped` + placeholder resolution (`cloneAndResolve`)
+
+---
+
 ## Agent playbook (reproducible workflow)
 
 ### Naming & artifacts (do this consistently)
@@ -446,6 +471,40 @@ Template (copy/paste):
 - **Guardrails**:
   - Preserve JSON semantics (duplicate key suffixing, EventData/Data flattening, `separate_json_attributes` behavior).
   - Keep `cargo test --features fast-alloc --locked --offline` green.
+
+### H3 — TemplateInstance “raw substitution spans” + `serde_json`-free streaming (fuse UTF-16→JSON)
+- **Claim**: We can plausibly win **≥20%** more on W1 by eliminating the remaining “decode + allocate + convert” work that still
+  dominates Rust profiles post-H2:
+  - eager TemplateInstance substitution decoding (`read_template_cursor` + `BinXmlValue::deserialize_value_type_cursor`),
+  - UTF-16→`String` allocations (`String::from_utf16`), and
+  - `serde_json::Value` buffering + serialization (`Value::from`, `serialize_str`).
+  Zig’s renderer avoids these by keeping values as raw spans + fusing UTF-16→JSON escaping.
+- **Evidence**:
+  - **macOS, H2, W1 `-t 1`, 200 iterations (Samply)** (`target/perf/rust_vs_zig_macos_h2_20251227_194318/`):
+    - **Inclusive**: `read_template_cursor` **~24.0%**, `BinXmlValue::deserialize_value_type_cursor` **~19.0%**,
+      `ByteCursor::utf16_by_char_count_trimmed` **~8.2%**
+    - **Leaf**: `_platform_memmove` **~7.0%** (callers include `write_key_id`, `serde_json::serialize_str`, UTF-16→String),
+      `read_template_cursor` **~5.0%**, `drop_in_place<DeserializationError>` **~4.6%**
+  - **Zig, same run**:
+    - `render_json.writeElementBodyJson` **~15.5%** leaf
+    - `util_string.writeUtf16LeJsonEscaped` **~14.5%** leaf (fused UTF-16LE→JSON escape)
+- **Change** (big, but contained to the JSON streaming path):
+  - Parse `TemplateInstance` into a lightweight per-record structure of **raw substitution spans**
+    (`(value_type, size, value_offset)`) instead of eagerly producing `Vec<BinXmlValue>`.
+  - Teach the compiled-template JSON interpreter (`Asm::expand_template`) to:
+    - decode a substitution **only when it is used** by `CompiledTemplateOp::Substitution`,
+    - cache decoded values by index (borrowed where possible) to avoid cloning on repeated references,
+    - write values directly via a `write_binxml_value_*` path (no `serde_json::Value` in `BufferedValues` / `data_values`).
+  - Implement a fused writer for UTF-16LE strings to JSON (Zig-style): write JSON-escaped UTF-8 directly from `&[u8]` UTF-16LE
+    bytes, avoiding `Vec<u16>` + `String::from_utf16` + second-pass escaping.
+  - Fix the pathological “construct-and-drop errors on success path” hot spot by making value-type decoding lazy
+    (`ok_or_else` / `match` instead of `ok_or(DeserializationError { ... })`) in the TemplateInstance loops.
+- **Success metric**:
+  - **W1 median improves ≥ 20%** on at least one stable machine (omer-pc or macOS), and preferably both.
+  - Samply top leafs show `read_template_cursor`, `String::from_utf16`, and the `serde_json` frames dropping materially.
+- **Guardrails**:
+  - Preserve JSON semantics (duplicate key suffixing, EventData/Data special handling, `separate_json_attributes` behavior).
+  - Keep `cargo test --features fast-alloc --locked --offline` green (especially streaming parity suites).
 
 ---
 
