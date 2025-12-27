@@ -1,7 +1,7 @@
 use crate::ParserSettings;
-use crate::{ChunkOffset, EvtxChunk};
 use crate::err::{SerializationError, SerializationResult};
 use crate::xml_output::BinXmlOutput;
+use crate::{ChunkOffset, EvtxChunk};
 
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
@@ -986,11 +986,15 @@ impl<W: Write> JsonStreamOutput<W> {
     /// - building `XmlElementBuilder` / `XmlElement`,
     /// - hashing name offsets in `StringCache` (now indexed), and
     /// - hashing element names in `lasso` on every use (via `name_offset_key_cache`).
+    ///
+    /// Attributes are passed as `Cow` to allow the assembler to pass owned values
+    /// (from substitution arrays) or borrowed values (from template definitions)
+    /// without cloning.
     pub(crate) fn visit_open_start_element_offsets<'a>(
         &mut self,
         chunk: &'a EvtxChunk<'a>,
         tag_name_offset: ChunkOffset,
-        attributes: &[(ChunkOffset, BinXmlValue<'a>)],
+        attributes: &[(ChunkOffset, Cow<'a, BinXmlValue<'a>>)],
     ) -> SerializationResult<()> {
         // If we're nested under an element without attributes, and this is the
         // first child element, we must represent the parent as an object.
@@ -1005,12 +1009,14 @@ impl<W: Write> JsonStreamOutput<W> {
         let mut data_name_attr_value: Option<Cow<'_, str>> = None;
         if is_data {
             for (attr_name_offset, attr_value) in attributes {
-                let is_name_attr = if let Some(n) = chunk.string_cache.get_cached_string(*attr_name_offset) {
-                    n.as_str() == "Name"
-                } else {
-                    let parsed = self.parse_string_table_name_at_offset(chunk, *attr_name_offset)?;
-                    parsed.as_str() == "Name"
-                };
+                let is_name_attr =
+                    if let Some(n) = chunk.string_cache.get_cached_string(*attr_name_offset) {
+                        n.as_str() == "Name"
+                    } else {
+                        let parsed =
+                            self.parse_string_table_name_at_offset(chunk, *attr_name_offset)?;
+                        parsed.as_str() == "Name"
+                    };
 
                 if is_name_attr {
                     data_name_attr_value = Some(attr_value.as_cow_str());
@@ -1052,7 +1058,7 @@ impl<W: Write> JsonStreamOutput<W> {
         let mut has_json_attributes = false;
         if !is_data {
             for (_, v) in attributes {
-                if !matches!(v, BinXmlValue::NullType) {
+                if !matches!(v.as_ref(), BinXmlValue::NullType) {
                     has_json_attributes = true;
                     break;
                 }
@@ -1087,7 +1093,7 @@ impl<W: Write> JsonStreamOutput<W> {
 
                 {
                     for (attr_name_offset, attr_value) in attributes {
-                        if matches!(attr_value, BinXmlValue::NullType) {
+                        if matches!(attr_value.as_ref(), BinXmlValue::NullType) {
                             continue;
                         }
 
@@ -1112,7 +1118,7 @@ impl<W: Write> JsonStreamOutput<W> {
                             self.write_json_string_ncname(parsed.as_str())?;
                         }
                         self.write_bytes(b":")?;
-                        self.write_binxml_value(attr_value)?;
+                        self.write_binxml_value(attr_value.as_ref())?;
                     }
                 }
 
@@ -1147,7 +1153,7 @@ impl<W: Write> JsonStreamOutput<W> {
 
                 {
                     for (attr_name_offset, attr_value) in attributes {
-                        if matches!(attr_value, BinXmlValue::NullType) {
+                        if matches!(attr_value.as_ref(), BinXmlValue::NullType) {
                             continue;
                         }
 
@@ -1172,7 +1178,7 @@ impl<W: Write> JsonStreamOutput<W> {
                             self.write_json_string_ncname(parsed.as_str())?;
                         }
                         self.write_bytes(b":")?;
-                        self.write_binxml_value(attr_value)?;
+                        self.write_binxml_value(attr_value.as_ref())?;
                     }
                 }
 

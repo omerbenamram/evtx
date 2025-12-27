@@ -804,8 +804,10 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
         current_tag: Option<ChunkOffset>,
         /// Current attribute name offset awaiting a value.
         current_attr: Option<ChunkOffset>,
-        /// Collected attributes for the current element (name offset + value).
-        attrs: Vec<(ChunkOffset, BinXmlValue<'a>)>,
+        /// Collected attributes for the current element (name offset + Cow value).
+        /// Using `Cow` allows us to store either owned values (from substitutions)
+        /// or borrowed values (from template definitions) without cloning.
+        attrs: Vec<(ChunkOffset, Cow<'a, BinXmlValue<'a>>)>,
         /// Stack of open element tag name offsets for `CloseElement`.
         tag_stack: Vec<ChunkOffset>,
     }
@@ -870,10 +872,10 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
         }
 
         fn value_owned(&mut self, value: BinXmlValue<'a>) -> Result<()> {
-            // Nested BinXML expands inline.
+            // Nested BinXML expands inline - consume tokens by value.
             if let BinXmlValue::BinXmlType(nested_tokens) = value {
-                for nested in nested_tokens.iter() {
-                    self.token_ref(nested)?;
+                for nested in nested_tokens.into_iter() {
+                    self.token_owned(nested)?;
                 }
                 return Ok(());
             }
@@ -881,7 +883,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
             if self.current_tag.is_some() {
                 // Attribute value (only if we have a pending attribute name).
                 if let Some(attr_name) = self.current_attr.take() {
-                    self.attrs.push((attr_name, value));
+                    self.attrs.push((attr_name, Cow::Owned(value)));
                 }
                 return Ok(());
             }
@@ -891,7 +893,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
             Ok(())
         }
 
-        fn value_ref(&mut self, value: &BinXmlValue<'a>) -> Result<()> {
+        fn value_ref(&mut self, value: &'a BinXmlValue<'a>) -> Result<()> {
             if let BinXmlValue::BinXmlType(nested_tokens) = value {
                 for nested in nested_tokens.iter() {
                     self.token_ref(nested)?;
@@ -901,8 +903,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
 
             if self.current_tag.is_some() {
                 if let Some(attr_name) = self.current_attr.take() {
-                    // Clone is cheap for arena-backed strings and primitive variants.
-                    self.attrs.push((attr_name, value.clone()));
+                    self.attrs.push((attr_name, Cow::Borrowed(value)));
                 }
                 return Ok(());
             }
@@ -960,6 +961,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
                             });
                         }
                         CompiledTemplateOp::Value { token_index } => {
+                            // Values in template definitions are borrowed from the cache (lifetime 'a).
                             let idx = token_index as usize;
                             if let Some(t) = entry.definition.tokens.get(idx) {
                                 self.token_ref(t)?;
@@ -972,6 +974,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
                             if ignore {
                                 continue;
                             }
+                            // Substitutions are moved/cloned from the owned substitution array.
                             let token = take_or_clone_substitution_value(
                                 template,
                                 substitution_index,
@@ -980,6 +983,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
                             self.token_owned(token)?;
                         }
                         CompiledTemplateOp::Unsupported { token_index } => {
+                            // Fallback to original tokens from cache (lifetime 'a).
                             let idx = token_index as usize;
                             if let Some(t) = entry.definition.tokens.get(idx) {
                                 self.token_ref(t)?;
@@ -1004,8 +1008,9 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
                     self.chunk.settings.get_ansi_codec(),
                 )?;
 
+                // Count substitution uses for take_or_clone.
                 let mut remaining_uses = vec![0u32; template.substitution_array.len()];
-                for t in template_def.tokens.iter() {
+                for t in &template_def.tokens {
                     if let BinXMLDeserializedTokens::Substitution(desc) = t {
                         if desc.ignore {
                             continue;
@@ -1082,7 +1087,7 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
             Ok(())
         }
 
-        fn token_ref(&mut self, token: &BinXMLDeserializedTokens<'a>) -> Result<()> {
+        fn token_ref(&mut self, token: &'a BinXMLDeserializedTokens<'a>) -> Result<()> {
             match token {
                 BinXMLDeserializedTokens::FragmentHeader(_)
                 | BinXMLDeserializedTokens::AttributeList
@@ -1104,7 +1109,8 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
                 }
 
                 BinXMLDeserializedTokens::TemplateInstance(template) => {
-                    // Shouldn't happen in template definitions; fall back by cloning.
+                    // Template definitions shouldn't contain nested TemplateInstance tokens,
+                    // but handle defensively by cloning (rare path).
                     let mut owned = template.clone();
                     self.expand_template(&mut owned)?
                 }
