@@ -55,9 +55,9 @@ struct ObjectFrame {
     used_keys: UniqueKeyTable,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 struct NameCountEntry {
-    base: Arc<str>,
+    base_ptr: *const str,
     next_suffix: u32,
 }
 
@@ -69,6 +69,8 @@ struct NameCountEntry {
 struct UniqueKeyTable {
     /// All keys that have been emitted (including suffixed forms).
     used: Vec<Arc<str>>,
+    /// Cached pointers for fast pointer-equality scans (kept in sync with `used`).
+    used_ptrs: Vec<*const str>,
     /// Per-base counters to generate `base_1`, `base_2`, ... without rescanning from 1.
     base_counts: Vec<NameCountEntry>,
 }
@@ -78,6 +80,7 @@ impl UniqueKeyTable {
         let cap = capacity.max(1);
         UniqueKeyTable {
             used: Vec::with_capacity(cap),
+            used_ptrs: Vec::with_capacity(cap),
             base_counts: Vec::with_capacity(cap.min(MAX_UNIQUE_NAMES)),
         }
     }
@@ -85,62 +88,81 @@ impl UniqueKeyTable {
     #[inline]
     fn clear(&mut self) {
         self.used.clear();
+        self.used_ptrs.clear();
         self.base_counts.clear();
     }
 
     #[inline]
     fn reserve(&mut self, additional: usize) {
         self.used.reserve(additional);
+        self.used_ptrs.reserve(additional);
         self.base_counts.reserve(additional.min(MAX_UNIQUE_NAMES));
     }
 
     #[inline]
-    fn contains_ptr(&self, key: &Arc<str>) -> bool {
-        self.used.iter().any(|k| Arc::ptr_eq(k, key))
+    fn contains_ptr(&self, ptr: *const str) -> bool {
+        // Manual loop tends to compile smaller/faster than iterator combinators here.
+        for &p in &self.used_ptrs {
+            if std::ptr::addr_eq(p, ptr) {
+                return true;
+            }
+        }
+        false
     }
 
     #[inline]
-    fn base_entry_mut(&mut self, base: &Arc<str>) -> Option<&mut NameCountEntry> {
-        self.base_counts
-            .iter_mut()
-            .find(|e| Arc::ptr_eq(&e.base, base))
+    fn base_entry_index(&self, base_ptr: *const str) -> Option<usize> {
+        for (i, e) in self.base_counts.iter().enumerate() {
+            if std::ptr::addr_eq(e.base_ptr, base_ptr) {
+                return Some(i);
+            }
+        }
+        None
     }
 
-    fn reserve_unique(&mut self, base: Arc<str>, interner: &mut KeyInterner) -> Arc<str> {
+    fn reserve_unique_index(&mut self, base: Arc<str>, interner: &mut KeyInterner) -> usize {
+        let base_ptr = Arc::as_ptr(&base);
+
         // Fast path: first time we see this base key in this object.
-        if !self.contains_ptr(&base) {
-            self.used.push(base.clone());
+        if !self.contains_ptr(base_ptr) {
+            let idx = self.used.len();
+            self.used.push(base);
+            self.used_ptrs.push(base_ptr);
             self.base_counts.push(NameCountEntry {
-                base: base.clone(),
+                base_ptr,
                 next_suffix: 1,
             });
-            return base;
+            return idx;
         }
 
         // Duplicate base key: generate the next suffix, skipping any collisions with existing keys.
-        let next_suffix = self
-            .base_entry_mut(&base)
-            .map(|e| e.next_suffix)
+        let entry_idx = self.base_entry_index(base_ptr);
+        let mut suffix = entry_idx
+            .map(|i| self.base_counts[i].next_suffix)
             .unwrap_or(1);
 
-        let mut suffix = next_suffix;
         loop {
             let candidate_str = format!("{}_{}", base.as_ref(), suffix);
             let candidate = interner.intern(&candidate_str);
+            let candidate_ptr = Arc::as_ptr(&candidate);
             suffix = suffix.saturating_add(1);
 
-            if !self.contains_ptr(&candidate) {
-                self.used.push(candidate.clone());
-                if let Some(e) = self.base_entry_mut(&base) {
-                    e.next_suffix = suffix;
+            if !self.contains_ptr(candidate_ptr) {
+                let idx = self.used.len();
+                self.used.push(candidate);
+                self.used_ptrs.push(candidate_ptr);
+
+                if let Some(i) = entry_idx {
+                    self.base_counts[i].next_suffix = suffix;
                 } else {
-                    // Should be rare (e.g. base key inserted via a reserved path); add the counter entry now.
+                    // Rare: base key was present but we didn't have a counter entry yet.
                     self.base_counts.push(NameCountEntry {
-                        base: base.clone(),
+                        base_ptr,
                         next_suffix: suffix,
                     });
                 }
-                return candidate;
+
+                return idx;
             }
         }
     }
@@ -610,7 +632,10 @@ impl<W: Write> JsonStreamOutput<W> {
             .frames
             .last_mut()
             .expect("no current JSON object frame");
-        frame.used_keys.reserve_unique(key, &mut self.key_interner)
+        let idx = frame
+            .used_keys
+            .reserve_unique_index(key, &mut self.key_interner);
+        frame.used_keys.used[idx].clone()
     }
 
     /// Write a JSON string key (with surrounding quotes and escaping).
@@ -624,13 +649,36 @@ impl<W: Write> JsonStreamOutput<W> {
     fn write_key_arc(&mut self, key: Arc<str>) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
 
-        let frame = self
-            .frames
-            .last_mut()
-            .expect("no current JSON object frame");
-        let unique_key = frame.used_keys.reserve_unique(key, &mut self.key_interner);
+        let base_ptr = Arc::as_ptr(&key);
 
-        // Keys derived from XML NCName don't need escaping
+        // Fast path: unique key (common case) — write from `key` without cloning,
+        // then record it in the current frame.
+        let already_used = self
+            .frames
+            .last()
+            .expect("no current JSON object frame")
+            .used_keys
+            .contains_ptr(base_ptr);
+
+        if !already_used {
+            // Keys derived from XML NCName don't need escaping
+            self.write_json_string_ncname(key.as_ref())?;
+            self.write_bytes(b":")?;
+
+            let (frames, key_interner) = (&mut self.frames, &mut self.key_interner);
+            let frame = frames.last_mut().expect("no current JSON object frame");
+            let _ = frame.used_keys.reserve_unique_index(key, key_interner);
+            return Ok(());
+        }
+
+        // Duplicate key: reserve the next available suffixed form, then write it.
+        let unique_key: Arc<str> = {
+            let (frames, key_interner) = (&mut self.frames, &mut self.key_interner);
+            let frame = frames.last_mut().expect("no current JSON object frame");
+            let idx = frame.used_keys.reserve_unique_index(key, key_interner);
+            frame.used_keys.used[idx].clone()
+        };
+
         self.write_json_string_ncname(unique_key.as_ref())?;
         self.write_bytes(b":")
     }
