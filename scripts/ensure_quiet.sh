@@ -7,7 +7,7 @@
 #   QUIET_CHECK=1 ./profile_comparison.sh --bench-only
 #
 # Thresholds (override via env):
-#   QUIET_IDLE_MIN=90            # minimum CPU idle percentage (from `top`)
+#   QUIET_IDLE_MIN=90            # minimum CPU idle percentage
 #   QUIET_LOAD1_MAX=2.0          # maximum 1-minute load average
 #   QUIET_STABLE_SAMPLES=3       # consecutive passing samples required
 #   QUIET_SAMPLE_INTERVAL_SEC=0.25
@@ -35,19 +35,64 @@ die() {
 }
 
 get_cpu_idle_percent() {
-    # Use the *second* sample from `top -l 2` to avoid the "since boot/last call" artifact.
-    local line
-    line="$(top -l 2 -n 0 | grep '^CPU usage' | tail -n 1 || true)"
-    if [[ -z "$line" ]]; then
-        die "failed to read CPU usage from top"
+    local os
+    os="$(uname -s)"
+
+    if [[ "$os" == "Darwin" ]]; then
+        # Use the *second* sample from `top -l 2` to avoid the "since boot/last call" artifact.
+        local line
+        line="$(top -l 2 -n 0 | grep '^CPU usage' | tail -n 1 || true)"
+        if [[ -z "$line" ]]; then
+            die "failed to read CPU usage from top (Darwin)"
+        fi
+        # Example: "CPU usage: 12.89% user, 15.2% sys, 72.8% idle"
+        echo "$line" | sed -E 's/.* ([0-9.]+)% idle.*/\1/'
+        return 0
     fi
-    # Example: "CPU usage: 12.89% user, 15.2% sys, 72.8% idle"
-    echo "$line" | sed -E 's/.* ([0-9.]+)% idle.*/\1/'
+
+    if [[ "$os" == "Linux" ]]; then
+        # Compute idle% from /proc/stat deltas.
+        # Fields: user nice system idle iowait irq softirq steal guest guest_nice
+        local u1 n1 s1 i1 w1 irq1 sirq1 st1
+        local u2 n2 s2 i2 w2 irq2 sirq2 st2
+        read -r _ u1 n1 s1 i1 w1 irq1 sirq1 st1 _ < /proc/stat || die "failed to read /proc/stat"
+        sleep 0.10
+        read -r _ u2 n2 s2 i2 w2 irq2 sirq2 st2 _ < /proc/stat || die "failed to read /proc/stat (2)"
+
+        local idle1=$((i1 + w1))
+        local idle2=$((i2 + w2))
+        local total1=$((u1 + n1 + s1 + i1 + w1 + irq1 + sirq1 + st1))
+        local total2=$((u2 + n2 + s2 + i2 + w2 + irq2 + sirq2 + st2))
+        local didle=$((idle2 - idle1))
+        local dtotal=$((total2 - total1))
+
+        if (( dtotal <= 0 )); then
+            die "invalid /proc/stat delta"
+        fi
+
+        awk -v idle="$didle" -v total="$dtotal" 'BEGIN { printf "%.2f", (idle / total) * 100.0 }'
+        return 0
+    fi
+
+    die "unsupported OS for idle sampling: $os"
 }
 
 get_load1() {
-    # Example: "{ 5.34 5.49 4.95 }"
-    sysctl -n vm.loadavg | sed -E 's/^\{ ([0-9.]+) .*/\1/'
+    local os
+    os="$(uname -s)"
+
+    if [[ "$os" == "Darwin" ]]; then
+        # Example: "{ 5.34 5.49 4.95 }"
+        sysctl -n vm.loadavg | sed -E 's/^\{ ([0-9.]+) .*/\1/'
+        return 0
+    fi
+
+    if [[ "$os" == "Linux" ]]; then
+        awk '{print $1}' /proc/loadavg
+        return 0
+    fi
+
+    die "unsupported OS for load sampling: $os"
 }
 
 float_ge() {
