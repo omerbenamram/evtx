@@ -105,7 +105,10 @@ Environment variables (see script header for full list):
 - **OS**: Arch Linux (kernel 6.17.9, x86_64)
 - **HW**: AMD Ryzen 9 3900X (12C/24T), 62 GiB RAM
 - **Toolchain**: rustc 1.92.0 (LLVM 21.1.6), cargo 1.92.0
-- **Tools**: hyperfine 1.20.0 (no Zig / no samply on this box)
+- **Tools**: hyperfine 1.20.0, samply 0.13.1, zig 0.15.2
+- **Kernel settings (for sampling)**:
+  - `kernel.perf_event_paranoid <= 1` (samply uses perf events)
+  - `kernel.perf_event_mlock_kb >= 8192` (otherwise samply can fail with `mmap failed`)
 
 ---
 
@@ -135,6 +138,23 @@ hyperfine --warmup 3 --runs 20 \
 ```
 
 Raw JSON capture (temporary on that run): `/tmp/evtx-bench.11jAUq/hyperfine_master_vs_branch_t1.json`.
+
+---
+
+## Rust vs Zig snapshot (omer-pc, 2025-12-27)
+
+W1 (JSONL, `-t 1`, output suppressed), built from this working tree and `~/Workspace/zig-evtx`:
+- **Rust (fast-alloc)**: median **532.4 ms** (mean 531.3 ms ± 5.5 ms, min 517.0 ms)
+- **Zig (ReleaseFast --no-checks)**: median **258.3 ms** (mean 258.0 ms ± 1.1 ms, min 255.2 ms)
+- **gap**: Zig is **~2.06× faster**
+
+Artifacts (copied into this repo, ignored by git):
+- `target/perf/rust_vs_zig_omerpc_20251227_172444/hyperfine_rust_vs_zig_t1.json`
+- `target/perf/rust_vs_zig_omerpc_20251227_172444/samply_rust_t1.profile.json.gz` + `.syms.json`
+- `target/perf/rust_vs_zig_omerpc_20251227_172444/samply_zig_t1.profile.json.gz` + `.syms.json`
+- Extracted tables:
+  - `.../top_leaves_rust_cpu.md`, `.../leaf_callers_rust.md`, `.../top_inclusive_rust_cpu.md`
+  - `.../top_leaves_zig_cpu.md`, `.../leaf_callers_zig.md`, `.../top_inclusive_zig_cpu.md`
 
 ---
 
@@ -378,6 +398,37 @@ Template (copy/paste):
 - **Guardrails**:
   - Preserve legacy JSON semantics (duplicate key suffixing, EventData/Data special handling, `separate_json_attributes` behavior).
   - `cargo test --features fast-alloc --locked --offline` stays green, especially streaming parity suites.
+
+### H2 — Compile templates to resolved-name JSON ops (avoid `XmlElementBuilder` + hashing in the hot path)
+- **Claim**: The remaining Rust-vs-Zig gap is dominated by `stream_expand_token*` work (template expansion + name resolution +
+  intermediate `XmlElementBuilder` objects). If we compile template definitions into a “ready-to-render” representation with
+  **resolved names + precomputed key IDs**, and drive JSON output directly from those ops (no `XmlElementBuilder` / no per-token
+  `StringCache` hashing / no `lasso` interning), we can plausibly win **≥20%** on W1.
+- **Evidence** (omer-pc, samply, W1 `-t 1`, 200 iterations, output→`/dev/null`):
+  - **Inclusive**: `stream_expand_token` ~73.8%, `stream_expand_template` ~73.0%, `stream_expand_token_ref` ~60.5%,
+    `expand_string_ref` ~9.8%, `Rodeo::try_get_or_intern` ~5.9%, `BuildHasher::hash_one` ~5.5%.
+  - **Leaf**: `stream_expand_token_ref` ~13.8%, `read_template_cursor` ~8.1%, `expand_string_ref` ~4.5%,
+    `BuildHasher::hash_one` ~4.5% (mostly under `expand_string_ref`), `Rodeo::try_get_or_intern` ~4.5%,
+    `XmlElementBuilder::{attribute_value,finish}` ~5.3% combined.
+  - Zig’s hot path avoids these specific costs by:
+    - Using IR with pre-converted names (`NameKey` pointer-equality fast path) and an arena allocator
+      (`zig-evtx/src/parser/render_json.zig`), and
+    - Fusing UTF-16LE→UTF-8 conversion + JSON escaping in one pass (`zig-evtx/src/parser/util_string.zig`).
+  - Saved profiles + extracted tables: `target/perf/rust_vs_zig_omerpc_20251227_172444/` (see snapshot section above).
+- **Change**:
+  - **Compile template definitions** into a `CompiledTemplate` (per chunk) where open/attr/entity tokens store resolved names
+    (`&'chunk str` or an offset-based `NameId`) and precomputed “JSON key bytes” where applicable (NCName fast path).
+  - Add a **JSON-only fast visitor** that consumes these compiled ops directly (no `XmlElementBuilder`, no `Vec<XmlAttribute>`),
+    and uses offset- or pointer-based IDs for duplicate key tracking (avoid `lasso` hashing).
+  - (Stretch) Store template substitution values as **raw spans** (type + `&[u8]`) and serialize directly, enabling a fused
+    UTF-16LE→JSON escape writer on the Rust side too.
+- **Success metric**:
+  - **W1 median improves ≥ 20%** on `omer-pc` (quiet-gated if possible).
+  - Samply shows `expand_string_ref` / `hash_one` / `Rodeo::try_get_or_intern` and `XmlElementBuilder::*` largely disappear
+    from the top hot path for JSON streaming.
+- **Guardrails**:
+  - Preserve JSON semantics (duplicate key suffixing, EventData/Data flattening, `separate_json_attributes` behavior).
+  - Keep `cargo test --features fast-alloc --locked --offline` green.
 
 ---
 
