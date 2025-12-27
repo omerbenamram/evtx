@@ -6,12 +6,10 @@ use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
 use chrono::{Datelike, Timelike};
-use hashbrown::DefaultHashBuilder;
-use hashbrown::HashMap;
+use lasso::{Rodeo, Spur};
 use quick_xml::events::BytesText;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
 
 /// Zig-style fixed table size for duplicate-key tracking (see `PERF.md` H1).
@@ -20,7 +18,7 @@ use std::io::Write;
 const MAX_UNIQUE_NAMES: usize = 64;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-struct KeyId(u32);
+struct KeyId(Spur);
 
 /// Represents how the current XML element is being rendered in JSON.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -198,39 +196,18 @@ impl BufferedValues {
 
 #[derive(Debug, Default)]
 struct KeyInterner {
-    hasher: DefaultHashBuilder,
-    buckets: HashMap<u64, Vec<KeyId>>,
-    strings: Vec<Box<str>>,
+    rodeo: Rodeo,
 }
 
 impl KeyInterner {
     #[inline]
-    fn hash_str(&self, s: &str) -> u64 {
-        let mut h = self.hasher.build_hasher();
-        h.write(s.as_bytes());
-        h.finish()
-    }
-
-    #[inline]
     fn intern(&mut self, s: &str) -> KeyId {
-        let hash = self.hash_str(s);
-        if let Some(ids) = self.buckets.get(&hash) {
-            for &id in ids {
-                if self.resolve(id) == s {
-                    return id;
-                }
-            }
-        }
-
-        let id = KeyId(self.strings.len() as u32);
-        self.strings.push(s.into());
-        self.buckets.entry(hash).or_default().push(id);
-        id
+        KeyId(self.rodeo.get_or_intern(s))
     }
 
     #[inline]
     fn resolve(&self, id: KeyId) -> &str {
-        &self.strings[id.0 as usize]
+        self.rodeo.resolve(&id.0)
     }
 }
 
