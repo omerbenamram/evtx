@@ -10,7 +10,7 @@ use crate::xml_output::{BinXmlOutput, XmlOutput};
 use crate::{EvtxChunk, ParserSettings};
 
 use chrono::prelude::*;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::sync::Arc;
 
 pub type RecordId = u64;
@@ -160,6 +160,26 @@ impl EvtxRecord<'_> {
             timestamp,
             data,
         })
+    }
+
+    /// Consumes the record and streams JSON into an existing `JsonStreamOutput`.
+    ///
+    /// This is useful for high-throughput JSONL emission where the caller wants to reuse
+    /// the output buffer across records (avoid per-record `Vec` allocations).
+    pub fn write_json_stream<W: Write>(
+        self,
+        output_builder: &mut crate::JsonStreamOutput<W>,
+    ) -> Result<()> {
+        let event_record_id = self.event_record_id;
+
+        parse_tokens_streaming(self.tokens, self.chunk, output_builder).map_err(|e| {
+            EvtxError::FailedToParseRecord {
+                record_id: event_record_id,
+                source: Box::new(e),
+            }
+        })?;
+
+        Ok(())
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
