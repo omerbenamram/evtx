@@ -17,6 +17,7 @@ evtx-wasm/evtx-viewer/public/pkg
 profile/*
 binaries/*
 benchmarks/*
+!benchmarks/omer-pc_ablation_matrix_t1_20251227.json
 scripts/FlameGraph
 .PRE_PATH
 

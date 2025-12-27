@@ -62,11 +62,6 @@ multithreading = ["rayon"]
 wevt_templates = ["glob", "goblin"]
 
 # Perf ablation toggles (used for local benchmarking; no effect unless enabled).
-perf_ablate_no_utf16_ascii = []
-perf_ablate_serde_json_strings = []
-perf_ablate_serde_json_values = []
-perf_ablate_preexpand_templates = []
-perf_ablate_chrono_datetime_format = []
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }

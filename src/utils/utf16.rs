@@ -22,16 +22,5 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
 pub(crate) fn decode_utf16_units_z(units: &[u16]) -> Result<String, Utf16LeDecodeError> {
     let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
     let slice = &units[..end];
-
-    // Fast path: if all code units are <= 0x7F, this is pure ASCII and can be converted
-    // directly to UTF-8 without surrogate handling overhead.
-    if !cfg!(feature = "perf_ablate_no_utf16_ascii") && slice.iter().all(|&c| c <= 0x7F) {
-        let mut s = String::with_capacity(slice.len());
-        for &c in slice {
-            s.push(c as u8 as char);
-        }
-        return Ok(s);
-    }
-
     String::from_utf16(slice).map_err(|_| Utf16LeDecodeError::InvalidData)
 }

@@ -304,24 +304,29 @@ git commit -am "perf: H{N} {short description}"
 
 ---
 
-## Optional: per-optimization attribution (ablation builds)
+## Attribution study: per-optimization deltas (omer-pc, 2025-12-27)
 
-For quick “what % did each optimization contribute?”, you can use opt-in feature toggles (no effect unless enabled):
-- `perf_ablate_no_utf16_ascii`
-- `perf_ablate_serde_json_strings`
-- `perf_ablate_serde_json_values`
-- `perf_ablate_preexpand_templates`
-- `perf_ablate_chrono_datetime_format`
+We measured how much each optimization contributes by doing a “one change reverted at a time” run:
+- **Baseline**: this branch (`--features fast-alloc`), `-t 1`, JSONL, output suppressed.
+- **Variant**: same, but revert exactly one optimization.
 
-Use isolated target dirs so builds don’t overwrite each other:
+Artifact (exported hyperfine JSON, includes exact commands + full run distributions):
+- `benchmarks/omer-pc_ablation_matrix_t1_20251227.json`
 
-```bash
-cd /Users/omerba/Workspace/evtx
-CARGO_TARGET_DIR=target/perf/ablate/no_utf16_ascii \
-  cargo build --release --features 'fast-alloc,perf_ablate_no_utf16_ascii' --locked --offline --bin evtx_dump
-```
+Results (median wall time deltas vs baseline; lower is better):
 
-Then benchmark binaries side-by-side in a single `hyperfine` invocation.
+| Variant | Median (ms) | Δ vs baseline |
+|---|---:|---:|
+| baseline | 605.5 | (base) |
+| revert: pre-expand templates | 750.1 | +23.88% |
+| revert: chrono datetime formatting | 625.6 | +3.31% |
+| revert: serde_json values | 615.6 | +1.66% |
+| revert: serde_json strings | 611.8 | +1.03% |
+| revert: UTF-16 ASCII fast-path | 600.6 | -0.81% |
+
+Notes:
+- This run was quiet-gated (`scripts/ensure_quiet.sh`, `QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8`).
+- The feature toggles used to build these variants were temporary and have since been removed; the JSON is the stable record.
 
 ---
 
@@ -340,11 +345,32 @@ Template (copy/paste):
 
 ## Completed optimizations
 
-### (placeholder)
-Add completed H{N} sections here following the mft-style format (What changed / Benchmarks / Profile delta / Correctness / Artifacts).
+### Stream template expansion (avoid pre-expanding templates)
+- **What changed**: Template expansion happens inline during streaming output, so substitution values can be *moved on last use* instead of cloned. This avoids building an expanded token Vec up-front.
+- **Where**: `src/binxml/assemble.rs` (streaming path).
+- **Impact (omer-pc, `-t 1`)**: reverting to the older “pre-expand templates” approach regresses **+23.88%** median (605.5 ms → 750.1 ms). This is the dominant contributor in the ablation study.
+
+### JSON string serialization (avoid `serde_json` for string escaping)
+- **What changed**: Serialize strings directly with a fast “no-escape needed” check + manual escaping for `"` `\\` control chars.
+- **Where**: `src/json_stream_output.rs` (`write_json_string_*`).
+- **Impact (omer-pc, `-t 1`)**: reverting to `serde_json::to_writer` for strings regresses **+1.03%** median (605.5 ms → 611.8 ms).
+
+### JSON value serialization (avoid `serde_json::Value` allocations)
+- **What changed**: Serialize `BinXmlValue` primitives directly (itoa/ryu for numbers; direct writes for bool/null/binary), avoiding intermediate JSON value construction.
+- **Where**: `src/json_stream_output.rs` (`write_binxml_value`).
+- **Impact (omer-pc, `-t 1`)**: reverting to `serde_json::Value` regresses **+1.66%** median (605.5 ms → 615.6 ms).
+
+### Datetime formatting (avoid chrono format string parsing)
+- **What changed**: Write ISO-8601 timestamps directly (`YYYY-MM-DDTHH:MM:SS.ffffffZ`) instead of `dt.format(...).to_string()`.
+- **Where**: `src/json_stream_output.rs` (FileTime/SysTime serialization).
+- **Impact (omer-pc, `-t 1`)**: reverting to chrono formatting regresses **+3.31%** median (605.5 ms → 625.6 ms).
 
 ---
 
 ## Rejected theses
 
-If the benchmark is within noise or regresses, document it here (numbers + profile evidence + next idea).
+### UTF-16 ASCII fast-path (rejected; removed)
+- **What changed**: Tried scanning UTF-16 units for “all <= 0x7F” and building an ASCII string directly.
+- **Where**: `src/utils/utf16.rs` (`decode_utf16_units_z`).
+- **Result (omer-pc, `-t 1`)**: reverting this “fast path” was **-0.81%** (slightly faster), i.e. the scan overhead outweighed the benefit for our canonical workload (within noise but wrong direction).
+- **Decision**: Removed the ASCII fast-path; use `String::from_utf16` unconditionally.
