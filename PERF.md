@@ -341,6 +341,37 @@ Template (copy/paste):
 - **Success metric**:
 - **Guardrails**:
 
+### H1 — Kill remaining allocator churn in streaming JSON output (keys + buffered values)
+- **Claim**: We can get a meaningful additional W1 speedup by eliminating the remaining hot-path heap churn in `JsonStreamOutput`
+  (key allocation + `serde_json::Value` buffering), which currently shows up as `_rjem_malloc` / `_rjem_sdallocx` + `_platform_memmove`.
+- **Evidence**:
+  - **Samply (macOS, W1 `-t 1`, 120 iterations, output→`/dev/null`)** shows allocator + memmove as major leaf cost:
+    - `_platform_memmove` ~7.1% leaf (top caller: `JsonStreamOutput::visit_open_start_element` ~29.5%, then `write_key` / `write_json_string_ncname`)
+    - `_rjem_malloc` ~3.0% leaf (top caller: `RawVec::finish_grow` ~28.8%, then `JsonStreamOutput::visit_open_start_element` / `write_key`)
+    - `RawVec::grow_one` callers: `XmlElementBuilder::attribute_value` ~35.7% and `JsonStreamOutput::visit_characters` ~35.6%
+    - Remaining `serde_json` overhead is still measurable (`BinXmlValue -> serde_json::Value` + `Serializer::serialize_str` show up in top leaves),
+      due to `buffered_values` / `data_values` paths.
+  - **Zig renderer avoids this class of overhead entirely**:
+    - It writes JSON directly from IR nodes without allocating per-key `String`s, and without buffering into `serde_json::Value`.
+    - It uses a fixed-size, stack-allocated name-count table (`MAX_UNIQUE_NAMES = 64`) + pointer-equality fast path for name keys
+      instead of hashing/allocating keys (`zig-evtx/src/parser/render_json.zig`, and rationale in `zig-evtx/docs/architecture.md`).
+- **Change**:
+  - Make `JsonStreamOutput` lifetime-aware (`JsonStreamOutput<'a, W>`) so it can **store borrowed keys**:
+    - Change `ElementState.name: String` → `Cow<'a, str>` (or `&'a str` where possible) to avoid `to_owned()`/`clone()` per element.
+    - Replace `ObjectFrame.used_keys: HashSet<String>` with a borrowed-key set (e.g. `HashSet<&'a str>`) and only allocate
+      suffix strings on collision (rare) into an arena / bump string.
+  - Replace `buffered_values: Vec<serde_json::Value>` and `data_values: Vec<serde_json::Value>` with a **small, borrow-friendly scalar repr**
+    (e.g. `SmallVec<[Cow<'a, BinXmlValue<'a>>; 2]>` + a “concatenated text” scratch), and serialize via
+    `write_binxml_value` / `write_json_string_*` (eliminate `serde_json::to_writer` from the hot path).
+  - Micro-follow-up inside the same thesis (only if needed to expose the win): switch `XmlElementBuilder.attributes` to a small prealloc
+    (or `SmallVec`) to avoid `grow_one` on common attribute counts.
+- **Success metric**:
+  - **W1 median improves ≥ 8%** on `omer-pc` (quiet-gated), vs current branch baseline.
+  - Samply shows reduced share of `_platform_memmove`, `_rjem_malloc`, and fewer `RawVec::grow_one` samples under JSON output.
+- **Guardrails**:
+  - Preserve legacy JSON semantics (duplicate key suffixing, EventData/Data special handling, `separate_json_attributes` behavior).
+  - `cargo test --features fast-alloc --locked --offline` stays green, especially streaming parity suites.
+
 ---
 
 ## Completed optimizations
