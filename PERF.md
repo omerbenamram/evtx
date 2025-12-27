@@ -450,8 +450,8 @@ hyperfine --warmup 3 --runs 25 \
   - Membership checks use pointer-address comparisons (no string hashing on the hot path); suffixed keys (`_1`, `_2`, …) are only
     allocated on collision.
 - **Benchmarks (omer-pc, quiet-gated, W1)**:
-  - **before**: median **606.7 ms**
-  - **after**: median **554.1 ms**
+  - **before**: median **603.9 ms**
+  - **after**: median **551.6 ms**
   - **speedup**: **1.095×** (≈ **8.7%** lower median)
   - **Command (omer-pc)**:
 
