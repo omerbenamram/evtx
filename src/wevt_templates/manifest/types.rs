@@ -278,5 +278,3 @@ impl Provider<'_> {
             .and_then(|t| t.templates.iter().find(|tpl| tpl.offset == offset))
     }
 }
-
-

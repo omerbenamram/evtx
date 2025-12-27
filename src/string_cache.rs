@@ -11,7 +11,8 @@ pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
 
 impl StringCache {
     pub fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
-        let mut cache = HashMap::new();
+        // Offsets can contain many duplicates / zeros; reserve a minimal baseline.
+        let mut cache = HashMap::with_capacity(offsets.len());
 
         for &offset in offsets.iter().filter(|&&offset| offset > 0) {
             let mut cursor = ByteCursor::with_pos(data, offset as usize)?;

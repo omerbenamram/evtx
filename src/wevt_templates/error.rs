@@ -17,5 +17,3 @@ pub enum WevtTemplateExtractError {
     #[error("failed to decode UTF-16 resource name")]
     InvalidResourceName,
 }
-
-

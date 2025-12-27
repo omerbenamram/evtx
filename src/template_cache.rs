@@ -5,6 +5,7 @@ use crate::ChunkOffset;
 use crate::model::deserialized::BinXMLTemplateDefinition;
 use crate::utils::ByteCursor;
 
+use bumpalo::Bump;
 use encoding::EncodingRef;
 use log::trace;
 use std::collections::HashMap;
@@ -22,16 +23,20 @@ impl<'chunk> TemplateCache<'chunk> {
     pub fn populate(
         data: &'chunk [u8],
         offsets: &[ChunkOffset],
+        arena: &'chunk Bump,
         ansi_codec: EncodingRef,
     ) -> DeserializationResult<Self> {
-        let mut cache = HashMap::new();
+        // Reserve a minimal baseline; actual number of cached templates may be higher
+        // due to chained template buckets.
+        let mut cache = HashMap::with_capacity(offsets.len());
 
         for offset in offsets.iter().filter(|&&offset| offset > 0) {
             let mut cursor = ByteCursor::with_pos(data, *offset as usize)?;
 
             loop {
                 let table_offset = cursor.pos() as ChunkOffset;
-                let definition = read_template_definition_cursor(&mut cursor, None, ansi_codec)?;
+                let definition =
+                    read_template_definition_cursor(&mut cursor, None, arena, ansi_codec)?;
                 let next_template_offset = definition.header.next_template_offset;
 
                 cache.insert(table_offset, definition);

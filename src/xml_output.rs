@@ -1,14 +1,14 @@
+use crate::ParserSettings;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlElement};
-use crate::ParserSettings;
 
 use log::trace;
 use std::io::Write;
 
+use quick_xml::Writer;
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Event};
-use quick_xml::Writer;
 
 use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;

@@ -5,6 +5,8 @@ use crate::xml_output::BinXmlOutput;
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
+use chrono::{Datelike, Timelike};
+use hashbrown::HashSet;
 use quick_xml::events::BytesText;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
@@ -46,7 +48,7 @@ struct ObjectFrame {
     /// Whether we've already written any field in this object.
     first_field: bool,
     /// Keys already used in this object (for duplicate key handling).
-    used_keys: std::collections::HashSet<String>,
+    used_keys: HashSet<String>,
 }
 
 pub struct JsonStreamOutput<W: Write> {
@@ -129,6 +131,283 @@ impl<W: Write> JsonStreamOutput<W> {
             .map_err(SerializationError::from)
     }
 
+    /// Write a JSON string directly without escaping.
+    /// Only safe for NCName strings (XML element/attribute names) which don't contain
+    /// characters that need JSON escaping (no quotes, backslashes, control chars).
+    #[inline]
+    fn write_json_string_ncname(&mut self, s: &str) -> SerializationResult<()> {
+        self.write_bytes(b"\"")?;
+        self.write_bytes(s.as_bytes())?;
+        self.write_bytes(b"\"")
+    }
+
+    /// Write a JSON string with proper escaping for special characters.
+    /// Uses a fast path for strings that don't need escaping.
+    fn write_json_string_escaped(&mut self, s: &str) -> SerializationResult<()> {
+        // Fast path: check if escaping is needed
+        let needs_escape = s
+            .bytes()
+            .any(|b| matches!(b, b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0..=0x1F));
+
+        if !needs_escape {
+            return self.write_json_string_ncname(s);
+        }
+
+        // Slow path: escape special characters
+        self.write_bytes(b"\"")?;
+        for c in s.chars() {
+            match c {
+                '"' => self.write_bytes(b"\\\"")?,
+                '\\' => self.write_bytes(b"\\\\")?,
+                '\n' => self.write_bytes(b"\\n")?,
+                '\r' => self.write_bytes(b"\\r")?,
+                '\t' => self.write_bytes(b"\\t")?,
+                c if c.is_control() => {
+                    write!(self.writer_mut(), "\\u{:04x}", c as u32)
+                        .map_err(SerializationError::from)?;
+                }
+                c => {
+                    let mut buf = [0u8; 4];
+                    let encoded = c.encode_utf8(&mut buf);
+                    self.write_bytes(encoded.as_bytes())?;
+                }
+            }
+        }
+        self.write_bytes(b"\"")
+    }
+
+    /// Write a BinXmlValue directly to JSON output without creating intermediate JsonValue.
+    /// This is the zero-allocation path for value serialization.
+    fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+        match value {
+            BinXmlValue::NullType => self.write_bytes(b"null"),
+            BinXmlValue::StringType(s) => self.write_json_string_escaped(s.as_str()),
+            BinXmlValue::AnsiStringType(s) => self.write_json_string_escaped(s.as_str()),
+            BinXmlValue::Int8Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt8Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Int16Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt16Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Int32Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt32Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Int64Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::UInt64Type(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Real32Type(n) => {
+                let mut buf = ryu::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::Real64Type(n) => {
+                let mut buf = ryu::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::BoolType(b) => self.write_bytes(if *b { b"true" } else { b"false" }),
+            BinXmlValue::BinaryType(bytes) => {
+                self.write_bytes(b"\"")?;
+                for byte in *bytes {
+                    write!(self.writer_mut(), "{:02X}", byte).map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"\"")
+            }
+            BinXmlValue::GuidType(guid) => {
+                // Use Guid's Display impl, write as JSON string
+                write!(self.writer_mut(), "\"{}\"", guid).map_err(SerializationError::from)
+            }
+            BinXmlValue::SizeTType(n) => {
+                let mut buf = itoa::Buffer::new();
+                self.write_bytes(buf.format(*n).as_bytes())
+            }
+            BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => {
+                // Fast ISO-8601 with microseconds (avoids strftime parser overhead):
+                // YYYY-MM-DDTHH:MM:SS.ffffffZ
+                write!(
+                    self.writer_mut(),
+                    "\"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z\"",
+                    dt.year(),
+                    dt.month(),
+                    dt.day(),
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second(),
+                    dt.timestamp_subsec_micros()
+                )
+                .map_err(SerializationError::from)
+            }
+            BinXmlValue::SidType(sid) => {
+                self.write_bytes(b"\"")?;
+                write!(self.writer_mut(), "{}", sid).map_err(SerializationError::from)?;
+                self.write_bytes(b"\"")
+            }
+            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => {
+                self.write_json_string_escaped(s.as_str())
+            }
+            BinXmlValue::EvtHandle | BinXmlValue::EvtXml => self.write_bytes(b"null"),
+            // Arrays
+            BinXmlValue::StringArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, s) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_json_string_escaped(s.as_str())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::Int8ArrayType(arr) => self.write_int_array(arr.iter().map(|n| *n as i64)),
+            BinXmlValue::UInt8ArrayType(arr) => {
+                self.write_uint_array(arr.iter().map(|n| *n as u64))
+            }
+            BinXmlValue::Int16ArrayType(arr) => self.write_int_array(arr.iter().map(|n| *n as i64)),
+            BinXmlValue::UInt16ArrayType(arr) => {
+                self.write_uint_array(arr.iter().map(|n| *n as u64))
+            }
+            BinXmlValue::Int32ArrayType(arr) => self.write_int_array(arr.iter().map(|n| *n as i64)),
+            BinXmlValue::UInt32ArrayType(arr) => {
+                self.write_uint_array(arr.iter().map(|n| *n as u64))
+            }
+            BinXmlValue::Int64ArrayType(arr) => self.write_int_array(arr.iter().copied()),
+            BinXmlValue::UInt64ArrayType(arr) => self.write_uint_array(arr.iter().copied()),
+            BinXmlValue::Real32ArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, n) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    let mut buf = ryu::Buffer::new();
+                    self.write_bytes(buf.format(*n).as_bytes())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::Real64ArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, n) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    let mut buf = ryu::Buffer::new();
+                    self.write_bytes(buf.format(*n).as_bytes())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::BoolArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, b) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_bytes(if *b { b"true" } else { b"false" })?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::GuidArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, guid) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    write!(self.writer_mut(), "\"{}\"", guid).map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::FileTimeArrayType(arr) | BinXmlValue::SysTimeArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, dt) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    write!(
+                        self.writer_mut(),
+                        "\"{}\"",
+                        dt.format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                    )
+                    .map_err(SerializationError::from)?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::SidArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, sid) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_bytes(b"\"")?;
+                    write!(self.writer_mut(), "{}", sid).map_err(SerializationError::from)?;
+                    self.write_bytes(b"\"")?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::HexInt32ArrayType(arr) | BinXmlValue::HexInt64ArrayType(arr) => {
+                self.write_bytes(b"[")?;
+                for (i, s) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.write_bytes(b",")?;
+                    }
+                    self.write_json_string_escaped(s.as_str())?;
+                }
+                self.write_bytes(b"]")
+            }
+            BinXmlValue::AnsiStringArrayType
+            | BinXmlValue::BinaryArrayType
+            | BinXmlValue::SizeTArrayType
+            | BinXmlValue::EvtArrayHandle
+            | BinXmlValue::BinXmlArrayType
+            | BinXmlValue::EvtXmlArrayType => self.write_bytes(b"null"),
+            BinXmlValue::BinXmlType(_) => self.write_bytes(b"null"),
+        }
+    }
+
+    /// Helper for writing integer arrays
+    fn write_int_array(&mut self, iter: impl Iterator<Item = i64>) -> SerializationResult<()> {
+        self.write_bytes(b"[")?;
+        let mut buf = itoa::Buffer::new();
+        let mut first = true;
+        for n in iter {
+            if !first {
+                self.write_bytes(b",")?;
+            }
+            first = false;
+            self.write_bytes(buf.format(n).as_bytes())?;
+        }
+        self.write_bytes(b"]")
+    }
+
+    /// Helper for writing unsigned integer arrays
+    fn write_uint_array(&mut self, iter: impl Iterator<Item = u64>) -> SerializationResult<()> {
+        self.write_bytes(b"[")?;
+        let mut buf = itoa::Buffer::new();
+        let mut first = true;
+        for n in iter {
+            if !first {
+                self.write_bytes(b",")?;
+            }
+            first = false;
+            self.write_bytes(buf.format(n).as_bytes())?;
+        }
+        self.write_bytes(b"]")
+    }
+
     fn current_frame_mut(&mut self) -> &mut ObjectFrame {
         self.frames
             .last_mut()
@@ -175,17 +454,37 @@ impl<W: Write> JsonStreamOutput<W> {
     fn write_key(&mut self, key: &str) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
 
-        // Check for duplicate keys and find a unique name
-        let unique_key = self.reserve_unique_key(key);
+        // Fast path: avoid allocating a second String for the common case.
+        // Reserve the key in the set, but write from `&str` directly.
+        let frame = self
+            .frames
+            .last_mut()
+            .expect("no current JSON object frame");
 
-        serde_json::to_writer(self.writer_mut(), &unique_key).map_err(SerializationError::from)?;
+        if frame.used_keys.insert(key.to_owned()) {
+            // Keys derived from XML NCName don't need escaping
+            self.write_json_string_ncname(key)?;
+        } else {
+            // Find next available suffix.
+            let mut suffix = 1;
+            loop {
+                let candidate = format!("{}_{}", key, suffix);
+                if !frame.used_keys.contains(&candidate) {
+                    frame.used_keys.insert(candidate.clone());
+                    self.write_json_string_ncname(&candidate)?;
+                    break;
+                }
+                suffix += 1;
+            }
+        }
         self.write_bytes(b":")
     }
 
     /// Write a pre-reserved key directly (no duplicate checking needed).
     fn write_reserved_key(&mut self, key: &str) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
-        serde_json::to_writer(self.writer_mut(), key).map_err(SerializationError::from)?;
+        // Keys derived from XML NCName don't need escaping
+        self.write_json_string_ncname(key)?;
         self.write_bytes(b":")
     }
 
@@ -195,7 +494,8 @@ impl<W: Write> JsonStreamOutput<W> {
         self.write_bytes(b"{")?;
         self.frames.push(ObjectFrame {
             first_field: true,
-            used_keys: std::collections::HashSet::new(),
+            // Heuristic: nested objects tend to have a moderate number of keys.
+            used_keys: HashSet::with_capacity(32),
         });
         Ok(())
     }
@@ -233,7 +533,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::with_capacity(32),
                 });
 
                 self.elements[parent_index].kind = ElementValueKind::Object;
@@ -253,7 +553,7 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::with_capacity(32),
                 });
 
                 // Write the buffered text as #text if not in separate mode
@@ -355,6 +655,43 @@ impl<W: Write> JsonStreamOutput<W> {
         self.data_inside_element = false;
         Ok(())
     }
+
+    /// Helper to handle entity reference strings without needing arena for BinXmlValue
+    fn handle_entity_string(&mut self, s: &str) -> SerializationResult<()> {
+        // Aggregated `<EventData><Data>...</Data>...</EventData>` case.
+        if let Some(owner_depth) = self.data_owner_depth {
+            let current_depth = self.elements.len();
+            if self.data_inside_element && current_depth == owner_depth {
+                self.write_json_string_escaped(s)?;
+                return Ok(());
+            }
+        }
+
+        let Some(index) = self.elements.len().checked_sub(1) else {
+            return Ok(());
+        };
+
+        let kind = self.elements[index].kind;
+        let json_value = JsonValue::String(s.to_string());
+
+        match kind {
+            ElementValueKind::Pending => {
+                self.elements[index].buffered_values.push(json_value);
+                self.elements[index].kind = ElementValueKind::Scalar;
+            }
+            ElementValueKind::Scalar => {
+                self.elements[index].buffered_values.push(json_value);
+            }
+            ElementValueKind::Object => {
+                // Match legacy `JsonOutput`: once an element has been materialized as an object
+                // (attributes and/or child elements), entity references are ignored.
+                let _ = json_value;
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
@@ -363,7 +700,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         self.write_bytes(b"{")?;
         self.frames.push(ObjectFrame {
             first_field: true,
-            used_keys: std::collections::HashSet::new(),
+            // Root objects can have many keys; pre-reserve to reduce rehashing.
+            used_keys: HashSet::with_capacity(128),
         });
         Ok(())
     }
@@ -443,8 +781,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         let mut has_json_attributes = false;
         if !is_data {
             for attr in &element.attributes {
-                let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
-                if !json_value.is_null() {
+                if !matches!(attr.value.as_ref(), BinXmlValue::NullType) {
                     has_json_attributes = true;
                     break;
                 }
@@ -471,15 +808,14 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 if !first_field {
                     self.write_bytes(b",")?;
                 }
-                serde_json::to_writer(self.writer_mut(), "#attributes")
-                    .map_err(SerializationError::from)?;
-                self.write_bytes(b":")?;
+                // "#attributes" is a fixed ASCII key, no escaping needed
+                self.write_bytes(b"\"#attributes\":")?;
 
                 // Start attributes object.
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::new(),
                 });
 
                 {
@@ -491,8 +827,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                             continue;
                         }
 
-                        let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
-                        if json_value.is_null() {
+                        if matches!(attr.value.as_ref(), BinXmlValue::NullType) {
                             continue;
                         }
 
@@ -507,11 +842,10 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         if !is_first {
                             self.write_bytes(b",")?;
                         }
-                        serde_json::to_writer(self.writer_mut(), attr_key)
-                            .map_err(SerializationError::from)?;
+                        // Attribute keys are XML NCName, no escaping needed
+                        self.write_json_string_ncname(attr_key)?;
                         self.write_bytes(b":")?;
-                        serde_json::to_writer(self.writer_mut(), &json_value)
-                            .map_err(SerializationError::from)?;
+                        self.write_binxml_value(attr.value.as_ref())?;
                     }
                 }
 
@@ -541,14 +875,13 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                 self.write_bytes(b"{")?;
                 self.frames.push(ObjectFrame {
                     first_field: true,
-                    used_keys: std::collections::HashSet::new(),
+                    used_keys: HashSet::new(),
                 });
 
                 {
                     for attr in &element.attributes {
                         let attr_name = attr.name.as_str();
-                        let json_value: JsonValue = JsonValue::from(attr.value.as_ref());
-                        if json_value.is_null() {
+                        if matches!(attr.value.as_ref(), BinXmlValue::NullType) {
                             continue;
                         }
 
@@ -563,11 +896,10 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         if !is_first {
                             self.write_bytes(b",")?;
                         }
-                        serde_json::to_writer(self.writer_mut(), attr_name)
-                            .map_err(SerializationError::from)?;
+                        // Attribute names are XML NCName, no escaping needed
+                        self.write_json_string_ncname(attr_name)?;
                         self.write_bytes(b":")?;
-                        serde_json::to_writer(self.writer_mut(), &json_value)
-                            .map_err(SerializationError::from)?;
+                        self.write_binxml_value(attr.value.as_ref())?;
                     }
                 }
 
@@ -671,9 +1003,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                         if !is_first {
                             self.write_bytes(b",")?;
                         }
-                        serde_json::to_writer(self.writer_mut(), "#text")
-                            .map_err(SerializationError::from)?;
-                        self.write_bytes(b":")?;
+                        // "#text" is a fixed ASCII key, no escaping needed
+                        self.write_bytes(b"\"#text\":")?;
 
                         if elem.buffered_values.len() == 1 {
                             // Single value: write directly.
@@ -768,8 +1099,8 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         let xml_event = BytesText::from_escaped(&entity_ref);
         match xml_event.unescape() {
             Ok(escaped) => {
-                let as_string = escaped.to_string();
-                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))
+                // Directly handle string without creating BinXmlValue (which would need arena)
+                self.handle_entity_string(escaped.as_ref())
             }
             Err(_) => Err(SerializationError::JsonStructureError {
                 message: format!("Unterminated XML Entity {}", entity_ref),
@@ -797,6 +1128,8 @@ mod tests {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::model::xml::{XmlAttribute, XmlElement};
     use crate::{BinXmlOutput, JsonOutput, ParserSettings};
+    use bumpalo::Bump;
+    use bumpalo::collections::String as BumpString;
     use pretty_assertions::assert_eq;
     use quick_xml::Reader;
     use quick_xml::events::{BytesStart, Event};
@@ -806,7 +1139,7 @@ mod tests {
         String::from_utf8(bytes.to_vec()).expect("UTF8 Input")
     }
 
-    fn event_to_element(event: BytesStart) -> XmlElement {
+    fn event_to_element<'a>(event: BytesStart, arena: &'a Bump) -> XmlElement<'a> {
         let mut attrs = vec![];
 
         for attr in event.attributes() {
@@ -814,7 +1147,10 @@ mod tests {
             attrs.push(XmlAttribute {
                 name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
                 // We have to compromise here and assume all values are strings.
-                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
+                value: Cow::Owned(BinXmlValue::StringType(BumpString::from_str_in(
+                    &bytes_to_string(&attr.value),
+                    arena,
+                ))),
             });
         }
 
@@ -828,6 +1164,7 @@ mod tests {
 
     /// Converts an XML string to JSON using the legacy `JsonOutput`.
     fn xml_to_json_legacy(xml: &str, settings: &ParserSettings) -> String {
+        let arena = Bump::new();
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
@@ -840,7 +1177,7 @@ mod tests {
             match reader.read_event() {
                 Ok(event) => match event {
                     Event::Start(start) => {
-                        let elem = event_to_element(start);
+                        let elem = event_to_element(start, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Open start element");
@@ -851,16 +1188,16 @@ mod tests {
                         output.visit_close_element(&elem).expect("Close element");
                     }
                     Event::Empty(empty) => {
-                        let elem = event_to_element(empty);
+                        let elem = event_to_element(empty, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Empty Open start element");
                         output.visit_close_element(&elem).expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                            BumpString::from_str_in(&bytes_to_string(text.as_ref()), &arena),
+                        )))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),
@@ -881,6 +1218,7 @@ mod tests {
 
     /// Converts an XML string to JSON using the streaming `JsonStreamOutput`.
     fn xml_to_json_streaming(xml: &str, settings: &ParserSettings) -> String {
+        let arena = Bump::new();
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
@@ -894,7 +1232,7 @@ mod tests {
             match reader.read_event() {
                 Ok(event) => match event {
                     Event::Start(start) => {
-                        let elem = event_to_element(start);
+                        let elem = event_to_element(start, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Open start element");
@@ -905,16 +1243,16 @@ mod tests {
                         output.visit_close_element(&elem).expect("Close element");
                     }
                     Event::Empty(empty) => {
-                        let elem = event_to_element(empty);
+                        let elem = event_to_element(empty, &arena);
                         output
                             .visit_open_start_element(&elem)
                             .expect("Empty Open start element");
                         output.visit_close_element(&elem).expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                            BumpString::from_str_in(&bytes_to_string(text.as_ref()), &arena),
+                        )))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),
@@ -1071,6 +1409,8 @@ mod tests {
     fn test_multiple_character_nodes_concatenation() {
         use crate::model::xml::XmlElement;
 
+        let arena = Bump::new();
+
         // Test by directly calling the visitor methods to simulate multiple character nodes
         let settings = ParserSettings::new().num_threads(1);
 
@@ -1088,10 +1428,14 @@ mod tests {
         legacy_output.visit_open_start_element(&event_elem).unwrap();
         legacy_output.visit_open_start_element(&msg_elem).unwrap();
         legacy_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part1", &arena),
+            )))
             .unwrap();
         legacy_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part2", &arena),
+            )))
             .unwrap();
         legacy_output.visit_close_element(&msg_elem).unwrap();
         legacy_output.visit_close_element(&event_elem).unwrap();
@@ -1109,10 +1453,14 @@ mod tests {
             .visit_open_start_element(&msg_elem)
             .unwrap();
         streaming_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part1".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part1", &arena),
+            )))
             .unwrap();
         streaming_output
-            .visit_characters(Cow::Owned(BinXmlValue::StringType("Part2".to_string())))
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("Part2", &arena),
+            )))
             .unwrap();
         streaming_output.visit_close_element(&msg_elem).unwrap();
         streaming_output.visit_close_element(&event_elem).unwrap();

@@ -341,8 +341,8 @@ impl BinXmlOutput for JsonOutput {
 
         // A small optimization in case we already have an owned string.
         fn value_to_json(value: Cow<BinXmlValue>) -> Value {
-            if let Cow::Owned(BinXmlValue::StringType(value)) = value {
-                json!(value)
+            if let Cow::Owned(BinXmlValue::StringType(ref s)) = value {
+                json!(s.as_str())
             } else {
                 value.into_owned().into()
             }
@@ -438,9 +438,25 @@ impl BinXmlOutput for JsonOutput {
         let xml_event = BytesText::from_escaped(&entity_ref);
         match xml_event.unescape() {
             Ok(escaped) => {
-                let as_string = escaped.to_string();
+                // Directly set string value without creating BinXmlValue (which would need arena)
+                let separate_json_attributes = self.separate_json_attributes;
+                let current_value = self.get_or_create_current_path();
+                let json_str = json!(escaped.as_ref());
 
-                self.visit_characters(Cow::Owned(BinXmlValue::StringType(as_string)))?;
+                match current_value {
+                    Value::Null => {
+                        *current_value = json_str;
+                    }
+                    Value::Object(object) => {
+                        if separate_json_attributes && object.is_empty() {
+                            *current_value = json_str;
+                        }
+                    }
+                    Value::String(s) => {
+                        s.push_str(escaped.as_ref());
+                    }
+                    _ => {}
+                }
                 Ok(())
             }
             Err(_) => Err(JsonStructureError {
@@ -476,6 +492,8 @@ mod tests {
     use crate::binxml::value_variant::BinXmlValue;
     use crate::model::xml::{XmlAttribute, XmlElement};
     use crate::{BinXmlOutput, JsonOutput, ParserSettings};
+    use bumpalo::Bump;
+    use bumpalo::collections::String as BumpString;
     use pretty_assertions::assert_eq;
     use quick_xml::Reader;
     use quick_xml::events::{BytesStart, Event};
@@ -492,7 +510,7 @@ mod tests {
         }
     }
 
-    fn event_to_element(event: BytesStart) -> XmlElement {
+    fn event_to_element<'a>(event: BytesStart, arena: &'a Bump) -> XmlElement<'a> {
         let mut attrs = vec![];
 
         for attr in event.attributes() {
@@ -500,7 +518,10 @@ mod tests {
             attrs.push(XmlAttribute {
                 name: Cow::Owned(BinXmlName::from_string(bytes_to_string(attr.key.as_ref()))),
                 // We have to compromise here and assume all values are strings.
-                value: Cow::Owned(BinXmlValue::StringType(bytes_to_string(&attr.value))),
+                value: Cow::Owned(BinXmlValue::StringType(BumpString::from_str_in(
+                    &bytes_to_string(&attr.value),
+                    arena,
+                ))),
             });
         }
 
@@ -514,6 +535,7 @@ mod tests {
 
     /// Converts an XML string to JSON, panics in xml is invalid.
     fn xml_to_json(xml: &str, settings: &ParserSettings) -> String {
+        let arena = Bump::new();
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(true);
 
@@ -525,7 +547,7 @@ mod tests {
                 Ok(event) => match event {
                     Event::Start(start) => {
                         output
-                            .visit_open_start_element(&event_to_element(start))
+                            .visit_open_start_element(&event_to_element(start, &arena))
                             .expect("Open start element");
                     }
                     Event::End(_) => output
@@ -533,7 +555,7 @@ mod tests {
                         .expect("Close element"),
                     Event::Empty(empty) => {
                         output
-                            .visit_open_start_element(&event_to_element(empty))
+                            .visit_open_start_element(&event_to_element(empty, &arena))
                             .expect("Empty Open start element");
 
                         output
@@ -541,9 +563,9 @@ mod tests {
                             .expect("Empty Close");
                     }
                     Event::Text(text) => output
-                        .visit_characters(Cow::Owned(BinXmlValue::StringType(bytes_to_string(
-                            text.as_ref(),
-                        ))))
+                        .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                            BumpString::from_str_in(&bytes_to_string(text.as_ref()), &arena),
+                        )))
                         .expect("Text element"),
                     Event::Comment(_) => {}
                     Event::CData(_) => unimplemented!(),

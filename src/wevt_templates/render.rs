@@ -28,6 +28,7 @@ pub fn render_temp_to_xml(
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     if temp_bytes.len() < TEMP_BINXML_OFFSET {
@@ -39,7 +40,8 @@ pub fn render_temp_to_xml(
     }
 
     let binxml = &temp_bytes[TEMP_BINXML_OFFSET..];
-    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -112,7 +114,10 @@ pub fn render_temp_to_xml(
             }
             crate::model::deserialized::BinXMLDeserializedTokens::Substitution(sub) => {
                 let placeholder = format!("{{sub:{}}}", sub.substitution_index);
-                let value = BinXmlValue::StringType(placeholder);
+                let value = BinXmlValue::StringType(bumpalo::collections::String::from_str_in(
+                    &placeholder,
+                    &arena,
+                ));
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
                     Some(ref mut builder) => {
@@ -230,6 +235,7 @@ pub fn render_temp_to_xml_with_substitution_values(
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     if temp_bytes.len() < TEMP_BINXML_OFFSET {
@@ -241,7 +247,8 @@ pub fn render_temp_to_xml_with_substitution_values(
     }
 
     let binxml = &temp_bytes[TEMP_BINXML_OFFSET..];
-    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -316,7 +323,8 @@ pub fn render_temp_to_xml_with_substitution_values(
                 }
                 let idx = sub.substitution_index as usize;
                 let s = substitution_values.get(idx).cloned().unwrap_or_default();
-                let value = BinXmlValue::StringType(s);
+                let value =
+                    BinXmlValue::StringType(bumpalo::collections::String::from_str_in(&s, &arena));
 
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
@@ -413,8 +421,7 @@ pub fn render_temp_to_xml_with_substitution_values(
 
     output.visit_end_of_stream()?;
 
-    String::from_utf8(output.into_writer())
-        .map_err(|e| EvtxError::calculation_error(e.to_string()))
+    String::from_utf8(output.into_writer()).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
 /// Render a parsed template definition to XML.
@@ -434,10 +441,12 @@ pub fn render_template_definition_to_xml(
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     let binxml = template.binxml;
-    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -518,7 +527,10 @@ pub fn render_template_definition_to_xml(
                     placeholder = format!("{{sub:{idx}:{name}}}");
                 }
 
-                let value = BinXmlValue::StringType(placeholder);
+                let value = BinXmlValue::StringType(bumpalo::collections::String::from_str_in(
+                    &placeholder,
+                    &arena,
+                ));
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
                     Some(ref mut builder) => {
@@ -639,10 +651,12 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     use crate::err::{EvtxError, Result};
     use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
     use crate::xml_output::{BinXmlOutput, XmlOutput};
+    use bumpalo::Bump;
     use std::borrow::Cow;
 
     let binxml = template.binxml;
-    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, &arena, ansi_codec)?;
 
     fn resolve_name<'a>(
         binxml: &'a [u8],
@@ -717,7 +731,8 @@ pub fn render_template_definition_to_xml_with_substitution_values(
                 }
                 let idx = sub.substitution_index as usize;
                 let s = substitution_values.get(idx).cloned().unwrap_or_default();
-                let value = BinXmlValue::StringType(s);
+                let value =
+                    BinXmlValue::StringType(bumpalo::collections::String::from_str_in(&s, &arena));
 
                 match current_element {
                     None => model.push(XmlModel::Value(Cow::Owned(value))),
