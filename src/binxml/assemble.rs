@@ -7,8 +7,10 @@ use crate::model::deserialized::{
 use crate::model::xml::{XmlElement, XmlElementBuilder, XmlModel, XmlPIBuilder};
 use crate::utils::ByteCursor;
 use crate::xml_output::BinXmlOutput;
+use crate::{ChunkOffset, JsonStreamOutput, template_cache::CompiledTemplateOp};
 use log::{debug, trace, warn};
 use std::borrow::Cow;
+use std::io::Write;
 
 use std::mem;
 
@@ -779,6 +781,360 @@ pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
         )?;
     }
     visitor.visit_end_of_stream()?;
+    Ok(())
+}
+
+/// JSON-only streaming path with compiled template ops.
+///
+/// This is the H2 “big move”:
+/// - expand templates without rescanning tokens for substitution counts,
+/// - resolve names by offset (no HashMap hashing in `StringCache`),
+/// - avoid building `XmlElementBuilder` / `XmlElement` for JSON emission.
+pub fn parse_tokens_streaming_json<'a, W: Write>(
+    tokens: Vec<BinXMLDeserializedTokens<'a>>,
+    chunk: &'a EvtxChunk<'a>,
+    visitor: &mut JsonStreamOutput<W>,
+) -> Result<()> {
+    visitor.visit_start_of_stream()?;
+
+    struct Asm<'a, W: Write> {
+        chunk: &'a EvtxChunk<'a>,
+        out: &'a mut JsonStreamOutput<W>,
+        /// Currently open (but not yet closed-start) element tag name offset.
+        current_tag: Option<ChunkOffset>,
+        /// Current attribute name offset awaiting a value.
+        current_attr: Option<ChunkOffset>,
+        /// Collected attributes for the current element (name offset + value).
+        attrs: Vec<(ChunkOffset, BinXmlValue<'a>)>,
+        /// Stack of open element tag name offsets for `CloseElement`.
+        tag_stack: Vec<ChunkOffset>,
+    }
+
+    impl<'a, W: Write> Asm<'a, W> {
+        fn new(chunk: &'a EvtxChunk<'a>, out: &'a mut JsonStreamOutput<W>) -> Self {
+            Asm {
+                chunk,
+                out,
+                current_tag: None,
+                current_attr: None,
+                attrs: Vec::new(),
+                tag_stack: Vec::new(),
+            }
+        }
+
+        #[inline]
+        fn open_start_element(&mut self, tag_name_offset: ChunkOffset) {
+            self.current_tag = Some(tag_name_offset);
+            self.current_attr = None;
+            self.attrs.clear();
+        }
+
+        #[inline]
+        fn attribute_name(&mut self, name_offset: ChunkOffset) {
+            self.current_attr = Some(name_offset);
+        }
+
+        fn close_start_element(&mut self) -> Result<()> {
+            let tag = self.current_tag.take().ok_or(EvtxError::FailedToCreateRecordModel(
+                "close start - Bad parser state",
+            ))?;
+
+            self.out
+                .visit_open_start_element_offsets(self.chunk, tag, &self.attrs)?;
+            self.tag_stack.push(tag);
+            self.current_attr = None;
+            self.attrs.clear();
+            Ok(())
+        }
+
+        fn close_empty_element(&mut self) -> Result<()> {
+            let tag = self.current_tag.take().ok_or(EvtxError::FailedToCreateRecordModel(
+                "close empty - Bad parser state",
+            ))?;
+
+            self.out
+                .visit_open_start_element_offsets(self.chunk, tag, &self.attrs)?;
+            self.out.visit_close_element_offset(self.chunk, tag)?;
+
+            self.current_attr = None;
+            self.attrs.clear();
+            Ok(())
+        }
+
+        fn close_element(&mut self) -> Result<()> {
+            let tag = self.tag_stack.pop().ok_or(EvtxError::FailedToCreateRecordModel(
+                "close element - Bad parser state",
+            ))?;
+            self.out.visit_close_element_offset(self.chunk, tag)?;
+            Ok(())
+        }
+
+        fn value_owned(&mut self, value: BinXmlValue<'a>) -> Result<()> {
+            // Nested BinXML expands inline.
+            if let BinXmlValue::BinXmlType(nested_tokens) = value {
+                for nested in nested_tokens.iter() {
+                    self.token_ref(nested)?;
+                }
+                return Ok(());
+            }
+
+            if self.current_tag.is_some() {
+                // Attribute value (only if we have a pending attribute name).
+                if let Some(attr_name) = self.current_attr.take() {
+                    self.attrs.push((attr_name, value));
+                }
+                return Ok(());
+            }
+
+            // Text node.
+            self.out.visit_characters(Cow::Owned(value))?;
+            Ok(())
+        }
+
+        fn value_ref(&mut self, value: &BinXmlValue<'a>) -> Result<()> {
+            if let BinXmlValue::BinXmlType(nested_tokens) = value {
+                for nested in nested_tokens.iter() {
+                    self.token_ref(nested)?;
+                }
+                return Ok(());
+            }
+
+            if self.current_tag.is_some() {
+                if let Some(attr_name) = self.current_attr.take() {
+                    // Clone is cheap for arena-backed strings and primitive variants.
+                    self.attrs.push((attr_name, value.clone()));
+                }
+                return Ok(());
+            }
+
+            self.out.visit_characters(Cow::Borrowed(value))?;
+            Ok(())
+        }
+
+        fn entity_ref_offset(&mut self, name_offset: ChunkOffset) -> Result<()> {
+            if let Some(name) = self.chunk.string_cache.get_cached_string(name_offset) {
+                self.out.visit_entity_reference(name)?;
+                return Ok(());
+            }
+
+            // Fallback: parse the name from the string table entry.
+            let name_off = name_offset
+                .checked_add(BINXML_NAME_LINK_SIZE)
+                .ok_or(EvtxError::FailedToCreateRecordModel(
+                    "string table offset overflow",
+                ))?;
+            let mut cursor = ByteCursor::with_pos(self.chunk.data, name_off as usize)?;
+            let name = BinXmlName::from_cursor(&mut cursor)?;
+            self.out.visit_entity_reference(&name)?;
+            Ok(())
+        }
+
+        fn expand_template(&mut self, template: &mut BinXmlTemplateRef<'a>) -> Result<()> {
+            if let Some(entry) = self.chunk.template_table.get_entry(template.template_def_offset) {
+                // Copy precomputed substitution use-counts (avoid rescanning template tokens).
+                let mut remaining_uses = vec![0u32; template.substitution_array.len()];
+                let counts = &entry.compiled.substitution_use_counts;
+                let n = remaining_uses.len().min(counts.len());
+                remaining_uses[..n].copy_from_slice(&counts[..n]);
+
+                for op in entry.compiled.ops.iter() {
+                    match *op {
+                        CompiledTemplateOp::FragmentHeader
+                        | CompiledTemplateOp::AttributeList
+                        | CompiledTemplateOp::StartOfStream
+                        | CompiledTemplateOp::EndOfStream => {}
+                        CompiledTemplateOp::OpenStartElement { name_offset } => {
+                            self.open_start_element(name_offset)
+                        }
+                        CompiledTemplateOp::Attribute { name_offset } => self.attribute_name(name_offset),
+                        CompiledTemplateOp::CloseStartElement => self.close_start_element()?,
+                        CompiledTemplateOp::CloseEmptyElement => self.close_empty_element()?,
+                        CompiledTemplateOp::CloseElement => self.close_element()?,
+                        CompiledTemplateOp::EntityRef { name_offset } => {
+                            self.entity_ref_offset(name_offset)?
+                        }
+                        CompiledTemplateOp::PITarget { .. } | CompiledTemplateOp::PIData { .. } => {
+                            // JSON streaming doesn't support PI; match existing behavior (errors when encountered).
+                            return Err(EvtxError::Unimplemented {
+                                name: "processing instructions in JSON streaming".to_string(),
+                            });
+                        }
+                        CompiledTemplateOp::Value { token_index } => {
+                            let idx = token_index as usize;
+                            if let Some(t) = entry.definition.tokens.get(idx) {
+                                self.token_ref(t)?;
+                            }
+                        }
+                        CompiledTemplateOp::Substitution {
+                            substitution_index,
+                            ignore,
+                        } => {
+                            if ignore {
+                                continue;
+                            }
+                            let token = take_or_clone_substitution_value(
+                                template,
+                                substitution_index,
+                                &mut remaining_uses,
+                            );
+                            self.token_owned(token)?;
+                        }
+                        CompiledTemplateOp::Unsupported { token_index } => {
+                            let idx = token_index as usize;
+                            if let Some(t) = entry.definition.tokens.get(idx) {
+                                self.token_ref(t)?;
+                            }
+                        }
+                    }
+                }
+
+                Ok(())
+            } else {
+                // Template not in cache - read directly from chunk (rare).
+                debug!(
+                    "Template in offset {} was not found in cache (json fast path)",
+                    template.template_def_offset
+                );
+                let mut cursor =
+                    ByteCursor::with_pos(self.chunk.data, template.template_def_offset as usize)?;
+                let template_def = read_template_definition_cursor(
+                    &mut cursor,
+                    Some(self.chunk),
+                    self.chunk.arena,
+                    self.chunk.settings.get_ansi_codec(),
+                )?;
+
+                let mut remaining_uses = vec![0u32; template.substitution_array.len()];
+                for t in template_def.tokens.iter() {
+                    if let BinXMLDeserializedTokens::Substitution(desc) = t {
+                        if desc.ignore {
+                            continue;
+                        }
+                        let idx = desc.substitution_index as usize;
+                        if idx < remaining_uses.len() {
+                            remaining_uses[idx] += 1;
+                        }
+                    }
+                }
+
+                for t in template_def.tokens {
+                    match t {
+                        BinXMLDeserializedTokens::Substitution(desc) => {
+                            if desc.ignore {
+                                continue;
+                            }
+                            let token = take_or_clone_substitution_value(
+                                template,
+                                desc.substitution_index,
+                                &mut remaining_uses,
+                            );
+                            self.token_owned(token)?;
+                        }
+                        other => self.token_owned(other)?,
+                    }
+                }
+
+                Ok(())
+            }
+        }
+
+        fn token_owned(&mut self, token: BinXMLDeserializedTokens<'a>) -> Result<()> {
+            match token {
+                BinXMLDeserializedTokens::FragmentHeader(_)
+                | BinXMLDeserializedTokens::AttributeList
+                | BinXMLDeserializedTokens::StartOfStream
+                | BinXMLDeserializedTokens::EndOfStream => {}
+
+                BinXMLDeserializedTokens::OpenStartElement(elem) => {
+                    self.open_start_element(elem.name.offset)
+                }
+                BinXMLDeserializedTokens::Attribute(attr) => self.attribute_name(attr.name.offset),
+                BinXMLDeserializedTokens::Value(value) => self.value_owned(value)?,
+
+                BinXMLDeserializedTokens::CloseStartElement => self.close_start_element()?,
+                BinXMLDeserializedTokens::CloseEmptyElement => self.close_empty_element()?,
+                BinXMLDeserializedTokens::CloseElement => self.close_element()?,
+
+                BinXMLDeserializedTokens::EntityRef(entity) => {
+                    self.entity_ref_offset(entity.name.offset)?
+                }
+
+                BinXMLDeserializedTokens::TemplateInstance(mut template) => {
+                    self.expand_template(&mut template)?
+                }
+
+                BinXMLDeserializedTokens::PITarget(_) | BinXMLDeserializedTokens::PIData(_) => {
+                    return Err(EvtxError::Unimplemented {
+                        name: "processing instructions in JSON streaming".to_string(),
+                    });
+                }
+                BinXMLDeserializedTokens::Substitution(_) => {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "Substitution token should not appear in input stream",
+                    ));
+                }
+                BinXMLDeserializedTokens::CDATASection | BinXMLDeserializedTokens::CharRef => {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "Unimplemented CDATA/CharRef",
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        fn token_ref(&mut self, token: &BinXMLDeserializedTokens<'a>) -> Result<()> {
+            match token {
+                BinXMLDeserializedTokens::FragmentHeader(_)
+                | BinXMLDeserializedTokens::AttributeList
+                | BinXMLDeserializedTokens::StartOfStream
+                | BinXMLDeserializedTokens::EndOfStream => {}
+
+                BinXMLDeserializedTokens::OpenStartElement(elem) => {
+                    self.open_start_element(elem.name.offset)
+                }
+                BinXMLDeserializedTokens::Attribute(attr) => self.attribute_name(attr.name.offset),
+                BinXMLDeserializedTokens::Value(value) => self.value_ref(value)?,
+
+                BinXMLDeserializedTokens::CloseStartElement => self.close_start_element()?,
+                BinXMLDeserializedTokens::CloseEmptyElement => self.close_empty_element()?,
+                BinXMLDeserializedTokens::CloseElement => self.close_element()?,
+
+                BinXMLDeserializedTokens::EntityRef(entity) => {
+                    self.entity_ref_offset(entity.name.offset)?
+                }
+
+                BinXMLDeserializedTokens::TemplateInstance(template) => {
+                    // Shouldn't happen in template definitions; fall back by cloning.
+                    let mut owned = template.clone();
+                    self.expand_template(&mut owned)?
+                }
+
+                BinXMLDeserializedTokens::PITarget(_) | BinXMLDeserializedTokens::PIData(_) => {
+                    return Err(EvtxError::Unimplemented {
+                        name: "processing instructions in JSON streaming".to_string(),
+                    });
+                }
+                BinXMLDeserializedTokens::Substitution(_) => {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "Substitution token should not appear in input stream",
+                    ));
+                }
+                BinXMLDeserializedTokens::CDATASection | BinXMLDeserializedTokens::CharRef => {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "Unimplemented CDATA/CharRef",
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let mut asm = Asm::new(chunk, visitor);
+    for token in tokens {
+        asm.token_owned(token)?;
+    }
+
+    asm.out.visit_end_of_stream()?;
     Ok(())
 }
 

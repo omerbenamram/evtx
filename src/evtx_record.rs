@@ -1,4 +1,4 @@
-use crate::binxml::assemble::{parse_tokens, parse_tokens_streaming};
+use crate::binxml::assemble::{parse_tokens, parse_tokens_streaming_json};
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
@@ -145,7 +145,7 @@ impl EvtxRecord<'_> {
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
-        parse_tokens_streaming(self.tokens, self.chunk, &mut output_builder).map_err(|e| {
+        parse_tokens_streaming_json(self.tokens, self.chunk, &mut output_builder).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),
@@ -172,7 +172,7 @@ impl EvtxRecord<'_> {
     ) -> Result<()> {
         let event_record_id = self.event_record_id;
 
-        parse_tokens_streaming(self.tokens, self.chunk, output_builder).map_err(|e| {
+        parse_tokens_streaming_json(self.tokens, self.chunk, output_builder).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),

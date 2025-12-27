@@ -141,7 +141,7 @@ Raw JSON capture (temporary on that run): `/tmp/evtx-bench.11jAUq/hyperfine_mast
 
 ---
 
-## Rust vs Zig snapshot (omer-pc, 2025-12-27)
+## Rust vs Zig snapshot (omer-pc, 2025-12-27, pre-H2)
 
 W1 (JSONL, `-t 1`, output suppressed), built from this working tree and `~/Workspace/zig-evtx`:
 - **Rust (fast-alloc)**: median **532.4 ms** (mean 531.3 ms ± 5.5 ms, min 517.0 ms)
@@ -152,6 +152,23 @@ Artifacts (copied into this repo, ignored by git):
 - `target/perf/rust_vs_zig_omerpc_20251227_172444/hyperfine_rust_vs_zig_t1.json`
 - `target/perf/rust_vs_zig_omerpc_20251227_172444/samply_rust_t1.profile.json.gz` + `.syms.json`
 - `target/perf/rust_vs_zig_omerpc_20251227_172444/samply_zig_t1.profile.json.gz` + `.syms.json`
+- Extracted tables:
+  - `.../top_leaves_rust_cpu.md`, `.../leaf_callers_rust.md`, `.../top_inclusive_rust_cpu.md`
+  - `.../top_leaves_zig_cpu.md`, `.../leaf_callers_zig.md`, `.../top_inclusive_zig_cpu.md`
+
+---
+
+## Rust vs Zig snapshot (omer-pc, 2025-12-27, H2)
+
+W1 (JSONL, `-t 1`, output suppressed), built from this branch and `~/Workspace/zig-evtx`:
+- **Rust (fast-alloc, H2)**: mean **428.7 ms** ± 3.2 ms (min 422.6 ms)
+- **Zig (ReleaseFast --no-checks)**: mean **256.9 ms** ± 3.1 ms (min 252.0 ms)
+- **gap**: Zig is **~1.67× faster** (down from ~2.06× pre-H2)
+
+Artifacts (copied into this repo, ignored by git):
+- `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/hyperfine_rust_vs_zig_t1.json`
+- `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/samply_rust_t1.profile.json.gz` + `.syms.json`
+- `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/samply_zig_t1.profile.json.gz` + `.syms.json`
 - Extracted tables:
   - `.../top_leaves_rust_cpu.md`, `.../leaf_callers_rust.md`, `.../top_inclusive_rust_cpu.md`
   - `.../top_leaves_zig_cpu.md`, `.../leaf_callers_zig.md`, `.../top_inclusive_zig_cpu.md`
@@ -536,6 +553,41 @@ hyperfine --warmup 3 --runs 25 \
     - `target/perf/samply/h1_after2.profile.json.gz` + `target/perf/samply/h1_after2.profile.json.syms.json`
     - `target/perf/samply/h1_after3.profile.json.gz` + `target/perf/samply/h1_after3.profile.json.syms.json`
     - `target/perf/samply/h1_after4.profile.json.gz` + `target/perf/samply/h1_after4.profile.json.syms.json`
+
+### H2 — Compiled template ops + offset-indexed names + JSON streaming without `XmlElementBuilder`
+- **What changed**:
+  - Replaced `StringCache(HashMap<ChunkOffset, BinXmlName>)` with an **offset-indexed table** to eliminate per-name hashing
+    in `expand_string_ref`-style lookups.
+    - **Where**: `src/string_cache.rs`
+  - `TemplateCache` now stores a **compiled template program** (`CompiledTemplateOp`) and **precomputed substitution use-counts**,
+    so expanding a `TemplateInstance` no longer scans template tokens twice to count substitution references.
+    - **Where**: `src/template_cache.rs`, used by `src/binxml/assemble.rs` `parse_tokens_streaming_json`
+  - Introduced a JSON-only streaming assembler that:
+    - expands templates using the compiled ops,
+    - collects attributes as `(name_offset, BinXmlValue)` (no `XmlElementBuilder` / `Vec<XmlAttribute>`),
+    - calls new offset-based JSON visitor hooks (`visit_open_start_element_offsets` / `visit_close_element_offset`).
+    - **Where**: `src/binxml/assemble.rs` (`parse_tokens_streaming_json`)
+  - `EvtxRecord::{into_json_stream, write_json_stream}` now use this new JSON streaming path.
+    - **Where**: `src/evtx_record.rs`
+- **Benchmarks (omer-pc, W1, `-t 1`, output suppressed)**:
+  - **pre-H2** (Rust only): median **532.4 ms** (from `target/perf/rust_vs_zig_omerpc_20251227_172444/hyperfine_rust_vs_zig_t1.json`)
+  - **H2**: median **428.6 ms** (from `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/hyperfine_rust_vs_zig_t1.json`)
+  - **speedup**: **1.24×** (≈ **19.5%** lower median wall time)
+  - **Zig baseline** (same run): median **256.2 ms** → Zig still **~1.67× faster** than Rust after H2
+- **Profile delta (omer-pc, samply, 200 iterations, W1)**:
+  - **Gone from the top**: `evtx::binxml::assemble::stream_expand_token_ref` and `core::hash::BuildHasher::hash_one`
+    (the old “template streaming + HashMap string cache hashing” hotspot).
+  - **New top leafs (Rust, H2)**:
+    - `evtx::binxml::tokens::read_template_cursor` (~9.9% leaf) — substitution value parsing
+    - `JsonStreamOutput::visit_open_start_element_offsets` (~5.0% leaf) — offset-based open hook
+    - `Asm::expand_template` (~5.0% leaf) — compiled-template expansion driver
+    - `BinXmlValue::clone` (~4.5% leaf) — mostly cloning borrowed template values when buffering attrs
+  - **Artifacts**:
+    - `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/samply_rust_t1.profile.json.gz` + `.syms.json`
+    - `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/top_leaves_rust_cpu.md`
+    - `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/top_inclusive_rust_cpu.md`
+    - `target/perf/rust_vs_zig_omerpc_h2_20251227_182359/leaf_callers_rust.md`
+- **Correctness check**: `cargo test --features fast-alloc --locked --offline` (incl. full streaming parity suites)
 
 ---
 

@@ -1,10 +1,12 @@
 use crate::ParserSettings;
+use crate::{ChunkOffset, EvtxChunk};
 use crate::err::{SerializationError, SerializationResult};
 use crate::xml_output::BinXmlOutput;
 
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
+use crate::utils::ByteCursor;
 use chrono::{Datelike, Timelike};
 use lasso::{Rodeo, Spur};
 use quick_xml::events::BytesText;
@@ -16,6 +18,11 @@ use std::io::Write;
 ///
 /// We keep this small so duplicate-key tracking stays in L1 and avoids hashing.
 const MAX_UNIQUE_NAMES: usize = 64;
+
+/// Size of the string table link header in the chunk string table.
+///
+/// This is used as a fallback when a name offset is not in `StringCache` (rare).
+const BINXML_NAME_LINK_SIZE: u32 = 6;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 struct KeyId(Spur);
@@ -228,6 +235,16 @@ pub struct JsonStreamOutput<W: Write> {
 
     /// Interned key strings to avoid per-record/per-key heap churn.
     key_interner: KeyInterner,
+    /// Pre-interned keys for common tag names, to avoid string compares in hot paths.
+    key_data_tag: KeyId,
+    key_event_data_tag: KeyId,
+
+    /// Per-chunk cache: map BinXML name offsets -> interned key IDs.
+    ///
+    /// This avoids hashing (`Rodeo::get_or_intern`) on every element/attribute name that comes
+    /// from the chunk string table. We reset this table when the chunk changes.
+    name_offset_key_cache_chunk_ptr: usize,
+    name_offset_key_cache: Vec<Option<KeyId>>,
 
     /// Optional depth (in `elements`) of an `EventData` element that owns a
     /// synthetic `"Data": { "#text": [...] }` aggregator, used to model
@@ -243,6 +260,10 @@ pub struct JsonStreamOutput<W: Write> {
 
 impl<W: Write> JsonStreamOutput<W> {
     pub fn with_writer(writer: W, settings: &ParserSettings) -> Self {
+        let mut key_interner = KeyInterner::default();
+        let key_data_tag = key_interner.intern("Data");
+        let key_event_data_tag = key_interner.intern("EventData");
+
         JsonStreamOutput {
             writer: Some(writer),
             indent: settings.should_indent(),
@@ -250,7 +271,11 @@ impl<W: Write> JsonStreamOutput<W> {
             frames: Vec::new(),
             elements: Vec::new(),
             recycled_frames: Vec::new(),
-            key_interner: KeyInterner::default(),
+            key_interner,
+            key_data_tag,
+            key_event_data_tag,
+            name_offset_key_cache_chunk_ptr: 0,
+            name_offset_key_cache: Vec::new(),
             data_owner_depth: None,
             data_values: BufferedValues::default(),
             data_inside_element: false,
@@ -296,6 +321,94 @@ impl<W: Write> JsonStreamOutput<W> {
         self.writer_mut()
             .write_all(bytes)
             .map_err(SerializationError::from)
+    }
+
+    #[inline]
+    fn reset_name_offset_key_cache_for_chunk<'a>(&mut self, chunk: &'a EvtxChunk<'a>) {
+        let ptr = chunk.data.as_ptr() as usize;
+        if self.name_offset_key_cache_chunk_ptr == ptr {
+            return;
+        }
+
+        self.name_offset_key_cache_chunk_ptr = ptr;
+
+        let needed = chunk.data.len().saturating_add(1);
+        if self.name_offset_key_cache.len() != needed {
+            self.name_offset_key_cache = vec![None; needed];
+        } else {
+            self.name_offset_key_cache.fill(None);
+        }
+    }
+
+    #[inline]
+    fn key_for_name_offset<'a>(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        offset: ChunkOffset,
+    ) -> SerializationResult<KeyId> {
+        self.reset_name_offset_key_cache_for_chunk(chunk);
+
+        let idx = offset as usize;
+        let Some(slot) = self.name_offset_key_cache.get_mut(idx) else {
+            return Err(SerializationError::JsonStructureError {
+                message: format!(
+                    "name offset out of bounds (offset={offset}, chunk_len={})",
+                    chunk.data.len()
+                ),
+            });
+        };
+
+        if let Some(k) = *slot {
+            return Ok(k);
+        }
+
+        let key = if let Some(name) = chunk.string_cache.get_cached_string(offset) {
+            self.key_interner.intern(name.as_str())
+        } else {
+            // Rare fallback: parse the string table entry at this offset directly.
+            let name_off = offset.checked_add(BINXML_NAME_LINK_SIZE).ok_or_else(|| {
+                SerializationError::JsonStructureError {
+                    message: "string table offset overflow".to_string(),
+                }
+            })?;
+
+            let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize).map_err(|e| {
+                SerializationError::JsonStructureError {
+                    message: e.to_string(),
+                }
+            })?;
+            let name = BinXmlName::from_cursor(&mut cursor).map_err(|e| {
+                SerializationError::JsonStructureError {
+                    message: e.to_string(),
+                }
+            })?;
+            self.key_interner.intern(name.as_str())
+        };
+
+        *slot = Some(key);
+        Ok(key)
+    }
+
+    #[inline]
+    fn parse_string_table_name_at_offset<'a>(
+        &self,
+        chunk: &'a EvtxChunk<'a>,
+        offset: ChunkOffset,
+    ) -> SerializationResult<BinXmlName> {
+        let name_off = offset.checked_add(BINXML_NAME_LINK_SIZE).ok_or_else(|| {
+            SerializationError::JsonStructureError {
+                message: "string table offset overflow".to_string(),
+            }
+        })?;
+
+        let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize).map_err(|e| {
+            SerializationError::JsonStructureError {
+                message: e.to_string(),
+            }
+        })?;
+        BinXmlName::from_cursor(&mut cursor).map_err(|e| SerializationError::JsonStructureError {
+            message: e.to_string(),
+        })
     }
 
     /// Write a JSON string directly without escaping.
@@ -864,6 +977,330 @@ impl<W: Write> JsonStreamOutput<W> {
         // Reset aggregator state.
         self.data_owner_depth = None;
         self.data_inside_element = false;
+        Ok(())
+    }
+
+    /// Fast-path entry point: open an element from BinXML name offsets + attribute values.
+    ///
+    /// This avoids:
+    /// - building `XmlElementBuilder` / `XmlElement`,
+    /// - hashing name offsets in `StringCache` (now indexed), and
+    /// - hashing element names in `lasso` on every use (via `name_offset_key_cache`).
+    pub(crate) fn visit_open_start_element_offsets<'a>(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        tag_name_offset: ChunkOffset,
+        attributes: &[(ChunkOffset, BinXmlValue<'a>)],
+    ) -> SerializationResult<()> {
+        // If we're nested under an element without attributes, and this is the
+        // first child element, we must represent the parent as an object.
+        self.ensure_parent_is_object()?;
+
+        // Tag name -> key id, cached per chunk.
+        let tag_key = self.key_for_name_offset(chunk, tag_name_offset)?;
+        let is_data = tag_key == self.key_data_tag;
+
+        // Special handling for `<Data>` nodes: they use their "Name" attribute
+        // as the JSON key when present, and ignore attributes entirely.
+        let mut data_name_attr_value: Option<Cow<'_, str>> = None;
+        if is_data {
+            for (attr_name_offset, attr_value) in attributes {
+                let is_name_attr = if let Some(n) = chunk.string_cache.get_cached_string(*attr_name_offset) {
+                    n.as_str() == "Name"
+                } else {
+                    let parsed = self.parse_string_table_name_at_offset(chunk, *attr_name_offset)?;
+                    parsed.as_str() == "Name"
+                };
+
+                if is_name_attr {
+                    data_name_attr_value = Some(attr_value.as_cow_str());
+                    break;
+                }
+            }
+        }
+
+        let key = if let Some(v) = data_name_attr_value.as_ref() {
+            self.key_interner.intern(v.as_ref())
+        } else {
+            tag_key
+        };
+
+        // Aggregated `<EventData><Data>...</Data>...</EventData>` case:
+        // multiple `<Data>` children without a `Name` attribute become a single
+        // `"Data": { "#text": [ ... ] }` object under their `EventData` parent.
+        if is_data
+            && data_name_attr_value.is_none()
+            && let Some(parent) = self.elements.last()
+            && parent.name == self.key_event_data_tag
+        {
+            // Depth of the owning `EventData` element.
+            let owner_depth = self.elements.len();
+
+            // Initialize a new aggregator for this `EventData`, if needed.
+            if self.data_owner_depth != Some(owner_depth) {
+                self.data_owner_depth = Some(owner_depth);
+                self.data_values = BufferedValues::default();
+            }
+
+            // We're now inside a `<Data>` element that contributes to the aggregated array.
+            self.data_inside_element = true;
+            return Ok(());
+        }
+
+        // In the JSON representation, `<Data Name="...">` behaves like a regular node without
+        // attributes. Attributes whose JSON value is `null` are ignored.
+        let mut has_json_attributes = false;
+        if !is_data {
+            for (_, v) in attributes {
+                if !matches!(v, BinXmlValue::NullType) {
+                    has_json_attributes = true;
+                    break;
+                }
+            }
+        }
+
+        // Elements with attributes and `separate_json_attributes == false` are
+        // materialized as objects with a `#attributes` field.
+        if has_json_attributes && !self.separate_json_attributes {
+            // `"key": { "#attributes": { ... } }`
+            self.start_object_value_id(key)?;
+
+            // Write `#attributes` object.
+            {
+                let first_field = {
+                    let frame = self.current_frame_mut();
+                    let first = frame.first_field;
+                    if first {
+                        frame.first_field = false;
+                    }
+                    first
+                };
+                if !first_field {
+                    self.write_bytes(b",")?;
+                }
+                // "#attributes" is a fixed ASCII key, no escaping needed
+                self.write_bytes(b"\"#attributes\":")?;
+
+                // Start attributes object.
+                self.write_bytes(b"{")?;
+                self.push_object_frame(0);
+
+                {
+                    for (attr_name_offset, attr_value) in attributes {
+                        if matches!(attr_value, BinXmlValue::NullType) {
+                            continue;
+                        }
+
+                        let is_first = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !is_first {
+                            self.write_bytes(b",")?;
+                        }
+
+                        // Attribute names are XML NCName, no escaping needed
+                        if let Some(n) = chunk.string_cache.get_cached_string(*attr_name_offset) {
+                            self.write_json_string_ncname(n.as_str())?;
+                        } else {
+                            let parsed =
+                                self.parse_string_table_name_at_offset(chunk, *attr_name_offset)?;
+                            self.write_json_string_ncname(parsed.as_str())?;
+                        }
+                        self.write_bytes(b":")?;
+                        self.write_binxml_value(attr_value)?;
+                    }
+                }
+
+                // Close `#attributes` object.
+                self.end_object()?;
+            }
+
+            self.elements.push(ElementState {
+                name: key,
+                kind: ElementValueKind::Object,
+                has_text: false,
+                has_separate_attributes: false,
+                buffered_values: BufferedValues::default(),
+            });
+        } else {
+            // `separate_json_attributes == true` or element has no attributes.
+            let wrote_separate_attrs = has_json_attributes && self.separate_json_attributes;
+
+            // If we're writing `_attributes`, pre-reserve the element key so both
+            // the `_attributes` and the element itself use matching suffixes.
+            let element_key = if wrote_separate_attrs {
+                let unique_key = self.reserve_unique_key(key);
+
+                // Emit `"<unique_key>_attributes": { ... }` into the parent object.
+                let attr_key = {
+                    let s = self.key_interner.resolve(unique_key);
+                    format!("{}_attributes", s)
+                };
+                self.write_reserved_key(&attr_key)?;
+                self.write_bytes(b"{")?;
+                self.push_object_frame(0);
+
+                {
+                    for (attr_name_offset, attr_value) in attributes {
+                        if matches!(attr_value, BinXmlValue::NullType) {
+                            continue;
+                        }
+
+                        let is_first = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !is_first {
+                            self.write_bytes(b",")?;
+                        }
+
+                        // Attribute names are XML NCName, no escaping needed
+                        if let Some(n) = chunk.string_cache.get_cached_string(*attr_name_offset) {
+                            self.write_json_string_ncname(n.as_str())?;
+                        } else {
+                            let parsed =
+                                self.parse_string_table_name_at_offset(chunk, *attr_name_offset)?;
+                            self.write_json_string_ncname(parsed.as_str())?;
+                        }
+                        self.write_bytes(b":")?;
+                        self.write_binxml_value(attr_value)?;
+                    }
+                }
+
+                self.end_object()?;
+                unique_key
+            } else {
+                // No attributes to write - use original key (will be deduped on write).
+                key
+            };
+
+            // We delay emitting the actual `"key": ...` until we see either
+            // a character node or a child element, so we can decide whether
+            // this element is a scalar, an object, or `null`.
+            self.elements.push(ElementState {
+                name: element_key,
+                kind: ElementValueKind::Pending,
+                has_text: false,
+                has_separate_attributes: wrote_separate_attrs,
+                buffered_values: BufferedValues::default(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Fast-path entry point: close the current element, using the tag name offset to handle
+    /// aggregated `<Data>` special casing.
+    pub(crate) fn visit_close_element_offset<'a>(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        tag_name_offset: ChunkOffset,
+    ) -> SerializationResult<()> {
+        // Closing an aggregated `<Data>` node: we only need to mark that we are no longer inside
+        // a contributing `<Data>`; the owning `EventData` element remains on the stack.
+        if self.data_owner_depth.is_some() && self.data_inside_element {
+            let tag_key = self.key_for_name_offset(chunk, tag_name_offset)?;
+            if tag_key == self.key_data_tag {
+                self.data_inside_element = false;
+                return Ok(());
+            }
+        }
+
+        let current_depth = self.elements.len();
+        let is_data_owner = self.data_owner_depth == Some(current_depth);
+
+        if let Some(elem) = self.elements.pop() {
+            if is_data_owner {
+                // Finalize the aggregated `"Data": { "#text": [...] }` object.
+                self.finalize_data_aggregator()?;
+            }
+
+            match elem.kind {
+                ElementValueKind::Pending => {
+                    // No text and no children – render as `null`, unless we already emitted
+                    // `<name>_attributes` separately (legacy omits the null).
+                    if !elem.has_separate_attributes {
+                        self.write_key_id(elem.name)?;
+                        self.write_bytes(b"null")?;
+                    }
+                }
+                ElementValueKind::Scalar => {
+                    // Write the buffered scalar value(s) now.
+                    if !elem.buffered_values.is_empty() {
+                        if elem.has_separate_attributes {
+                            self.write_reserved_key_id(elem.name)?;
+                        } else {
+                            self.write_key_id(elem.name)?;
+                        }
+                        match elem.buffered_values {
+                            BufferedValues::Empty => {}
+                            BufferedValues::One(v) => {
+                                serde_json::to_writer(self.writer_mut(), &v)
+                                    .map_err(SerializationError::from)?;
+                            }
+                            BufferedValues::Many(vs) => {
+                                let mut concat = String::new();
+                                for v in &vs {
+                                    match v {
+                                        JsonValue::String(s) => concat.push_str(s),
+                                        JsonValue::Number(n) => concat.push_str(&n.to_string()),
+                                        JsonValue::Bool(b) => {
+                                            concat.push_str(if *b { "true" } else { "false" })
+                                        }
+                                        JsonValue::Null => concat.push_str("null"),
+                                        _ => concat.push_str(&v.to_string()),
+                                    }
+                                }
+                                self.write_json_string_escaped(&concat)?;
+                            }
+                        }
+                    }
+                }
+                ElementValueKind::Object => {
+                    // Write buffered #text values if any, then close the object.
+                    // In separate_json_attributes mode, elements with child elements drop text
+                    // content (legacy behavior - no #text field).
+                    if !elem.buffered_values.is_empty() && !self.separate_json_attributes {
+                        let is_first = {
+                            let frame = self.current_frame_mut();
+                            let first = frame.first_field;
+                            if first {
+                                frame.first_field = false;
+                            }
+                            first
+                        };
+                        if !is_first {
+                            self.write_bytes(b",")?;
+                        }
+                        // "#text" is a fixed ASCII key, no escaping needed
+                        self.write_bytes(b"\"#text\":")?;
+
+                        match elem.buffered_values {
+                            BufferedValues::Empty => {}
+                            BufferedValues::One(v) => {
+                                serde_json::to_writer(self.writer_mut(), &v)
+                                    .map_err(SerializationError::from)?;
+                            }
+                            BufferedValues::Many(vs) => {
+                                serde_json::to_writer(self.writer_mut(), &vs)
+                                    .map_err(SerializationError::from)?;
+                            }
+                        }
+                    }
+                    self.end_object()?;
+                }
+            }
+        }
+
         Ok(())
     }
 
