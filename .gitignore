@@ -26,3 +26,6 @@ samples_local/
 # Local vendor checkouts (for format research / patching upstream).
 external/
 profile_results/*
+
+# Local scratch space (worktrees, ablation builds, etc).
+tmp/

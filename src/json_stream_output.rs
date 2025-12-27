@@ -136,6 +136,10 @@ impl<W: Write> JsonStreamOutput<W> {
     /// characters that need JSON escaping (no quotes, backslashes, control chars).
     #[inline]
     fn write_json_string_ncname(&mut self, s: &str) -> SerializationResult<()> {
+        if cfg!(feature = "perf_ablate_serde_json_strings") {
+            serde_json::to_writer(self.writer_mut(), s).map_err(SerializationError::from)?;
+            return Ok(());
+        }
         self.write_bytes(b"\"")?;
         self.write_bytes(s.as_bytes())?;
         self.write_bytes(b"\"")
@@ -144,6 +148,10 @@ impl<W: Write> JsonStreamOutput<W> {
     /// Write a JSON string with proper escaping for special characters.
     /// Uses a fast path for strings that don't need escaping.
     fn write_json_string_escaped(&mut self, s: &str) -> SerializationResult<()> {
+        if cfg!(feature = "perf_ablate_serde_json_strings") {
+            serde_json::to_writer(self.writer_mut(), s).map_err(SerializationError::from)?;
+            return Ok(());
+        }
         // Fast path: check if escaping is needed
         let needs_escape = s
             .bytes()
@@ -179,6 +187,13 @@ impl<W: Write> JsonStreamOutput<W> {
     /// Write a BinXmlValue directly to JSON output without creating intermediate JsonValue.
     /// This is the zero-allocation path for value serialization.
     fn write_binxml_value(&mut self, value: &BinXmlValue) -> SerializationResult<()> {
+        if cfg!(feature = "perf_ablate_serde_json_values") {
+            let json_value: JsonValue = JsonValue::from(value);
+            serde_json::to_writer(self.writer_mut(), &json_value)
+                .map_err(SerializationError::from)?;
+            return Ok(());
+        }
+
         match value {
             BinXmlValue::NullType => self.write_bytes(b"null"),
             BinXmlValue::StringType(s) => self.write_json_string_escaped(s.as_str()),
@@ -240,6 +255,10 @@ impl<W: Write> JsonStreamOutput<W> {
                 self.write_bytes(buf.format(*n).as_bytes())
             }
             BinXmlValue::FileTimeType(dt) | BinXmlValue::SysTimeType(dt) => {
+                if cfg!(feature = "perf_ablate_chrono_datetime_format") {
+                    let s = dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+                    return self.write_json_string_escaped(&s);
+                }
                 // Fast ISO-8601 with microseconds (avoids strftime parser overhead):
                 // YYYY-MM-DDTHH:MM:SS.ffffffZ
                 write!(

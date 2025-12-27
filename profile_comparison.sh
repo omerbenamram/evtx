@@ -2,6 +2,9 @@
 #
 # profile_comparison.sh - Compare Rust vs Zig EVTX parser performance
 #
+# See PERF.md for the hypothesis-driven workflow (before/after binaries, hyperfine JSON,
+# samply profiles) and how to interpret allocator churn vs the Zig implementation.
+#
 # Usage:
 #   ./profile_comparison.sh                    # Build + benchmark (no profiling)
 #   ./profile_comparison.sh --bench-only       # Skip builds, just benchmark

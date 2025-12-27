@@ -767,6 +767,14 @@ pub fn parse_tokens_streaming<'a, T: BinXmlOutput>(
     let mut element_stack: Vec<XmlElement<'a>> = Vec::new();
     let mut current_element: Option<XmlElementBuilder<'a>> = None;
     let mut current_pi: Option<XmlPIBuilder<'a>> = None;
+
+    // Ablation: pre-expand templates (older approach) to measure clone/alloc overhead.
+    let tokens = if cfg!(feature = "perf_ablate_preexpand_templates") {
+        expand_templates(tokens, chunk)?
+    } else {
+        tokens
+    };
+
     for token in tokens {
         stream_expand_token(
             token,
