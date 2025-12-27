@@ -6,17 +6,21 @@ use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::xml::{BinXmlPI, XmlElement};
 use chrono::{Datelike, Timelike};
-use hashbrown::HashSet;
+use hashbrown::DefaultHashBuilder;
+use hashbrown::HashMap;
 use quick_xml::events::BytesText;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
+use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
-use std::sync::Arc;
 
 /// Zig-style fixed table size for duplicate-key tracking (see `PERF.md` H1).
 ///
 /// We keep this small so duplicate-key tracking stays in L1 and avoids hashing.
 const MAX_UNIQUE_NAMES: usize = 64;
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct KeyId(u32);
 
 /// Represents how the current XML element is being rendered in JSON.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -34,7 +38,7 @@ enum ElementValueKind {
 #[derive(Debug)]
 struct ElementState {
     /// JSON key for this element in its parent object.
-    name: Arc<str>,
+    name: KeyId,
     /// How this element's JSON value is currently represented.
     kind: ElementValueKind,
     /// Whether we've already emitted a `#text` field for this element (when `kind == Object`).
@@ -57,7 +61,7 @@ struct ObjectFrame {
 
 #[derive(Debug, Copy, Clone)]
 struct NameCountEntry {
-    base_ptr: *const str,
+    base: KeyId,
     next_suffix: u32,
 }
 
@@ -68,7 +72,7 @@ struct NameCountEntry {
 #[derive(Debug)]
 struct UniqueKeyTable {
     /// All keys that have been emitted (including suffixed forms).
-    used: Vec<Arc<str>>,
+    used: Vec<KeyId>,
     /// Per-base counters to generate `base_1`, `base_2`, ... without rescanning from 1.
     base_counts: Vec<NameCountEntry>,
 }
@@ -95,10 +99,10 @@ impl UniqueKeyTable {
     }
 
     #[inline]
-    fn contains_ptr(&self, ptr: *const str) -> bool {
+    fn contains(&self, key: KeyId) -> bool {
         // Manual loop tends to compile smaller/faster than iterator combinators here.
-        for k in &self.used {
-            if std::ptr::addr_eq(Arc::as_ptr(k), ptr) {
+        for &k in &self.used {
+            if k == key {
                 return true;
             }
         }
@@ -106,43 +110,41 @@ impl UniqueKeyTable {
     }
 
     #[inline]
-    fn base_entry_index(&self, base_ptr: *const str) -> Option<usize> {
+    fn base_entry_index(&self, base: KeyId) -> Option<usize> {
         for (i, e) in self.base_counts.iter().enumerate() {
-            if std::ptr::addr_eq(e.base_ptr, base_ptr) {
+            if e.base == base {
                 return Some(i);
             }
         }
         None
     }
 
-    fn reserve_unique_index(&mut self, base: Arc<str>, interner: &mut KeyInterner) -> usize {
-        let base_ptr = Arc::as_ptr(&base);
-
+    fn reserve_unique(&mut self, base: KeyId, interner: &mut KeyInterner) -> KeyId {
         // Fast path: first time we see this base key in this object.
-        if !self.contains_ptr(base_ptr) {
-            let idx = self.used.len();
+        if !self.contains(base) {
             self.used.push(base);
             self.base_counts.push(NameCountEntry {
-                base_ptr,
+                base,
                 next_suffix: 1,
             });
-            return idx;
+            return base;
         }
 
         // Duplicate base key: generate the next suffix, skipping any collisions with existing keys.
-        let entry_idx = self.base_entry_index(base_ptr);
+        let entry_idx = self.base_entry_index(base);
         let mut suffix = entry_idx
             .map(|i| self.base_counts[i].next_suffix)
             .unwrap_or(1);
 
         loop {
-            let candidate_str = format!("{}_{}", base.as_ref(), suffix);
+            let candidate_str = {
+                let base_str = interner.resolve(base);
+                format!("{}_{}", base_str, suffix)
+            };
             let candidate = interner.intern(&candidate_str);
-            let candidate_ptr = Arc::as_ptr(&candidate);
             suffix = suffix.saturating_add(1);
 
-            if !self.contains_ptr(candidate_ptr) {
-                let idx = self.used.len();
+            if !self.contains(candidate) {
                 self.used.push(candidate);
 
                 if let Some(i) = entry_idx {
@@ -150,12 +152,12 @@ impl UniqueKeyTable {
                 } else {
                     // Rare: base key was present but we didn't have a counter entry yet.
                     self.base_counts.push(NameCountEntry {
-                        base_ptr,
+                        base,
                         next_suffix: suffix,
                     });
                 }
 
-                return idx;
+                return candidate;
             }
         }
     }
@@ -196,19 +198,39 @@ impl BufferedValues {
 
 #[derive(Debug, Default)]
 struct KeyInterner {
-    keys: HashSet<Arc<str>>,
+    hasher: DefaultHashBuilder,
+    buckets: HashMap<u64, Vec<KeyId>>,
+    strings: Vec<Box<str>>,
 }
 
 impl KeyInterner {
     #[inline]
-    fn intern(&mut self, s: &str) -> Arc<str> {
-        if let Some(existing) = self.keys.get(s) {
-            return existing.clone();
+    fn hash_str(&self, s: &str) -> u64 {
+        let mut h = self.hasher.build_hasher();
+        h.write(s.as_bytes());
+        h.finish()
+    }
+
+    #[inline]
+    fn intern(&mut self, s: &str) -> KeyId {
+        let hash = self.hash_str(s);
+        if let Some(ids) = self.buckets.get(&hash) {
+            for &id in ids {
+                if self.resolve(id) == s {
+                    return id;
+                }
+            }
         }
 
-        let arc: Arc<str> = Arc::from(s);
-        self.keys.insert(arc.clone());
-        arc
+        let id = KeyId(self.strings.len() as u32);
+        self.strings.push(s.into());
+        self.buckets.entry(hash).or_default().push(id);
+        id
+    }
+
+    #[inline]
+    fn resolve(&self, id: KeyId) -> &str {
+        &self.strings[id.0 as usize]
     }
 }
 
@@ -620,60 +642,61 @@ impl<W: Write> JsonStreamOutput<W> {
     /// Reserve a unique key in the current frame from an already-interned key.
     /// This avoids hashing the same key again on hot paths.
     #[inline]
-    fn reserve_unique_key_arc(&mut self, key: Arc<str>) -> Arc<str> {
+    fn reserve_unique_key(&mut self, key: KeyId) -> KeyId {
         let frame = self
             .frames
             .last_mut()
             .expect("no current JSON object frame");
-        let idx = frame
-            .used_keys
-            .reserve_unique_index(key, &mut self.key_interner);
-        frame.used_keys.used[idx].clone()
+        frame.used_keys.reserve_unique(key, &mut self.key_interner)
     }
 
     /// Write a JSON string key (with surrounding quotes and escaping).
     /// Write a JSON string key, handling duplicates by appending `_1`, `_2`, etc.
     fn write_key(&mut self, key: &str) -> SerializationResult<()> {
         let key = self.key_interner.intern(key);
-        self.write_key_arc(key)
+        self.write_key_id(key)
     }
 
     #[inline]
-    fn write_key_arc(&mut self, key: Arc<str>) -> SerializationResult<()> {
+    fn write_key_id(&mut self, key: KeyId) -> SerializationResult<()> {
         self.write_comma_if_needed()?;
 
-        let base_ptr = Arc::as_ptr(&key);
-
-        // Fast path: unique key (common case) — write from `key` without cloning,
-        // then record it in the current frame.
-        let already_used = self
-            .frames
-            .last()
-            .expect("no current JSON object frame")
-            .used_keys
-            .contains_ptr(base_ptr);
-
-        if !already_used {
-            // Keys derived from XML NCName don't need escaping
-            self.write_json_string_ncname(key.as_ref())?;
-            self.write_bytes(b":")?;
-
-            let (frames, key_interner) = (&mut self.frames, &mut self.key_interner);
-            let frame = frames.last_mut().expect("no current JSON object frame");
-            let _ = frame.used_keys.reserve_unique_index(key, key_interner);
-            return Ok(());
-        }
-
-        // Duplicate key: reserve the next available suffixed form, then write it.
-        let unique_key: Arc<str> = {
-            let (frames, key_interner) = (&mut self.frames, &mut self.key_interner);
-            let frame = frames.last_mut().expect("no current JSON object frame");
-            let idx = frame.used_keys.reserve_unique_index(key, key_interner);
-            frame.used_keys.used[idx].clone()
+        let unique_key = {
+            let frame = self
+                .frames
+                .last_mut()
+                .expect("no current JSON object frame");
+            frame.used_keys.reserve_unique(key, &mut self.key_interner)
         };
 
-        self.write_json_string_ncname(unique_key.as_ref())?;
-        self.write_bytes(b":")
+        // Keys derived from XML NCName don't need escaping.
+        let key_str = self.key_interner.resolve(unique_key);
+        let writer = self
+            .writer
+            .as_mut()
+            .expect("JsonStreamOutput writer missing");
+        writer.write_all(b"\"").map_err(SerializationError::from)?;
+        writer
+            .write_all(key_str.as_bytes())
+            .map_err(SerializationError::from)?;
+        writer.write_all(b"\":").map_err(SerializationError::from)
+    }
+
+    #[inline]
+    fn write_reserved_key_id(&mut self, key: KeyId) -> SerializationResult<()> {
+        self.write_comma_if_needed()?;
+
+        // Keys derived from XML NCName don't need escaping.
+        let key_str = self.key_interner.resolve(key);
+        let writer = self
+            .writer
+            .as_mut()
+            .expect("JsonStreamOutput writer missing");
+        writer.write_all(b"\"").map_err(SerializationError::from)?;
+        writer
+            .write_all(key_str.as_bytes())
+            .map_err(SerializationError::from)?;
+        writer.write_all(b"\":").map_err(SerializationError::from)
     }
 
     /// Write a pre-reserved key directly (no duplicate checking needed).
@@ -687,12 +710,12 @@ impl<W: Write> JsonStreamOutput<W> {
     /// Start a new nested JSON object as the value of `key` in the current object.
     fn start_object_value(&mut self, key: &str) -> SerializationResult<()> {
         let key = self.key_interner.intern(key);
-        self.start_object_value_arc(key)
+        self.start_object_value_id(key)
     }
 
     #[inline]
-    fn start_object_value_arc(&mut self, key: Arc<str>) -> SerializationResult<()> {
-        self.write_key_arc(key)?;
+    fn start_object_value_id(&mut self, key: KeyId) -> SerializationResult<()> {
+        self.write_key_id(key)?;
         self.write_bytes(b"{")?;
         // Heuristic: nested objects tend to have a moderate number of keys.
         self.push_object_frame(32);
@@ -719,15 +742,15 @@ impl<W: Write> JsonStreamOutput<W> {
             ElementValueKind::Pending => {
                 // Turn `"parent": null` into `"parent": { ... }` by starting an
                 // object value for it now.
-                let key = self.elements[parent_index].name.clone();
+                let key = self.elements[parent_index].name;
                 let was_reserved = self.elements[parent_index].has_separate_attributes;
 
                 // If the key was pre-reserved (separate_json_attributes mode), use
                 // write_reserved_key to avoid double-reservation.
                 if was_reserved {
-                    self.write_reserved_key(key.as_ref())?;
+                    self.write_reserved_key_id(key)?;
                 } else {
-                    self.write_key_arc(key)?;
+                    self.write_key_id(key)?;
                 }
                 self.write_bytes(b"{")?;
                 self.push_object_frame(32);
@@ -737,14 +760,14 @@ impl<W: Write> JsonStreamOutput<W> {
             ElementValueKind::Scalar => {
                 // Element had text content but now has child elements too.
                 // Turn it into an object and move buffered text to #text field.
-                let key = self.elements[parent_index].name.clone();
+                let key = self.elements[parent_index].name;
                 let was_reserved = self.elements[parent_index].has_separate_attributes;
                 let buffered = std::mem::take(&mut self.elements[parent_index].buffered_values);
 
                 if was_reserved {
-                    self.write_reserved_key(key.as_ref())?;
+                    self.write_reserved_key_id(key)?;
                 } else {
-                    self.write_key_arc(key)?;
+                    self.write_key_id(key)?;
                 }
                 self.write_bytes(b"{")?;
                 self.push_object_frame(32);
@@ -1005,7 +1028,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         if is_data
             && data_name_attr.is_none()
             && let Some(parent) = self.elements.last()
-            && parent.name.as_ref() == "EventData"
+            && self.key_interner.resolve(parent.name) == "EventData"
         {
             // Depth of the owning `EventData` element.
             let owner_depth = self.elements.len();
@@ -1042,7 +1065,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
         // materialized as objects with a `#attributes` field.
         if has_json_attributes && !self.separate_json_attributes {
             // `"key": { "#attributes": { ... } }`
-            self.start_object_value_arc(key.clone())?;
+            self.start_object_value_id(key)?;
 
             // Write `#attributes` object.
             {
@@ -1114,10 +1137,13 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             // If we're writing `_attributes`, pre-reserve the element key so both
             // the `_attributes` and the element itself use matching suffixes.
             let element_key = if wrote_separate_attrs {
-                let unique_key = self.reserve_unique_key_arc(key);
+                let unique_key = self.reserve_unique_key(key);
 
                 // Emit `"<unique_key>_attributes": { ... }` into the parent object.
-                let attr_key = format!("{}_attributes", unique_key.as_ref());
+                let attr_key = {
+                    let s = self.key_interner.resolve(unique_key);
+                    format!("{}_attributes", s)
+                };
                 self.write_reserved_key(&attr_key)?;
                 self.write_bytes(b"{")?;
                 self.push_object_frame(0);
@@ -1194,7 +1220,7 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     // No text and no children – render as `null`, unless we already
                     // emitted `<name>_attributes` separately (legacy omits the null).
                     if !elem.has_separate_attributes {
-                        self.write_key_arc(elem.name)?;
+                        self.write_key_id(elem.name)?;
                         self.write_bytes(b"null")?;
                     }
                 }
@@ -1203,9 +1229,9 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
                     if !elem.buffered_values.is_empty() {
                         // If key was pre-reserved (separate_json_attributes mode), use reserved writer.
                         if elem.has_separate_attributes {
-                            self.write_reserved_key(elem.name.as_ref())?;
+                            self.write_reserved_key_id(elem.name)?;
                         } else {
-                            self.write_key_arc(elem.name)?;
+                            self.write_key_id(elem.name)?;
                         }
                         match elem.buffered_values {
                             BufferedValues::Empty => {}
