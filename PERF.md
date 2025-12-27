@@ -440,8 +440,46 @@ hyperfine --warmup 3 --runs 25 \
     - `target/perf/samply/h1_before.profile.json.gz` + `target/perf/samply/h1_before.profile.json.syms.json`
     - `target/perf/samply/h1_after.profile.json.gz` + `target/perf/samply/h1_after.profile.json.syms.json`
 - **Correctness check**: `cargo test --features fast-alloc --locked`
-- **Notes**: This improves allocator/memmove hotspots, but did **not** hit the original H1 ≥8% target on `omer-pc`; remaining
-  overhead is visible in hashing/memcmp-heavy leaf frames (candidate: Zig-style fixed-table duplicate-key tracking).
+- **Notes**: This was a partial step; the follow-up “Zig-style duplicate-key tracking” below removes hash/memcmp hotspots and
+  crosses the original H1 ≥8% target on `omer-pc`.
+
+### H1 (finish) — Zig-style duplicate-key tracking (fixed table + pointer fast-path)
+- **What changed**:
+  - Replaced per-object `HashSet` duplicate-key tracking with a Zig-style fixed table (`MAX_UNIQUE_NAMES = 64`) + per-base suffix counters
+    in `JsonStreamOutput` (`UniqueKeyTable`).
+  - Membership checks use pointer-address comparisons (no string hashing on the hot path); suffixed keys (`_1`, `_2`, …) are only
+    allocated on collision.
+- **Benchmarks (omer-pc, quiet-gated, W1)**:
+  - **before**: median **606.7 ms**
+  - **after**: median **554.1 ms**
+  - **speedup**: **1.095×** (≈ **8.7%** lower median)
+  - **Command (omer-pc)**:
+
+```bash
+BASE=/tmp/evtx-h1-bench
+SAMPLE=$BASE/before/samples/security_big_sample.evtx
+
+QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8 $BASE/after/scripts/ensure_quiet.sh
+hyperfine --warmup 3 --runs 25 \
+  --export-json $BASE/h1-zigkeys-before-vs-after.hyperfine.json \
+  "$BASE/before/target/release/evtx_dump -t 1 -o jsonl $SAMPLE > /dev/null" \
+  "$BASE/after/target/release/evtx_dump  -t 1 -o jsonl $SAMPLE > /dev/null"
+```
+
+  - **Artifact**: `target/perf/h1-zigkeys-before-vs-after.hyperfine.json` (copied from `omer-pc:/tmp/evtx-h1-bench/h1-zigkeys-before-vs-after.hyperfine.json`)
+
+- **Profile delta (macOS, samply, W1, 200 iterations)**:
+  - **Key-tracking hot path (after1 → after2)**:
+    - `hashbrown::map::HashMap<K,V,S,A>::get_inner`: **3.20% → 0.00%** leaf
+    - `hashbrown::map::HashMap<K,V,S,A>::insert`: **1.83% → 0.00%** leaf
+    - `_platform_memcmp`: **2.99% → 2.43%** leaf
+    - `evtx::json_stream_output::UniqueKeyTable::reserve_unique_index`: **0.00% → 2.17%** leaf (replacement cost)
+  - **Final vs baseline (before → after2)**:
+    - `_platform_memmove`: **7.38% → 4.54%** leaf
+    - `_rjem_malloc`: **3.15% → 1.26%** leaf
+    - `alloc::raw_vec::RawVecInner<A>::finish_grow`: **1.62% → 1.00%** leaf
+  - **Artifacts**:
+    - `target/perf/samply/h1_after2.profile.json.gz` + `target/perf/samply/h1_after2.profile.json.syms.json`
 
 ---
 
