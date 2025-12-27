@@ -32,7 +32,7 @@ W1 (JSONL, end-to-end, single-thread, write suppressed):
 ./target/release/evtx_dump -t 1 -o jsonl samples/security_big_sample.evtx > /dev/null
 ```
 
-W2 (JSONL, end-to-end, 8 threads, write suppressed):
+W2 (optional, multi-thread throughput; **not** used for baseline allocator-churn tracking):
 
 ```bash
 ./target/release/evtx_dump -t 8 -o jsonl samples/security_big_sample.evtx > /dev/null
@@ -40,7 +40,7 @@ W2 (JSONL, end-to-end, 8 threads, write suppressed):
 
 Notes:
 - Redirecting output is critical; otherwise you benchmark terminal I/O and buffering, not parsing/serialization.
-- `-t 1` is the primary KPI for single-core throughput and for making profiles readable.
+- **All reference baselines in this repo use `-t 1`**. It best highlights allocator churn and per-chunk work on a single core.
 
 ---
 
@@ -97,6 +97,55 @@ Environment variables (see script header for full list):
 - **HW**: Apple M3 Pro, 11 cores, 36 GB RAM
 - **Toolchain**: rustc 1.92.0 (LLVM 21.1.3), cargo 1.92.0
 - **Tools**: hyperfine 1.20.0, samply 0.13.1, zig 0.15.2
+
+---
+
+## Baseline environment (omer-pc, 2025-12-27)
+
+- **OS**: Arch Linux (kernel 6.17.9, x86_64)
+- **HW**: AMD Ryzen 9 3900X (12C/24T), 62 GiB RAM
+- **Toolchain**: rustc 1.92.0 (LLVM 21.1.6), cargo 1.92.0
+- **Tools**: hyperfine 1.20.0 (no Zig / no samply on this box)
+
+---
+
+## Baseline numbers (omer-pc, 2025-12-27)
+
+Measured on `omer-pc` via SSH. We sync two trees (`origin/master` snapshot and this branch) and compare end-to-end JSONL throughput.
+We gate runs with `scripts/ensure_quiet.sh` but loosened load-average tolerance because the box maintains a steady load (~4) while
+being effectively idle (CPU idle ~99%).
+
+W1 (JSONL, `-t 1`, output suppressed):
+- **master**: **median 883.6 ms**, mean 891.5 ms ± 28.7 ms (range 873.6–993.2 ms)
+- **branch**: **median 599.6 ms**, mean 601.1 ms ± 6.1 ms (range 589.7–611.9 ms)
+- **speedup**: ~**1.47×** (≈ **32%** lower wall time)
+
+W2 (JSONL, `-t 8`, output suppressed):
+- **master**: **median 173.9 ms**, mean 173.8 ms ± 4.6 ms (range 165.2–182.4 ms)
+- **branch**: **median 160.9 ms**, mean 160.9 ms ± 3.0 ms (range 155.8–166.1 ms)
+- **speedup**: ~**1.08×**
+
+Repro commands (on `omer-pc`):
+
+```bash
+BASE=/tmp/evtx-bench
+SAMPLE=$BASE/master/samples/security_big_sample.evtx
+
+# Wait for a "quiet enough" machine before each benchmark batch.
+QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8 $BASE/branch/scripts/ensure_quiet.sh
+
+hyperfine --warmup 3 --runs 20 \
+  "$BASE/master/target/release/evtx_dump -t 1 -o jsonl $SAMPLE > /dev/null" \
+  "$BASE/branch/target/release/evtx_dump -t 1 -o jsonl $SAMPLE > /dev/null"
+
+QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8 $BASE/branch/scripts/ensure_quiet.sh
+
+hyperfine --warmup 3 --runs 20 \
+  "$BASE/master/target/release/evtx_dump -t 8 -o jsonl $SAMPLE > /dev/null" \
+  "$BASE/branch/target/release/evtx_dump -t 8 -o jsonl $SAMPLE > /dev/null"
+```
+
+Raw JSON captures (temporary on that run): `/tmp/evtx-bench.11jAUq/hyperfine_master_vs_branch_t{1,8}.json`.
 
 ---
 
