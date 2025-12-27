@@ -21,6 +21,9 @@
 #   QUIET_CHECK     - If set (e.g. 1), wait for a quiet system before profiling and use
 #                    `hyperfine --prepare ./scripts/ensure_quiet.sh` for benchmarks.
 #                    Tune thresholds via QUIET_* env vars (see `scripts/ensure_quiet.sh`).
+#   BENCH_MT        - If set to 0, skip the 8-thread benchmark comparison (default: 1).
+#                    Single-thread is the primary KPI for allocator-churn work, but 8T is still
+#                    useful for end-to-end throughput comparisons.
 #
 
 set -euo pipefail
@@ -46,6 +49,7 @@ RUST_BINARY="$SCRIPT_DIR/target/release/evtx_dump"
 
 QUIET_SCRIPT="$SCRIPT_DIR/scripts/ensure_quiet.sh"
 QUIET_CHECK="${QUIET_CHECK:-0}"
+BENCH_MT="${BENCH_MT:-1}"
 HYPERFINE_PREPARE_ARGS=()
 if [[ "$QUIET_CHECK" != "0" ]]; then
     if [[ ! -f "$QUIET_SCRIPT" ]]; then
@@ -352,20 +356,22 @@ if [[ "$BENCH" == true ]]; then
     echo ""
     echo -e "${GREEN}Benchmark results saved to: $BENCH_FILE${NC}"
 
-    # Also run multi-threaded comparison
-    echo ""
-    echo -e "${YELLOW}Running multi-threaded comparison (8 threads)...${NC}"
+    # Optional: multi-threaded comparison (on by default).
+    if [[ "${BENCH_MT}" != "0" ]]; then
+        echo ""
+        echo -e "${YELLOW}Running multi-threaded comparison (8 threads)...${NC}"
 
-    hyperfine \
-        "${HYPERFINE_PREPARE_ARGS[@]}" \
-        --warmup 2 \
-        --runs "$RUNS" \
-        --export-markdown "$OUTPUT_DIR/benchmark_mt_${TIMESTAMP}.md" \
-        -n "Rust 8T" "$RUST_BINARY -t 8 -o jsonl $SAMPLE_FILE" \
-        -n "Zig 8T" "$ZIG_BINARY -t 8 --no-checks -o jsonl $SAMPLE_FILE" \
-        2>&1 || echo "Multi-threaded benchmark failed (may need --features multithreading)"
+        hyperfine \
+            "${HYPERFINE_PREPARE_ARGS[@]}" \
+            --warmup 2 \
+            --runs "$RUNS" \
+            --export-markdown "$OUTPUT_DIR/benchmark_mt_${TIMESTAMP}.md" \
+            -n "Rust 8T" "$RUST_BINARY -t 8 -o jsonl $SAMPLE_FILE" \
+            -n "Zig 8T" "$ZIG_BINARY -t 8 --no-checks -o jsonl $SAMPLE_FILE" \
+            2>&1 || echo "Multi-threaded benchmark failed (may need --features multithreading)"
 
-    echo ""
+        echo ""
+    fi
 fi
 
 # Profile phase (samply - opens browser UI)
@@ -477,6 +483,9 @@ echo "  ./profile_comparison.sh --bench-only"
 echo ""
 echo "# Benchmark (wait for quiet machine via scripts/ensure_quiet.sh):"
 echo "  QUIET_CHECK=1 ./profile_comparison.sh --bench-only"
+echo ""
+echo "# Benchmark without multi-thread comparison:"
+echo "  BENCH_MT=0 ./profile_comparison.sh --bench-only"
 echo ""
 echo "# Interactive profiling (opens browser):"
 echo "  ./profile_comparison.sh --profile-only"
