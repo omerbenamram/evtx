@@ -21,8 +21,8 @@
 #   QUIET_CHECK     - If set (e.g. 1), wait for a quiet system before profiling and use
 #                    `hyperfine --prepare ./scripts/ensure_quiet.sh` for benchmarks.
 #                    Tune thresholds via QUIET_* env vars (see `scripts/ensure_quiet.sh`).
-#   BENCH_MT        - If set to 0, skip the 8-thread benchmark comparison (default: 1).
-#                    Single-thread is the primary KPI for allocator-churn work, but 8T is still
+#   BENCH_MT        - If set (e.g. 1), also run the 8-thread benchmark comparison (default: 0).
+#                    Single-thread is the baseline KPI for allocator-churn work; multi-thread is
 #                    useful for end-to-end throughput comparisons.
 #
 
@@ -49,7 +49,7 @@ RUST_BINARY="$SCRIPT_DIR/target/release/evtx_dump"
 
 QUIET_SCRIPT="$SCRIPT_DIR/scripts/ensure_quiet.sh"
 QUIET_CHECK="${QUIET_CHECK:-0}"
-BENCH_MT="${BENCH_MT:-1}"
+BENCH_MT="${BENCH_MT:-0}"
 HYPERFINE_PREPARE_ARGS=()
 if [[ "$QUIET_CHECK" != "0" ]]; then
     if [[ ! -f "$QUIET_SCRIPT" ]]; then
@@ -356,7 +356,7 @@ if [[ "$BENCH" == true ]]; then
     echo ""
     echo -e "${GREEN}Benchmark results saved to: $BENCH_FILE${NC}"
 
-    # Optional: multi-threaded comparison (on by default).
+    # Optional: multi-threaded comparison (off by default; enable with BENCH_MT=1).
     if [[ "${BENCH_MT}" != "0" ]]; then
         echo ""
         echo -e "${YELLOW}Running multi-threaded comparison (8 threads)...${NC}"
@@ -484,8 +484,8 @@ echo ""
 echo "# Benchmark (wait for quiet machine via scripts/ensure_quiet.sh):"
 echo "  QUIET_CHECK=1 ./profile_comparison.sh --bench-only"
 echo ""
-echo "# Benchmark without multi-thread comparison:"
-echo "  BENCH_MT=0 ./profile_comparison.sh --bench-only"
+echo "# Benchmark + multi-thread comparison:"
+echo "  BENCH_MT=1 ./profile_comparison.sh --bench-only"
 echo ""
 echo "# Interactive profiling (opens browser):"
 echo "  ./profile_comparison.sh --profile-only"

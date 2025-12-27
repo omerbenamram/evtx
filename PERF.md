@@ -115,15 +115,10 @@ Measured on `omer-pc` via SSH. We sync two trees (`origin/master` snapshot and t
 We gate runs with `scripts/ensure_quiet.sh` but loosened load-average tolerance because the box maintains a steady load (~4) while
 being effectively idle (CPU idle ~99%).
 
-W1 (JSONL, `-t 1`, output suppressed):
+W1 (JSONL, `-t 1`, output suppressed) — **reference baseline**:
 - **master**: **median 883.6 ms**, mean 891.5 ms ± 28.7 ms (range 873.6–993.2 ms)
 - **branch**: **median 599.6 ms**, mean 601.1 ms ± 6.1 ms (range 589.7–611.9 ms)
 - **speedup**: ~**1.47×** (≈ **32%** lower wall time)
-
-W2 (JSONL, `-t 8`, output suppressed):
-- **master**: **median 173.9 ms**, mean 173.8 ms ± 4.6 ms (range 165.2–182.4 ms)
-- **branch**: **median 160.9 ms**, mean 160.9 ms ± 3.0 ms (range 155.8–166.1 ms)
-- **speedup**: ~**1.08×**
 
 Repro commands (on `omer-pc`):
 
@@ -137,15 +132,9 @@ QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8 $BASE/branch/scripts/ensure_quiet.sh
 hyperfine --warmup 3 --runs 20 \
   "$BASE/master/target/release/evtx_dump -t 1 -o jsonl $SAMPLE > /dev/null" \
   "$BASE/branch/target/release/evtx_dump -t 1 -o jsonl $SAMPLE > /dev/null"
-
-QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8 $BASE/branch/scripts/ensure_quiet.sh
-
-hyperfine --warmup 3 --runs 20 \
-  "$BASE/master/target/release/evtx_dump -t 8 -o jsonl $SAMPLE > /dev/null" \
-  "$BASE/branch/target/release/evtx_dump -t 8 -o jsonl $SAMPLE > /dev/null"
 ```
 
-Raw JSON captures (temporary on that run): `/tmp/evtx-bench.11jAUq/hyperfine_master_vs_branch_t{1,8}.json`.
+Raw JSON capture (temporary on that run): `/tmp/evtx-bench.11jAUq/hyperfine_master_vs_branch_t1.json`.
 
 ---
 
