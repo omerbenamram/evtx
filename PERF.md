@@ -403,6 +403,46 @@ Template (copy/paste):
 - **Where**: `src/json_stream_output.rs` (FileTime/SysTime serialization).
 - **Impact (omer-pc, `-t 1`)**: reverting to chrono formatting regresses **+3.31%** median (605.5 ms → 625.6 ms).
 
+### H1 (partial) — Reuse scratch buffer + reduce key/value churn in streaming JSONL output
+- **What changed**:
+  - `evtx_dump` (`-o jsonl`, `--json-parser streaming`, `-t 1`) now reuses a single `JsonStreamOutput<Vec<u8>>` across records and
+    writes it directly to the output stream (avoids per-record `Vec<u8>` + `String` allocation in `EvtxRecord::into_json_stream()`).
+  - `JsonStreamOutput` reduces per-record heap churn by:
+    - interning element keys (`Arc<str>`) instead of allocating `String` per element,
+    - using an inline “one value” buffer for `buffered_values` / aggregated `Data` values (avoids many small `Vec` allocations),
+    - recycling per-object duplicate-key tracking frames (reuses `HashSet` allocations across records).
+- **Benchmarks (omer-pc, quiet-gated, W1)**:
+  - **before**: median **607.0 ms**
+  - **after**: median **572.4 ms**
+  - **speedup**: **1.061×** (≈ **5.7%** lower median)
+  - **Command (omer-pc)**:
+
+```bash
+BASE=/tmp/evtx-h1-bench
+SAMPLE=$BASE/before/samples/security_big_sample.evtx
+
+QUIET_IDLE_MIN=95 QUIET_LOAD1_MAX=8 $BASE/after/scripts/ensure_quiet.sh
+hyperfine --warmup 3 --runs 25 \
+  --export-json $BASE/h1-before-vs-after.hyperfine.json \
+  "$BASE/before/target/release/evtx_dump -t 1 -o jsonl $SAMPLE > /dev/null" \
+  "$BASE/after/target/release/evtx_dump  -t 1 -o jsonl $SAMPLE > /dev/null"
+```
+
+  - **Artifact**: `target/perf/h1-before-vs-after.hyperfine.json` (copied from `omer-pc:/tmp/evtx-h1-bench/h1-before-vs-after.hyperfine.json`)
+
+- **Profile delta (macOS, samply, W1, 200 iterations)**:
+  - `_platform_memmove`: **7.38% → 4.33%** leaf
+  - `alloc::raw_vec::RawVecInner<A>::finish_grow`: **1.62% → 0.88%** leaf
+  - `alloc::raw_vec::RawVec<T,A>::grow_one`: **0.71% → 0.44%** leaf
+  - `_rjem_malloc`: **3.15% → 1.09%** leaf
+  - `_rjem_sdallocx.cold.1`: **3.77% → 1.75%** leaf
+  - **Artifacts**:
+    - `target/perf/samply/h1_before.profile.json.gz` + `target/perf/samply/h1_before.profile.json.syms.json`
+    - `target/perf/samply/h1_after.profile.json.gz` + `target/perf/samply/h1_after.profile.json.syms.json`
+- **Correctness check**: `cargo test --features fast-alloc --locked`
+- **Notes**: This improves allocator/memmove hotspots, but did **not** hit the original H1 ≥8% target on `omer-pc`; remaining
+  overhead is visible in hashing/memcmp-heavy leaf frames (candidate: Zig-style fixed-table duplicate-key tracking).
+
 ---
 
 ## Rejected theses
