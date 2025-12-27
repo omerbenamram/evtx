@@ -18,6 +18,9 @@
 #   OUTPUT_DIR      - Directory for results (default: ./profile_results)
 #   ZIG_BINARY      - Path to Zig binary (default: ~/Workspace/zig-evtx/zig-out/bin/evtx_dump_zig)
 #   TOP_LEAVES_N    - Number of leaf functions to print (default: 20)
+#   QUIET_CHECK     - If set (e.g. 1), wait for a quiet system before profiling and use
+#                    `hyperfine --prepare ./scripts/ensure_quiet.sh` for benchmarks.
+#                    Tune thresholds via QUIET_* env vars (see `scripts/ensure_quiet.sh`).
 #
 
 set -euo pipefail
@@ -40,6 +43,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${TOP_LEAVES_WEIGHT:=cpu}" # cpu | samples | wall
 
 RUST_BINARY="$SCRIPT_DIR/target/release/evtx_dump"
+
+QUIET_SCRIPT="$SCRIPT_DIR/scripts/ensure_quiet.sh"
+QUIET_CHECK="${QUIET_CHECK:-0}"
+HYPERFINE_PREPARE_ARGS=()
+if [[ "$QUIET_CHECK" != "0" ]]; then
+    if [[ ! -f "$QUIET_SCRIPT" ]]; then
+        echo -e "${RED}Error: QUIET_CHECK is set but missing: $QUIET_SCRIPT${NC}"
+        exit 1
+    fi
+    # `hyperfine --prepare` runs outside the measured timings; it’s ideal for waiting for quiet.
+    HYPERFINE_PREPARE_ARGS=(--prepare "$QUIET_SCRIPT")
+fi
+
+maybe_wait_for_quiet() {
+    if [[ "$QUIET_CHECK" != "0" ]]; then
+        "$QUIET_SCRIPT"
+    fi
+}
 
 print_top_leaves_table() {
     local profile_json="$1"
@@ -319,6 +340,7 @@ if [[ "$BENCH" == true ]]; then
     BENCH_FILE="$OUTPUT_DIR/benchmark_${TIMESTAMP}.md"
 
     hyperfine \
+        "${HYPERFINE_PREPARE_ARGS[@]}" \
         --warmup 2 \
         --runs "$RUNS" \
         --export-markdown "$BENCH_FILE" \
@@ -335,6 +357,7 @@ if [[ "$BENCH" == true ]]; then
     echo -e "${YELLOW}Running multi-threaded comparison (8 threads)...${NC}"
 
     hyperfine \
+        "${HYPERFINE_PREPARE_ARGS[@]}" \
         --warmup 2 \
         --runs "$RUNS" \
         --export-markdown "$OUTPUT_DIR/benchmark_mt_${TIMESTAMP}.md" \
@@ -369,21 +392,25 @@ if [[ "$PROFILE" == true ]]; then
         1)
             echo -e "${YELLOW}Profiling Rust...${NC}"
             # Save profile + sidecar symbols file so `samply load` shows function names.
+            maybe_wait_for_quiet
             samply record --unstable-presymbolicate -o "$OUTPUT_DIR/rust_profile.json" -- \
                 "$RUST_BINARY" -t 1 -o jsonl "$SAMPLE_FILE"
             ;;
         2)
             echo -e "${YELLOW}Profiling Zig...${NC}"
             # Save profile + sidecar symbols file so `samply load` shows function names.
+            maybe_wait_for_quiet
             samply record --unstable-presymbolicate -o "$OUTPUT_DIR/zig_profile.json" -- \
                 "$ZIG_BINARY" -t 1 --no-checks -o jsonl "$SAMPLE_FILE"
             ;;
         3)
             echo -e "${YELLOW}Recording Rust profile...${NC}"
+            maybe_wait_for_quiet
             samply record --save-only --unstable-presymbolicate -o "$OUTPUT_DIR/rust_profile.json" -- \
                 "$RUST_BINARY" -t 1 -o jsonl "$SAMPLE_FILE" > /dev/null 2>&1
 
             echo -e "${YELLOW}Recording Zig profile...${NC}"
+            maybe_wait_for_quiet
             samply record --save-only --unstable-presymbolicate -o "$OUTPUT_DIR/zig_profile.json" -- \
                 "$ZIG_BINARY" -t 1 --no-checks -o jsonl "$SAMPLE_FILE" > /dev/null 2>&1
 
@@ -432,6 +459,7 @@ if [[ "$FLAMEGRAPH" == true ]]; then
 
     # For Zig, use dtrace directly or samply
     echo -e "${YELLOW}Generating Zig flamegraph via samply...${NC}"
+    maybe_wait_for_quiet
     samply record --save-only --unstable-presymbolicate -o "$OUTPUT_DIR/zig_profile_${TIMESTAMP}.json" \
         -- "$ZIG_BINARY" -t 1 --no-checks -o jsonl "$SAMPLE_FILE" > /dev/null 2>&1
 
@@ -446,6 +474,9 @@ echo -e "${BLUE}=== Quick Commands ===${NC}"
 echo ""
 echo "# Benchmark only:"
 echo "  ./profile_comparison.sh --bench-only"
+echo ""
+echo "# Benchmark (wait for quiet machine via scripts/ensure_quiet.sh):"
+echo "  QUIET_CHECK=1 ./profile_comparison.sh --bench-only"
 echo ""
 echo "# Interactive profiling (opens browser):"
 echo "  ./profile_comparison.sh --profile-only"

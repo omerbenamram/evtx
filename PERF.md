@@ -44,6 +44,35 @@ Notes:
 
 ---
 
+## Quiet-machine guard (recommended)
+
+Benchmarks are extremely sensitive to background load (Spotlight indexing, builds, browser tabs, etc).
+To avoid “busy machine” noise, use `scripts/ensure_quiet.sh`:
+
+```bash
+cd /Users/omerba/Workspace/evtx
+./scripts/ensure_quiet.sh
+```
+
+For hyperfine runs, prefer using it as a prepare hook (prepare time is not included in timings):
+
+```bash
+hyperfine --prepare ./scripts/ensure_quiet.sh ...
+```
+
+For the Rust-vs-Zig harness, enable it via:
+
+```bash
+QUIET_CHECK=1 ./profile_comparison.sh --bench-only
+```
+
+Tune thresholds via env vars (see `scripts/ensure_quiet.sh`):
+- `QUIET_IDLE_MIN` (default `90`)
+- `QUIET_LOAD1_MAX` (default `2.0`)
+- `QUIET_MAX_WAIT_SEC` (default `60`)
+
+---
+
 ## Baseline harness (Rust vs Zig)
 
 Use `profile_comparison.sh` for quick Rust-vs-Zig baselines and to print top leaf frames (helpful to validate allocator-churn hypotheses):
@@ -59,6 +88,15 @@ Environment variables (see script header for full list):
 - `RUNS` (hyperfine runs)
 - `OUTPUT_DIR` (defaults to `./profile_results`, ignored by git)
 - `ZIG_BINARY` (defaults to `~/Workspace/zig-evtx/zig-out/bin/evtx_dump_zig`)
+
+---
+
+## Baseline environment (2025-12-27)
+
+- **OS**: Darwin 25.2.0 (arm64)
+- **HW**: Apple M3 Pro, 11 cores, 36 GB RAM
+- **Toolchain**: rustc 1.92.0 (LLVM 21.1.3), cargo 1.92.0
+- **Tools**: hyperfine 1.20.0, samply 0.13.1, zig 0.15.2
 
 ---
 
