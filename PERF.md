@@ -356,15 +356,22 @@ Template (copy/paste):
     - It uses a fixed-size, stack-allocated name-count table (`MAX_UNIQUE_NAMES = 64`) + pointer-equality fast path for name keys
       instead of hashing/allocating keys (`zig-evtx/src/parser/render_json.zig`, and rationale in `zig-evtx/docs/architecture.md`).
 - **Change**:
+  - **Reuse memory across records** (Zig-style) instead of allocating fresh per record:
+    - Today `EvtxRecord::into_json_stream()` constructs a new `Vec<u8>` + a new `JsonStreamOutput` every record. Introduce a
+      reusable per-thread/per-chunk “scratch” JSON emitter that:
+        - keeps the output `Vec<u8>` and calls `clear()` per record (capacity retained),
+        - keeps `frames` / `elements` vectors and clears them per record (capacity retained),
+        - reuses duplicate-key tracking storage (see next bullets) instead of re-allocating HashSets.
+    - The existing `EvtxChunkData.arena` is **per-chunk** and cannot be reset per record because it backs template cache + values,
+      but we can add a **separate scratch bump** (per record) and `reset()` it after each record to recycle memory aggressively.
   - Make `JsonStreamOutput` lifetime-aware (`JsonStreamOutput<'a, W>`) so it can **store borrowed keys**:
     - Change `ElementState.name: String` → `Cow<'a, str>` (or `&'a str` where possible) to avoid `to_owned()`/`clone()` per element.
-    - Replace `ObjectFrame.used_keys: HashSet<String>` with a borrowed-key set (e.g. `HashSet<&'a str>`) and only allocate
-      suffix strings on collision (rare) into an arena / bump string.
-  - Replace `buffered_values: Vec<serde_json::Value>` and `data_values: Vec<serde_json::Value>` with a **small, borrow-friendly scalar repr**
-    (e.g. `SmallVec<[Cow<'a, BinXmlValue<'a>>; 2]>` + a “concatenated text” scratch), and serialize via
-    `write_binxml_value` / `write_json_string_*` (eliminate `serde_json::to_writer` from the hot path).
-  - Micro-follow-up inside the same thesis (only if needed to expose the win): switch `XmlElementBuilder.attributes` to a small prealloc
-    (or `SmallVec`) to avoid `grow_one` on common attribute counts.
+    - Replace `ObjectFrame.used_keys: HashSet<String>` with a borrowed-key structure and only allocate suffix keys on collision.
+      If we keep hashing, store `&'a str` (borrowed) and allocate only suffixed strings into the per-record scratch bump.
+      (Alternative: Zig-style fixed table + linear scan for ≤64 keys, avoiding hashing altogether.)
+  - Replace `buffered_values: Vec<serde_json::Value>` and `data_values: Vec<serde_json::Value>` with a **borrow-friendly scalar buffer**
+    (plain `Vec` with preallocation + reuse; avoid `smallvec`), and serialize via `write_binxml_value` / `write_json_string_*`
+    to eliminate `serde_json::to_writer` from the hot path.
 - **Success metric**:
   - **W1 median improves ≥ 8%** on `omer-pc` (quiet-gated), vs current branch baseline.
   - Samply shows reduced share of `_platform_memmove`, `_rjem_malloc`, and fewer `RawVec::grow_one` samples under JSON output.
