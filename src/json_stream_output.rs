@@ -946,6 +946,14 @@ impl<W: Write> BinXmlOutput for JsonStreamOutput<W> {
             self.pop_object_frame();
         }
 
+        // Reset `<EventData><Data>...</Data>...</EventData>` aggregator state.
+        // If a previous record failed mid-stream while inside an unnamed `<Data>` element,
+        // these fields can retain stale routing state that would corrupt subsequent records
+        // when the same `JsonStreamOutput` is reused.
+        self.data_owner_depth = None;
+        self.data_values = BufferedValues::default();
+        self.data_inside_element = false;
+
         // Open the root JSON object.
         self.write_bytes(b"{")?;
         // Root objects can have many keys; pre-reserve to reduce rehashing.
@@ -1729,6 +1737,70 @@ mod tests {
             legacy_value, streaming_value,
             "Multiple character nodes: streaming must match legacy.\nLegacy: {:?}\nStreaming: {}",
             legacy_value, streaming_json
+        );
+    }
+
+    /// Regression test: when reusing `JsonStreamOutput` across records, a previous record that
+    /// failed mid-stream inside aggregated `<EventData><Data>...</Data></EventData>` must not
+    /// leak stale `data_*` routing state into the next record.
+    #[test]
+    fn test_reuse_after_error_resets_data_aggregator_state() {
+        let arena = Bump::new();
+        let settings = ParserSettings::new().num_threads(1);
+
+        let writer = Vec::new();
+        let mut output = JsonStreamOutput::with_writer(writer, &settings);
+
+        // "Record 1": enter unnamed `<Data>` aggregation and then "fail" before closing.
+        output.visit_start_of_stream().unwrap();
+
+        let event_data = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("EventData")),
+            attributes: vec![],
+        };
+        let data = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("Data")),
+            attributes: vec![],
+        };
+
+        output.visit_open_start_element(&event_data).unwrap();
+        output.visit_open_start_element(&data).unwrap();
+        output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("stale", &arena),
+            )))
+            .unwrap();
+
+        // Simulate caller behavior on error in the single-thread fast path:
+        // discard partial bytes and immediately start the next record with the same builder.
+        output.clear_buffer();
+
+        // "Record 2": plain element with text. If aggregator state wasn't reset, `visit_characters`
+        // would route this text into `data_values` and the element would render as `null`.
+        output.visit_start_of_stream().unwrap();
+
+        let message = XmlElement {
+            name: Cow::Owned(BinXmlName::from_str("Message")),
+            attributes: vec![],
+        };
+
+        output.visit_open_start_element(&message).unwrap();
+        output
+            .visit_characters(Cow::Owned(BinXmlValue::StringType(
+                BumpString::from_str_in("hello", &arena),
+            )))
+            .unwrap();
+        output.visit_close_element(&message).unwrap();
+        output.visit_end_of_stream().unwrap();
+
+        let bytes = output.finish().unwrap();
+        let json = String::from_utf8(bytes).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            value["Message"],
+            serde_json::Value::String("hello".to_string()),
+            "Text must not be misrouted into the aggregated Data buffer when reusing JsonStreamOutput.\nJSON: {json}"
         );
     }
 }
