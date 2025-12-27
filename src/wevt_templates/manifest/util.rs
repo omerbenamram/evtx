@@ -30,7 +30,7 @@ pub(super) fn decode_utf16_z(bytes: &[u8], what: &'static str, offset: u32) -> R
 }
 
 pub(super) fn read_sig_named(buf: &[u8], offset: usize, what: &'static str) -> Result<[u8; 4]> {
-    bytes::read_sig(buf, offset).ok_or(WevtManifestError::Truncated {
+    bytes::read_sig(buf, offset).ok_or_else(|| WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
         need: 4,
@@ -39,7 +39,7 @@ pub(super) fn read_sig_named(buf: &[u8], offset: usize, what: &'static str) -> R
 }
 
 pub(super) fn read_u8_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u8> {
-    bytes::read_u8(buf, offset).ok_or(WevtManifestError::Truncated {
+    bytes::read_u8(buf, offset).ok_or_else(|| WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
         need: 1,
@@ -48,7 +48,7 @@ pub(super) fn read_u8_named(buf: &[u8], offset: usize, what: &'static str) -> Re
 }
 
 pub(super) fn read_u16_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u16> {
-    bytes::read_u16_le(buf, offset).ok_or(WevtManifestError::Truncated {
+    bytes::read_u16_le(buf, offset).ok_or_else(|| WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
         need: 2,
@@ -57,7 +57,7 @@ pub(super) fn read_u16_named(buf: &[u8], offset: usize, what: &'static str) -> R
 }
 
 pub(super) fn read_u32_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u32> {
-    bytes::read_u32_le(buf, offset).ok_or(WevtManifestError::Truncated {
+    bytes::read_u32_le(buf, offset).ok_or_else(|| WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
         need: 4,
@@ -66,7 +66,7 @@ pub(super) fn read_u32_named(buf: &[u8], offset: usize, what: &'static str) -> R
 }
 
 pub(super) fn read_u64_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u64> {
-    bytes::read_u64_le(buf, offset).ok_or(WevtManifestError::Truncated {
+    bytes::read_u64_le(buf, offset).ok_or_else(|| WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
         need: 8,
@@ -75,7 +75,7 @@ pub(super) fn read_u64_named(buf: &[u8], offset: usize, what: &'static str) -> R
 }
 
 pub(super) fn read_guid_named(buf: &[u8], offset: usize, what: &'static str) -> Result<Guid> {
-    let bytes = bytes::read_array::<16>(buf, offset).ok_or(WevtManifestError::Truncated {
+    let bytes = bytes::read_array::<16>(buf, offset).ok_or_else(|| WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
         need: 16,
@@ -124,7 +124,7 @@ pub(super) fn checked_end(len: usize, off: u32, size: u32, what: &'static str) -
     })?;
     let end = off_usize
         .checked_add(size_usize)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
+        .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
             what,
             offset: off,
             size,

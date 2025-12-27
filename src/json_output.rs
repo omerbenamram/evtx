@@ -281,7 +281,7 @@ impl JsonOutput {
             let value =
                 self.get_current_parent()
                     .as_object_mut()
-                    .ok_or(SerializationError::JsonStructureError {
+                    .ok_or_else(|| SerializationError::JsonStructureError {
                     message:
                         "This is a bug - expected current value to exist, and to be an object type.
                          Check that the value is not `Value::null`"

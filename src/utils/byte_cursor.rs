@@ -65,7 +65,7 @@ impl<'a> ByteCursor<'a> {
         let new_pos = self
             .pos
             .checked_add(n)
-            .ok_or(DeserializationError::Truncated {
+            .ok_or_else(|| DeserializationError::Truncated {
                 what,
                 offset: self.pos as u64,
                 need: n,
@@ -102,12 +102,13 @@ impl<'a> ByteCursor<'a> {
 
     #[inline]
     pub(crate) fn u8_named(&mut self, what: &'static str) -> DeserializationResult<u8> {
-        let b = bytes::read_u8(self.buf, self.pos).ok_or(DeserializationError::Truncated {
-            what,
-            offset: self.pos as u64,
-            need: 1,
-            have: self.buf.len().saturating_sub(self.pos),
-        })?;
+        let b =
+            bytes::read_u8(self.buf, self.pos).ok_or_else(|| DeserializationError::Truncated {
+                what,
+                offset: self.pos as u64,
+                need: 1,
+                have: self.buf.len().saturating_sub(self.pos),
+            })?;
         self.pos += 1;
         Ok(b)
     }
@@ -247,14 +248,15 @@ impl<'a> ByteCursor<'a> {
             return Ok(None);
         }
 
-        let byte_len = char_count
-            .checked_mul(2)
-            .ok_or(DeserializationError::Truncated {
-                what,
-                offset: self.pos as u64,
-                need: usize::MAX,
-                have: self.buf.len().saturating_sub(self.pos),
-            })?;
+        let byte_len =
+            char_count
+                .checked_mul(2)
+                .ok_or_else(|| DeserializationError::Truncated {
+                    what,
+                    offset: self.pos as u64,
+                    need: usize::MAX,
+                    have: self.buf.len().saturating_sub(self.pos),
+                })?;
 
         let bytes = self.take_bytes(byte_len, what)?;
         if !bytes.len().is_multiple_of(2) {

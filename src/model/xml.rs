@@ -73,9 +73,9 @@ impl<'a> XmlElementBuilder<'a> {
 
     pub fn finish(self) -> Result<XmlElement<'a>, EvtxError> {
         Ok(XmlElement {
-            name: self.name.ok_or(EvtxError::FailedToCreateRecordModel(
-                "Element name should be set",
-            ))?,
+            name: self.name.ok_or_else(|| {
+                EvtxError::FailedToCreateRecordModel("Element name should be set")
+            })?,
             attributes: self.attributes,
         })
     }

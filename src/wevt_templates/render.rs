@@ -189,14 +189,14 @@ pub fn render_temp_to_xml(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                output.visit_open_start_element(stack.last().ok_or({
+                output.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
                 })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or({
+                let close_element = stack.pop().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
@@ -397,14 +397,14 @@ pub fn render_temp_to_xml_with_substitution_values(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                output.visit_open_start_element(stack.last().ok_or({
+                output.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
                 })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or({
+                let close_element = stack.pop().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
@@ -602,14 +602,14 @@ pub fn render_template_definition_to_xml(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                output.visit_open_start_element(stack.last().ok_or({
+                output.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
                 })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or({
+                let close_element = stack.pop().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
@@ -805,14 +805,14 @@ pub fn render_template_definition_to_xml_with_substitution_values(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                output.visit_open_start_element(stack.last().ok_or({
+                output.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
                 })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or({
+                let close_element = stack.pop().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )

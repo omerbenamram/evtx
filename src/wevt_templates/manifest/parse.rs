@@ -40,14 +40,14 @@ impl<'a> CrimManifest<'a> {
         let providers_off = 16usize;
         let provider_desc_size = 20usize;
         let providers_end = providers_off
-            .checked_add(provider_count.checked_mul(provider_desc_size).ok_or(
-                WevtManifestError::CountOutOfBounds {
+            .checked_add(provider_count.checked_mul(provider_desc_size).ok_or_else(
+                || WevtManifestError::CountOutOfBounds {
                     what: "CRIM.provider_count",
                     offset: 12,
                     count: header.provider_count,
                 },
             )?)
-            .ok_or(WevtManifestError::CountOutOfBounds {
+            .ok_or_else(|| WevtManifestError::CountOutOfBounds {
                 what: "CRIM.provider_count",
                 offset: 12,
                 count: header.provider_count,
@@ -202,7 +202,7 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
     let desc_bytes =
         desc_count_usize
             .checked_mul(8)
-            .ok_or(WevtManifestError::CountOutOfBounds {
+            .ok_or_else(|| WevtManifestError::CountOutOfBounds {
                 what: "WEVT.number_of_descriptors",
                 offset: provider_off + 12,
                 count: descriptor_count,
@@ -235,7 +235,7 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
     let unknown2_bytes =
         unknown2_count_usize
             .checked_mul(4)
-            .ok_or(WevtManifestError::CountOutOfBounds {
+            .ok_or_else(|| WevtManifestError::CountOutOfBounds {
                 what: "WEVT.number_of_unknown2",
                 offset: provider_off + 16,
                 count: unknown2_count,
@@ -350,14 +350,14 @@ fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
     let defs_off = off_usize + 12;
     let defs_bytes = count_usize
         .checked_mul(16)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "CHAN.count",
             offset: off + 8,
             count,
         })?;
     let min_end = defs_off
         .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
+        .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
             what: "CHAN definitions array",
             offset: off,
             size,
@@ -441,7 +441,7 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
     let events_off = off_usize + 16;
     let events_bytes = count_usize
         .checked_mul(48)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "EVNT.count",
             offset: off + 8,
             count,
@@ -449,7 +449,7 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
     let min_end =
         events_off
             .checked_add(events_bytes)
-            .ok_or(WevtManifestError::SizeOutOfBounds {
+            .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
                 what: "EVNT event array",
                 offset: off,
                 size,
@@ -568,14 +568,14 @@ fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
     let defs_off = off_usize + 12;
     let defs_bytes = count_usize
         .checked_mul(16)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "KEYW.count",
             offset: off + 8,
             count,
         })?;
     let min_end = defs_off
         .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
+        .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
             what: "KEYW definitions array",
             offset: off,
             size,
@@ -656,14 +656,14 @@ fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
     let defs_off = off_usize + 12;
     let defs_bytes = count_usize
         .checked_mul(12)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "LEVL.count",
             offset: off + 8,
             count,
         })?;
     let min_end = defs_off
         .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
+        .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
             what: "LEVL definitions array",
             offset: off,
             size,
@@ -743,14 +743,14 @@ fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
     let defs_off = off_usize + 12;
     let defs_bytes = count_usize
         .checked_mul(12)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "OPCO.count",
             offset: off + 8,
             count,
         })?;
     let min_end = defs_off
         .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
+        .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
             what: "OPCO definitions array",
             offset: off,
             size,
@@ -830,14 +830,14 @@ fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
     let defs_off = off_usize + 12;
     let defs_bytes = count_usize
         .checked_mul(28)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "TASK.count",
             offset: off + 8,
             count,
         })?;
     let min_end = defs_off
         .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
+        .ok_or_else(|| WevtManifestError::SizeOutOfBounds {
             what: "TASK definitions array",
             offset: off,
             size,
@@ -1098,7 +1098,7 @@ fn parse_template_items(
 
     let needed = count_usize
         .checked_mul(20)
-        .ok_or(WevtManifestError::CountOutOfBounds {
+        .ok_or_else(|| WevtManifestError::CountOutOfBounds {
             what: "TEMP.item_descriptor_count",
             offset: template_off_abs + 8,
             count: item_descriptor_count,
@@ -1351,7 +1351,7 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
     let entries_bytes =
         entry_count_usize
             .checked_mul(8)
-            .ok_or(WevtManifestError::CountOutOfBounds {
+            .ok_or_else(|| WevtManifestError::CountOutOfBounds {
                 what: "VMAP.entry_count",
                 offset: off + 12,
                 count: entry_count,

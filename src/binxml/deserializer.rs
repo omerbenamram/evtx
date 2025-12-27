@@ -164,7 +164,7 @@ impl<'a> IterTokens<'a> {
     fn read_next_token(&self, cursor: &mut ByteCursor<'a>) -> Result<BinXMLRawToken> {
         let token = cursor.u8()?;
 
-        BinXMLRawToken::from_u8(token).ok_or(DeserializationError::InvalidToken {
+        BinXMLRawToken::from_u8(token).ok_or_else(|| DeserializationError::InvalidToken {
             value: token,
             offset: cursor.position(),
         })

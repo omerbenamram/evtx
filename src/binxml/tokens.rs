@@ -58,12 +58,12 @@ pub(crate) fn read_template_cursor<'a>(
         let size = cursor.u16()?;
         let value_type_token = cursor.u8()?;
 
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
+        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
             DeserializationError::InvalidValueVariant {
                 value: value_type_token,
                 offset: cursor.position(),
-            },
-        )?;
+            }
+        })?;
 
         // Empty
         let _ = cursor.u8()?;
@@ -333,12 +333,12 @@ pub(crate) fn read_substitution_descriptor_cursor(
     let substitution_index = cursor.u16()?;
     let value_type_token = cursor.u8()?;
 
-    let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
+    let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
         DeserializationError::InvalidValueVariant {
             value: value_type_token,
             offset: cursor.position(),
-        },
-    )?;
+        }
+    })?;
 
     let ignore = optional && (value_type == BinXmlValueType::NullType);
 

@@ -39,75 +39,77 @@ fn parse_image_resource_directory(
     }
 
     Ok(ImageResourceDirectory {
-        characteristics: bytes::read_u32_le(rsrc, offset).ok_or(
+        characteristics: bytes::read_u32_le(rsrc, offset).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource directory characteristics out of bounds",
-            },
-        )?,
-        time_date_stamp: bytes::read_u32_le(rsrc, offset + 4).ok_or(
+            }
+        })?,
+        time_date_stamp: bytes::read_u32_le(rsrc, offset + 4).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource directory time_date_stamp out of bounds",
-            },
-        )?,
-        major_version: bytes::read_u16_le(rsrc, offset + 8).ok_or(
+            }
+        })?,
+        major_version: bytes::read_u16_le(rsrc, offset + 8).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource directory major_version out of bounds",
-            },
-        )?,
-        minor_version: bytes::read_u16_le(rsrc, offset + 10).ok_or(
+            }
+        })?,
+        minor_version: bytes::read_u16_le(rsrc, offset + 10).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource directory minor_version out of bounds",
-            },
-        )?,
-        number_of_named_entries: bytes::read_u16_le(rsrc, offset + 12).ok_or(
+            }
+        })?,
+        number_of_named_entries: bytes::read_u16_le(rsrc, offset + 12).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource directory number_of_named_entries out of bounds",
-            },
-        )?,
-        number_of_id_entries: bytes::read_u16_le(rsrc, offset + 14).ok_or(
+            }
+        })?,
+        number_of_id_entries: bytes::read_u16_le(rsrc, offset + 14).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource directory number_of_id_entries out of bounds",
-            },
-        )?,
+            }
+        })?,
     })
 }
 
 fn parse_resource_name(rsrc: &[u8], offset: usize) -> Result<String, WevtTemplateExtractError> {
-    let char_count =
-        bytes::read_u16_le(rsrc, offset).ok_or(WevtTemplateExtractError::MalformedResource {
+    let char_count = bytes::read_u16_le(rsrc, offset).ok_or_else(|| {
+        WevtTemplateExtractError::MalformedResource {
             message: "resource name length out of bounds",
-        })? as usize;
+        }
+    })? as usize;
 
-    let bytes_off = offset
-        .checked_add(2)
-        .ok_or(WevtTemplateExtractError::MalformedResource {
-            message: "resource name offset overflow",
-        })?;
+    let bytes_off =
+        offset
+            .checked_add(2)
+            .ok_or_else(|| WevtTemplateExtractError::MalformedResource {
+                message: "resource name offset overflow",
+            })?;
     let bytes_len =
         char_count
             .checked_mul(2)
-            .ok_or(WevtTemplateExtractError::MalformedResource {
+            .ok_or_else(|| WevtTemplateExtractError::MalformedResource {
                 message: "resource name length overflow",
             })?;
-    let bytes_end =
-        bytes_off
-            .checked_add(bytes_len)
-            .ok_or(WevtTemplateExtractError::MalformedResource {
-                message: "resource name end overflow",
-            })?;
+    let bytes_end = bytes_off.checked_add(bytes_len).ok_or_else(|| {
+        WevtTemplateExtractError::MalformedResource {
+            message: "resource name end overflow",
+        }
+    })?;
 
-    let buf =
-        rsrc.get(bytes_off..bytes_end)
-            .ok_or(WevtTemplateExtractError::MalformedResource {
-                message: "resource name out of bounds",
-            })?;
+    let buf = rsrc.get(bytes_off..bytes_end).ok_or_else(|| {
+        WevtTemplateExtractError::MalformedResource {
+            message: "resource name out of bounds",
+        }
+    })?;
 
     let mut chars = Vec::with_capacity(char_count);
     for i in 0..char_count {
-        let c =
-            bytes::read_u16_le(buf, i * 2).ok_or(WevtTemplateExtractError::MalformedResource {
+        let c = bytes::read_u16_le(buf, i * 2).ok_or_else(|| {
+            WevtTemplateExtractError::MalformedResource {
                 message: "resource name read out of bounds",
-            })?;
+            }
+        })?;
         chars.push(c);
     }
 
@@ -136,7 +138,7 @@ fn directory_entries(
     let dir = parse_image_resource_directory(rsrc, dir_offset)?;
     let entries_offset = dir_offset
         .checked_add(IMAGE_RESOURCE_DIRECTORY_HEADER_SIZE)
-        .ok_or(WevtTemplateExtractError::MalformedResource {
+        .ok_or_else(|| WevtTemplateExtractError::MalformedResource {
             message: "resource directory entries offset overflow",
         })?;
 
@@ -163,26 +165,26 @@ fn parse_resource_data_entry(
     }
 
     Ok(ResourceDataEntry {
-        offset_to_data: bytes::read_u32_le(rsrc, offset).ok_or(
+        offset_to_data: bytes::read_u32_le(rsrc, offset).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource data entry RVA out of bounds",
-            },
-        )?,
-        size: bytes::read_u32_le(rsrc, offset + 4).ok_or(
+            }
+        })?,
+        size: bytes::read_u32_le(rsrc, offset + 4).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource data entry size out of bounds",
-            },
-        )?,
-        code_page: bytes::read_u32_le(rsrc, offset + 8).ok_or(
+            }
+        })?,
+        code_page: bytes::read_u32_le(rsrc, offset + 8).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource data entry code_page out of bounds",
-            },
-        )?,
-        reserved: bytes::read_u32_le(rsrc, offset + 12).ok_or(
+            }
+        })?,
+        reserved: bytes::read_u32_le(rsrc, offset + 12).ok_or_else(|| {
             WevtTemplateExtractError::MalformedResource {
                 message: "resource data entry reserved out of bounds",
-            },
-        )?,
+            }
+        })?,
     })
 }
 
@@ -233,22 +235,21 @@ pub fn extract_wevt_template_resources(
         &opts,
         resource_table.virtual_address,
     )
-    .ok_or(WevtTemplateExtractError::UnmappedRva {
+    .ok_or_else(|| WevtTemplateExtractError::UnmappedRva {
         rva: resource_table.virtual_address,
     })?;
 
     let rsrc_end = rsrc_offset
         .checked_add(resource_table.size as usize)
-        .ok_or(WevtTemplateExtractError::MalformedPe {
+        .ok_or_else(|| WevtTemplateExtractError::MalformedPe {
             message: "resource directory overflow",
         })?;
 
-    let rsrc =
-        pe_bytes
-            .get(rsrc_offset..rsrc_end)
-            .ok_or(WevtTemplateExtractError::MalformedPe {
-                message: "resource directory out of bounds",
-            })?;
+    let rsrc = pe_bytes.get(rsrc_offset..rsrc_end).ok_or_else(|| {
+        WevtTemplateExtractError::MalformedPe {
+            message: "resource directory out of bounds",
+        }
+    })?;
 
     let root_entries = directory_entries(rsrc, 0)?;
 
@@ -298,16 +299,16 @@ pub fn extract_wevt_template_resources(
             }
 
             let data_offset = rva_to_file_offset(&sections, file_alignment, &opts, data_rva)
-                .ok_or(WevtTemplateExtractError::UnmappedRva { rva: data_rva })?;
+                .ok_or_else(|| WevtTemplateExtractError::UnmappedRva { rva: data_rva })?;
 
-            let data_end = data_offset.checked_add(data_size).ok_or(
+            let data_end = data_offset.checked_add(data_size).ok_or_else(|| {
                 WevtTemplateExtractError::MalformedPe {
                     message: "resource data overflow",
-                },
-            )?;
+                }
+            })?;
             let data = pe_bytes
                 .get(data_offset..data_end)
-                .ok_or(WevtTemplateExtractError::MalformedPe {
+                .ok_or_else(|| WevtTemplateExtractError::MalformedPe {
                     message: "resource data out of bounds",
                 })?
                 .to_vec();

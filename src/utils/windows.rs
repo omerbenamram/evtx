@@ -51,9 +51,9 @@ pub(crate) fn systime_from_bytes(bytes: &[u8; 16]) -> DeserializationResult<Date
 
     Ok(Utc.from_utc_datetime(
         &NaiveDate::from_ymd_opt(year, month, day)
-            .ok_or(DeserializationError::InvalidDateTimeError)?
+            .ok_or_else(|| DeserializationError::InvalidDateTimeError)?
             .and_hms_nano_opt(hour, minute, second, milliseconds * 1_000_000) // Convert milliseconds to nanoseconds
-            .ok_or(DeserializationError::InvalidDateTimeError)?,
+            .ok_or_else(|| DeserializationError::InvalidDateTimeError)?,
     ))
 }
 
@@ -62,7 +62,7 @@ pub(crate) fn read_sid(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Sid
     let remaining = cursor
         .buf()
         .get(start..)
-        .ok_or(DeserializationError::Truncated {
+        .ok_or_else(|| DeserializationError::Truncated {
             what: "sid",
             offset: start as u64,
             need: 1,

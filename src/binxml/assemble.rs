@@ -34,14 +34,14 @@ pub fn parse_tokens<'a, T: BinXmlOutput>(
         match owned_token {
             XmlModel::OpenElement(open_element) => {
                 stack.push(open_element);
-                visitor.visit_open_start_element(stack.last().ok_or({
+                visitor.visit_open_start_element(stack.last().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
                 })?)?;
             }
             XmlModel::CloseElement => {
-                let close_element = stack.pop().ok_or({
+                let close_element = stack.pop().ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Invalid parser state - expected stack to be non-empty",
                     )
@@ -434,12 +434,9 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
         }
 
         fn close_start_element(&mut self) -> Result<()> {
-            let tag = self
-                .current_tag
-                .take()
-                .ok_or(EvtxError::FailedToCreateRecordModel(
-                    "close start - Bad parser state",
-                ))?;
+            let tag = self.current_tag.take().ok_or_else(|| {
+                EvtxError::FailedToCreateRecordModel("close start - Bad parser state")
+            })?;
 
             self.out
                 .visit_open_start_element_offsets(self.chunk, tag, &self.attrs)?;
@@ -450,12 +447,9 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
         }
 
         fn close_empty_element(&mut self) -> Result<()> {
-            let tag = self
-                .current_tag
-                .take()
-                .ok_or(EvtxError::FailedToCreateRecordModel(
-                    "close empty - Bad parser state",
-                ))?;
+            let tag = self.current_tag.take().ok_or_else(|| {
+                EvtxError::FailedToCreateRecordModel("close empty - Bad parser state")
+            })?;
 
             self.out
                 .visit_open_start_element_offsets(self.chunk, tag, &self.attrs)?;
@@ -467,12 +461,9 @@ pub fn parse_tokens_streaming_json<'a, W: Write>(
         }
 
         fn close_element(&mut self) -> Result<()> {
-            let tag = self
-                .tag_stack
-                .pop()
-                .ok_or(EvtxError::FailedToCreateRecordModel(
-                    "close element - Bad parser state",
-                ))?;
+            let tag = self.tag_stack.pop().ok_or_else(|| {
+                EvtxError::FailedToCreateRecordModel("close element - Bad parser state")
+            })?;
             self.out.visit_close_element_offset(self.chunk, tag)?;
             Ok(())
         }
