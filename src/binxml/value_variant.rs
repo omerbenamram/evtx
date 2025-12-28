@@ -1,7 +1,5 @@
-use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::evtx_chunk::EvtxChunk;
-use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::utils::ByteCursor;
 use crate::utils::invalid_data;
 use crate::utils::windows::{filetime_to_datetime, read_sid, read_systime, systime_from_bytes};
@@ -45,8 +43,10 @@ pub enum BinXmlValue<'a> {
     HexInt32Type(Cow<'a, str>),
     HexInt64Type(Cow<'a, str>),
     EvtHandle,
-    // Because of the recursive type, we instantiate this enum via a method of the Deserializer
-    BinXmlType(Vec<BinXMLDeserializedTokens<'a>>),
+    /// Raw BinXML fragment bytes (no length prefix).
+    ///
+    /// This is stored as a slice into the chunk data and parsed on demand by higher-level code.
+    BinXmlType(&'a [u8]),
     EvtXml,
     StringArrayType(Vec<String>),
     AnsiStringArrayType,
@@ -224,6 +224,7 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
+        let _ = chunk;
         trace!(
             "Offset `0x{offset:08x} ({offset}): {value_type:?}, {size:?}",
             offset = cursor.position(),
@@ -355,15 +356,24 @@ impl<'a> BinXmlValue<'a> {
             }
 
             (BinXmlValueType::BinXmlType, size) => {
-                let data_size = size.map(u32::from);
-                let start_pos = cursor.position();
-                let mut c = Cursor::new(cursor.buf());
-                c.set_position(start_pos);
-                let tokens = BinXmlDeserializer::read_binxml_fragment(
-                    &mut c, chunk, data_size, false, ansi_codec,
-                )?;
-                cursor.set_pos_u64(c.position(), "advance after BinXmlType")?;
-                BinXmlValue::BinXmlType(tokens)
+                let payload = match size {
+                    Some(sz) => {
+                        if sz == 0 {
+                            &[]
+                        } else {
+                            cursor.take_bytes(usize::from(sz), "binxml_payload")?
+                        }
+                    }
+                    None => {
+                        let payload_len = cursor.u16_named("binxml_payload_len")? as usize;
+                        if payload_len == 0 {
+                            &[]
+                        } else {
+                            cursor.take_bytes(payload_len, "binxml_payload")?
+                        }
+                    }
+                };
+                BinXmlValue::BinXmlType(payload)
             }
 
             (BinXmlValueType::BinaryType, Some(sz)) => {
