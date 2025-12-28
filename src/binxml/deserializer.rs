@@ -224,7 +224,7 @@ impl<'a> IterTokens<'a> {
                 read_processing_instruction_data_cursor(cursor)?,
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template_cursor(cursor, self.chunk, self.arena, self.ansi_codec)?,
+                read_template_cursor(cursor)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution_descriptor_cursor(cursor, false)?,

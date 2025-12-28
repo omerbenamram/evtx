@@ -27,12 +27,7 @@ fn with_cursor<'a, T>(
     Ok(out)
 }
 
-pub(crate) fn read_template_cursor<'a>(
-    cursor: &mut ByteCursor<'a>,
-    _chunk: Option<&'a EvtxChunk<'a>>,
-    _arena: &'a Bump,
-    _ansi_codec: EncodingRef,
-) -> Result<BinXmlTemplateRef> {
+pub(crate) fn read_template_cursor(cursor: &mut ByteCursor<'_>) -> Result<BinXmlTemplateRef> {
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = cursor.u8()?;
@@ -78,12 +73,13 @@ pub(crate) fn read_template_cursor<'a>(
     let mut substitutions = Vec::with_capacity(number_of_substitutions as usize);
     for descriptor in value_descriptors {
         let offset_u64 = cursor.position();
-        let offset: u32 = u32::try_from(offset_u64).map_err(|_| DeserializationError::Truncated {
-            what: "TemplateInstance substitution offset",
-            offset: offset_u64,
-            need: 0,
-            have: 0,
-        })?;
+        let offset: u32 =
+            u32::try_from(offset_u64).map_err(|_| DeserializationError::Truncated {
+                what: "TemplateInstance substitution offset",
+                offset: offset_u64,
+                need: 0,
+                have: 0,
+            })?;
 
         trace!(
             "Offset `0x{offset:08x} ({offset})`: Substitution span: {substitution:?} (size={size})",
@@ -98,7 +94,10 @@ pub(crate) fn read_template_cursor<'a>(
             value_type: descriptor.value_type,
         });
 
-        cursor.advance(usize::from(descriptor.size), "skip TemplateInstance substitution bytes")?;
+        cursor.advance(
+            usize::from(descriptor.size),
+            "skip TemplateInstance substitution bytes",
+        )?;
     }
 
     Ok(BinXmlTemplateRef {
