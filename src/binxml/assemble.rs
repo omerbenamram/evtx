@@ -1,5 +1,6 @@
 use crate::err::{EvtxError, Result};
 
+use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::deserialized::{
     BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
@@ -288,10 +289,8 @@ fn _expand_templates<'a>(
     stack: &mut Vec<BinXMLDeserializedTokens<'a>>,
 ) -> Result<()> {
     match token {
-        BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(tokens)) => {
-            for token in tokens.into_iter() {
-                _expand_templates(token, chunk, stack)?;
-            }
+        BinXMLDeserializedTokens::Value(BinXmlValue::BinXmlType(bytes)) => {
+            expand_binxml_bytes(bytes, chunk, stack)?;
         }
         BinXMLDeserializedTokens::TemplateInstance(template) => {
             expand_template(template, chunk, stack)?;
@@ -314,6 +313,42 @@ pub fn expand_templates<'a>(
     }
 
     Ok(stack)
+}
+
+fn expand_binxml_bytes<'a>(
+    bytes: &'a [u8],
+    chunk: &'a EvtxChunk<'a>,
+    stack: &mut Vec<BinXMLDeserializedTokens<'a>>,
+) -> Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
+    let chunk_start = chunk.data.as_ptr() as usize;
+    let slice_start = bytes.as_ptr() as usize;
+    let slice_end = slice_start.saturating_add(bytes.len());
+    let chunk_end = chunk_start.saturating_add(chunk.data.len());
+
+    if slice_start < chunk_start || slice_end > chunk_end {
+        return Err(EvtxError::FailedToCreateRecordModel(
+            "BinXML slice is outside chunk data",
+        ));
+    }
+
+    let offset = (slice_start - chunk_start) as u64;
+    let deserializer = BinXmlDeserializer::init(
+        chunk.data,
+        offset,
+        Some(chunk),
+        false,
+        chunk.settings.get_ansi_codec(),
+    );
+    let iter = deserializer.iter_tokens(Some(bytes.len() as u32))?;
+    for token in iter {
+        let token = token.map_err(EvtxError::from)?;
+        _expand_templates(token, chunk, stack)?;
+    }
+    Ok(())
 }
 
 fn stream_expand_token<'a, T: BinXmlOutput>(

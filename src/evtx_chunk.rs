@@ -9,6 +9,7 @@ use log::{debug, info, trace};
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
+use crate::binxml::ir::{build_tree_from_iter, IrTemplateCache};
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
 use crate::{ParserSettings, checksum_ieee};
@@ -200,6 +201,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
+            ir_template_cache: IrTemplateCache::new(),
         }
     }
 }
@@ -229,6 +231,8 @@ pub struct IterChunkRecords<'a> {
     offset_from_chunk_start: u64,
     exhausted: bool,
     settings: Arc<ParserSettings>,
+    /// Per-iterator template cache used during streaming tree construction.
+    ir_template_cache: IrTemplateCache<'a>,
 }
 
 impl<'a> Iterator for IterChunkRecords<'a> {
@@ -315,7 +319,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.settings.get_ansi_codec(),
         );
 
-        let mut tokens = vec![];
         let iter = match deserializer
             .iter_tokens(Some(binxml_data_size))
             .map_err(|e| EvtxError::FailedToParseRecord {
@@ -326,18 +329,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             Err(err) => return Some(Err(err)),
         };
 
-        for token in iter {
-            match token.map_err(|e| EvtxError::FailedToParseRecord {
-                source: Box::new(EvtxError::DeserializationError(e)),
-                record_id: record_header.event_record_id,
-            }) {
-                Ok(token) => tokens.push(token),
-                Err(err) => {
-                    self.offset_from_chunk_start += u64::from(record_header.data_size);
-                    return Some(Err(err));
+        let tree_result =
+            build_tree_from_iter(iter, self.chunk, &mut self.ir_template_cache).map_err(|err| {
+                EvtxError::FailedToParseRecord {
+                    record_id: record_header.event_record_id,
+                    source: Box::new(err),
                 }
-            }
-        }
+            });
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
@@ -345,11 +343,18 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.exhausted = true;
         }
 
+        let tree = match tree_result {
+            Ok(tree) => tree,
+            Err(err) => return Some(Err(err)),
+        };
+
         Some(Ok(EvtxRecord {
             chunk: self.chunk,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            tokens,
+            tree,
+            binxml_offset: record_start + EVTX_RECORD_HEADER_SIZE as u64,
+            binxml_size: binxml_data_size,
             settings: Arc::clone(&self.settings),
         }))
     }

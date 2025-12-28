@@ -1,12 +1,13 @@
-use crate::binxml::assemble::{parse_tokens, parse_tokens_streaming};
+use crate::binxml::deserializer::BinXmlDeserializer;
+use crate::binxml::ir::render_json_record;
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
-use crate::json_output::JsonOutput;
 use crate::model::deserialized::BinXMLDeserializedTokens;
+use crate::model::ir::Element;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_datetime;
-use crate::xml_output::{BinXmlOutput, XmlOutput};
+use crate::xml_output::BinXmlOutput;
 use crate::{EvtxChunk, ParserSettings};
 
 use chrono::prelude::*;
@@ -22,7 +23,9 @@ pub struct EvtxRecord<'a> {
     pub chunk: &'a EvtxChunk<'a>,
     pub event_record_id: RecordId,
     pub timestamp: DateTime<Utc>,
-    pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
+    pub tree: Element<'a>,
+    pub binxml_offset: u64,
+    pub binxml_size: u32,
     pub settings: Arc<ParserSettings>,
 }
 
@@ -88,71 +91,65 @@ impl EvtxRecordHeader {
     }
 }
 
-impl EvtxRecord<'_> {
+impl<'a> EvtxRecord<'a> {
     /// Consumes the record, processing it using the given `output_builder`.
     pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
-        let event_record_id = self.event_record_id;
-        parse_tokens(self.tokens, self.chunk, output_builder).map_err(|e| {
-            EvtxError::FailedToParseRecord {
-                record_id: event_record_id,
-                source: Box::new(e),
-            }
-        })?;
-
-        Ok(())
+        let _ = output_builder;
+        Err(EvtxError::Unimplemented {
+            name: "record serialization via BinXmlOutput".to_string(),
+        })
     }
 
     /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
-        let mut output_builder = JsonOutput::new(&self.settings);
-
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
-        self.into_output(&mut output_builder)?;
+        let record_with_json = self.into_json()?;
 
         Ok(SerializedEvtxRecord {
             event_record_id,
             timestamp,
-            data: output_builder.into_value()?,
+            data: serde_json::from_str(&record_with_json.data)
+                .map_err(crate::err::SerializationError::from)?,
         })
     }
 
     /// Consumes the record and parse it, producing a JSON serialized record.
     pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
         let indent = self.settings.should_indent();
-        let record_with_json_value = self.into_json_value()?;
+        let record_with_json = self.into_json_stream()?;
 
-        let data = if indent {
-            serde_json::to_string_pretty(&record_with_json_value.data)
-                .map_err(SerializationError::from)?
-        } else {
-            serde_json::to_string(&record_with_json_value.data).map_err(SerializationError::from)?
-        };
+        if !indent {
+            return Ok(record_with_json);
+        }
+
+        let value: serde_json::Value =
+            serde_json::from_str(&record_with_json.data).map_err(SerializationError::from)?;
+        let data = serde_json::to_string_pretty(&value).map_err(SerializationError::from)?;
 
         Ok(SerializedEvtxRecord {
-            event_record_id: record_with_json_value.event_record_id,
-            timestamp: record_with_json_value.timestamp,
+            event_record_id: record_with_json.event_record_id,
+            timestamp: record_with_json.timestamp,
             data,
         })
     }
 
-    /// Consumes the record and streams JSON directly into a buffer using the streaming visitor.
+    /// Consumes the record and streams JSON directly into a buffer using the IR tree renderer.
     pub fn into_json_stream(self) -> Result<SerializedEvtxRecord<String>> {
-        // Estimate buffer size based on token count
-        let capacity_hint = self.tokens.len().saturating_mul(64);
+        // Estimate buffer size based on BinXML size
+        let capacity_hint = self.binxml_size as usize * 2;
         let buf = Vec::with_capacity(capacity_hint);
-        let mut output_builder = crate::JsonStreamOutput::with_writer(buf, &self.settings);
 
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
-        parse_tokens_streaming(self.tokens, self.chunk, &mut output_builder).map_err(|e| {
+
+        let mut writer = buf;
+        render_json_record(&self.tree, &self.settings, &mut writer).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: event_record_id,
                 source: Box::new(e),
             }
         })?;
-
-        let writer = output_builder.finish()?;
         let data = String::from_utf8(writer).map_err(crate::err::SerializationError::from)?;
 
         Ok(SerializedEvtxRecord {
@@ -164,19 +161,37 @@ impl EvtxRecord<'_> {
 
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
-        let mut output_builder = XmlOutput::with_writer(Vec::new(), &self.settings);
-
-        let event_record_id = self.event_record_id;
-        let timestamp = self.timestamp;
-        self.into_output(&mut output_builder)?;
-
-        let data =
-            String::from_utf8(output_builder.into_writer()).map_err(SerializationError::from)?;
-
-        Ok(SerializedEvtxRecord {
-            event_record_id,
-            timestamp,
-            data,
+        Err(EvtxError::Unimplemented {
+            name: "XML rendering is disabled in tree-only mode".to_string(),
         })
+    }
+
+    /// Rebuild the flattened token stream on demand (legacy tooling only).
+    pub fn tokens(&self) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
+        let deserializer = BinXmlDeserializer::init(
+            self.chunk.data,
+            self.binxml_offset,
+            Some(self.chunk),
+            false,
+            self.settings.get_ansi_codec(),
+        );
+
+        let iter = deserializer
+            .iter_tokens(Some(self.binxml_size))
+            .map_err(|e| EvtxError::FailedToParseRecord {
+                record_id: self.event_record_id,
+                source: Box::new(EvtxError::DeserializationError(e)),
+            })?;
+
+        let mut tokens = Vec::new();
+        for token in iter {
+            let token = token.map_err(|e| EvtxError::FailedToParseRecord {
+                source: Box::new(EvtxError::DeserializationError(e)),
+                record_id: self.event_record_id,
+            })?;
+            tokens.push(token);
+        }
+
+        Ok(tokens)
     }
 }

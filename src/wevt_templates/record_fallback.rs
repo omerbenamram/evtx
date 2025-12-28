@@ -81,17 +81,20 @@ fn resolve_template_guid_from_record<'a>(
     .map(|h| h.guid.to_string())
 }
 
-fn collect_template_instances<'a>(record: &crate::EvtxRecord<'a>) -> Vec<TemplateInstanceInfo> {
+fn collect_template_instances<'a>(
+    record: &crate::EvtxRecord<'a>,
+) -> crate::err::Result<Vec<TemplateInstanceInfo>> {
     let mut out = Vec::new();
+    let tokens = record.tokens()?;
 
-    for t in &record.tokens {
+    for t in &tokens {
         let BinXMLDeserializedTokens::TemplateInstance(tpl) = t else {
             continue;
         };
 
         let guid =
-            resolve_template_guid_from_record(record, tpl).map(|g| super::normalize_guid(&g));
-        let substitutions = substitutions_from_template_instance(tpl);
+            resolve_template_guid_from_record(record, &tpl).map(|g| super::normalize_guid(&g));
+        let substitutions = substitutions_from_template_instance(&tpl);
 
         out.push(TemplateInstanceInfo {
             guid,
@@ -99,7 +102,7 @@ fn collect_template_instances<'a>(record: &crate::EvtxRecord<'a>) -> Vec<Templat
         });
     }
 
-    out
+    Ok(out)
 }
 
 fn select_template_instance_for_guid<'a>(
@@ -141,7 +144,7 @@ impl crate::EvtxRecord<'_> {
         let timestamp = self.timestamp;
         let ansi_codec = self.settings.get_ansi_codec();
 
-        let instances = collect_template_instances(&self);
+        let instances = collect_template_instances(&self)?;
 
         match self.into_xml() {
             Ok(r) => Ok(r),
@@ -198,7 +201,7 @@ impl crate::EvtxRecord<'_> {
         let indent = self.settings.should_indent();
         let ansi_codec = self.settings.get_ansi_codec();
 
-        let instances = collect_template_instances(&self);
+        let instances = collect_template_instances(&self)?;
 
         match self.into_json() {
             Ok(r) => Ok(r),
@@ -264,7 +267,7 @@ impl crate::EvtxRecord<'_> {
         let indent = self.settings.should_indent();
         let ansi_codec = self.settings.get_ansi_codec();
 
-        let instances = collect_template_instances(&self);
+        let instances = collect_template_instances(&self)?;
 
         match self.into_json_stream() {
             Ok(r) => Ok(r),

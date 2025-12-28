@@ -335,6 +335,7 @@ pub(crate) fn read_substitution_descriptor_cursor(
         substitution_index,
         value_type,
         ignore,
+        optional,
     })
 }
 

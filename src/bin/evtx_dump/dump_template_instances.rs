@@ -152,7 +152,8 @@ mod imp {
                 }
 
                 let mut instances = vec![];
-                for t in &record.tokens {
+                let tokens = record.tokens()?;
+                for t in &tokens {
                     if let BinXMLDeserializedTokens::TemplateInstance(tpl) = t {
                         instances.push(tpl);
                     }
