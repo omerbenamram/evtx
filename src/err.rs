@@ -175,8 +175,7 @@ pub enum DeserializationError {
     },
 }
 
-// TODO: this should be pub(crate), but we need to make `BinXmlOutput` private to do that.
-/// Errors related to Serialization of Binxml token trees to XML/JSON.
+/// Errors related to serialization of IR trees to XML/JSON.
 #[derive(Debug, Error)]
 pub enum SerializationError {
     // Since `quick-xml` maintains the stack for us, structural errors with the XML

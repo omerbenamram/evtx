@@ -1,5 +1,6 @@
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::ir::render_json_record;
+use crate::binxml::ir_xml::render_xml_record;
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
@@ -7,7 +8,6 @@ use crate::model::deserialized::BinXMLDeserializedTokens;
 use crate::model::ir::Element;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_datetime;
-use crate::xml_output::BinXmlOutput;
 use crate::{EvtxChunk, ParserSettings};
 
 use chrono::prelude::*;
@@ -92,14 +92,6 @@ impl EvtxRecordHeader {
 }
 
 impl<'a> EvtxRecord<'a> {
-    /// Consumes the record, processing it using the given `output_builder`.
-    pub fn into_output<T: BinXmlOutput>(self, output_builder: &mut T) -> Result<()> {
-        let _ = output_builder;
-        Err(EvtxError::Unimplemented {
-            name: "record serialization via BinXmlOutput".to_string(),
-        })
-    }
-
     /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
         let event_record_id = self.event_record_id;
@@ -161,8 +153,26 @@ impl<'a> EvtxRecord<'a> {
 
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
-        Err(EvtxError::Unimplemented {
-            name: "XML rendering is disabled in tree-only mode".to_string(),
+        let capacity_hint = self.binxml_size as usize * 2;
+        let buf = Vec::with_capacity(capacity_hint);
+
+        let event_record_id = self.event_record_id;
+        let timestamp = self.timestamp;
+
+        let mut writer = buf;
+        render_xml_record(&self.tree, &self.settings, &mut writer).map_err(|e| {
+            EvtxError::FailedToParseRecord {
+                record_id: event_record_id,
+                source: Box::new(e),
+            }
+        })?;
+
+        let data = String::from_utf8(writer).map_err(crate::err::SerializationError::from)?;
+
+        Ok(SerializedEvtxRecord {
+            event_record_id,
+            timestamp,
+            data,
         })
     }
 
