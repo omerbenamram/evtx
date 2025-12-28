@@ -258,6 +258,40 @@ Artifacts (ignored by git):
 
 ---
 
+## Rust snapshot (omer-pc, 2025-12-28, TemplateInstance raw substitution spans)
+
+Measured on `omer-pc` via SSH (quiet-gated via `scripts/ensure_quiet.sh`), built from this working tree.
+
+W1 (JSONL, `-t 1`, output suppressed):
+- **Rust (fast-alloc)**: mean **324.4 ms** ± 2.8 ms (min 319.1 ms)
+
+W1 (XML, `-t 1`, output suppressed):
+- **Rust (fast-alloc)**: mean **530.4 ms** ± 4.5 ms (min 520.2 ms)
+
+Delta vs the prior omer-pc snapshot (same workload, pre-span change):
+- JSONL: **356.7 ms → 324.4 ms** (≈ **9.1%** lower mean)
+- XML: **557.1 ms → 530.4 ms** (≈ **4.8%** lower mean)
+
+Profiles (sanity-check the “shape” matches expectations):
+- Rust JSONL hot leaf/self frames:
+  - `read_template_cursor` dropped from being the top hotspot (**~11.5% → ~2.8%** leaf), consistent with no eager substitution decode
+  - new hotspot: `Asm<W>::emit_substitution` (**~5.5%** leaf), i.e. decode moved to first-use at expansion time
+  - `BinXmlValue::deserialize_value_type_cursor` (**~4.5%** leaf) + `String::from_utf16` (**~3.7%**) remain meaningful (expected)
+- Rust XML hot leaf/self frames:
+  - `read_template_cursor` dropped (**~7.1% → ~1.8%** leaf)
+  - new hotspot: `Asm<W>::emit_substitution` (**~3.4%** leaf)
+  - `BinXmlValue::deserialize_value_type_cursor` (**~3.4%**) + `String::from_utf16` (**~2.3%**) still visible (expected)
+  - XML emission remains non-trivial (`quick_xml::writer::Writer<W>::write_event` **~4.0%** leaf)
+
+Artifacts (ignored by git):
+- `target/perf/rust_spans_omerpc_20251228_094234/results/`
+  - `hyperfine_rust_jsonl_t1.json` + `.md`
+  - `hyperfine_rust_xml_t1.json` + `.md`
+  - `samply/*.profile.json.gz` + `.syms.json` (note: XML profile reported “Lost 500 events”)
+  - `tables/top_*` + `tables/leaf_callers_*`
+
+---
+
 ## Agent playbook (reproducible workflow)
 
 ### Naming & artifacts (do this consistently)
