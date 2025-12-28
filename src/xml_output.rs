@@ -1,7 +1,9 @@
 use crate::ParserSettings;
+use crate::{ChunkOffset, EvtxChunk};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{SerializationError, SerializationResult};
 use crate::model::xml::{BinXmlPI, XmlElement};
+use crate::utils::ByteCursor;
 
 use log::trace;
 use std::io::Write;
@@ -12,6 +14,8 @@ use quick_xml::events::{BytesDecl, BytesEnd, BytesPI, BytesStart, BytesText, Eve
 
 use crate::binxml::name::BinXmlName;
 use std::borrow::Cow;
+
+const BINXML_NAME_LINK_SIZE: u32 = 6;
 
 pub trait BinXmlOutput {
     /// Called once when EOF is reached.
@@ -64,6 +68,82 @@ impl<W: Write> XmlOutput<W> {
 
     pub fn into_writer(self) -> W {
         self.writer.into_inner()
+    }
+
+    #[inline]
+    fn parse_string_table_name_at_offset<'a>(
+        &self,
+        chunk: &'a EvtxChunk<'a>,
+        offset: ChunkOffset,
+    ) -> SerializationResult<BinXmlName> {
+        let name_off = offset.checked_add(BINXML_NAME_LINK_SIZE).ok_or_else(|| {
+            SerializationError::Unimplemented {
+                message: "string table offset overflow".to_string(),
+            }
+        })?;
+
+        let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize).map_err(|e| {
+            SerializationError::Unimplemented {
+                message: e.to_string(),
+            }
+        })?;
+
+        BinXmlName::from_cursor(&mut cursor).map_err(|e| SerializationError::Unimplemented {
+            message: e.to_string(),
+        })
+    }
+
+    #[inline]
+    fn name_for_offset<'a>(
+        &self,
+        chunk: &'a EvtxChunk<'a>,
+        offset: ChunkOffset,
+    ) -> SerializationResult<Cow<'a, BinXmlName>> {
+        if let Some(n) = chunk.string_cache.get_cached_string(offset) {
+            return Ok(Cow::Borrowed(n));
+        }
+        Ok(Cow::Owned(self.parse_string_table_name_at_offset(chunk, offset)?))
+    }
+
+    /// Fast-path entry point: open an element from BinXML name offsets + attribute values.
+    ///
+    /// This avoids constructing `XmlElementBuilder` / `XmlElement` when we already have
+    /// name offsets and attribute values from the streaming assembler.
+    pub(crate) fn visit_open_start_element_offsets<'a>(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        tag_name_offset: ChunkOffset,
+        attributes: &[(ChunkOffset, Cow<'a, BinXmlValue<'a>>)],
+    ) -> SerializationResult<()> {
+        let tag_name = self.name_for_offset(chunk, tag_name_offset)?;
+
+        let mut event_builder = BytesStart::new(tag_name.as_ref().as_str());
+
+        for (attr_name_offset, attr_value) in attributes {
+            let attr_name = self.name_for_offset(chunk, *attr_name_offset)?;
+            let value_cow: Cow<'_, str> = attr_value.as_ref().as_cow_str();
+
+            // Preserve legacy behavior: skip empty attribute values.
+            if !value_cow.is_empty() {
+                let attr = Attribute::from((attr_name.as_ref().as_str(), value_cow.as_ref()));
+                event_builder.push_attribute(attr);
+            }
+        }
+
+        self.writer.write_event(Event::Start(event_builder))?;
+        Ok(())
+    }
+
+    /// Fast-path entry point: close the current element by tag name offset.
+    pub(crate) fn visit_close_element_offset<'a>(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        tag_name_offset: ChunkOffset,
+    ) -> SerializationResult<()> {
+        let tag_name = self.name_for_offset(chunk, tag_name_offset)?;
+        let event = BytesEnd::new(tag_name.as_ref().as_str());
+        self.writer.write_event(Event::End(event))?;
+        Ok(())
     }
 }
 

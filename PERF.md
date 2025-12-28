@@ -200,6 +200,57 @@ Notes (what the profiles suggest to do next):
 
 ---
 
+## Rust vs Zig snapshot (omer-pc, 2025-12-28, XML streaming via compiled ops)
+
+Measured on `omer-pc` via SSH (quiet-gated via `scripts/ensure_quiet.sh`), built from this working tree and a synced `zig-evtx` checkout.
+
+W1 (JSONL, `-t 1`, output suppressed):
+- **Rust (fast-alloc)**: mean **356.7 ms** ± 1.9 ms (min 353.0 ms)
+- **Zig (ReleaseFast --no-checks)**: mean **255.8 ms** ± 1.3 ms (min 254.0 ms)
+- **gap**: Zig is **~1.39× faster**
+
+W1 (XML, `-t 1`, output suppressed):
+- **Rust (fast-alloc)**: mean **557.1 ms** ± 4.2 ms (min 549.8 ms)
+- **Zig (ReleaseFast --no-checks)**: mean **243.6 ms** ± 1.4 ms (min 241.0 ms)
+- **gap**: Zig is **~2.29× faster**
+
+What changed vs the earlier XML numbers:
+- Switched `EvtxRecord::into_xml()` to use the compiled-op streaming assembler (`parse_tokens_streaming_xml`) instead of
+  `expand_templates` + `create_record_model` + `XmlElementBuilder` (legacy path).
+- This reduced Rust XML wall time from **~768.7 ms → ~557.1 ms** on the same workload (≈ **1.38× speedup**), but XML is still
+  materially behind Zig.
+
+Profiles (what it suggests next):
+- Rust JSONL (H2) hot leaf/self frames (from `.../tables/top_leaves_rust_jsonl_cpu.md`):
+  - `evtx::binxml::tokens::read_template_cursor` **~11.5%** leaf (TemplateInstance decoding)
+  - `lasso::rodeo::Rodeo<K,S>::try_get_or_intern` **~3.0%** leaf (name key interning still non-trivial)
+  - remaining serde fallback in the “streaming” path:
+    - `serde_json::Serializer::serialize_str` **~2.5%** leaf
+    - `BinXmlValue -> serde_json::Value::from` **~2.3%** leaf
+- Rust XML (after compiled-op streaming) hot leaf/self frames (from `.../tables/top_leaves_rust_xml_after_cpu.md`):
+  - `evtx::binxml::tokens::read_template_cursor` **~7.1%** leaf (same underlying TemplateInstance decode cost)
+  - `BinXmlValue::deserialize_value_type_cursor` **~1.7%** leaf
+  - XML emission is still expensive (quick-xml attribute handling + buffer growth), but see below for current focus.
+
+Next substantial directions (focus):
+- **Raw substitution spans + decode/write-on-demand** (Zig-style), shared by JSON + XML:
+  - Stop eagerly materializing `BinXmlValue` for every substitution at TemplateInstance parse time.
+  - Let the template expander request “substitution i” and write it directly (with a per-record cache for repeated uses).
+- **Remove lasso key interning from the JSON hot path**:
+  - Prefer name offsets / stable IDs for duplicate-key tracking and key emission, so `try_get_or_intern` disappears from profiles.
+  - This should also help reduce residual `serde_json` fallbacks by keeping JSON emission fully specialized.
+
+Artifacts (ignored by git):
+- `target/perf/rust_vs_zig_omerpc_20251228_004337/results/`
+  - `hyperfine_rust_vs_zig_jsonl_t1.json` + `.md`
+  - `hyperfine_rust_vs_zig_xml_t1.json` + `.md`
+  - `hyperfine_rust_vs_zig_jsonl_t1_after_xml_stream.json` + `.md`
+  - `hyperfine_rust_vs_zig_xml_t1_after_xml_stream.json` + `.md`
+  - `samply/*.profile.json.gz` + `.syms.json`
+  - `tables/top_*` + `tables/leaf_callers_*`
+
+---
+
 ## Agent playbook (reproducible workflow)
 
 ### Naming & artifacts (do this consistently)
