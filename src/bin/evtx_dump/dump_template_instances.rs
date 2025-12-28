@@ -58,6 +58,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 #[cfg(feature = "wevt_templates")]
 mod imp {
     use super::*;
+    use evtx::binxml::value_variant::format_timestamp;
     use evtx::{EvtxParser, ParserSettings};
     use serde::Serialize;
     use serde_json::Value as JsonValue;
@@ -176,7 +177,7 @@ mod imp {
                 let line = DumpTemplateInstanceOutputLine {
                     source: source.clone(),
                     record_id: record.event_record_id,
-                    timestamp: record.timestamp.to_rfc3339(),
+                    timestamp: format_timestamp(&record.timestamp),
                     template_instance_index,
                     template_id: tpl.template_id,
                     template_def_offset: tpl.template_def_offset,

@@ -16,9 +16,11 @@ use crate::err::{DeserializationError, EvtxError, Result};
 use crate::model::deserialized::{
     BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
 };
-use crate::model::ir::{Attr, Element, Name, Node, Placeholder, Text};
-use crate::utils::ByteCursor;
+use crate::model::ir::{Attr, Element, ElementId, IrTree, Name, Node, Placeholder, Text};
+use crate::utils::{ByteCursor, write_utf16le_json_escaped};
 use crate::{EvtxChunk, ParserSettings};
+use indextree::Arena;
+use jiff::{Timestamp, tz::Offset};
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
 use std::borrow::Cow;
@@ -26,7 +28,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 use zmij::Buffer as ZmijBuffer;
-use chrono::{Datelike, Timelike};
 
 const BINXML_NAME_LINK_SIZE: u32 = 6;
 
@@ -88,7 +89,7 @@ impl<'a> ElementBuilder<'a> {
 pub(crate) fn build_tree<'a>(
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
     chunk: &'a EvtxChunk<'a>,
-) -> Result<Element<'a>> {
+) -> Result<IrTree<'a>> {
     let mut cache = IrTemplateCache::new();
     build_tree_from_tokens(tokens, chunk, &mut cache, BuildMode::Record)
 }
@@ -144,9 +145,17 @@ impl<'a> IrTemplateCache<'a> {
         );
 
         let iter = deserializer.iter_tokens(Some(header.data_size))?;
-        let root =
-            build_tree_from_iter_with_mode(iter, chunk, self, BuildMode::TemplateDefinition)?;
-        let template = Rc::new(Template { root });
+        let mut arena = Arena::with_capacity(estimate_node_capacity(header.data_size));
+        let root = build_tree_from_iter_with_mode_into(
+            iter,
+            chunk,
+            self,
+            BuildMode::TemplateDefinition,
+            &mut arena,
+        )?;
+        let template = Rc::new(Template {
+            tree: IrTree::new(arena, root),
+        });
         self.templates.insert(header.guid, Rc::clone(&template));
         Ok(template)
     }
@@ -155,17 +164,19 @@ impl<'a> IrTemplateCache<'a> {
         &mut self,
         template_ref: BinXmlTemplateRef<'a>,
         chunk: &'a EvtxChunk<'a>,
-    ) -> Result<Element<'a>> {
+        arena: &mut Arena<Element<'a>>,
+    ) -> Result<ElementId> {
         let template = self.get_or_parse_template(chunk, template_ref.template_def_offset)?;
+        arena.reserve(template.tree.arena().count());
         let values = template_values_from_ref(template_ref)?;
-        template.instantiate(&values, chunk, self)
+        template.instantiate(&values, chunk, self, arena)
     }
 }
 
 /// Parsed template definition with placeholder nodes.
 #[derive(Debug)]
 struct Template<'a> {
-    root: Element<'a>,
+    tree: IrTree<'a>,
 }
 
 impl<'a> Template<'a> {
@@ -174,8 +185,16 @@ impl<'a> Template<'a> {
         values: &[BinXmlValue<'a>],
         chunk: &'a EvtxChunk<'a>,
         cache: &mut IrTemplateCache<'a>,
-    ) -> Result<Element<'a>> {
-        clone_and_resolve(&self.root, values, chunk, cache)
+        arena: &mut Arena<Element<'a>>,
+    ) -> Result<ElementId> {
+        clone_and_resolve(
+            self.tree.arena(),
+            self.tree.root(),
+            values,
+            chunk,
+            cache,
+            arena,
+        )
     }
 }
 
@@ -190,25 +209,28 @@ enum BuildMode {
 ///
 /// In `TemplateDefinition` mode, substitutions are captured as placeholders.
 /// In `Record` mode, template instances are instantiated and spliced in-place.
-struct TreeBuilder<'a, 'cache> {
+struct TreeBuilder<'a, 'cache, 'arena> {
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
     mode: BuildMode,
-    stack: Vec<Element<'a>>,
+    arena: &'arena mut Arena<Element<'a>>,
+    stack: Vec<ElementId>,
     current_element: Option<ElementBuilder<'a>>,
-    root: Option<Element<'a>>,
+    root: Option<ElementId>,
 }
 
-impl<'a, 'cache> TreeBuilder<'a, 'cache> {
+impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     fn new(
         chunk: &'a EvtxChunk<'a>,
         cache: &'cache mut IrTemplateCache<'a>,
         mode: BuildMode,
+        arena: &'arena mut Arena<Element<'a>>,
     ) -> Self {
         TreeBuilder {
             chunk,
             cache,
             mode,
+            arena,
             stack: Vec::new(),
             current_element: None,
             root: None,
@@ -232,8 +254,10 @@ impl<'a, 'cache> TreeBuilder<'a, 'cache> {
                         "template instance inside attribute value",
                     ));
                 }
-                let element = self.cache.instantiate_template(template, self.chunk)?;
-                attach_element(&mut self.stack, &mut self.root, element)
+                let element_id = self
+                    .cache
+                    .instantiate_template(template, self.chunk, self.arena)?;
+                attach_element(self.arena, &mut self.stack, &mut self.root, element_id)
             }
             BinXMLDeserializedTokens::Substitution(substitution) => {
                 self.process_substitution(substitution)
@@ -273,32 +297,36 @@ impl<'a, 'cache> TreeBuilder<'a, 'cache> {
                 self.push_node(node)
             }
             BinXMLDeserializedTokens::CloseStartElement => {
-                let element =
-                    self.current_element
-                        .take()
-                        .ok_or(EvtxError::FailedToCreateRecordModel(
-                            "close start - Bad parser state",
-                        ))?;
-                self.stack.push(element.finish());
+                let element = self
+                    .current_element
+                    .take()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "close start - Bad parser state",
+                    ))?
+                    .finish();
+                let element_id = self.arena.new_node(element);
+                self.stack.push(element_id);
                 Ok(())
             }
             BinXMLDeserializedTokens::CloseEmptyElement => {
-                let element =
-                    self.current_element
-                        .take()
-                        .ok_or(EvtxError::FailedToCreateRecordModel(
-                            "close empty - Bad parser state",
-                        ))?;
-                attach_element(&mut self.stack, &mut self.root, element.finish())
+                let element = self
+                    .current_element
+                    .take()
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "close empty - Bad parser state",
+                    ))?
+                    .finish();
+                let element_id = self.arena.new_node(element);
+                attach_element(self.arena, &mut self.stack, &mut self.root, element_id)
             }
             BinXMLDeserializedTokens::CloseElement => {
-                let element = self
+                let element_id = self
                     .stack
                     .pop()
                     .ok_or(EvtxError::FailedToCreateRecordModel(
                         "close element - Bad parser state",
                     ))?;
-                attach_element(&mut self.stack, &mut self.root, element)
+                attach_element(self.arena, &mut self.stack, &mut self.root, element_id)
             }
             BinXMLDeserializedTokens::CDATASection | BinXMLDeserializedTokens::CharRef => Err(
                 EvtxError::FailedToCreateRecordModel("Unimplemented - CDATA/CharRef"),
@@ -332,8 +360,9 @@ impl<'a, 'cache> TreeBuilder<'a, 'cache> {
                 if bytes.is_empty() {
                     return Ok(());
                 }
-                let element = build_tree_from_binxml_bytes(bytes, self.chunk, self.cache)?;
-                attach_element(&mut self.stack, &mut self.root, element)
+                let element_id =
+                    build_tree_from_binxml_bytes(bytes, self.chunk, self.cache, self.arena)?;
+                attach_element(self.arena, &mut self.stack, &mut self.root, element_id)
             }
             BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
                 "Unimplemented - EvtXml",
@@ -355,11 +384,11 @@ impl<'a, 'cache> TreeBuilder<'a, 'cache> {
             builder.push_attr_value(node);
             Ok(())
         } else {
-            push_child(&mut self.stack, node)
+            push_child(self.arena, &mut self.stack, node)
         }
     }
 
-    fn finish(self) -> Result<Element<'a>> {
+    fn finish(self) -> Result<ElementId> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "unfinished element start",
@@ -381,7 +410,7 @@ pub(crate) fn build_tree_from_iter<'a, 'cache, I>(
     iter: I,
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
-) -> Result<Element<'a>>
+) -> Result<IrTree<'a>>
 where
     I: IntoIterator<Item = std::result::Result<BinXMLDeserializedTokens<'a>, DeserializationError>>,
 {
@@ -393,11 +422,26 @@ fn build_tree_from_iter_with_mode<'a, 'cache, I>(
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
     mode: BuildMode,
-) -> Result<Element<'a>>
+) -> Result<IrTree<'a>>
 where
     I: IntoIterator<Item = std::result::Result<BinXMLDeserializedTokens<'a>, DeserializationError>>,
 {
-    let mut builder = TreeBuilder::new(chunk, cache, mode);
+    let mut arena = Arena::new();
+    let root = build_tree_from_iter_with_mode_into(iter, chunk, cache, mode, &mut arena)?;
+    Ok(IrTree::new(arena, root))
+}
+
+fn build_tree_from_iter_with_mode_into<'a, 'cache, I>(
+    iter: I,
+    chunk: &'a EvtxChunk<'a>,
+    cache: &'cache mut IrTemplateCache<'a>,
+    mode: BuildMode,
+    arena: &mut Arena<Element<'a>>,
+) -> Result<ElementId>
+where
+    I: IntoIterator<Item = std::result::Result<BinXMLDeserializedTokens<'a>, DeserializationError>>,
+{
+    let mut builder = TreeBuilder::new(chunk, cache, mode, arena);
     for token in iter {
         let token = token.map_err(EvtxError::from)?;
         builder.process_token(token)?;
@@ -410,11 +454,26 @@ fn build_tree_from_tokens<'a, 'cache, I>(
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
     mode: BuildMode,
-) -> Result<Element<'a>>
+) -> Result<IrTree<'a>>
 where
     I: IntoIterator<Item = BinXMLDeserializedTokens<'a>>,
 {
-    let mut builder = TreeBuilder::new(chunk, cache, mode);
+    let mut arena = Arena::new();
+    let root = build_tree_from_tokens_into(tokens, chunk, cache, mode, &mut arena)?;
+    Ok(IrTree::new(arena, root))
+}
+
+fn build_tree_from_tokens_into<'a, 'cache, I>(
+    tokens: I,
+    chunk: &'a EvtxChunk<'a>,
+    cache: &'cache mut IrTemplateCache<'a>,
+    mode: BuildMode,
+    arena: &mut Arena<Element<'a>>,
+) -> Result<ElementId>
+where
+    I: IntoIterator<Item = BinXMLDeserializedTokens<'a>>,
+{
+    let mut builder = TreeBuilder::new(chunk, cache, mode, arena);
     for token in tokens {
         builder.process_token(token)?;
     }
@@ -425,7 +484,8 @@ fn build_tree_from_binxml_bytes<'a, 'cache>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
-) -> Result<Element<'a>> {
+    arena: &mut Arena<Element<'a>>,
+) -> Result<ElementId> {
     let offset = binxml_slice_offset(chunk, bytes)?;
     let deserializer = crate::binxml::deserializer::BinXmlDeserializer::init(
         chunk.data,
@@ -435,7 +495,7 @@ fn build_tree_from_binxml_bytes<'a, 'cache>(
         chunk.settings.get_ansi_codec(),
     );
     let iter = deserializer.iter_tokens(Some(bytes.len() as u32))?;
-    build_tree_from_iter(iter, chunk, cache)
+    build_tree_from_iter_with_mode_into(iter, chunk, cache, BuildMode::Record, arena)
 }
 
 fn binxml_slice_offset(chunk: &EvtxChunk<'_>, bytes: &[u8]) -> Result<u64> {
@@ -461,6 +521,12 @@ fn binxml_slice_offset(chunk: &EvtxChunk<'_>, bytes: &[u8]) -> Result<u64> {
 struct TemplateHeader {
     guid: [u8; 16],
     data_size: u32,
+}
+
+fn estimate_node_capacity(data_size: u32) -> usize {
+    let bytes = data_size as usize;
+    let estimate = bytes / 12;
+    estimate.max(16)
 }
 
 fn read_template_definition_header_at(data: &[u8], offset: u32) -> Result<TemplateHeader> {
@@ -491,16 +557,25 @@ fn template_values_from_ref<'a>(template: BinXmlTemplateRef<'a>) -> Result<Vec<B
 }
 
 fn clone_and_resolve<'a, 'cache>(
-    element: &Element<'a>,
+    template_arena: &Arena<Element<'a>>,
+    element_id: ElementId,
     values: &[BinXmlValue<'a>],
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
-) -> Result<Element<'a>> {
+    arena: &mut Arena<Element<'a>>,
+) -> Result<ElementId> {
+    let element = template_arena
+        .get(element_id)
+        .ok_or(EvtxError::FailedToCreateRecordModel(
+            "invalid template element id",
+        ))?
+        .get();
+
     let mut resolved = Element {
         name: element.name.clone(),
         attrs: Vec::with_capacity(element.attrs.len()),
         children: Vec::with_capacity(element.children.len()),
-        has_element_child: element.has_element_child,
+        has_element_child: false,
     };
 
     for attr in &element.attrs {
@@ -509,7 +584,15 @@ fn clone_and_resolve<'a, 'cache>(
             value: Vec::with_capacity(attr.value.len()),
         };
         for node in &attr.value {
-            resolve_node_into(node, values, chunk, cache, &mut new_attr.value)?;
+            resolve_node_into(
+                template_arena,
+                node,
+                values,
+                chunk,
+                cache,
+                arena,
+                &mut new_attr.value,
+            )?;
         }
         if !new_attr.value.is_empty() {
             resolved.attrs.push(new_attr);
@@ -518,7 +601,15 @@ fn clone_and_resolve<'a, 'cache>(
 
     for node in &element.children {
         let before = resolved.children.len();
-        resolve_node_into(node, values, chunk, cache, &mut resolved.children)?;
+        resolve_node_into(
+            template_arena,
+            node,
+            values,
+            chunk,
+            cache,
+            arena,
+            &mut resolved.children,
+        )?;
         if !resolved.has_element_child {
             if resolved.children[before..]
                 .iter()
@@ -529,21 +620,24 @@ fn clone_and_resolve<'a, 'cache>(
         }
     }
 
-    Ok(resolved)
+    Ok(arena.new_node(resolved))
 }
 
 fn resolve_node_into<'a, 'cache>(
+    template_arena: &Arena<Element<'a>>,
     node: &Node<'a>,
     values: &[BinXmlValue<'a>],
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
+    arena: &mut Arena<Element<'a>>,
     out: &mut Vec<Node<'a>>,
 ) -> Result<()> {
     match node {
-        Node::Placeholder(ph) => resolve_placeholder_into(ph, values, chunk, cache, out),
-        Node::Element(el) => {
-            let cloned = clone_and_resolve(el.as_ref(), values, chunk, cache)?;
-            out.push(Node::Element(Box::new(cloned)));
+        Node::Placeholder(ph) => resolve_placeholder_into(ph, values, chunk, cache, arena, out),
+        Node::Element(element_id) => {
+            let cloned =
+                clone_and_resolve(template_arena, *element_id, values, chunk, cache, arena)?;
+            out.push(Node::Element(cloned));
             Ok(())
         }
         Node::Text(text) => {
@@ -582,6 +676,7 @@ fn resolve_placeholder_into<'a, 'cache>(
     values: &[BinXmlValue<'a>],
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
+    arena: &mut Arena<Element<'a>>,
     out: &mut Vec<Node<'a>>,
 ) -> Result<()> {
     let index = placeholder.id as usize;
@@ -599,8 +694,8 @@ fn resolve_placeholder_into<'a, 'cache>(
             if bytes.is_empty() {
                 return Ok(());
             }
-            let element = build_tree_from_binxml_bytes(bytes, chunk, cache)?;
-            out.push(Node::Element(Box::new(element)));
+            let element_id = build_tree_from_binxml_bytes(bytes, chunk, cache, arena)?;
+            out.push(Node::Element(element_id));
             Ok(())
         }
         BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
@@ -644,15 +739,21 @@ fn is_optional_empty(value: &BinXmlValue<'_>) -> bool {
 }
 
 fn attach_element<'a>(
-    stack: &mut Vec<Element<'a>>,
-    root: &mut Option<Element<'a>>,
-    element: Element<'a>,
+    arena: &mut Arena<Element<'a>>,
+    stack: &mut Vec<ElementId>,
+    root: &mut Option<ElementId>,
+    element_id: ElementId,
 ) -> Result<()> {
-    if let Some(parent) = stack.last_mut() {
-        parent.push_child(Node::Element(Box::new(element)));
+    if let Some(parent_id) = stack.last().copied() {
+        let parent = arena
+            .get_mut(parent_id)
+            .ok_or(EvtxError::FailedToCreateRecordModel(
+                "invalid parent element id",
+            ))?;
+        parent.get_mut().push_child(Node::Element(element_id));
         Ok(())
     } else if root.is_none() {
-        *root = Some(element);
+        *root = Some(element_id);
         Ok(())
     } else {
         Err(EvtxError::FailedToCreateRecordModel(
@@ -661,20 +762,30 @@ fn attach_element<'a>(
     }
 }
 
-fn push_child<'a>(stack: &mut Vec<Element<'a>>, node: Node<'a>) -> Result<()> {
-    let parent = stack
-        .last_mut()
+fn push_child<'a>(
+    arena: &mut Arena<Element<'a>>,
+    stack: &mut Vec<ElementId>,
+    node: Node<'a>,
+) -> Result<()> {
+    let parent_id = stack
+        .last()
+        .copied()
         .ok_or(EvtxError::FailedToCreateRecordModel(
             "value outside of element",
         ))?;
-    parent.push_child(node);
+    let parent = arena
+        .get_mut(parent_id)
+        .ok_or(EvtxError::FailedToCreateRecordModel(
+            "invalid parent element id",
+        ))?;
+    parent.get_mut().push_child(node);
     Ok(())
 }
 
 fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
     match value {
-        BinXmlValue::StringType(s) => Ok(Node::Text(Text::new(Cow::Owned(s)))),
-        BinXmlValue::AnsiStringType(s) => Ok(Node::Text(Text::new(s))),
+        BinXmlValue::StringType(s) => Ok(Node::Text(Text::utf16(s))),
+        BinXmlValue::AnsiStringType(s) => Ok(Node::Text(Text::utf8(s))),
         BinXmlValue::EvtXml | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtHandle => Err(
             EvtxError::FailedToCreateRecordModel("unsupported BinXML value in tree"),
         ),
@@ -700,11 +811,12 @@ fn expand_string_ref<'a>(
 }
 
 pub(crate) fn render_json_record<W: WriteExt>(
-    root: &Element<'_>,
+    tree: &IrTree<'_>,
     _settings: &ParserSettings,
     writer: &mut W,
 ) -> Result<()> {
-    let mut emitter = JsonEmitter::new(writer);
+    let mut emitter = JsonEmitter::new(writer, tree.arena());
+    let root = tree.root_element();
     emitter.write_bytes(b"{\"")?;
     emitter.write_name(root.name.as_str())?;
     emitter.write_bytes(b"\":")?;
@@ -714,7 +826,6 @@ pub(crate) fn render_json_record<W: WriteExt>(
 }
 
 const MAX_UNIQUE_NAMES: usize = 64;
-const DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
 
 /// Key for comparing element names without allocating.
 #[derive(Clone, Copy)]
@@ -745,16 +856,18 @@ struct NameCount<'a> {
 }
 
 /// Streaming JSON renderer for IR trees.
-struct JsonEmitter<'w, W: WriteExt> {
+struct JsonEmitter<'w, 'a, W: WriteExt> {
     writer: &'w mut W,
+    arena: &'a Arena<Element<'a>>,
     float_buf: ZmijBuffer,
     formatter: CompactFormatter,
 }
 
-impl<'w, W: WriteExt> JsonEmitter<'w, W> {
-    fn new(writer: &'w mut W) -> Self {
+impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
+    fn new(writer: &'w mut W, arena: &'a Arena<Element<'a>>) -> Self {
         JsonEmitter {
             writer,
+            arena,
             float_buf: ZmijBuffer::new(),
             formatter: CompactFormatter,
         }
@@ -796,8 +909,17 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         for node in nodes {
             match node {
                 Node::Text(text) | Node::CData(text) => {
-                    if !text.value.is_empty() {
-                        self.write_json_escaped(&text.value)?;
+                    if text.is_empty() {
+                        continue;
+                    }
+                    match text {
+                        Text::Utf8(value) => {
+                            self.write_json_escaped(value.as_ref())?;
+                        }
+                        Text::Utf16(value) => {
+                            write_utf16le_json_escaped(&mut self.writer, *value)
+                                .map_err(EvtxError::from)?;
+                        }
                     }
                 }
                 Node::Value(value) => {
@@ -834,7 +956,9 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
     fn write_value_text(&mut self, value: &BinXmlValue<'_>) -> Result<()> {
         match value {
             BinXmlValue::NullType => Ok(()),
-            BinXmlValue::StringType(s) => self.write_json_escaped(s),
+            BinXmlValue::StringType(s) => {
+                write_utf16le_json_escaped(&mut self.writer, *s).map_err(EvtxError::from)
+            }
             BinXmlValue::AnsiStringType(s) => self.write_json_escaped(s.as_ref()),
             BinXmlValue::Int8Type(v) => self
                 .formatter
@@ -889,7 +1013,7 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
                         self.write_byte(b',')?;
                     }
                     first = false;
-                    self.write_json_escaped(item)?;
+                    write_utf16le_json_escaped(&mut self.writer, *item).map_err(EvtxError::from)?;
                 }
                 Ok(())
             }
@@ -970,31 +1094,29 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         Ok(())
     }
 
-    fn write_datetime(&mut self, tm: &chrono::DateTime<chrono::Utc>) -> Result<()> {
-        let year = tm.year();
-        if !(0..=9999).contains(&year) {
-            write!(self.writer, "{}", tm.format(DATETIME_FORMAT))?;
-            return Ok(());
-        }
+    fn write_datetime(&mut self, tm: &Timestamp) -> Result<()> {
+        let dt = Offset::UTC.to_datetime(*tm);
+        let year = dt.year() as i32;
 
         self.write_4_digits(year as u32)?;
         self.write_byte(b'-')?;
-        self.write_2_digits(tm.month())?;
+        self.write_2_digits(u32::from(dt.month() as u8))?;
         self.write_byte(b'-')?;
-        self.write_2_digits(tm.day())?;
+        self.write_2_digits(u32::from(dt.day() as u8))?;
         self.write_byte(b'T')?;
-        self.write_2_digits(tm.hour())?;
+        self.write_2_digits(u32::from(dt.hour() as u8))?;
         self.write_byte(b':')?;
-        self.write_2_digits(tm.minute())?;
+        self.write_2_digits(u32::from(dt.minute() as u8))?;
         self.write_byte(b':')?;
-        self.write_2_digits(tm.second())?;
+        self.write_2_digits(u32::from(dt.second() as u8))?;
         self.write_byte(b'.')?;
-        self.write_6_digits(tm.timestamp_subsec_micros())?;
+        let micros = (dt.subsec_nanosecond() / 1_000) as u32;
+        self.write_6_digits(micros)?;
         self.write_byte(b'Z')?;
         Ok(())
     }
 
-    fn write_datetime_list(&mut self, items: &[chrono::DateTime<chrono::Utc>]) -> Result<()> {
+    fn write_datetime_list(&mut self, items: &[Timestamp]) -> Result<()> {
         let mut first = true;
         for item in items {
             if !first {
@@ -1109,7 +1231,7 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         for node in nodes {
             match node {
                 Node::Text(text) | Node::CData(text) => {
-                    if !text.value.is_empty() {
+                    if !text.is_empty() {
                         return true;
                     }
                 }
@@ -1228,14 +1350,16 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         element: &Element<'_>,
         in_data_container: bool,
     ) -> Result<()> {
+        let arena = self.arena;
         let mut name_counts: [Option<NameCount<'_>>; MAX_UNIQUE_NAMES] =
             std::array::from_fn(|_| None);
         let mut num_unique = 0usize;
 
         for node in &element.children {
-            let Node::Element(child) = node else {
+            let Node::Element(child_id) = node else {
                 continue;
             };
+            let child = arena.get(*child_id).expect("invalid element id").get();
             let key = NameKey::from_name(&child.name);
             let mut found = false;
             for idx in 0..num_unique {
@@ -1270,10 +1394,11 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         let should_flatten = in_data_container;
 
         for node in &element.children {
-            let Node::Element(child) = node else {
+            let Node::Element(child_id) = node else {
                 continue;
             };
 
+            let child = arena.get(*child_id).expect("invalid element id").get();
             let key = NameKey::from_name(&child.name);
             let mut count = 1u16;
             let mut found = false;
@@ -1300,13 +1425,14 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
 
             if should_flatten && is_data_element(child.name.as_str()) {
                 for node2 in &element.children {
-                    let Node::Element(candidate) = node2 else {
+                    let Node::Element(candidate_id) = node2 else {
                         continue;
                     };
+                    let candidate = arena.get(*candidate_id).expect("invalid element id").get();
                     if !is_data_element(candidate.name.as_str()) {
                         continue;
                     }
-                    let Some(name_nodes) = self.get_name_attr_nodes(candidate) else {
+                    let Some(name_nodes) = Self::get_name_attr_nodes(candidate) else {
                         continue;
                     };
                     if !self.has_non_empty_text_content(name_nodes) {
@@ -1335,9 +1461,10 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
                 self.write_byte(b'[')?;
                 let mut first = true;
                 for node2 in &element.children {
-                    let Node::Element(candidate) = node2 else {
+                    let Node::Element(candidate_id) = node2 else {
                         continue;
                     };
+                    let candidate = arena.get(*candidate_id).expect("invalid element id").get();
                     if !NameKey::from_name(&candidate.name).eql(key) {
                         continue;
                     }
@@ -1357,7 +1484,7 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         Ok(())
     }
 
-    fn get_name_attr_nodes<'a>(&self, element: &'a Element<'a>) -> Option<&'a [Node<'a>]> {
+    fn get_name_attr_nodes<'b>(element: &'b Element<'a>) -> Option<&'b [Node<'a>]> {
         for attr in &element.attrs {
             if attr.name.as_str() == "Name" {
                 return Some(&attr.value);

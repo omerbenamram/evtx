@@ -1,10 +1,11 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::utils::ByteCursor;
+use crate::utils::Utf16LeSlice;
 use crate::utils::invalid_data;
-use crate::utils::windows::{filetime_to_datetime, read_sid, read_systime, systime_from_bytes};
+use crate::utils::windows::{filetime_to_timestamp, read_sid, read_systime, systime_from_bytes};
 
-use chrono::{DateTime, Utc};
+use jiff::{Timestamp, tz::Offset};
 use encoding::EncodingRef;
 use log::{trace, warn};
 use serde_json::{Value, json};
@@ -15,13 +16,11 @@ use std::string::ToString;
 use winstructs::guid::Guid;
 use winstructs::security::Sid;
 
-static DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
-
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXmlValue<'a> {
     NullType,
     // String may originate in substitution.
-    StringType(String),
+    StringType(Utf16LeSlice<'a>),
     AnsiStringType(Cow<'a, str>),
     Int8Type(i8),
     UInt8Type(u8),
@@ -37,8 +36,8 @@ pub enum BinXmlValue<'a> {
     BinaryType(&'a [u8]),
     GuidType(Guid),
     SizeTType(usize),
-    FileTimeType(DateTime<Utc>),
-    SysTimeType(DateTime<Utc>),
+    FileTimeType(Timestamp),
+    SysTimeType(Timestamp),
     SidType(Sid),
     HexInt32Type(Cow<'a, str>),
     HexInt64Type(Cow<'a, str>),
@@ -48,7 +47,7 @@ pub enum BinXmlValue<'a> {
     /// This is stored as a slice into the chunk data and parsed on demand by higher-level code.
     BinXmlType(&'a [u8]),
     EvtXml,
-    StringArrayType(Vec<String>),
+    StringArrayType(Vec<Utf16LeSlice<'a>>),
     AnsiStringArrayType,
     Int8ArrayType(Vec<i8>),
     UInt8ArrayType(Vec<u8>),
@@ -64,8 +63,8 @@ pub enum BinXmlValue<'a> {
     BinaryArrayType,
     GuidArrayType(Vec<Guid>),
     SizeTArrayType,
-    FileTimeArrayType(Vec<DateTime<Utc>>),
-    SysTimeArrayType(Vec<DateTime<Utc>>),
+    FileTimeArrayType(Vec<Timestamp>),
+    SysTimeArrayType(Vec<Timestamp>),
     SidArrayType(Vec<Sid>),
     HexInt32ArrayType(Vec<Cow<'a, str>>),
     HexInt64ArrayType(Vec<Cow<'a, str>>),
@@ -190,12 +189,12 @@ impl<'a> BinXmlValue<'a> {
     ) -> Result<BinXmlValue<'a>> {
         let value_type_token = cursor.u8()?;
 
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
+        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
             DeserializationError::InvalidValueVariant {
                 value: value_type_token,
                 offset: cursor.position(),
-            },
-        )?;
+            }
+        })?;
 
         let data =
             Self::deserialize_value_type_cursor(&value_type, cursor, chunk, size, ansi_codec)?;
@@ -244,12 +243,12 @@ impl<'a> BinXmlValue<'a> {
                 } else {
                     cursor.utf16_by_char_count_trimmed(sz_bytes / 2, "<string_value>")?
                 };
-                BinXmlValue::StringType(s.unwrap_or_else(|| "".to_owned()))
+                BinXmlValue::StringType(s.unwrap_or_else(Utf16LeSlice::empty))
             }
             (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
                 cursor
                     .len_prefixed_utf16_string(false, "<string_value>")?
-                    .unwrap_or_default(),
+                    .unwrap_or_else(Utf16LeSlice::empty),
             ),
 
             (BinXmlValueType::AnsiStringType, Some(sz)) => {
@@ -341,7 +340,7 @@ impl<'a> BinXmlValue<'a> {
             }
 
             (BinXmlValueType::FileTimeType, _) => {
-                BinXmlValue::FileTimeType(filetime_to_datetime(cursor.u64()?))
+                BinXmlValue::FileTimeType(filetime_to_timestamp(cursor.u64()?)?)
             }
             (BinXmlValueType::SysTimeType, _) => BinXmlValue::SysTimeType(read_systime(cursor)?),
             (BinXmlValueType::SidType, _) => BinXmlValue::SidType(read_sid(cursor)?),
@@ -386,7 +385,7 @@ impl<'a> BinXmlValue<'a> {
                 let size_usize = usize::from(sz);
                 let start = cursor.pos();
                 let end = start.saturating_add(size_usize);
-                let mut out: Vec<String> = Vec::new();
+                let mut out: Vec<Utf16LeSlice<'a>> = Vec::new();
                 while cursor.pos() < end {
                     out.push(cursor.null_terminated_utf16_string("string_array")?);
                 }
@@ -464,7 +463,7 @@ impl<'a> BinXmlValue<'a> {
             ),
             (BinXmlValueType::FileTimeArrayType, Some(sz)) => BinXmlValue::FileTimeArrayType(
                 cursor.read_sized_vec_aligned::<8, _>(sz, "filetime_array", |_off, b| {
-                    Ok(filetime_to_datetime(u64::from_le_bytes(*b)))
+                    filetime_to_timestamp(u64::from_le_bytes(*b))
                 })?,
             ),
             (BinXmlValueType::SysTimeArrayType, Some(sz)) => BinXmlValue::SysTimeArrayType(
@@ -525,11 +524,69 @@ fn to_delimited_list<N: ToString>(ns: impl AsRef<Vec<N>>) -> String {
         .join(",")
 }
 
+/// Format a timestamp as an RFC 3339-like UTC string with microsecond precision.
+///
+/// The output uses the `YYYY-MM-DDTHH:MM:SS.microsZ` form, matching EVTX JSON
+/// conventions while avoiding allocator-heavy formatting paths.
+pub fn format_timestamp(ts: &Timestamp) -> String {
+    let dt = Offset::UTC.to_datetime(*ts);
+    let mut out = String::with_capacity(27);
+    push_4_digits(&mut out, dt.year() as u32);
+    out.push('-');
+    push_2_digits(&mut out, u32::from(dt.month() as u8));
+    out.push('-');
+    push_2_digits(&mut out, u32::from(dt.day() as u8));
+    out.push('T');
+    push_2_digits(&mut out, u32::from(dt.hour() as u8));
+    out.push(':');
+    push_2_digits(&mut out, u32::from(dt.minute() as u8));
+    out.push(':');
+    push_2_digits(&mut out, u32::from(dt.second() as u8));
+    out.push('.');
+    let micros = (dt.subsec_nanosecond() / 1_000) as u32;
+    push_6_digits(&mut out, micros);
+    out.push('Z');
+    out
+}
+
+fn push_2_digits(out: &mut String, value: u32) {
+    let tens = (value / 10) % 10;
+    let ones = value % 10;
+    out.push(char::from(b'0' + tens as u8));
+    out.push(char::from(b'0' + ones as u8));
+}
+
+fn push_4_digits(out: &mut String, value: u32) {
+    let thousands = (value / 1000) % 10;
+    let hundreds = (value / 100) % 10;
+    let tens = (value / 10) % 10;
+    let ones = value % 10;
+    out.push(char::from(b'0' + thousands as u8));
+    out.push(char::from(b'0' + hundreds as u8));
+    out.push(char::from(b'0' + tens as u8));
+    out.push(char::from(b'0' + ones as u8));
+}
+
+fn push_6_digits(out: &mut String, value: u32) {
+    let hundred_thousands = (value / 100000) % 10;
+    let ten_thousands = (value / 10000) % 10;
+    let thousands = (value / 1000) % 10;
+    let hundreds = (value / 100) % 10;
+    let tens = (value / 10) % 10;
+    let ones = value % 10;
+    out.push(char::from(b'0' + hundred_thousands as u8));
+    out.push(char::from(b'0' + ten_thousands as u8));
+    out.push(char::from(b'0' + thousands as u8));
+    out.push(char::from(b'0' + hundreds as u8));
+    out.push(char::from(b'0' + tens as u8));
+    out.push(char::from(b'0' + ones as u8));
+}
+
 impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
     fn from(value: BinXmlValue<'c>) -> Self {
         match value {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s),
+            BinXmlValue::StringType(s) => json!(s.to_string().unwrap_or_default()),
             BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -554,12 +611,17 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             }
             BinXmlValue::GuidType(guid) => json!(guid.to_string()),
             //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
-            BinXmlValue::FileTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
-            BinXmlValue::SysTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
+            BinXmlValue::FileTimeType(tm) => json!(format_timestamp(&tm)),
+            BinXmlValue::SysTimeType(tm) => json!(format_timestamp(&tm)),
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
-            BinXmlValue::StringArrayType(s) => json!(s),
+            BinXmlValue::StringArrayType(items) => json!(
+                items
+                    .iter()
+                    .map(|item| item.to_string().unwrap_or_default())
+                    .collect::<Vec<String>>()
+            ),
             BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
             BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
             BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
@@ -574,8 +636,18 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::GuidArrayType(guids) => {
                 json!(guids.iter().map(Guid::to_string).collect::<Vec<String>>())
             }
-            BinXmlValue::FileTimeArrayType(filetimes) => json!(filetimes),
-            BinXmlValue::SysTimeArrayType(systimes) => json!(systimes),
+            BinXmlValue::FileTimeArrayType(filetimes) => json!(
+                filetimes
+                    .iter()
+                    .map(|ts| format_timestamp(ts))
+                    .collect::<Vec<String>>()
+            ),
+            BinXmlValue::SysTimeArrayType(systimes) => json!(
+                systimes
+                    .iter()
+                    .map(|ts| format_timestamp(ts))
+                    .collect::<Vec<String>>()
+            ),
             BinXmlValue::SidArrayType(sids) => {
                 json!(sids.iter().map(Sid::to_string).collect::<Vec<String>>())
             }
@@ -597,7 +669,7 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
     fn from(value: &'c BinXmlValue) -> Self {
         match value {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s),
+            BinXmlValue::StringType(s) => json!(s.to_string().unwrap_or_default()),
             BinXmlValue::AnsiStringType(s) => json!(s.as_ref()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -622,12 +694,17 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             }
             BinXmlValue::GuidType(guid) => json!(guid.to_string()),
             //            BinXmlValue::SizeTType(sz) => json!(sz.to_string()),
-            BinXmlValue::FileTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
-            BinXmlValue::SysTimeType(tm) => json!(tm.format(DATETIME_FORMAT).to_string()),
+            BinXmlValue::FileTimeType(tm) => json!(format_timestamp(tm)),
+            BinXmlValue::SysTimeType(tm) => json!(format_timestamp(tm)),
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
-            BinXmlValue::StringArrayType(s) => json!(s),
+            BinXmlValue::StringArrayType(items) => json!(
+                items
+                    .iter()
+                    .map(|item| item.to_string().unwrap_or_default())
+                    .collect::<Vec<String>>()
+            ),
             BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
             BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
             BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
@@ -642,8 +719,18 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::GuidArrayType(guids) => {
                 json!(guids.iter().map(Guid::to_string).collect::<Vec<String>>())
             }
-            BinXmlValue::FileTimeArrayType(filetimes) => json!(filetimes),
-            BinXmlValue::SysTimeArrayType(systimes) => json!(systimes),
+            BinXmlValue::FileTimeArrayType(filetimes) => json!(
+                filetimes
+                    .iter()
+                    .map(|ts| format_timestamp(ts))
+                    .collect::<Vec<String>>()
+            ),
+            BinXmlValue::SysTimeArrayType(systimes) => json!(
+                systimes
+                    .iter()
+                    .map(|ts| format_timestamp(ts))
+                    .collect::<Vec<String>>()
+            ),
             BinXmlValue::SidArrayType(sids) => {
                 json!(sids.iter().map(Sid::to_string).collect::<Vec<String>>())
             }
@@ -665,7 +752,9 @@ impl BinXmlValue<'_> {
     pub fn as_cow_str(&self) -> Cow<'_, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),
+            BinXmlValue::StringType(s) => {
+                Cow::Owned(s.to_string().unwrap_or_default())
+            }
             BinXmlValue::AnsiStringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
@@ -687,12 +776,18 @@ impl BinXmlValue<'_> {
             )),
             BinXmlValue::GuidType(guid) => Cow::Owned(guid.to_string()),
             BinXmlValue::SizeTType(sz) => Cow::Owned(sz.to_string()),
-            BinXmlValue::FileTimeType(tm) => Cow::Owned(tm.format(DATETIME_FORMAT).to_string()),
-            BinXmlValue::SysTimeType(tm) => Cow::Owned(tm.format(DATETIME_FORMAT).to_string()),
+            BinXmlValue::FileTimeType(tm) => Cow::Owned(format_timestamp(tm)),
+            BinXmlValue::SysTimeType(tm) => Cow::Owned(format_timestamp(tm)),
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => hex_string.clone(),
             BinXmlValue::HexInt64Type(hex_string) => hex_string.clone(),
-            BinXmlValue::StringArrayType(s) => Cow::Owned(s.join(",")),
+            BinXmlValue::StringArrayType(items) => Cow::Owned(
+                items
+                    .iter()
+                    .map(|item| item.to_string().unwrap_or_default())
+                    .collect::<Vec<String>>()
+                    .join(","),
+            ),
             BinXmlValue::Int8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::UInt8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::Int16ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
@@ -705,8 +800,20 @@ impl BinXmlValue<'_> {
             BinXmlValue::Real64ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::BoolArrayType(bools) => Cow::Owned(to_delimited_list(bools)),
             BinXmlValue::GuidArrayType(guids) => Cow::Owned(to_delimited_list(guids)),
-            BinXmlValue::FileTimeArrayType(filetimes) => Cow::Owned(to_delimited_list(filetimes)),
-            BinXmlValue::SysTimeArrayType(systimes) => Cow::Owned(to_delimited_list(systimes)),
+            BinXmlValue::FileTimeArrayType(filetimes) => Cow::Owned(
+                filetimes
+                    .iter()
+                    .map(|ts| format_timestamp(ts))
+                    .collect::<Vec<String>>()
+                    .join(","),
+            ),
+            BinXmlValue::SysTimeArrayType(systimes) => Cow::Owned(
+                systimes
+                    .iter()
+                    .map(|ts| format_timestamp(ts))
+                    .collect::<Vec<String>>()
+                    .join(","),
+            ),
             BinXmlValue::SidArrayType(sids) => Cow::Owned(to_delimited_list(sids)),
             BinXmlValue::HexInt32ArrayType(hex_strings) => Cow::Owned(hex_strings.join(",")),
             BinXmlValue::HexInt64ArrayType(hex_strings) => Cow::Owned(hex_strings.join(",")),

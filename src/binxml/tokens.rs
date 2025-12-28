@@ -304,7 +304,7 @@ pub(crate) fn read_processing_instruction_data_cursor(
     );
 
     let data = cursor
-        .len_prefixed_utf16_string(false, "pi_data")?
+        .len_prefixed_utf16_string_utf8(false, "pi_data")?
         .unwrap_or_default();
     trace!("PIData - {}", data,);
     Ok(data)
