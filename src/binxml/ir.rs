@@ -12,17 +12,15 @@
 
 use crate::binxml::name::{BinXmlName, BinXmlNameRef};
 use crate::binxml::value_variant::BinXmlValue;
-use crate::err::{DeserializationError, EvtxError, Result, SerializationError};
+use crate::err::{DeserializationError, EvtxError, Result};
 use crate::model::deserialized::{
     BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
 };
 use crate::model::ir::{Attr, Element, Name, Node, Placeholder, Text};
 use crate::utils::ByteCursor;
 use crate::{EvtxChunk, ParserSettings};
-use quick_xml::events::BytesText;
-use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -693,39 +691,58 @@ fn expand_string_ref<'a>(
     }
 }
 
+
 pub(crate) fn render_json_record<W: Write>(
     root: &Element<'_>,
-    settings: &ParserSettings,
+    _settings: &ParserSettings,
     writer: &mut W,
 ) -> Result<()> {
-    let mut emitter = JsonEmitter::new(writer, settings);
-    emitter.write_object_start()?;
-    emitter.write_element_field(root, false)?;
-    emitter.write_object_end()?;
+    let mut emitter = JsonEmitter::new(writer);
+    emitter.write_bytes(b"{\"")?;
+    emitter.write_name(root.name.as_str())?;
+    emitter.write_bytes(b"\":")?;
+    emitter.write_element_value(root, false)?;
+    emitter.write_bytes(b"}")?;
     Ok(())
 }
 
-/// Per-object JSON rendering frame used to de-duplicate keys.
-#[derive(Debug)]
-struct ObjectFrame {
-    first_field: bool,
-    used_keys: HashSet<String>,
+const MAX_UNIQUE_NAMES: usize = 64;
+const DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+
+/// Key for comparing element names without allocating.
+#[derive(Clone, Copy)]
+struct NameKey<'a> {
+    bytes: &'a str,
+}
+
+impl<'a> NameKey<'a> {
+    fn from_name(name: &'a Name<'a>) -> Self {
+        NameKey { bytes: name.as_str() }
+    }
+
+    fn eql(self, other: NameKey<'a>) -> bool {
+        if self.bytes.as_ptr() == other.bytes.as_ptr() && self.bytes.len() == other.bytes.len() {
+            return true;
+        }
+        self.bytes == other.bytes
+    }
+}
+
+/// Entry for counting unique child element names.
+struct NameCount<'a> {
+    key: NameKey<'a>,
+    count: u16,
+    emitted: bool,
 }
 
 /// Streaming JSON renderer for IR trees.
 struct JsonEmitter<'w, W: Write> {
     writer: &'w mut W,
-    frames: Vec<ObjectFrame>,
-    separate_json_attributes: bool,
 }
 
 impl<'w, W: Write> JsonEmitter<'w, W> {
-    fn new(writer: &'w mut W, settings: &ParserSettings) -> Self {
-        JsonEmitter {
-            writer,
-            frames: Vec::new(),
-            separate_json_attributes: settings.should_separate_json_attributes(),
-        }
+    fn new(writer: &'w mut W) -> Self {
+        JsonEmitter { writer }
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
@@ -733,454 +750,515 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
         Ok(())
     }
 
-    fn write_object_start(&mut self) -> Result<()> {
-        self.write_bytes(b"{")?;
-        self.frames.push(ObjectFrame {
-            first_field: true,
-            used_keys: HashSet::new(),
-        });
+    fn write_byte(&mut self, byte: u8) -> Result<()> {
+        self.writer.write_all(&[byte])?;
         Ok(())
     }
 
-    fn write_object_end(&mut self) -> Result<()> {
-        self.write_bytes(b"}")?;
-        self.frames.pop();
-        Ok(())
+    fn write_name(&mut self, name: &str) -> Result<()> {
+        self.write_bytes(name.as_bytes())
     }
 
-    fn current_frame_mut(&mut self) -> &mut ObjectFrame {
-        self.frames
-            .last_mut()
-            .expect("no current JSON object frame")
+    fn write_json_key_from_name(&mut self, name: &Name<'_>) -> Result<()> {
+        self.write_byte(b'"')?;
+        self.write_name(name.as_str())?;
+        self.write_bytes(b"\":")
     }
 
-    fn write_comma_if_needed(&mut self) -> Result<()> {
-        let frame = self.current_frame_mut();
-        if frame.first_field {
-            frame.first_field = false;
-            Ok(())
-        } else {
-            self.write_bytes(b",")
-        }
+    fn write_json_key_from_nodes(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+        self.write_byte(b'"')?;
+        self.write_json_text_content(nodes)?;
+        self.write_bytes(b"\":")
     }
 
-    fn reserve_unique_key(&mut self, key: &str) -> String {
-        let frame = self
-            .frames
-            .last_mut()
-            .expect("no current JSON object frame");
-        if frame.used_keys.contains(key) {
-            let mut suffix = 1;
-            loop {
-                let candidate = format!("{}_{}", key, suffix);
-                if !frame.used_keys.contains(&candidate) {
-                    frame.used_keys.insert(candidate.clone());
-                    return candidate;
+    fn write_json_escaped(&mut self, value: &str) -> Result<()> {
+        let bytes = value.as_bytes();
+        let mut start = 0;
+        for (idx, &b) in bytes.iter().enumerate() {
+            let escape = match b {
+                b'"' => Some(b"\\\"".as_ref()),
+                b'\\' => Some(b"\\\\".as_ref()),
+                b'\n' => Some(b"\\n".as_ref()),
+                b'\r' => Some(b"\\r".as_ref()),
+                b'\t' => Some(b"\\t".as_ref()),
+                0x08 => Some(b"\\b".as_ref()),
+                0x0c => Some(b"\\f".as_ref()),
+                b if b < 0x20 => {
+                    if start < idx {
+                        self.write_bytes(&bytes[start..idx])?;
+                    }
+                    let hi = (b >> 4) & 0x0f;
+                    let lo = b & 0x0f;
+                    let mut buf = [0u8; 6];
+                    buf[..4].copy_from_slice(b"\\u00");
+                    buf[4] = to_hex_digit(hi);
+                    buf[5] = to_hex_digit(lo);
+                    self.write_bytes(&buf)?;
+                    start = idx + 1;
+                    continue;
                 }
-                suffix += 1;
-            }
-        } else {
-            frame.used_keys.insert(key.to_owned());
-            key.to_owned()
-        }
-    }
-
-    fn write_reserved_key(&mut self, key: &str) -> Result<()> {
-        self.write_comma_if_needed()?;
-        serde_json::to_writer(&mut self.writer, key).map_err(SerializationError::from)?;
-        self.write_bytes(b":")
-    }
-
-    fn write_key(&mut self, key: &str) -> Result<String> {
-        let unique_key = self.reserve_unique_key(key);
-        self.write_reserved_key(&unique_key)?;
-        Ok(unique_key)
-    }
-
-    fn write_element_field(
-        &mut self,
-        element: &Element<'_>,
-        in_data_container: bool,
-    ) -> Result<()> {
-        let is_data = is_data_element(element.name.as_str());
-        let data_name_attr = if is_data {
-            self.get_name_attr_value(element)?
-        } else {
-            None
-        };
-
-        if is_data && data_name_attr.is_none() && in_data_container {
-            return Ok(());
-        }
-
-        let key = data_name_attr
-            .as_deref()
-            .unwrap_or_else(|| element.name.as_str());
-
-        let has_attrs = if is_data {
-            false
-        } else {
-            self.has_non_null_attributes(element)?
-        };
-
-        let write_attrs_separately = has_attrs && self.separate_json_attributes;
-
-        let element_key = if write_attrs_separately {
-            let unique_key = self.reserve_unique_key(key);
-            self.write_attributes_sibling(&unique_key, element)?;
-            unique_key
-        } else {
-            String::new()
-        };
-
-        let has_text_nodes = has_text_nodes(element);
-        let has_element_child = element.has_element_child;
-
-        if write_attrs_separately && !has_text_nodes && !has_element_child {
-            return Ok(());
-        }
-
-        if write_attrs_separately {
-            self.write_reserved_key(&element_key)?;
-            self.write_element_value(element, false)?;
-        } else {
-            self.write_key(key)?;
-            self.write_element_value(element, has_attrs)?;
-        }
-
-        Ok(())
-    }
-
-    fn write_element_value(
-        &mut self,
-        element: &Element<'_>,
-        include_attributes: bool,
-    ) -> Result<()> {
-        let has_element_child = element.has_element_child;
-        let needs_object = has_element_child || include_attributes;
-        if !needs_object {
-            self.write_nodes_as_scalar(&element.children)?;
-            return Ok(());
-        }
-
-        self.write_object_start()?;
-        if include_attributes {
-            self.write_attributes_inline(element)?;
-        }
-
-        let child_is_container = is_data_container(element.name.as_str());
-        self.write_children(element, child_is_container)?;
-
-        if !self.separate_json_attributes {
-            self.write_text_field(element)?;
-        }
-
-        self.write_object_end()?;
-        Ok(())
-    }
-
-    fn write_attributes_inline(&mut self, element: &Element<'_>) -> Result<()> {
-        let mut attrs: Vec<&Attr<'_>> = Vec::new();
-        for attr in &element.attrs {
-            if let Some(_) = self.attr_value_to_json(&attr.value)? {
-                attrs.push(attr);
-            }
-        }
-
-        if attrs.is_empty() {
-            return Ok(());
-        }
-
-        self.write_key("#attributes")?;
-        self.write_object_start()?;
-        for attr in attrs {
-            self.write_key(attr.name.as_str())?;
-            let value = self.attr_value_to_json(&attr.value)?.ok_or(
-                EvtxError::FailedToCreateRecordModel("attribute value vanished"),
-            )?;
-            serde_json::to_writer(&mut self.writer, &value).map_err(SerializationError::from)?;
-        }
-        self.write_object_end()?;
-        Ok(())
-    }
-
-    fn write_attributes_sibling(&mut self, element_key: &str, element: &Element<'_>) -> Result<()> {
-        let attr_key = format!("{}_attributes", element_key);
-        self.write_reserved_key(&attr_key)?;
-        self.write_object_start()?;
-        for attr in &element.attrs {
-            let Some(value) = self.attr_value_to_json(&attr.value)? else {
-                continue;
+                _ => None,
             };
-            self.write_key(attr.name.as_str())?;
-            serde_json::to_writer(&mut self.writer, &value).map_err(SerializationError::from)?;
+
+            if let Some(esc) = escape {
+                if start < idx {
+                    self.write_bytes(&bytes[start..idx])?;
+                }
+                self.write_bytes(esc)?;
+                start = idx + 1;
+            }
         }
-        self.write_object_end()?;
+        if start < bytes.len() {
+            self.write_bytes(&bytes[start..])?;
+        }
         Ok(())
     }
 
-    fn write_children(&mut self, element: &Element<'_>, in_data_container: bool) -> Result<()> {
-        let mut data_values: Vec<JsonValue> = Vec::new();
+    fn write_json_text_content(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+        for node in nodes {
+            match node {
+                Node::Text(text) | Node::CData(text) => {
+                    if !text.value.is_empty() {
+                        self.write_json_escaped(&text.value)?;
+                    }
+                }
+                Node::Value(value) => {
+                    self.write_value_text(value)?;
+                }
+                Node::CharRef(ch) => {
+                    write!(self.writer, "&#{};", ch)?;
+                }
+                Node::EntityRef(name) => {
+                    self.write_bytes(b"&")?;
+                    self.write_name(name.as_str())?;
+                    self.write_bytes(b";")?;
+                }
+                Node::PITarget(_) | Node::PIData(_) => {}
+                Node::Placeholder(_) => {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "unresolved placeholder in tree",
+                    ));
+                }
+                Node::Element(_) => {
+                    return Err(EvtxError::FailedToCreateRecordModel(
+                        "unexpected element node in text context",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_value_text(&mut self, value: &BinXmlValue<'_>) -> Result<()> {
+        match value {
+            BinXmlValue::NullType => Ok(()),
+            BinXmlValue::StringType(s) => self.write_json_escaped(s),
+            BinXmlValue::AnsiStringType(s) => self.write_json_escaped(s.as_ref()),
+            BinXmlValue::Int8Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::UInt8Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Int16Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::UInt16Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Int32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::UInt32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Int64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::UInt64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Real32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Real64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::BoolType(v) => {
+                self.write_bytes(if *v { b"true" } else { b"false" })
+            }
+            BinXmlValue::BinaryType(bytes) => self.write_hex_bytes(bytes),
+            BinXmlValue::GuidType(guid) => write!(self.writer, "{}", guid).map_err(EvtxError::from),
+            BinXmlValue::SizeTType(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::FileTimeType(tm) => {
+                write!(self.writer, "{}", tm.format(DATETIME_FORMAT)).map_err(EvtxError::from)
+            }
+            BinXmlValue::SysTimeType(tm) => {
+                write!(self.writer, "{}", tm.format(DATETIME_FORMAT)).map_err(EvtxError::from)
+            }
+            BinXmlValue::SidType(sid) => write!(self.writer, "{}", sid).map_err(EvtxError::from),
+            BinXmlValue::HexInt32Type(s) => self.write_json_escaped(s.as_ref()),
+            BinXmlValue::HexInt64Type(s) => self.write_json_escaped(s.as_ref()),
+            BinXmlValue::StringArrayType(items) => {
+                let mut first = true;
+                for item in items {
+                    if !first {
+                        self.write_byte(b',')?;
+                    }
+                    first = false;
+                    self.write_json_escaped(item)?;
+                }
+                Ok(())
+            }
+            BinXmlValue::Int8ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::UInt8ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::Int16ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::UInt16ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::Int32ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::UInt32ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::Int64ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::UInt64ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::Real32ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::Real64ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::BoolArrayType(items) => self.write_delimited(items),
+            BinXmlValue::GuidArrayType(items) => self.write_delimited(items),
+            BinXmlValue::FileTimeArrayType(items) => self.write_delimited(items),
+            BinXmlValue::SysTimeArrayType(items) => self.write_delimited(items),
+            BinXmlValue::SidArrayType(items) => self.write_delimited(items),
+            BinXmlValue::HexInt32ArrayType(items) => {
+                let mut first = true;
+                for item in items {
+                    if !first {
+                        self.write_byte(b',')?;
+                    }
+                    first = false;
+                    self.write_json_escaped(item.as_ref())?;
+                }
+                Ok(())
+            }
+            BinXmlValue::HexInt64ArrayType(items) => {
+                let mut first = true;
+                for item in items {
+                    if !first {
+                        self.write_byte(b',')?;
+                    }
+                    first = false;
+                    self.write_json_escaped(item.as_ref())?;
+                }
+                Ok(())
+            }
+            BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
+                EvtxError::FailedToCreateRecordModel("unsupported BinXML value in JSON"),
+            ),
+            _ => Err(EvtxError::Unimplemented {
+                name: format!("JSON formatting for {:?}", value),
+            }),
+        }
+    }
+
+    fn write_hex_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        for &b in bytes {
+            let hi = (b >> 4) & 0x0f;
+            let lo = b & 0x0f;
+            self.write_byte(to_hex_digit(hi))?;
+            self.write_byte(to_hex_digit(lo))?;
+        }
+        Ok(())
+    }
+
+    fn write_delimited<T: std::fmt::Display>(&mut self, items: &[T]) -> Result<()> {
+        let mut first = true;
+        for item in items {
+            if !first {
+                self.write_byte(b',')?;
+            }
+            first = false;
+            write!(self.writer, "{}", item)?;
+        }
+        Ok(())
+    }
+
+    fn try_write_as_number(&mut self, nodes: &[Node<'_>]) -> Result<bool> {
+        if nodes.len() != 1 {
+            return Ok(false);
+        }
+        let Node::Value(value) = &nodes[0] else {
+            return Ok(false);
+        };
+        match value {
+            BinXmlValue::Int8Type(v) => self.write_int_number(*v),
+            BinXmlValue::UInt8Type(v) => self.write_int_number(*v),
+            BinXmlValue::Int16Type(v) => self.write_int_number(*v),
+            BinXmlValue::UInt16Type(v) => self.write_int_number(*v),
+            BinXmlValue::Int32Type(v) => self.write_int_number(*v),
+            BinXmlValue::UInt32Type(v) => self.write_int_number(*v),
+            BinXmlValue::Int64Type(v) => self.write_int_number(*v),
+            BinXmlValue::UInt64Type(v) => self.write_int_number(*v),
+            BinXmlValue::BoolType(v) => {
+                self.write_bytes(if *v { b"true" } else { b"false" })?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn write_int_number<T: std::fmt::Display>(&mut self, value: T) -> Result<bool> {
+        write!(self.writer, "{}", value)?;
+        Ok(true)
+    }
+
+    fn render_text_to_json_string(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+        self.write_byte(b'"')?;
+        self.write_json_text_content(nodes)?;
+        self.write_byte(b'"')
+    }
+
+    fn render_content_as_json_value(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+        if self.try_write_as_number(nodes)? {
+            return Ok(());
+        }
+        self.render_text_to_json_string(nodes)
+    }
+
+    fn has_non_empty_text_content(&self, nodes: &[Node<'_>]) -> bool {
+        for node in nodes {
+            match node {
+                Node::Text(text) | Node::CData(text) => {
+                    if !text.value.is_empty() {
+                        return true;
+                    }
+                }
+                Node::Value(value) => {
+                    if !is_optional_empty(value) {
+                        return true;
+                    }
+                }
+                Node::CharRef(_) | Node::EntityRef(_) => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn has_non_empty_attributes(&self, element: &Element<'_>) -> bool {
+        for attr in &element.attrs {
+            if self.has_non_empty_text_content(&attr.value) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn render_attributes_object(&mut self, attrs: &[Attr<'_>]) -> Result<bool> {
+        let mut has_any = false;
+        for attr in attrs {
+            if self.has_non_empty_text_content(&attr.value) {
+                has_any = true;
+                break;
+            }
+        }
+        if !has_any {
+            return Ok(false);
+        }
+
+        self.write_bytes(b"\"#attributes\":{")?;
+        let mut first = true;
+        for attr in attrs {
+            if !self.has_non_empty_text_content(&attr.value) {
+                continue;
+            }
+            if !first {
+                self.write_byte(b',')?;
+            }
+            first = false;
+            self.write_byte(b'"')?;
+            self.write_name(attr.name.as_str())?;
+            self.write_bytes(b"\":")?;
+            if self.try_write_as_number(&attr.value)? {
+                continue;
+            }
+            self.render_text_to_json_string(&attr.value)?;
+        }
+        self.write_byte(b'}')?;
+        Ok(true)
+    }
+
+    fn should_render_as_null(&self, element: &Element<'_>) -> bool {
+        if element.has_element_child {
+            return false;
+        }
+        if self.has_non_empty_text_content(&element.children) {
+            return false;
+        }
+        if self.has_non_empty_attributes(element) {
+            return false;
+        }
+        true
+    }
+
+    fn can_render_as_simple_value(&self, element: &Element<'_>) -> bool {
+        if element.has_element_child {
+            return false;
+        }
+        if self.has_non_empty_attributes(element) {
+            return false;
+        }
+        self.has_non_empty_text_content(&element.children)
+    }
+
+    fn is_leaf_string(&self, element: &Element<'_>) -> bool {
+        element.attrs.is_empty() && !element.has_element_child
+    }
+
+    fn render_data_element_value(&mut self, element: &Element<'_>) -> Result<()> {
+        if !self.has_non_empty_text_content(&element.children) && !element.has_element_child {
+            return self.write_bytes(b"\"\"");
+        }
+
+        if element.has_element_child {
+            self.write_element_body_json(element, false)
+        } else {
+            self.render_content_as_json_value(&element.children)
+        }
+    }
+
+    fn write_element_value(&mut self, element: &Element<'_>, child_is_container: bool) -> Result<()> {
+        if self.should_render_as_null(element) {
+            self.write_bytes(b"null")
+        } else if self.can_render_as_simple_value(element) {
+            self.render_content_as_json_value(&element.children)
+        } else if self.is_leaf_string(element) {
+            self.render_content_as_json_value(&element.children)
+        } else {
+            self.write_element_body_json(element, child_is_container)
+        }
+    }
+
+    fn write_element_body_json(&mut self, element: &Element<'_>, in_data_container: bool) -> Result<()> {
+        let mut name_counts: [Option<NameCount<'_>>; MAX_UNIQUE_NAMES] =
+            std::array::from_fn(|_| None);
+        let mut num_unique = 0usize;
 
         for node in &element.children {
             let Node::Element(child) = node else {
                 continue;
             };
-            let child = child.as_ref();
-            let child_name = child.name.as_str();
-            let child_is_container = is_data_container(child_name);
+            let key = NameKey::from_name(&child.name);
+            let mut found = false;
+            for idx in 0..num_unique {
+                let Some(nc) = name_counts[idx].as_mut() else {
+                    continue;
+                };
+                if nc.key.eql(key) {
+                    nc.count = nc.count.saturating_add(1);
+                    found = true;
+                    break;
+                }
+            }
+            if !found && num_unique < MAX_UNIQUE_NAMES {
+                name_counts[num_unique] = Some(NameCount {
+                    key,
+                    count: 1,
+                    emitted: false,
+                });
+                num_unique += 1;
+            }
+        }
 
-            if in_data_container && is_data_element(child_name) {
-                if let Some(name_attr) = self.get_name_attr_value(child)? {
-                    self.write_key(&name_attr)?;
-                    self.write_element_value(child, false)?;
-                } else {
-                    self.collect_data_values(child, &mut data_values)?;
+        self.write_byte(b'{')?;
+        let mut wrote_any = false;
+
+        if !element.attrs.is_empty() {
+            if self.render_attributes_object(&element.attrs)? {
+                wrote_any = true;
+            }
+        }
+
+        let should_flatten = in_data_container;
+
+        for node in &element.children {
+            let Node::Element(child) = node else {
+                continue;
+            };
+
+            let key = NameKey::from_name(&child.name);
+            let mut count = 1u16;
+            let mut found = false;
+
+            for idx in 0..num_unique {
+                let Some(nc) = name_counts[idx].as_mut() else {
+                    continue;
+                };
+                if nc.key.eql(key) {
+                    if nc.emitted {
+                        found = true;
+                        break;
+                    }
+                    nc.emitted = true;
+                    count = nc.count;
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                continue;
+            }
+
+            if should_flatten && is_data_element(child.name.as_str()) {
+                for node2 in &element.children {
+                    let Node::Element(candidate) = node2 else {
+                        continue;
+                    };
+                    if !is_data_element(candidate.name.as_str()) {
+                        continue;
+                    }
+                    let Some(name_nodes) = self.get_name_attr_nodes(candidate) else {
+                        continue;
+                    };
+                    if !self.has_non_empty_text_content(name_nodes) {
+                        continue;
+                    }
+                    if wrote_any {
+                        self.write_byte(b',')?;
+                    }
+                    wrote_any = true;
+                    self.write_json_key_from_nodes(name_nodes)?;
+                    self.render_data_element_value(candidate)?;
                 }
                 continue;
             }
 
-            self.write_element_field(child, child_is_container)?;
-        }
+            if wrote_any {
+                self.write_byte(b',')?;
+            }
 
-        if in_data_container && !data_values.is_empty() {
-            self.write_aggregated_data(&data_values)?;
-        }
+            self.write_json_key_from_name(&child.name)?;
+            let child_is_container = is_data_container(child.name.as_str());
 
-        Ok(())
-    }
-
-    fn write_text_field(&mut self, element: &Element<'_>) -> Result<()> {
-        let mut values: Vec<JsonValue> = Vec::new();
-        for node in element
-            .children
-            .iter()
-            .filter(|n| !matches!(n, Node::Element(_)))
-        {
-            values.push(self.node_to_json_value(node)?);
-        }
-        if values.is_empty() {
-            return Ok(());
-        }
-
-        self.write_key("#text")?;
-        if values.len() == 1 {
-            serde_json::to_writer(&mut self.writer, &values[0])
-                .map_err(SerializationError::from)?;
-        } else {
-            self.write_bytes(b"[")?;
-            for (idx, value) in values.iter().enumerate() {
-                if idx > 0 {
-                    self.write_bytes(b",")?;
+            if count == 1 {
+                self.write_element_value(child, child_is_container)?;
+            } else {
+                self.write_byte(b'[')?;
+                let mut first = true;
+                for node2 in &element.children {
+                    let Node::Element(candidate) = node2 else {
+                        continue;
+                    };
+                    if !NameKey::from_name(&candidate.name).eql(key) {
+                        continue;
+                    }
+                    if !first {
+                        self.write_byte(b',')?;
+                    }
+                    first = false;
+                    self.write_element_value(candidate, child_is_container)?;
                 }
-                serde_json::to_writer(&mut self.writer, value).map_err(SerializationError::from)?;
+                self.write_byte(b']')?;
             }
-            self.write_bytes(b"]")?;
+
+            wrote_any = true;
         }
+
+        self.write_byte(b'}')?;
         Ok(())
     }
 
-    fn write_nodes_as_scalar(&mut self, nodes: &[Node<'_>]) -> Result<()> {
-        let non_elements: Vec<&Node<'_>> = nodes
-            .iter()
-            .filter(|n| !matches!(n, Node::Element(_)))
-            .collect();
-
-        if non_elements.is_empty() {
-            self.write_bytes(b"null")?;
-            return Ok(());
-        }
-
-        if non_elements.len() == 1 {
-            let value = self.node_to_json_value(non_elements[0])?;
-            serde_json::to_writer(&mut self.writer, &value).map_err(SerializationError::from)?;
-            return Ok(());
-        }
-
-        let mut concat = String::new();
-        for node in non_elements {
-            let value = self.node_to_json_value(node)?;
-            match value {
-                JsonValue::String(s) => concat.push_str(&s),
-                JsonValue::Number(n) => concat.push_str(&n.to_string()),
-                JsonValue::Bool(b) => concat.push_str(if b { "true" } else { "false" }),
-                JsonValue::Null => concat.push_str("null"),
-                other => concat.push_str(&other.to_string()),
-            }
-        }
-
-        serde_json::to_writer(&mut self.writer, &concat).map_err(SerializationError::from)?;
-        Ok(())
-    }
-
-    fn has_non_null_attributes(&self, element: &Element<'_>) -> Result<bool> {
-        for attr in &element.attrs {
-            if let Some(value) = self.attr_value_to_json(&attr.value)? {
-                if !value.is_null() {
-                    return Ok(true);
-                }
-            }
-        }
-        Ok(false)
-    }
-
-    fn attr_value_to_json(&self, nodes: &[Node<'_>]) -> Result<Option<JsonValue>> {
-        let non_elements: Vec<&Node<'_>> = nodes
-            .iter()
-            .filter(|n| !matches!(n, Node::Element(_)))
-            .collect();
-
-        if non_elements.is_empty() {
-            return Ok(None);
-        }
-
-        if non_elements.len() == 1 {
-            let value = self.node_to_json_value(non_elements[0])?;
-            if value.is_null() {
-                return Ok(None);
-            }
-            return Ok(Some(value));
-        }
-
-        let mut concat = String::new();
-        for node in non_elements {
-            let value = self.node_to_json_value(node)?;
-            match value {
-                JsonValue::String(s) => concat.push_str(&s),
-                JsonValue::Number(n) => concat.push_str(&n.to_string()),
-                JsonValue::Bool(b) => concat.push_str(if b { "true" } else { "false" }),
-                JsonValue::Null => concat.push_str("null"),
-                other => concat.push_str(&other.to_string()),
-            }
-        }
-        Ok(Some(JsonValue::String(concat)))
-    }
-
-    fn node_to_json_value(&self, node: &Node<'_>) -> Result<JsonValue> {
-        match node {
-            Node::Text(text) | Node::CData(text) => Ok(JsonValue::String(text.value.to_string())),
-            Node::Value(value) => binxml_value_to_json(value),
-            Node::EntityRef(name) => {
-                let resolved = resolve_entity_ref(name.as_binxml_name())?;
-                Ok(JsonValue::String(resolved))
-            }
-            Node::CharRef(_) => Err(EvtxError::Unimplemented {
-                name: "character reference".to_string(),
-            }),
-            Node::PITarget(_) | Node::PIData(_) => Err(EvtxError::Unimplemented {
-                name: "processing instruction".to_string(),
-            }),
-            Node::Placeholder(_) => Err(EvtxError::FailedToCreateRecordModel(
-                "unresolved placeholder in tree",
-            )),
-            Node::Element(_) => Err(EvtxError::FailedToCreateRecordModel(
-                "unexpected element node in value context",
-            )),
-        }
-    }
-
-    fn collect_data_values(&self, element: &Element<'_>, out: &mut Vec<JsonValue>) -> Result<()> {
-        for node in element
-            .children
-            .iter()
-            .filter(|n| !matches!(n, Node::Element(_)))
-        {
-            out.push(self.node_to_json_value(node)?);
-        }
-        Ok(())
-    }
-
-    fn write_aggregated_data(&mut self, values: &[JsonValue]) -> Result<()> {
-        if self.separate_json_attributes {
-            let mut concat = String::new();
-            for value in values {
-                match value {
-                    JsonValue::String(s) => concat.push_str(s),
-                    JsonValue::Number(n) => concat.push_str(&n.to_string()),
-                    JsonValue::Bool(b) => concat.push_str(if *b { "true" } else { "false" }),
-                    JsonValue::Null => {}
-                    other => concat.push_str(&other.to_string()),
-                }
-            }
-
-            self.write_key("Data")?;
-            serde_json::to_writer(&mut self.writer, &concat).map_err(SerializationError::from)?;
-            return Ok(());
-        }
-
-        self.write_key("Data")?;
-        self.write_object_start()?;
-        self.write_key("#text")?;
-
-        if values.len() == 1 {
-            serde_json::to_writer(&mut self.writer, &values[0])
-                .map_err(SerializationError::from)?;
-        } else {
-            self.write_bytes(b"[")?;
-            for (idx, value) in values.iter().enumerate() {
-                if idx > 0 {
-                    self.write_bytes(b",")?;
-                }
-                serde_json::to_writer(&mut self.writer, value).map_err(SerializationError::from)?;
-            }
-            self.write_bytes(b"]")?;
-        }
-
-        self.write_object_end()?;
-        Ok(())
-    }
-
-    fn get_name_attr_value(&self, element: &Element<'_>) -> Result<Option<String>> {
+    fn get_name_attr_nodes<'a>(&self, element: &'a Element<'a>) -> Option<&'a [Node<'a>]> {
         for attr in &element.attrs {
             if attr.name.as_str() == "Name" {
-                if attr.value.is_empty() {
-                    return Ok(None);
-                }
-                let mut s = String::new();
-                for node in attr.value.iter().filter(|n| !matches!(n, Node::Element(_))) {
-                    let value = self.node_to_json_value(node)?;
-                    match value {
-                        JsonValue::String(text) => s.push_str(&text),
-                        JsonValue::Number(num) => s.push_str(&num.to_string()),
-                        JsonValue::Bool(b) => s.push_str(if b { "true" } else { "false" }),
-                        JsonValue::Null => {}
-                        other => s.push_str(&other.to_string()),
-                    }
-                }
-                return Ok(Some(s));
+                return Some(&attr.value);
             }
         }
-        Ok(None)
+        None
     }
 }
 
-fn binxml_value_to_json(value: &BinXmlValue<'_>) -> Result<JsonValue> {
+fn to_hex_digit(value: u8) -> u8 {
     match value {
-        BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
-            EvtxError::FailedToCreateRecordModel("unsupported BinXML value in tree"),
-        ),
-        _ => Ok(JsonValue::from(value)),
+        0..=9 => b'0' + value,
+        _ => b'A' + (value - 10),
     }
-}
-
-fn resolve_entity_ref(name: &BinXmlName) -> Result<String> {
-    let entity_ref = format!("&{};", name.as_str());
-    let xml_event = BytesText::from_escaped(&entity_ref);
-    match xml_event.unescape() {
-        Ok(escaped) => Ok(escaped.to_string()),
-        Err(_) => Err(EvtxError::SerializationError(
-            SerializationError::JsonStructureError {
-                message: format!("Unterminated XML Entity {}", entity_ref),
-            },
-        )),
-    }
-}
-
-fn has_text_nodes(element: &Element<'_>) -> bool {
-    element
-        .children
-        .iter()
-        .any(|n| !matches!(n, Node::Element(_)))
 }
 
 fn is_data_container(name: &str) -> bool {
