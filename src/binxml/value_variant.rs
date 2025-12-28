@@ -1,7 +1,6 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::utils::ByteCursor;
-use crate::utils::Utf16LeSlice;
 use crate::utils::invalid_data;
 use crate::utils::windows::{filetime_to_timestamp, read_sid, read_systime, systime_from_bytes};
 
@@ -20,7 +19,7 @@ use winstructs::security::Sid;
 pub enum BinXmlValue<'a> {
     NullType,
     // String may originate in substitution.
-    StringType(Utf16LeSlice<'a>),
+    StringType(Cow<'a, str>),
     AnsiStringType(Cow<'a, str>),
     Int8Type(i8),
     UInt8Type(u8),
@@ -47,7 +46,7 @@ pub enum BinXmlValue<'a> {
     /// This is stored as a slice into the chunk data and parsed on demand by higher-level code.
     BinXmlType(&'a [u8]),
     EvtXml,
-    StringArrayType(Vec<Utf16LeSlice<'a>>),
+    StringArrayType(Vec<Cow<'a, str>>),
     AnsiStringArrayType,
     Int8ArrayType(Vec<i8>),
     UInt8ArrayType(Vec<u8>),
@@ -241,14 +240,15 @@ impl<'a> BinXmlValue<'a> {
                 } else if !sz_bytes.is_multiple_of(2) {
                     return Err(invalid_data("sized utf-16 string", cursor.position()));
                 } else {
-                    cursor.utf16_by_char_count_trimmed(sz_bytes / 2, "<string_value>")?
+                    cursor.utf16_by_char_count_trimmed_utf8(sz_bytes / 2, "<string_value>")?
                 };
-                BinXmlValue::StringType(s.unwrap_or_else(Utf16LeSlice::empty))
+                BinXmlValue::StringType(s.map(Cow::Owned).unwrap_or(Cow::Borrowed("")))
             }
             (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
                 cursor
-                    .len_prefixed_utf16_string(false, "<string_value>")?
-                    .unwrap_or_else(Utf16LeSlice::empty),
+                    .len_prefixed_utf16_string_utf8(false, "<string_value>")?
+                    .map(Cow::Owned)
+                    .unwrap_or(Cow::Borrowed("")),
             ),
 
             (BinXmlValueType::AnsiStringType, Some(sz)) => {
@@ -385,9 +385,10 @@ impl<'a> BinXmlValue<'a> {
                 let size_usize = usize::from(sz);
                 let start = cursor.pos();
                 let end = start.saturating_add(size_usize);
-                let mut out: Vec<Utf16LeSlice<'a>> = Vec::new();
+                let mut out: Vec<Cow<'a, str>> = Vec::new();
                 while cursor.pos() < end {
-                    out.push(cursor.null_terminated_utf16_string("string_array")?);
+                    let s = cursor.null_terminated_utf16_string_utf8("string_array")?;
+                    out.push(Cow::Owned(s));
                 }
                 BinXmlValue::StringArrayType(out)
             }
@@ -586,7 +587,7 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
     fn from(value: BinXmlValue<'c>) -> Self {
         match value {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s.to_string().unwrap_or_default()),
+            BinXmlValue::StringType(s) => json!(s.as_ref()),
             BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -616,12 +617,9 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
-            BinXmlValue::StringArrayType(items) => json!(
-                items
-                    .iter()
-                    .map(|item| item.to_string().unwrap_or_default())
-                    .collect::<Vec<String>>()
-            ),
+            BinXmlValue::StringArrayType(items) => {
+                json!(items.iter().map(|item| item.as_ref()).collect::<Vec<&str>>())
+            }
             BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
             BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
             BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
@@ -669,7 +667,7 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
     fn from(value: &'c BinXmlValue) -> Self {
         match value {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s.to_string().unwrap_or_default()),
+            BinXmlValue::StringType(s) => json!(s.as_ref()),
             BinXmlValue::AnsiStringType(s) => json!(s.as_ref()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -699,12 +697,9 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
-            BinXmlValue::StringArrayType(items) => json!(
-                items
-                    .iter()
-                    .map(|item| item.to_string().unwrap_or_default())
-                    .collect::<Vec<String>>()
-            ),
+            BinXmlValue::StringArrayType(items) => {
+                json!(items.iter().map(|item| item.as_ref()).collect::<Vec<&str>>())
+            }
             BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
             BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
             BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
@@ -752,9 +747,7 @@ impl BinXmlValue<'_> {
     pub fn as_cow_str(&self) -> Cow<'_, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => {
-                Cow::Owned(s.to_string().unwrap_or_default())
-            }
+            BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::AnsiStringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
@@ -781,13 +774,9 @@ impl BinXmlValue<'_> {
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => hex_string.clone(),
             BinXmlValue::HexInt64Type(hex_string) => hex_string.clone(),
-            BinXmlValue::StringArrayType(items) => Cow::Owned(
-                items
-                    .iter()
-                    .map(|item| item.to_string().unwrap_or_default())
-                    .collect::<Vec<String>>()
-                    .join(","),
-            ),
+            BinXmlValue::StringArrayType(items) => {
+                Cow::Owned(items.iter().map(|item| item.as_ref()).collect::<Vec<&str>>().join(","))
+            }
             BinXmlValue::Int8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::UInt8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::Int16ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),

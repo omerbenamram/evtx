@@ -268,6 +268,23 @@ impl<'a> ByteCursor<'a> {
         Ok(Some(Utf16LeSlice::new(bytes, trimmed_chars)))
     }
 
+    /// Read `char_count` UTF-16 code units, trim trailing whitespace, and decode to UTF-8.
+    pub(crate) fn utf16_by_char_count_trimmed_utf8(
+        &mut self,
+        char_count: usize,
+        what: &'static str,
+    ) -> DeserializationResult<Option<String>> {
+        let start = self.pos;
+        let slice = self.utf16_by_char_count_trimmed(char_count, what)?;
+        match slice {
+            Some(value) => value
+                .to_string()
+                .map(Some)
+                .map_err(|_| Self::invalid_data(what, start as u64)),
+            None => Ok(None),
+        }
+    }
+
     /// Read a `u16` length prefix (number of UTF-16 code units), then that many code units,
     /// decoding until NUL (if present). Optionally reads and discards a trailing NUL code unit.
     pub(crate) fn len_prefixed_utf16_string(
@@ -330,5 +347,17 @@ impl<'a> ByteCursor<'a> {
         trim_utf16le_whitespace(bytes, num_chars)
             .map_err(|_| Self::invalid_data(what, start as u64))?;
         Ok(Utf16LeSlice::new(bytes, num_chars))
+    }
+
+    /// Read UTF-16 code units until NUL and decode into UTF-8.
+    pub(crate) fn null_terminated_utf16_string_utf8(
+        &mut self,
+        what: &'static str,
+    ) -> DeserializationResult<String> {
+        let start = self.pos;
+        let slice = self.null_terminated_utf16_string(what)?;
+        slice
+            .to_string()
+            .map_err(|_| Self::invalid_data(what, start as u64))
     }
 }

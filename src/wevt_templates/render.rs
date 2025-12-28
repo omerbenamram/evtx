@@ -188,7 +188,7 @@ fn build_wevt_tree<'a>(
                     ));
                 }
                 BinXmlValue::StringType(s) => {
-                    let node = Node::Text(Text::utf16(s));
+                    let node = Node::Text(Text::utf8(s));
                     push_node(&mut arena, &mut stack, &mut current_element, node)?;
                 }
                 BinXmlValue::AnsiStringType(s) => {
