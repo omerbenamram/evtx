@@ -19,13 +19,14 @@ use crate::model::deserialized::{
 use crate::model::ir::{Attr, Element, Name, Node, Placeholder, Text};
 use crate::utils::ByteCursor;
 use crate::{EvtxChunk, ParserSettings};
-use std::borrow::Cow;
-use std::collections::HashMap;
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
 use zmij::Buffer as ZmijBuffer;
+use chrono::{Datelike, Timelike};
 
 const BINXML_NAME_LINK_SIZE: u32 = 6;
 
@@ -698,7 +699,6 @@ fn expand_string_ref<'a>(
     }
 }
 
-
 pub(crate) fn render_json_record<W: WriteExt>(
     root: &Element<'_>,
     _settings: &ParserSettings,
@@ -724,7 +724,9 @@ struct NameKey<'a> {
 
 impl<'a> NameKey<'a> {
     fn from_name(name: &'a Name<'a>) -> Self {
-        NameKey { bytes: name.as_str() }
+        NameKey {
+            bytes: name.as_str(),
+        }
     }
 
     fn eql(self, other: NameKey<'a>) -> bool {
@@ -802,7 +804,11 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
                     self.write_value_text(value)?;
                 }
                 Node::CharRef(ch) => {
-                    write!(self.writer, "&#{};", ch)?;
+                    self.write_bytes(b"&#")?;
+                    self.formatter
+                        .write_u64(&mut self.writer, u64::from(*ch))
+                        .map_err(EvtxError::from)?;
+                    self.write_bytes(b";")?;
                 }
                 Node::EntityRef(name) => {
                     self.write_bytes(b"&")?;
@@ -864,21 +870,15 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
                 .map_err(EvtxError::from),
             BinXmlValue::Real32Type(v) => self.write_float(*v),
             BinXmlValue::Real64Type(v) => self.write_float(*v),
-            BinXmlValue::BoolType(v) => {
-                self.write_bytes(if *v { b"true" } else { b"false" })
-            }
+            BinXmlValue::BoolType(v) => self.write_bytes(if *v { b"true" } else { b"false" }),
             BinXmlValue::BinaryType(bytes) => self.write_hex_bytes(bytes),
             BinXmlValue::GuidType(guid) => write!(self.writer, "{}", guid).map_err(EvtxError::from),
             BinXmlValue::SizeTType(v) => self
                 .formatter
                 .write_u64(&mut self.writer, *v as u64)
                 .map_err(EvtxError::from),
-            BinXmlValue::FileTimeType(tm) => {
-                write!(self.writer, "{}", tm.format(DATETIME_FORMAT)).map_err(EvtxError::from)
-            }
-            BinXmlValue::SysTimeType(tm) => {
-                write!(self.writer, "{}", tm.format(DATETIME_FORMAT)).map_err(EvtxError::from)
-            }
+            BinXmlValue::FileTimeType(tm) => self.write_datetime(tm),
+            BinXmlValue::SysTimeType(tm) => self.write_datetime(tm),
             BinXmlValue::SidType(sid) => write!(self.writer, "{}", sid).map_err(EvtxError::from),
             BinXmlValue::HexInt32Type(s) => self.write_json_escaped(s.as_ref()),
             BinXmlValue::HexInt64Type(s) => self.write_json_escaped(s.as_ref()),
@@ -905,8 +905,8 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
             BinXmlValue::Real64ArrayType(items) => self.write_float_list(items),
             BinXmlValue::BoolArrayType(items) => self.write_delimited(items),
             BinXmlValue::GuidArrayType(items) => self.write_delimited(items),
-            BinXmlValue::FileTimeArrayType(items) => self.write_delimited(items),
-            BinXmlValue::SysTimeArrayType(items) => self.write_delimited(items),
+            BinXmlValue::FileTimeArrayType(items) => self.write_datetime_list(items),
+            BinXmlValue::SysTimeArrayType(items) => self.write_datetime_list(items),
             BinXmlValue::SidArrayType(items) => self.write_delimited(items),
             BinXmlValue::HexInt32ArrayType(items) => {
                 let mut first = true;
@@ -967,6 +967,78 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
             let s = buf.format(*item);
             writer.write_all(s.as_bytes())?;
         }
+        Ok(())
+    }
+
+    fn write_datetime(&mut self, tm: &chrono::DateTime<chrono::Utc>) -> Result<()> {
+        let year = tm.year();
+        if !(0..=9999).contains(&year) {
+            write!(self.writer, "{}", tm.format(DATETIME_FORMAT))?;
+            return Ok(());
+        }
+
+        self.write_4_digits(year as u32)?;
+        self.write_byte(b'-')?;
+        self.write_2_digits(tm.month())?;
+        self.write_byte(b'-')?;
+        self.write_2_digits(tm.day())?;
+        self.write_byte(b'T')?;
+        self.write_2_digits(tm.hour())?;
+        self.write_byte(b':')?;
+        self.write_2_digits(tm.minute())?;
+        self.write_byte(b':')?;
+        self.write_2_digits(tm.second())?;
+        self.write_byte(b'.')?;
+        self.write_6_digits(tm.timestamp_subsec_micros())?;
+        self.write_byte(b'Z')?;
+        Ok(())
+    }
+
+    fn write_datetime_list(&mut self, items: &[chrono::DateTime<chrono::Utc>]) -> Result<()> {
+        let mut first = true;
+        for item in items {
+            if !first {
+                self.write_byte(b',')?;
+            }
+            first = false;
+            self.write_datetime(item)?;
+        }
+        Ok(())
+    }
+
+    fn write_2_digits(&mut self, value: u32) -> Result<()> {
+        let tens = (value / 10) % 10;
+        let ones = value % 10;
+        self.write_byte(b'0' + tens as u8)?;
+        self.write_byte(b'0' + ones as u8)?;
+        Ok(())
+    }
+
+    fn write_4_digits(&mut self, value: u32) -> Result<()> {
+        let thousands = (value / 1000) % 10;
+        let hundreds = (value / 100) % 10;
+        let tens = (value / 10) % 10;
+        let ones = value % 10;
+        self.write_byte(b'0' + thousands as u8)?;
+        self.write_byte(b'0' + hundreds as u8)?;
+        self.write_byte(b'0' + tens as u8)?;
+        self.write_byte(b'0' + ones as u8)?;
+        Ok(())
+    }
+
+    fn write_6_digits(&mut self, value: u32) -> Result<()> {
+        let hundreds_thousands = (value / 100000) % 10;
+        let tens_thousands = (value / 10000) % 10;
+        let thousands = (value / 1000) % 10;
+        let hundreds = (value / 100) % 10;
+        let tens = (value / 10) % 10;
+        let ones = value % 10;
+        self.write_byte(b'0' + hundreds_thousands as u8)?;
+        self.write_byte(b'0' + tens_thousands as u8)?;
+        self.write_byte(b'0' + thousands as u8)?;
+        self.write_byte(b'0' + hundreds as u8)?;
+        self.write_byte(b'0' + tens as u8)?;
+        self.write_byte(b'0' + ones as u8)?;
         Ok(())
     }
 
@@ -1135,7 +1207,11 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         }
     }
 
-    fn write_element_value(&mut self, element: &Element<'_>, child_is_container: bool) -> Result<()> {
+    fn write_element_value(
+        &mut self,
+        element: &Element<'_>,
+        child_is_container: bool,
+    ) -> Result<()> {
         if self.should_render_as_null(element) {
             self.write_bytes(b"null")
         } else if self.can_render_as_simple_value(element) {
@@ -1147,7 +1223,11 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         }
     }
 
-    fn write_element_body_json(&mut self, element: &Element<'_>, in_data_container: bool) -> Result<()> {
+    fn write_element_body_json(
+        &mut self,
+        element: &Element<'_>,
+        in_data_container: bool,
+    ) -> Result<()> {
         let mut name_counts: [Option<NameCount<'_>>; MAX_UNIQUE_NAMES] =
             std::array::from_fn(|_| None);
         let mut num_unique = 0usize;
