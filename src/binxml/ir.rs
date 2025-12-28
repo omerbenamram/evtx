@@ -21,6 +21,8 @@ use crate::utils::ByteCursor;
 use crate::{EvtxChunk, ParserSettings};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use sonic_rs::format::{CompactFormatter, Formatter};
+use sonic_rs::writer::WriteExt;
 use std::io::Write;
 use std::rc::Rc;
 use zmij::Buffer as ZmijBuffer;
@@ -697,7 +699,7 @@ fn expand_string_ref<'a>(
 }
 
 
-pub(crate) fn render_json_record<W: Write>(
+pub(crate) fn render_json_record<W: WriteExt>(
     root: &Element<'_>,
     _settings: &ParserSettings,
     writer: &mut W,
@@ -741,16 +743,18 @@ struct NameCount<'a> {
 }
 
 /// Streaming JSON renderer for IR trees.
-struct JsonEmitter<'w, W: Write> {
+struct JsonEmitter<'w, W: WriteExt> {
     writer: &'w mut W,
     float_buf: ZmijBuffer,
+    formatter: CompactFormatter,
 }
 
-impl<'w, W: Write> JsonEmitter<'w, W> {
+impl<'w, W: WriteExt> JsonEmitter<'w, W> {
     fn new(writer: &'w mut W) -> Self {
         JsonEmitter {
             writer,
             float_buf: ZmijBuffer::new(),
+            formatter: CompactFormatter,
         }
     }
 
@@ -781,46 +785,9 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
     }
 
     fn write_json_escaped(&mut self, value: &str) -> Result<()> {
-        let bytes = value.as_bytes();
-        let mut start = 0;
-        for (idx, &b) in bytes.iter().enumerate() {
-            let escape = match b {
-                b'"' => Some(b"\\\"".as_ref()),
-                b'\\' => Some(b"\\\\".as_ref()),
-                b'\n' => Some(b"\\n".as_ref()),
-                b'\r' => Some(b"\\r".as_ref()),
-                b'\t' => Some(b"\\t".as_ref()),
-                0x08 => Some(b"\\b".as_ref()),
-                0x0c => Some(b"\\f".as_ref()),
-                b if b < 0x20 => {
-                    if start < idx {
-                        self.write_bytes(&bytes[start..idx])?;
-                    }
-                    let hi = (b >> 4) & 0x0f;
-                    let lo = b & 0x0f;
-                    let mut buf = [0u8; 6];
-                    buf[..4].copy_from_slice(b"\\u00");
-                    buf[4] = to_hex_digit(hi);
-                    buf[5] = to_hex_digit(lo);
-                    self.write_bytes(&buf)?;
-                    start = idx + 1;
-                    continue;
-                }
-                _ => None,
-            };
-
-            if let Some(esc) = escape {
-                if start < idx {
-                    self.write_bytes(&bytes[start..idx])?;
-                }
-                self.write_bytes(esc)?;
-                start = idx + 1;
-            }
-        }
-        if start < bytes.len() {
-            self.write_bytes(&bytes[start..])?;
-        }
-        Ok(())
+        self.formatter
+            .write_string_fast(&mut self.writer, value, false)
+            .map_err(EvtxError::from)
     }
 
     fn write_json_text_content(&mut self, nodes: &[Node<'_>]) -> Result<()> {
@@ -863,14 +830,38 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
             BinXmlValue::NullType => Ok(()),
             BinXmlValue::StringType(s) => self.write_json_escaped(s),
             BinXmlValue::AnsiStringType(s) => self.write_json_escaped(s.as_ref()),
-            BinXmlValue::Int8Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::UInt8Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::Int16Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::UInt16Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::Int32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::UInt32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::Int64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::UInt64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Int8Type(v) => self
+                .formatter
+                .write_i8(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::UInt8Type(v) => self
+                .formatter
+                .write_u8(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::Int16Type(v) => self
+                .formatter
+                .write_i16(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::UInt16Type(v) => self
+                .formatter
+                .write_u16(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::Int32Type(v) => self
+                .formatter
+                .write_i32(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::UInt32Type(v) => self
+                .formatter
+                .write_u32(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::Int64Type(v) => self
+                .formatter
+                .write_i64(&mut self.writer, *v)
+                .map_err(EvtxError::from),
+            BinXmlValue::UInt64Type(v) => self
+                .formatter
+                .write_u64(&mut self.writer, *v)
+                .map_err(EvtxError::from),
             BinXmlValue::Real32Type(v) => self.write_float(*v),
             BinXmlValue::Real64Type(v) => self.write_float(*v),
             BinXmlValue::BoolType(v) => {
@@ -878,7 +869,10 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
             }
             BinXmlValue::BinaryType(bytes) => self.write_hex_bytes(bytes),
             BinXmlValue::GuidType(guid) => write!(self.writer, "{}", guid).map_err(EvtxError::from),
-            BinXmlValue::SizeTType(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::SizeTType(v) => self
+                .formatter
+                .write_u64(&mut self.writer, *v as u64)
+                .map_err(EvtxError::from),
             BinXmlValue::FileTimeType(tm) => {
                 write!(self.writer, "{}", tm.format(DATETIME_FORMAT)).map_err(EvtxError::from)
             }
@@ -996,14 +990,14 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
             return Ok(false);
         };
         match value {
-            BinXmlValue::Int8Type(v) => self.write_int_number(*v),
-            BinXmlValue::UInt8Type(v) => self.write_int_number(*v),
-            BinXmlValue::Int16Type(v) => self.write_int_number(*v),
-            BinXmlValue::UInt16Type(v) => self.write_int_number(*v),
-            BinXmlValue::Int32Type(v) => self.write_int_number(*v),
-            BinXmlValue::UInt32Type(v) => self.write_int_number(*v),
-            BinXmlValue::Int64Type(v) => self.write_int_number(*v),
-            BinXmlValue::UInt64Type(v) => self.write_int_number(*v),
+            BinXmlValue::Int8Type(v) => self.write_signed_number(i64::from(*v)),
+            BinXmlValue::Int16Type(v) => self.write_signed_number(i64::from(*v)),
+            BinXmlValue::Int32Type(v) => self.write_signed_number(i64::from(*v)),
+            BinXmlValue::Int64Type(v) => self.write_signed_number(*v),
+            BinXmlValue::UInt8Type(v) => self.write_unsigned_number(u64::from(*v)),
+            BinXmlValue::UInt16Type(v) => self.write_unsigned_number(u64::from(*v)),
+            BinXmlValue::UInt32Type(v) => self.write_unsigned_number(u64::from(*v)),
+            BinXmlValue::UInt64Type(v) => self.write_unsigned_number(*v),
             BinXmlValue::BoolType(v) => {
                 self.write_bytes(if *v { b"true" } else { b"false" })?;
                 Ok(true)
@@ -1012,8 +1006,17 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
         }
     }
 
-    fn write_int_number<T: std::fmt::Display>(&mut self, value: T) -> Result<bool> {
-        write!(self.writer, "{}", value)?;
+    fn write_signed_number(&mut self, value: i64) -> Result<bool> {
+        self.formatter
+            .write_i64(&mut self.writer, value)
+            .map_err(EvtxError::from)?;
+        Ok(true)
+    }
+
+    fn write_unsigned_number(&mut self, value: u64) -> Result<bool> {
+        self.formatter
+            .write_u64(&mut self.writer, value)
+            .map_err(EvtxError::from)?;
         Ok(true)
     }
 
