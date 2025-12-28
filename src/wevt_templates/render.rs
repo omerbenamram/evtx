@@ -18,7 +18,8 @@ use crate::binxml::name::{BinXmlNameRef, read_wevt_inline_name_at};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::deserialized::{BinXMLDeserializedTokens, TemplateSubstitutionDescriptor};
-use crate::model::ir::{Attr, Element, Name, Node, Text};
+use crate::model::ir::{Attr, Element, ElementId, IrTree, Name, Node, Text};
+use indextree::Arena;
 use std::borrow::Cow;
 
 /// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
@@ -39,8 +40,8 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> Result<
     let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
 
     let mode = SubstitutionMode::Placeholders { names: None };
-    let root = build_wevt_tree(binxml, tokens, mode)?;
-    render_ir_xml(&root, ansi_codec)
+    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    render_ir_xml(&tree, ansi_codec)
 }
 
 /// Render a `TEMP` entry to an XML string, applying substitution values.
@@ -67,8 +68,8 @@ pub fn render_temp_to_xml_with_substitution_values(
     let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
 
     let mode = SubstitutionMode::Values(substitution_values);
-    let root = build_wevt_tree(binxml, tokens, mode)?;
-    render_ir_xml(&root, ansi_codec)
+    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    render_ir_xml(&tree, ansi_codec)
 }
 
 /// Render a parsed template definition to XML.
@@ -94,8 +95,8 @@ pub fn render_template_definition_to_xml(
     let mode = SubstitutionMode::Placeholders {
         names: Some(&names),
     };
-    let root = build_wevt_tree(binxml, tokens, mode)?;
-    render_ir_xml(&root, ansi_codec)
+    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    render_ir_xml(&tree, ansi_codec)
 }
 
 /// Render a parsed template definition to XML, applying substitution values.
@@ -114,8 +115,8 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
 
     let mode = SubstitutionMode::Values(substitution_values);
-    let root = build_wevt_tree(binxml, tokens, mode)?;
-    render_ir_xml(&root, ansi_codec)
+    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    render_ir_xml(&tree, ansi_codec)
 }
 
 /// How substitutions should be represented while building a WEVT IR tree.
@@ -128,10 +129,10 @@ enum SubstitutionMode<'a> {
     Values(&'a [String]),
 }
 
-fn render_ir_xml(root: &Element<'_>, ansi_codec: EncodingRef) -> Result<String> {
+fn render_ir_xml(tree: &IrTree<'_>, ansi_codec: EncodingRef) -> Result<String> {
     let settings = ParserSettings::default().ansi_codec(ansi_codec);
     let mut out = Vec::new();
-    render_xml_record(root, &settings, &mut out)?;
+    render_xml_record(tree, &settings, &mut out)?;
     String::from_utf8(out).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
@@ -139,10 +140,11 @@ fn build_wevt_tree<'a>(
     binxml: &'a [u8],
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
     mode: SubstitutionMode<'_>,
-) -> Result<Element<'a>> {
-    let mut stack: Vec<Element<'a>> = Vec::new();
+) -> Result<IrTree<'a>> {
+    let mut arena = Arena::new();
+    let mut stack: Vec<ElementId> = Vec::new();
     let mut current_element: Option<WevtElementBuilder<'a>> = None;
-    let mut root: Option<Element<'a>> = None;
+    let mut root: Option<ElementId> = None;
 
     for token in tokens {
         match token {
@@ -185,29 +187,37 @@ fn build_wevt_tree<'a>(
                         "Unexpected BinXmlType in WEVT template BinXML",
                     ));
                 }
-                _ => {
-                    let node = Node::Value(value);
-                    push_node(&mut stack, &mut current_element, node)?;
+                BinXmlValue::StringType(s) => {
+                    let node = Node::Text(Text::utf16(s));
+                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                }
+                BinXmlValue::AnsiStringType(s) => {
+                    let node = Node::Text(Text::utf8(s));
+                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                }
+                other => {
+                    let node = Node::Value(other);
+                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
                 }
             },
             BinXMLDeserializedTokens::EntityRef(entity) => {
                 let name = resolve_name(binxml, &entity.name)?;
                 let node = Node::EntityRef(name);
-                push_node(&mut stack, &mut current_element, node)?;
+                push_node(&mut arena, &mut stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::PITarget(target) => {
                 let name = resolve_name(binxml, &target.name)?;
                 let node = Node::PITarget(name);
-                push_node(&mut stack, &mut current_element, node)?;
+                push_node(&mut arena, &mut stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::PIData(data) => {
                 let node = Node::PIData(Text::new(Cow::Owned(data)));
-                push_node(&mut stack, &mut current_element, node)?;
+                push_node(&mut arena, &mut stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::Substitution(sub) => {
                 if let Some(text) = substitution_text(&mode, &sub) {
-                    let node = Node::Text(Text::new(Cow::Owned(text)));
-                    push_node(&mut stack, &mut current_element, node)?;
+                    let node = Node::Text(Text::utf8(Cow::Owned(text)));
+                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
                 }
             }
             BinXMLDeserializedTokens::CloseStartElement => {
@@ -217,7 +227,8 @@ fn build_wevt_tree<'a>(
                         "close start - Bad parser state",
                     ))?
                     .finish();
-                stack.push(element);
+                let element_id = arena.new_node(element);
+                stack.push(element_id);
             }
             BinXMLDeserializedTokens::CloseEmptyElement => {
                 let element = current_element
@@ -226,13 +237,14 @@ fn build_wevt_tree<'a>(
                         "close empty - Bad parser state",
                     ))?
                     .finish();
-                attach_element(&mut stack, &mut root, element)?;
+                let element_id = arena.new_node(element);
+                attach_element(&mut arena, &mut stack, &mut root, element_id)?;
             }
             BinXMLDeserializedTokens::CloseElement => {
-                let element = stack.pop().ok_or(EvtxError::FailedToCreateRecordModel(
+                let element_id = stack.pop().ok_or(EvtxError::FailedToCreateRecordModel(
                     "close element - Bad parser state",
                 ))?;
-                attach_element(&mut stack, &mut root, element)?;
+                attach_element(&mut arena, &mut stack, &mut root, element_id)?;
             }
             BinXMLDeserializedTokens::CDATASection | BinXMLDeserializedTokens::CharRef => {
                 return Err(EvtxError::FailedToCreateRecordModel(
@@ -254,7 +266,9 @@ fn build_wevt_tree<'a>(
         ));
     }
 
-    root.ok_or(EvtxError::FailedToCreateRecordModel("missing root element"))
+    let root_id =
+        root.ok_or(EvtxError::FailedToCreateRecordModel("missing root element"))?;
+    Ok(IrTree::new(arena, root_id))
 }
 
 fn substitution_text(
@@ -288,15 +302,19 @@ fn resolve_name<'a>(binxml: &'a [u8], name_ref: &BinXmlNameRef) -> Result<Name<'
 }
 
 fn attach_element<'a>(
-    stack: &mut Vec<Element<'a>>,
-    root: &mut Option<Element<'a>>,
-    element: Element<'a>,
+    arena: &mut Arena<Element<'a>>,
+    stack: &mut Vec<ElementId>,
+    root: &mut Option<ElementId>,
+    element_id: ElementId,
 ) -> Result<()> {
-    if let Some(parent) = stack.last_mut() {
-        parent.push_child(Node::Element(Box::new(element)));
+    if let Some(parent_id) = stack.last().copied() {
+        let parent = arena.get_mut(parent_id).ok_or(EvtxError::FailedToCreateRecordModel(
+            "invalid parent element id",
+        ))?;
+        parent.get_mut().push_child(Node::Element(element_id));
         Ok(())
     } else if root.is_none() {
-        *root = Some(element);
+        *root = Some(element_id);
         Ok(())
     } else {
         Err(EvtxError::FailedToCreateRecordModel(
@@ -306,7 +324,8 @@ fn attach_element<'a>(
 }
 
 fn push_node<'a>(
-    stack: &mut Vec<Element<'a>>,
+    arena: &mut Arena<Element<'a>>,
+    stack: &mut Vec<ElementId>,
     current_element: &mut Option<WevtElementBuilder<'a>>,
     node: Node<'a>,
 ) -> Result<()> {
@@ -319,12 +338,16 @@ fn push_node<'a>(
         builder.push_attr_value(node);
         Ok(())
     } else {
-        let parent = stack
-            .last_mut()
+        let parent_id = stack
+            .last()
+            .copied()
             .ok_or(EvtxError::FailedToCreateRecordModel(
                 "value outside of element",
             ))?;
-        parent.push_child(node);
+        let parent = arena.get_mut(parent_id).ok_or(EvtxError::FailedToCreateRecordModel(
+            "invalid parent element id",
+        ))?;
+        parent.get_mut().push_child(node);
         Ok(())
     }
 }

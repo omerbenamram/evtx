@@ -1,28 +1,27 @@
 use std::io;
 use std::io::Cursor;
 
-use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
+use jiff::{Timestamp, civil::DateTime, tz::Offset};
 use winstructs::security::Sid;
 
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::ByteCursor;
 
+const WINDOWS_TO_UNIX_SECS: i64 = 11_644_473_600;
+
 #[inline]
-pub(crate) fn filetime_to_datetime(filetime: u64) -> DateTime<Utc> {
-    // Match historical behavior (`winstructs::timestamp::WinTimestamp::to_datetime`).
-    let naive = NaiveDate::from_ymd_opt(1601, 1, 1)
-        .and_then(|x| x.and_hms_nano_opt(0, 0, 0, 0))
-        .expect("filetime epoch should be valid")
-        + Duration::microseconds((filetime / 10) as i64);
-    Utc.from_utc_datetime(&naive)
+pub(crate) fn filetime_to_timestamp(filetime: u64) -> DeserializationResult<Timestamp> {
+    let secs = (filetime / 10_000_000) as i64 - WINDOWS_TO_UNIX_SECS;
+    let nanos = ((filetime % 10_000_000) * 100) as i32;
+    Timestamp::new(secs, nanos).map_err(|_| DeserializationError::InvalidDateTimeError)
 }
 
-pub(crate) fn read_systime(cursor: &mut ByteCursor<'_>) -> DeserializationResult<DateTime<Utc>> {
+pub(crate) fn read_systime(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Timestamp> {
     let bytes = cursor.array::<16>("systime")?;
     systime_from_bytes(&bytes)
 }
 
-pub(crate) fn systime_from_bytes(bytes: &[u8; 16]) -> DeserializationResult<DateTime<Utc>> {
+pub(crate) fn systime_from_bytes(bytes: &[u8; 16]) -> DeserializationResult<Timestamp> {
     let year = i32::from(u16::from_le_bytes([bytes[0], bytes[1]]));
     let month = u32::from(u16::from_le_bytes([bytes[2], bytes[3]]));
     let _day_of_week = u16::from_le_bytes([bytes[4], bytes[5]]);
@@ -41,20 +40,23 @@ pub(crate) fn systime_from_bytes(bytes: &[u8; 16]) -> DeserializationResult<Date
         && second == 0
         && milliseconds == 0
     {
-        return Ok(Utc.from_utc_datetime(
-            &NaiveDate::from_ymd_opt(1601, 1, 1)
-                .expect("Always valid")
-                .and_hms_nano_opt(0, 0, 0, 0)
-                .expect("Always valid"),
-        ));
+        return filetime_to_timestamp(0);
     }
 
-    Ok(Utc.from_utc_datetime(
-        &NaiveDate::from_ymd_opt(year, month, day)
-            .ok_or(DeserializationError::InvalidDateTimeError)?
-            .and_hms_nano_opt(hour, minute, second, milliseconds * 1_000_000) // Convert milliseconds to nanoseconds
-            .ok_or(DeserializationError::InvalidDateTimeError)?,
-    ))
+    let year = i16::try_from(year).map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    let month = i8::try_from(month).map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    let day = i8::try_from(day).map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    let hour = i8::try_from(hour).map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    let minute = i8::try_from(minute).map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    let second = i8::try_from(second).map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    let nanos = i32::try_from(milliseconds * 1_000_000)
+        .map_err(|_| DeserializationError::InvalidDateTimeError)?;
+
+    let dt = DateTime::new(year, month, day, hour, minute, second, nanos)
+        .map_err(|_| DeserializationError::InvalidDateTimeError)?;
+    Offset::UTC
+        .to_timestamp(dt)
+        .map_err(|_| DeserializationError::InvalidDateTimeError)
 }
 
 pub(crate) fn read_sid(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Sid> {
@@ -62,7 +64,7 @@ pub(crate) fn read_sid(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Sid
     let remaining = cursor
         .buf()
         .get(start..)
-        .ok_or(DeserializationError::Truncated {
+        .ok_or_else(|| DeserializationError::Truncated {
             what: "sid",
             offset: start as u64,
             need: 1,
@@ -76,5 +78,3 @@ pub(crate) fn read_sid(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Sid
     cursor.advance(c.position() as usize, "sid")?;
     Ok(sid)
 }
-
-

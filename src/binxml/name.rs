@@ -183,7 +183,7 @@ pub(crate) fn read_wevt_inline_name_at(data: &[u8], offset: ChunkOffset) -> Resu
     let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
     let _ = cursor.u16_named("wevt_inline_name_hash")?;
     let name = cursor
-        .len_prefixed_utf16_string(true, "wevt_inline_name")?
+        .len_prefixed_utf16_string_utf8(true, "wevt_inline_name")?
         .unwrap_or_default();
     Ok(BinXmlName { str: name })
 }
@@ -211,7 +211,7 @@ impl BinXmlName {
 
     pub(crate) fn from_cursor(cursor: &mut ByteCursor<'_>) -> Result<Self> {
         let name = cursor
-            .len_prefixed_utf16_string(true, "name")?
+            .len_prefixed_utf16_string_utf8(true, "name")?
             .unwrap_or_default();
         Ok(BinXmlName { str: name })
     }

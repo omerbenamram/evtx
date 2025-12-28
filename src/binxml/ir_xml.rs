@@ -19,19 +19,21 @@
 
 use crate::ParserSettings;
 use crate::err::{EvtxError, Result};
-use crate::model::ir::{Element, Name, Node, Text};
+use crate::model::ir::{Element, ElementId, IrTree, Name, Node, Text};
+use crate::utils::{write_utf16le_raw, write_utf16le_xml_escaped};
+use indextree::Arena;
 use std::io::Write;
 
 const INDENT_WIDTH: usize = 2;
 
 /// Render a single record element to XML.
 pub(crate) fn render_xml_record<W: Write>(
-    root: &Element<'_>,
+    tree: &IrTree<'_>,
     settings: &ParserSettings,
     writer: &mut W,
 ) -> Result<()> {
-    let mut emitter = XmlEmitter::new(writer, settings.should_indent());
-    emitter.render_element(root, 0)?;
+    let mut emitter = XmlEmitter::new(writer, settings.should_indent(), tree.arena());
+    emitter.render_element(tree.root(), 0)?;
     Ok(())
 }
 
@@ -39,14 +41,19 @@ pub(crate) fn render_xml_record<W: Write>(
 ///
 /// The emitter owns indentation state and writes escaped content directly to
 /// the underlying writer without allocating intermediate strings.
-struct XmlEmitter<'w, W: Write> {
+struct XmlEmitter<'w, 'a, W: Write> {
     writer: &'w mut W,
     indent: bool,
+    arena: &'a Arena<Element<'a>>,
 }
 
-impl<'w, W: Write> XmlEmitter<'w, W> {
-    fn new(writer: &'w mut W, indent: bool) -> Self {
-        XmlEmitter { writer, indent }
+impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
+    fn new(writer: &'w mut W, indent: bool, arena: &'a Arena<Element<'a>>) -> Self {
+        XmlEmitter {
+            writer,
+            indent,
+            arena,
+        }
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
@@ -71,7 +78,12 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
         Ok(())
     }
 
-    fn render_element(&mut self, element: &Element<'_>, indent: usize) -> Result<()> {
+    fn render_element(&mut self, element_id: ElementId, indent: usize) -> Result<()> {
+        let arena = self.arena;
+        let element = arena
+            .get(element_id)
+            .expect("invalid element id")
+            .get();
         self.write_indent(indent)?;
         self.write_bytes(b"<")?;
         self.write_name(&element.name)?;
@@ -106,8 +118,8 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
 
         for node in &element.children {
             match node {
-                Node::Element(child) => {
-                    self.render_element(child.as_ref(), indent + INDENT_WIDTH)?;
+                Node::Element(child_id) => {
+                    self.render_element(*child_id, indent + INDENT_WIDTH)?;
                 }
                 _ => {
                     self.write_indent(indent + INDENT_WIDTH)?;
@@ -137,7 +149,7 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
         for node in nodes {
             match node {
                 Node::Text(text) => {
-                    if !text.value.is_empty() {
+                    if !text.is_empty() {
                         return Ok(false);
                     }
                 }
@@ -186,7 +198,7 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
                             self.write_bytes(b"<?")?;
                             self.write_name(name)?;
                             self.write_bytes(b" ")?;
-                            self.write_raw(data)?;
+                            self.write_text_raw(data)?;
                             self.write_bytes(b"?>")?;
                             idx += 2;
                             continue;
@@ -217,10 +229,10 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
             Node::Element(_) => Err(EvtxError::FailedToCreateRecordModel(
                 "unexpected element node in text context",
             )),
-            Node::Text(text) => self.write_escaped(&text.value, in_attribute),
+            Node::Text(text) => self.write_text_escaped(text, in_attribute),
             Node::Value(value) => {
                 let text = value.as_cow_str();
-                self.write_escaped(text.as_ref(), in_attribute)
+                self.write_escaped_str(text.as_ref(), in_attribute)
             }
             Node::EntityRef(name) => {
                 self.write_bytes(b"&")?;
@@ -233,10 +245,10 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
             }
             Node::CData(text) => {
                 if in_attribute {
-                    self.write_escaped(&text.value, true)
+                    self.write_text_escaped(text, true)
                 } else {
                     self.write_bytes(b"<![CDATA[")?;
-                    self.write_raw(text)?;
+                    self.write_text_raw(text)?;
                     self.write_bytes(b"]]>")
                 }
             }
@@ -247,11 +259,23 @@ impl<'w, W: Write> XmlEmitter<'w, W> {
         }
     }
 
-    fn write_raw(&mut self, text: &Text<'_>) -> Result<()> {
-        self.write_bytes(text.value.as_bytes())
+    fn write_text_raw(&mut self, text: &Text<'_>) -> Result<()> {
+        match text {
+            Text::Utf8(value) => self.write_bytes(value.as_bytes()),
+            Text::Utf16(value) => write_utf16le_raw(&mut self.writer, *value)
+                .map_err(EvtxError::from),
+        }
     }
 
-    fn write_escaped(&mut self, text: &str, in_attribute: bool) -> Result<()> {
+    fn write_text_escaped(&mut self, text: &Text<'_>, in_attribute: bool) -> Result<()> {
+        match text {
+            Text::Utf8(value) => self.write_escaped_str(value.as_ref(), in_attribute),
+            Text::Utf16(value) => write_utf16le_xml_escaped(&mut self.writer, *value, in_attribute)
+                .map_err(EvtxError::from),
+        }
+    }
+
+    fn write_escaped_str(&mut self, text: &str, in_attribute: bool) -> Result<()> {
         for ch in text.chars() {
             match ch {
                 '&' => self.write_bytes(b"&amp;")?,

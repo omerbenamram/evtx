@@ -1,5 +1,6 @@
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::bytes;
+use crate::utils::{Utf16LeSlice, trim_utf16le_whitespace};
 use std::io;
 
 /// A lightweight cursor over an immutable byte slice.
@@ -65,7 +66,7 @@ impl<'a> ByteCursor<'a> {
         let new_pos = self
             .pos
             .checked_add(n)
-            .ok_or(DeserializationError::Truncated {
+            .ok_or_else(|| DeserializationError::Truncated {
                 what,
                 offset: self.pos as u64,
                 need: n,
@@ -102,7 +103,7 @@ impl<'a> ByteCursor<'a> {
 
     #[inline]
     pub(crate) fn u8_named(&mut self, what: &'static str) -> DeserializationResult<u8> {
-        let b = bytes::read_u8(self.buf, self.pos).ok_or(DeserializationError::Truncated {
+        let b = bytes::read_u8(self.buf, self.pos).ok_or_else(|| DeserializationError::Truncated {
             what,
             offset: self.pos as u64,
             need: 1,
@@ -242,14 +243,14 @@ impl<'a> ByteCursor<'a> {
         &mut self,
         char_count: usize,
         what: &'static str,
-    ) -> DeserializationResult<Option<String>> {
+    ) -> DeserializationResult<Option<Utf16LeSlice<'a>>> {
         if char_count == 0 {
             return Ok(None);
         }
 
         let byte_len = char_count
             .checked_mul(2)
-            .ok_or(DeserializationError::Truncated {
+            .ok_or_else(|| DeserializationError::Truncated {
                 what,
                 offset: self.pos as u64,
                 need: usize::MAX,
@@ -261,21 +262,10 @@ impl<'a> ByteCursor<'a> {
             return Err(Self::invalid_data(what, self.pos as u64));
         }
 
-        let mut units = Vec::with_capacity(bytes.len() / 2);
-        for chunk in bytes.chunks_exact(2) {
-            units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
-        }
-
-        let mut s = crate::utils::decode_utf16_units_z(&units)
+        let trimmed_chars = trim_utf16le_whitespace(bytes, char_count)
             .map_err(|_| Self::invalid_data(what, (self.pos - byte_len) as u64))?;
 
-        // Match historical behavior: trim trailing whitespace (common in EVTX strings).
-        let trimmed_len = s.trim_end().len();
-        if trimmed_len < s.len() {
-            s.truncate(trimmed_len);
-        }
-
-        Ok(Some(s))
+        Ok(Some(Utf16LeSlice::new(bytes, trimmed_chars)))
     }
 
     /// Read a `u16` length prefix (number of UTF-16 code units), then that many code units,
@@ -284,7 +274,7 @@ impl<'a> ByteCursor<'a> {
         &mut self,
         is_null_terminated: bool,
         what: &'static str,
-    ) -> DeserializationResult<Option<String>> {
+    ) -> DeserializationResult<Option<Utf16LeSlice<'a>>> {
         let char_count = self.u16_named(what)? as usize;
         let s = self.utf16_by_char_count_trimmed(char_count, what)?;
         if is_null_terminated {
@@ -293,22 +283,52 @@ impl<'a> ByteCursor<'a> {
         Ok(s)
     }
 
+    /// Read a length-prefixed UTF-16LE string and decode it into UTF-8.
+    ///
+    /// This is intended for legacy paths that still require owned `String` values.
+    pub(crate) fn len_prefixed_utf16_string_utf8(
+        &mut self,
+        is_null_terminated: bool,
+        what: &'static str,
+    ) -> DeserializationResult<Option<String>> {
+        let start = self.pos;
+        let slice = self.len_prefixed_utf16_string(is_null_terminated, what)?;
+        match slice {
+            Some(value) => value
+                .to_string()
+                .map(Some)
+                .map_err(|_| Self::invalid_data(what, start as u64)),
+            None => Ok(None),
+        }
+    }
+
     /// Read UTF-16 code units until a NUL (0x0000) code unit is encountered.
     pub(crate) fn null_terminated_utf16_string(
         &mut self,
         what: &'static str,
-    ) -> DeserializationResult<String> {
+    ) -> DeserializationResult<Utf16LeSlice<'a>> {
         let start = self.pos;
-        let mut units: Vec<u16> = Vec::new();
         loop {
-            let cu = self.u16_named(what)?;
+            let cu = bytes::read_u16_le_r(self.buf, self.pos, what)?;
+            self.pos += 2;
             if cu == 0 {
                 break;
             }
-            units.push(cu);
         }
 
-        crate::utils::decode_utf16_units_z(&units)
-            .map_err(|_| Self::invalid_data(what, start as u64))
+        let end = self.pos.saturating_sub(2);
+        let bytes = self.buf.get(start..end).ok_or_else(|| {
+            DeserializationError::Truncated {
+                what,
+                offset: start as u64,
+                need: 2,
+                have: self.buf.len().saturating_sub(start),
+            }
+        })?;
+
+        let num_chars = bytes.len() / 2;
+        trim_utf16le_whitespace(bytes, num_chars)
+            .map_err(|_| Self::invalid_data(what, start as u64))?;
+        Ok(Utf16LeSlice::new(bytes, num_chars))
     }
 }

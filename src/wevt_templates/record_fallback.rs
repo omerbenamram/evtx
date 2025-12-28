@@ -1,4 +1,5 @@
 use crate::SerializedEvtxRecord;
+use crate::binxml::value_variant::format_timestamp;
 
 use crate::model::deserialized::BinXMLDeserializedTokens;
 
@@ -225,7 +226,7 @@ impl crate::EvtxRecord<'_> {
                             "_wevt_cache_used": true,
                             "template_guid": guid,
                             "record_id": record_id,
-                            "timestamp": timestamp.to_rfc3339(),
+                            "timestamp": format_timestamp(&timestamp),
                             "xml": xml_fragment,
                         });
 
@@ -291,7 +292,7 @@ impl crate::EvtxRecord<'_> {
                             "_wevt_cache_used": true,
                             "template_guid": guid,
                             "record_id": record_id,
-                            "timestamp": timestamp.to_rfc3339(),
+                            "timestamp": format_timestamp(&timestamp),
                             "xml": xml_fragment,
                         });
 

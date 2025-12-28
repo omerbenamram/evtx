@@ -12,6 +12,8 @@
 
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::utils::Utf16LeSlice;
+use indextree::{Arena, NodeId};
 use std::borrow::Cow;
 
 /// An XML name backed by a BinXML name entry.
@@ -41,19 +43,57 @@ impl<'a> Name<'a> {
     }
 }
 
-/// Text content stored as UTF-8.
+/// Text content stored as UTF-16LE or UTF-8.
 ///
-/// Text is decoded at parse time and may be borrowed from the input buffer
-/// when possible.
+/// UTF-16LE text is carried through the IR to avoid eager decoding and
+/// allocation. UTF-8 text is used for synthetic values (e.g. WEVT
+/// substitutions or debugging paths).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Text<'a> {
-    pub value: Cow<'a, str>,
+pub enum Text<'a> {
+    /// Borrowed UTF-16LE text with a logical code-unit length.
+    Utf16(Utf16LeSlice<'a>),
+    /// UTF-8 text, borrowed or owned.
+    Utf8(Cow<'a, str>),
 }
 
 impl<'a> Text<'a> {
-    /// Wrap a text value as an IR text node.
+    /// Wrap UTF-8 text as an IR text node.
     pub fn new(value: Cow<'a, str>) -> Self {
-        Text { value }
+        Text::Utf8(value)
+    }
+
+    /// Wrap UTF-8 text as an IR text node.
+    pub fn utf8(value: Cow<'a, str>) -> Self {
+        Text::Utf8(value)
+    }
+
+    /// Wrap UTF-16LE text as an IR text node.
+    pub fn utf16(value: Utf16LeSlice<'a>) -> Self {
+        Text::Utf16(value)
+    }
+
+    /// Returns true if the text is empty.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Text::Utf16(value) => value.is_empty(),
+            Text::Utf8(value) => value.is_empty(),
+        }
+    }
+
+    /// Returns a UTF-8 view when this text is already UTF-8.
+    pub fn as_utf8(&self) -> Option<&str> {
+        match self {
+            Text::Utf8(value) => Some(value.as_ref()),
+            Text::Utf16(_) => None,
+        }
+    }
+
+    /// Returns a UTF-16LE view when available.
+    pub fn as_utf16(&self) -> Option<Utf16LeSlice<'a>> {
+        match self {
+            Text::Utf16(value) => Some(*value),
+            Text::Utf8(_) => None,
+        }
     }
 }
 
@@ -63,7 +103,8 @@ impl<'a> Text<'a> {
 /// should never see unresolved placeholders.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Node<'a> {
-    Element(Box<Element<'a>>),
+    /// Reference to an element stored in the IR arena.
+    Element(NodeId),
     Text(Text<'a>),
     Value(BinXmlValue<'a>),
     EntityRef(Name<'a>),
@@ -123,5 +164,62 @@ impl<'a> Element<'a> {
             self.has_element_child = true;
         }
         self.children.push(node);
+    }
+}
+
+/// Identifier for an element stored in an IR arena.
+pub type ElementId = NodeId;
+
+/// Arena-backed IR tree.
+///
+/// The tree owns an `indextree::Arena` of elements and stores the root node ID.
+/// All element references inside `Node::Element` variants point back into this
+/// arena.
+#[derive(Debug, Clone)]
+pub struct IrTree<'a> {
+    arena: Arena<Element<'a>>,
+    root: ElementId,
+}
+
+impl<'a> IrTree<'a> {
+    /// Create a new IR tree from the provided arena and root ID.
+    pub fn new(arena: Arena<Element<'a>>, root: ElementId) -> Self {
+        IrTree { arena, root }
+    }
+
+    /// Returns the root element ID.
+    pub fn root(&self) -> ElementId {
+        self.root
+    }
+
+    /// Returns a shared reference to the element arena.
+    pub fn arena(&self) -> &Arena<Element<'a>> {
+        &self.arena
+    }
+
+    /// Returns a mutable reference to the element arena.
+    pub fn arena_mut(&mut self) -> &mut Arena<Element<'a>> {
+        &mut self.arena
+    }
+
+    /// Returns the root element.
+    pub fn root_element(&self) -> &Element<'a> {
+        self.element(self.root)
+    }
+
+    /// Returns a reference to the element for the given ID.
+    pub fn element(&self, id: ElementId) -> &Element<'a> {
+        self.arena
+            .get(id)
+            .expect("invalid element id")
+            .get()
+    }
+
+    /// Returns a mutable reference to the element for the given ID.
+    pub fn element_mut(&mut self, id: ElementId) -> &mut Element<'a> {
+        self.arena
+            .get_mut(id)
+            .expect("invalid element id")
+            .get_mut()
     }
 }

@@ -5,12 +5,12 @@ use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
 };
 use crate::model::deserialized::BinXMLDeserializedTokens;
-use crate::model::ir::Element;
+use crate::model::ir::IrTree;
 use crate::utils::bytes;
-use crate::utils::windows::filetime_to_datetime;
+use crate::utils::windows::filetime_to_timestamp;
 use crate::{EvtxChunk, ParserSettings};
 
-use chrono::prelude::*;
+use jiff::Timestamp;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -22,8 +22,8 @@ pub(crate) const EVTX_RECORD_HEADER_SIZE: usize = 24;
 pub struct EvtxRecord<'a> {
     pub chunk: &'a EvtxChunk<'a>,
     pub event_record_id: RecordId,
-    pub timestamp: DateTime<Utc>,
-    pub tree: Element<'a>,
+    pub timestamp: Timestamp,
+    pub tree: IrTree<'a>,
     pub binxml_offset: u64,
     pub binxml_size: u32,
     pub settings: Arc<ParserSettings>,
@@ -33,13 +33,13 @@ pub struct EvtxRecord<'a> {
 pub struct EvtxRecordHeader {
     pub data_size: u32,
     pub event_record_id: RecordId,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerializedEvtxRecord<T> {
     pub event_record_id: RecordId,
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: Timestamp,
     pub data: T,
 }
 
@@ -56,7 +56,7 @@ impl EvtxRecordHeader {
         let record_id = bytes::read_u64_le_r(buf, offset + 8, "record.event_record_id")?;
         let filetime = bytes::read_u64_le_r(buf, offset + 16, "record.filetime")?;
 
-        let timestamp = filetime_to_datetime(filetime);
+        let timestamp = filetime_to_timestamp(filetime)?;
 
         Ok(EvtxRecordHeader {
             data_size: size,

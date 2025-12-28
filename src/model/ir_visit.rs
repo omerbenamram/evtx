@@ -16,7 +16,7 @@
 //!   them as errors if encountered.
 
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::ir::{Element, Name, Node, Placeholder, Text};
+use crate::model::ir::{Element, ElementId, IrTree, Name, Node, Placeholder, Text};
 
 /// Visitor interface for traversing an IR element tree.
 pub trait IrVisitor {
@@ -55,12 +55,21 @@ pub trait IrVisitor {
 }
 
 /// Depth-first walk of an IR element tree.
-pub fn walk_ir<V: IrVisitor>(element: &Element<'_>, visitor: &mut V) -> Result<(), V::Error> {
+pub fn walk_ir<V: IrVisitor>(tree: &IrTree<'_>, visitor: &mut V) -> Result<(), V::Error> {
+    walk_ir_node(tree, tree.root(), visitor)
+}
+
+fn walk_ir_node<V: IrVisitor>(
+    tree: &IrTree<'_>,
+    element_id: ElementId,
+    visitor: &mut V,
+) -> Result<(), V::Error> {
+    let element = tree.element(element_id);
     visitor.start_element(element)?;
 
     for node in &element.children {
         match node {
-            Node::Element(child) => walk_ir(child.as_ref(), visitor)?,
+            Node::Element(child_id) => walk_ir_node(tree, *child_id, visitor)?,
             Node::Text(text) => visitor.visit_text(text)?,
             Node::Value(value) => visitor.visit_value(value)?,
             Node::EntityRef(name) => visitor.visit_entity_ref(name)?,
