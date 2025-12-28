@@ -17,7 +17,7 @@ use crate::model::deserialized::{
     BinXMLDeserializedTokens, BinXmlTemplateRef, TemplateSubstitutionDescriptor,
 };
 use crate::model::ir::{Attr, Element, ElementId, IrTree, Name, Node, Placeholder, Text};
-use crate::utils::{ByteCursor, write_utf16le_json_escaped};
+use crate::utils::ByteCursor;
 use crate::{EvtxChunk, ParserSettings};
 use indextree::Arena;
 use jiff::{Timestamp, tz::Offset};
@@ -784,7 +784,7 @@ fn push_child<'a>(
 
 fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
     match value {
-        BinXmlValue::StringType(s) => Ok(Node::Text(Text::utf16(s))),
+        BinXmlValue::StringType(s) => Ok(Node::Text(Text::utf8(s))),
         BinXmlValue::AnsiStringType(s) => Ok(Node::Text(Text::utf8(s))),
         BinXmlValue::EvtXml | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtHandle => Err(
             EvtxError::FailedToCreateRecordModel("unsupported BinXML value in tree"),
@@ -916,10 +916,6 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                         Text::Utf8(value) => {
                             self.write_json_escaped(value.as_ref())?;
                         }
-                        Text::Utf16(value) => {
-                            write_utf16le_json_escaped(&mut self.writer, *value)
-                                .map_err(EvtxError::from)?;
-                        }
                     }
                 }
                 Node::Value(value) => {
@@ -956,9 +952,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     fn write_value_text(&mut self, value: &BinXmlValue<'_>) -> Result<()> {
         match value {
             BinXmlValue::NullType => Ok(()),
-            BinXmlValue::StringType(s) => {
-                write_utf16le_json_escaped(&mut self.writer, *s).map_err(EvtxError::from)
-            }
+            BinXmlValue::StringType(s) => self.write_json_escaped(s.as_ref()),
             BinXmlValue::AnsiStringType(s) => self.write_json_escaped(s.as_ref()),
             BinXmlValue::Int8Type(v) => self
                 .formatter
@@ -1013,7 +1007,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                         self.write_byte(b',')?;
                     }
                     first = false;
-                    write_utf16le_json_escaped(&mut self.writer, *item).map_err(EvtxError::from)?;
+                    self.write_json_escaped(item.as_ref())?;
                 }
                 Ok(())
             }

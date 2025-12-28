@@ -12,7 +12,6 @@
 
 use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
-use crate::utils::Utf16LeSlice;
 use indextree::{Arena, NodeId};
 use std::borrow::Cow;
 
@@ -43,15 +42,12 @@ impl<'a> Name<'a> {
     }
 }
 
-/// Text content stored as UTF-16LE or UTF-8.
+/// Text content stored as UTF-8.
 ///
-/// UTF-16LE text is carried through the IR to avoid eager decoding and
-/// allocation. UTF-8 text is used for synthetic values (e.g. WEVT
-/// substitutions or debugging paths).
+/// UTF-8 text is used for both decoded BinXML strings and synthetic values
+/// (e.g. WEVT substitutions).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Text<'a> {
-    /// Borrowed UTF-16LE text with a logical code-unit length.
-    Utf16(Utf16LeSlice<'a>),
     /// UTF-8 text, borrowed or owned.
     Utf8(Cow<'a, str>),
 }
@@ -67,15 +63,9 @@ impl<'a> Text<'a> {
         Text::Utf8(value)
     }
 
-    /// Wrap UTF-16LE text as an IR text node.
-    pub fn utf16(value: Utf16LeSlice<'a>) -> Self {
-        Text::Utf16(value)
-    }
-
     /// Returns true if the text is empty.
     pub fn is_empty(&self) -> bool {
         match self {
-            Text::Utf16(value) => value.is_empty(),
             Text::Utf8(value) => value.is_empty(),
         }
     }
@@ -84,15 +74,6 @@ impl<'a> Text<'a> {
     pub fn as_utf8(&self) -> Option<&str> {
         match self {
             Text::Utf8(value) => Some(value.as_ref()),
-            Text::Utf16(_) => None,
-        }
-    }
-
-    /// Returns a UTF-16LE view when available.
-    pub fn as_utf16(&self) -> Option<Utf16LeSlice<'a>> {
-        match self {
-            Text::Utf16(value) => Some(*value),
-            Text::Utf8(_) => None,
         }
     }
 }

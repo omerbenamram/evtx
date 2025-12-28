@@ -20,7 +20,6 @@
 use crate::ParserSettings;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{Element, ElementId, IrTree, Name, Node, Text};
-use crate::utils::{write_utf16le_raw, write_utf16le_xml_escaped};
 use indextree::Arena;
 use std::io::Write;
 
@@ -262,16 +261,12 @@ impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
     fn write_text_raw(&mut self, text: &Text<'_>) -> Result<()> {
         match text {
             Text::Utf8(value) => self.write_bytes(value.as_bytes()),
-            Text::Utf16(value) => write_utf16le_raw(&mut self.writer, *value)
-                .map_err(EvtxError::from),
         }
     }
 
     fn write_text_escaped(&mut self, text: &Text<'_>, in_attribute: bool) -> Result<()> {
         match text {
             Text::Utf8(value) => self.write_escaped_str(value.as_ref(), in_attribute),
-            Text::Utf16(value) => write_utf16le_xml_escaped(&mut self.writer, *value, in_attribute)
-                .map_err(EvtxError::from),
         }
     }
 
