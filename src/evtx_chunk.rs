@@ -9,7 +9,7 @@ use log::{debug, info, trace};
 use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::ir::{build_tree_from_iter, IrTemplateCache};
+use crate::binxml::ir::{IrTemplateCache, build_tree_from_iter};
 use crate::string_cache::StringCache;
 use crate::template_cache::TemplateCache;
 use crate::{ParserSettings, checksum_ieee};
@@ -201,7 +201,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
-            ir_template_cache: IrTemplateCache::new(),
+            ir_template_cache: IrTemplateCache::with_capacity(self.template_table.len()),
         }
     }
 }
@@ -329,12 +329,10 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             Err(err) => return Some(Err(err)),
         };
 
-        let tree_result =
-            build_tree_from_iter(iter, self.chunk, &mut self.ir_template_cache).map_err(|err| {
-                EvtxError::FailedToParseRecord {
-                    record_id: record_header.event_record_id,
-                    source: Box::new(err),
-                }
+        let tree_result = build_tree_from_iter(iter, self.chunk, &mut self.ir_template_cache)
+            .map_err(|err| EvtxError::FailedToParseRecord {
+                record_id: record_header.event_record_id,
+                source: Box::new(err),
             });
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
