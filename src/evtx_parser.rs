@@ -491,7 +491,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 
     /// Return an iterator over all the records.
-    /// Records will be JSON-formatted using a streaming writer that skips XmlModel and serde_json::Value construction.
+    /// Records will be JSON-formatted using a streaming writer that skips full JSON value construction.
     pub fn records_json_stream(
         &mut self,
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
