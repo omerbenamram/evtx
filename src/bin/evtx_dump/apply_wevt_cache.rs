@@ -268,11 +268,11 @@ mod imp {
                     )
                 })?;
 
-                let mut out = Vec::with_capacity(tpl.substitution_array.len());
-                for s in &tpl.substitution_array {
-                    match s {
-                        BinXMLDeserializedTokens::Value(v) => out.push(value_to_string_lossy(v)),
-                        _ => out.push(String::new()),
+                let mut out = Vec::with_capacity(tpl.substitutions.len());
+                for span in &tpl.substitutions {
+                    match span.decode(record.chunk) {
+                        Ok(v) => out.push(value_to_string_lossy(&v)),
+                        Err(_) => out.push(String::new()),
                     }
                 }
                 return Ok(out);

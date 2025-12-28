@@ -8,9 +8,9 @@ use std::io::Cursor;
 
 use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
-use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::binxml::value_variant::BinXmlValueType;
 
-use log::{error, trace, warn};
+use log::trace;
 
 use crate::evtx_chunk::EvtxChunk;
 use bumpalo::Bump;
@@ -29,10 +29,10 @@ fn with_cursor<'a, T>(
 
 pub(crate) fn read_template_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-    arena: &'a Bump,
-    ansi_codec: EncodingRef,
-) -> Result<BinXmlTemplateRef<'a>> {
+    _chunk: Option<&'a EvtxChunk<'a>>,
+    _arena: &'a Bump,
+    _ansi_codec: EncodingRef,
+) -> Result<BinXmlTemplateRef> {
     trace!("TemplateInstance at {}", cursor.position());
 
     let _ = cursor.u8()?;
@@ -73,62 +73,39 @@ pub(crate) fn read_template_cursor<'a>(
 
     trace!("{:?}", value_descriptors);
 
-    let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
-
+    // Keep raw substitution spans (type + size + offset), and skip the value bytes.
+    // The expander/serializer will decode on-demand when the substitution is referenced.
+    let mut substitutions = Vec::with_capacity(number_of_substitutions as usize);
     for descriptor in value_descriptors {
-        let position_before_reading_value = cursor.position();
+        let offset_u64 = cursor.position();
+        let offset: u32 = u32::try_from(offset_u64).map_err(|_| DeserializationError::Truncated {
+            what: "TemplateInstance substitution offset",
+            offset: offset_u64,
+            need: 0,
+            have: 0,
+        })?;
+
         trace!(
-            "Offset `0x{offset:08x} ({offset})`: Substitution: {substitution:?}",
-            offset = position_before_reading_value,
+            "Offset `0x{offset:08x} ({offset})`: Substitution span: {substitution:?} (size={size})",
+            offset = offset,
             substitution = descriptor.value_type,
+            size = descriptor.size,
         );
 
-        let value = BinXmlValue::deserialize_value_type_cursor(
-            &descriptor.value_type,
-            cursor,
-            chunk,
-            arena,
-            Some(descriptor.size),
-            ansi_codec,
-        )?;
+        substitutions.push(TemplateSubstitutionSpan {
+            offset,
+            size: descriptor.size,
+            value_type: descriptor.value_type,
+        });
 
-        trace!("\t {:?}", value);
-        // NullType can mean deleted substitution (and data need to be skipped)
-        if value == BinXmlValue::NullType {
-            trace!("\t Skipping `NullType` descriptor");
-            cursor.set_pos_u64(
-                cursor.position() + u64::from(descriptor.size),
-                "NullType Descriptor",
-            )?;
-        }
-
-        let current_position = cursor.position();
-        let expected_position = position_before_reading_value + u64::from(descriptor.size);
-
-        if expected_position != current_position {
-            let diff = expected_position as i128 - current_position as i128;
-            // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
-            // Sometimes however the log will contain a lot of zero fields.
-            warn!(
-                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                current_position, expected_position, &descriptor
-            );
-
-            match u64::try_from(diff) {
-                Ok(u64_diff) => {
-                    cursor.set_pos_u64(current_position + u64_diff, "Broken record")?;
-                }
-                Err(_) => error!("Broken record"),
-            }
-        }
-        substitution_array.push(BinXMLDeserializedTokens::Value(value));
+        cursor.advance(usize::from(descriptor.size), "skip TemplateInstance substitution bytes")?;
     }
 
     Ok(BinXmlTemplateRef {
         template_id,
         template_def_offset: template_definition_data_offset,
         template_guid,
-        substitution_array,
+        substitutions,
     })
 }
 

@@ -30,13 +30,14 @@ fn binxml_value_to_string_lossy(value: &crate::binxml::value_variant::BinXmlValu
 }
 
 fn substitutions_from_template_instance<'a>(
-    tpl: &crate::model::deserialized::BinXmlTemplateRef<'a>,
+    chunk: &'a crate::EvtxChunk<'a>,
+    tpl: &crate::model::deserialized::BinXmlTemplateRef,
 ) -> Vec<String> {
-    tpl.substitution_array
+    tpl.substitutions
         .iter()
-        .map(|t| match t {
-            BinXMLDeserializedTokens::Value(v) => binxml_value_to_string_lossy(v),
-            _ => String::new(),
+        .map(|span| match span.decode(chunk) {
+            Ok(v) => binxml_value_to_string_lossy(&v),
+            Err(_) => String::new(),
         })
         .collect()
 }
@@ -56,7 +57,7 @@ fn substitutions_from_template_instance<'a>(
 /// attempted because we cannot prove which substitution array matches the error GUID.
 fn resolve_template_guid_from_record<'a>(
     record: &crate::EvtxRecord<'a>,
-    tpl: &crate::model::deserialized::BinXmlTemplateRef<'a>,
+    tpl: &crate::model::deserialized::BinXmlTemplateRef,
 ) -> Option<String> {
     if let Some(g) = tpl.template_guid.as_ref() {
         return Some(g.to_string());
@@ -91,7 +92,7 @@ fn collect_template_instances<'a>(record: &crate::EvtxRecord<'a>) -> Vec<Templat
 
         let guid =
             resolve_template_guid_from_record(record, tpl).map(|g| super::normalize_guid(&g));
-        let substitutions = substitutions_from_template_instance(tpl);
+        let substitutions = substitutions_from_template_instance(record.chunk, tpl);
 
         out.push(TemplateInstanceInfo {
             guid,

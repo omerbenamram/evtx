@@ -162,13 +162,13 @@ mod imp {
                     continue;
                 };
 
-                let mut substitutions = Vec::with_capacity(tpl.substitution_array.len());
-                for s in &tpl.substitution_array {
-                    match s {
-                        BinXMLDeserializedTokens::Value(v) => {
-                            substitutions.push(binxml_value_to_json_lossy(v))
-                        }
-                        other => substitutions.push(JsonValue::String(format!("{other:?}"))),
+                let mut substitutions = Vec::with_capacity(tpl.substitutions.len());
+                for span in &tpl.substitutions {
+                    match span.decode(record.chunk) {
+                        Ok(v) => substitutions.push(binxml_value_to_json_lossy(&v)),
+                        Err(e) => substitutions.push(JsonValue::String(format!(
+                            "<decode error: {e}>"
+                        ))),
                     }
                 }
 

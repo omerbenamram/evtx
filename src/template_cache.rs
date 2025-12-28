@@ -35,20 +35,14 @@ pub(crate) enum CompiledTemplateOp {
 }
 
 /// Precompiled representation of a template definition for fast streaming expansion.
-///
-/// Key idea: avoid rescanning the template tokens for substitution counts on every
-/// `TemplateInstance`. We compute `substitution_use_counts` once per template definition.
 #[derive(Debug)]
 pub(crate) struct CompiledTemplateDefinition {
     pub(crate) ops: Vec<CompiledTemplateOp>,
-    /// Index by `substitution_index` (0-based) -> number of times referenced in the template.
-    pub(crate) substitution_use_counts: Vec<u32>,
 }
 
 impl CompiledTemplateDefinition {
     fn compile(template: &BinXMLTemplateDefinition<'_>) -> Self {
         let mut ops = Vec::with_capacity(template.tokens.len());
-        let mut counts: Vec<u32> = Vec::new();
 
         for (i, t) in template.tokens.iter().enumerate() {
             match t {
@@ -110,14 +104,6 @@ impl CompiledTemplateDefinition {
                         substitution_index: desc.substitution_index,
                         ignore: desc.ignore,
                     });
-
-                    if !desc.ignore {
-                        let idx = desc.substitution_index as usize;
-                        if idx >= counts.len() {
-                            counts.resize(idx + 1, 0);
-                        }
-                        counts[idx] = counts[idx].saturating_add(1);
-                    }
                 }
                 crate::model::deserialized::BinXMLDeserializedTokens::TemplateInstance(_) => {
                     ops.push(CompiledTemplateOp::Unsupported {
@@ -135,10 +121,7 @@ impl CompiledTemplateDefinition {
             }
         }
 
-        CompiledTemplateDefinition {
-            ops,
-            substitution_use_counts: counts,
-        }
+        CompiledTemplateDefinition { ops }
     }
 }
 
@@ -203,13 +186,6 @@ impl<'chunk> TemplateCache<'chunk> {
 
     pub fn get_template(&self, offset: ChunkOffset) -> Option<&BinXMLTemplateDefinition<'chunk>> {
         self.get_entry(offset).map(|e| &e.definition)
-    }
-
-    pub(crate) fn get_compiled(
-        &self,
-        offset: ChunkOffset,
-    ) -> Option<&CompiledTemplateDefinition> {
-        self.get_entry(offset).map(|e| &e.compiled)
     }
 
     pub fn len(&self) -> usize {
