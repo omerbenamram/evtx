@@ -23,6 +23,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::rc::Rc;
+use zmij::Buffer as ZmijBuffer;
 
 const BINXML_NAME_LINK_SIZE: u32 = 6;
 
@@ -102,8 +103,12 @@ pub(crate) struct IrTemplateCache<'a> {
 
 impl<'a> IrTemplateCache<'a> {
     pub fn new() -> Self {
+        IrTemplateCache::with_capacity(0)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
         IrTemplateCache {
-            templates: HashMap::new(),
+            templates: HashMap::with_capacity(capacity),
         }
     }
 
@@ -490,15 +495,15 @@ fn clone_and_resolve<'a, 'cache>(
 ) -> Result<Element<'a>> {
     let mut resolved = Element {
         name: element.name.clone(),
-        attrs: Vec::new(),
-        children: Vec::new(),
+        attrs: Vec::with_capacity(element.attrs.len()),
+        children: Vec::with_capacity(element.children.len()),
         has_element_child: element.has_element_child,
     };
 
     for attr in &element.attrs {
         let mut new_attr = Attr {
             name: attr.name.clone(),
-            value: Vec::new(),
+            value: Vec::with_capacity(attr.value.len()),
         };
         for node in &attr.value {
             resolve_node_into(node, values, chunk, cache, &mut new_attr.value)?;
@@ -738,11 +743,15 @@ struct NameCount<'a> {
 /// Streaming JSON renderer for IR trees.
 struct JsonEmitter<'w, W: Write> {
     writer: &'w mut W,
+    float_buf: ZmijBuffer,
 }
 
 impl<'w, W: Write> JsonEmitter<'w, W> {
     fn new(writer: &'w mut W) -> Self {
-        JsonEmitter { writer }
+        JsonEmitter {
+            writer,
+            float_buf: ZmijBuffer::new(),
+        }
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
@@ -862,8 +871,8 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
             BinXmlValue::UInt32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
             BinXmlValue::Int64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
             BinXmlValue::UInt64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::Real32Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
-            BinXmlValue::Real64Type(v) => write!(self.writer, "{}", v).map_err(EvtxError::from),
+            BinXmlValue::Real32Type(v) => self.write_float(*v),
+            BinXmlValue::Real64Type(v) => self.write_float(*v),
             BinXmlValue::BoolType(v) => {
                 self.write_bytes(if *v { b"true" } else { b"false" })
             }
@@ -898,8 +907,8 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
             BinXmlValue::UInt32ArrayType(items) => self.write_delimited(items),
             BinXmlValue::Int64ArrayType(items) => self.write_delimited(items),
             BinXmlValue::UInt64ArrayType(items) => self.write_delimited(items),
-            BinXmlValue::Real32ArrayType(items) => self.write_delimited(items),
-            BinXmlValue::Real64ArrayType(items) => self.write_delimited(items),
+            BinXmlValue::Real32ArrayType(items) => self.write_float_list(items),
+            BinXmlValue::Real64ArrayType(items) => self.write_float_list(items),
             BinXmlValue::BoolArrayType(items) => self.write_delimited(items),
             BinXmlValue::GuidArrayType(items) => self.write_delimited(items),
             BinXmlValue::FileTimeArrayType(items) => self.write_delimited(items),
@@ -942,6 +951,27 @@ impl<'w, W: Write> JsonEmitter<'w, W> {
             let lo = b & 0x0f;
             self.write_byte(to_hex_digit(hi))?;
             self.write_byte(to_hex_digit(lo))?;
+        }
+        Ok(())
+    }
+
+    fn write_float<F: zmij::Float>(&mut self, value: F) -> Result<()> {
+        let (buf, writer) = (&mut self.float_buf, &mut self.writer);
+        let s = buf.format(value);
+        writer.write_all(s.as_bytes())?;
+        Ok(())
+    }
+
+    fn write_float_list<F: zmij::Float>(&mut self, items: &[F]) -> Result<()> {
+        let (buf, writer) = (&mut self.float_buf, &mut self.writer);
+        let mut first = true;
+        for item in items {
+            if !first {
+                writer.write_all(b",")?;
+            }
+            first = false;
+            let s = buf.format(*item);
+            writer.write_all(s.as_bytes())?;
         }
         Ok(())
     }
