@@ -227,10 +227,17 @@ Profiles (what it suggests next):
   - remaining serde fallback in the “streaming” path:
     - `serde_json::Serializer::serialize_str` **~2.5%** leaf
     - `BinXmlValue -> serde_json::Value::from` **~2.3%** leaf
+- Rust XML (legacy / pre-switch) hot leaf/self frames (from `.../tables/top_leaves_rust_xml_cpu.md`):
+  - `evtx::binxml::assemble::create_record_model` **~10.0%** leaf
+  - `evtx::binxml::assemble::_expand_templates` **~6.7%** leaf
+  - `evtx::binxml::tokens::read_template_cursor` **~5.2%** leaf (TemplateInstance decoding even on the legacy path)
+  - `quick_xml::writer::Writer<W>::write_event` **~2.9%** leaf
 - Rust XML (after compiled-op streaming) hot leaf/self frames (from `.../tables/top_leaves_rust_xml_after_cpu.md`):
-  - `evtx::binxml::tokens::read_template_cursor` **~7.1%** leaf (same underlying TemplateInstance decode cost)
-  - `BinXmlValue::deserialize_value_type_cursor` **~1.7%** leaf
-  - XML emission is still expensive (quick-xml attribute handling + buffer growth), but see below for current focus.
+  - `evtx::binxml::tokens::read_template_cursor` **~7.1%** leaf (TemplateInstance decoding dominates once the legacy model path is gone)
+  - `Asm<W>::expand_template` **~5.0%** leaf (compiled-op template driver)
+  - `quick_xml::writer::Writer<W>::write_event` **~3.8%** leaf
+  - `BinXmlValue::deserialize_value_type_cursor` / `String::from_utf16` **~1.7%** leaf each
+  - Even though `quick_xml` is still visible, the next best leverage is to stop eagerly decoding substitutions (benefits both JSON + XML).
 
 Next substantial directions (focus):
 - **Raw substitution spans + decode/write-on-demand** (Zig-style), shared by JSON + XML:
