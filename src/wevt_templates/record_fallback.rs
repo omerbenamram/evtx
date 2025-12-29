@@ -48,9 +48,7 @@ fn substitutions_from_template_instance<'a>(
 /// Resolution order (deterministic):
 /// 1. **Inline**: `tpl.template_guid` when the record embeds a template definition header inline in
 ///    the `TemplateInstance`.
-/// 2. **Cached**: lookup `tpl.template_def_offset` in the chunk `template_table` and read the cached
-///    template definition header GUID.
-/// 3. **Direct**: read and validate a `TemplateDefinitionHeader` directly from the chunk bytes at
+/// 2. **Direct**: read and validate a `TemplateDefinitionHeader` directly from the chunk bytes at
 ///    `tpl.template_def_offset` (bounds + plausible header + BinXML fragment header).
 ///
 /// If none of the above succeeds, returns `None`. In that case WEVT-cache rendering will not be
@@ -61,15 +59,6 @@ fn resolve_template_guid_from_record<'a>(
 ) -> Option<String> {
     if let Some(g) = tpl.template_guid.as_ref() {
         return Some(g.to_string());
-    }
-
-    // Prefer the fully-parsed/cached template table (fast path).
-    if let Some(def) = record
-        .chunk
-        .template_table
-        .get_template(tpl.template_def_offset)
-    {
-        return Some(def.header.guid.to_string());
     }
 
     // Finally: validate and read the template definition header directly from the chunk bytes at
@@ -94,8 +83,8 @@ fn collect_template_instances<'a>(
         };
 
         let guid =
-            resolve_template_guid_from_record(record, &tpl).map(|g| super::normalize_guid(&g));
-        let substitutions = substitutions_from_template_instance(&tpl);
+            resolve_template_guid_from_record(record, tpl).map(|g| super::normalize_guid(&g));
+        let substitutions = substitutions_from_template_instance(tpl);
 
         out.push(TemplateInstanceInfo {
             guid,

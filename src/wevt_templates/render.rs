@@ -18,8 +18,8 @@ use crate::binxml::name::{BinXmlNameRef, read_wevt_inline_name_at};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::deserialized::{BinXMLDeserializedTokens, TemplateSubstitutionDescriptor};
-use crate::model::ir::{Attr, Element, ElementId, IrTree, Name, Node, Text};
-use indextree::Arena;
+use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Text};
+use bumpalo::Bump;
 use std::borrow::Cow;
 
 /// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
@@ -40,7 +40,8 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> Result<
     let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
 
     let mode = SubstitutionMode::Placeholders { names: None };
-    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    let arena = Bump::new();
+    let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
 
@@ -68,7 +69,8 @@ pub fn render_temp_to_xml_with_substitution_values(
     let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
 
     let mode = SubstitutionMode::Values(substitution_values);
-    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    let arena = Bump::new();
+    let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
 
@@ -95,7 +97,8 @@ pub fn render_template_definition_to_xml(
     let mode = SubstitutionMode::Placeholders {
         names: Some(&names),
     };
-    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    let arena = Bump::new();
+    let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
 
@@ -115,7 +118,8 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
 
     let mode = SubstitutionMode::Values(substitution_values);
-    let tree = build_wevt_tree(binxml, tokens, mode)?;
+    let arena = Bump::new();
+    let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
 
@@ -140,8 +144,9 @@ fn build_wevt_tree<'a>(
     binxml: &'a [u8],
     tokens: Vec<BinXMLDeserializedTokens<'a>>,
     mode: SubstitutionMode<'_>,
+    bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
-    let mut arena = Arena::new();
+    let mut arena = IrArena::new_in(bump);
     let mut stack: Vec<ElementId> = Vec::new();
     let mut current_element: Option<WevtElementBuilder<'a>> = None;
     let mut root: Option<ElementId> = None;
@@ -164,7 +169,7 @@ fn build_wevt_tree<'a>(
                     ));
                 }
                 let name = resolve_name(binxml, &elem.name)?;
-                current_element = Some(WevtElementBuilder::new(name));
+                current_element = Some(WevtElementBuilder::new(name, bump));
             }
             BinXMLDeserializedTokens::Attribute(attr) => {
                 let builder =
@@ -188,36 +193,36 @@ fn build_wevt_tree<'a>(
                     ));
                 }
                 BinXmlValue::StringType(s) => {
-                    let node = Node::Text(Text::utf8(s));
-                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                    let node = Node::Text(Text::utf16(s));
+                    push_node(&mut arena, &stack, &mut current_element, node)?;
                 }
                 BinXmlValue::AnsiStringType(s) => {
                     let node = Node::Text(Text::utf8(s));
-                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                    push_node(&mut arena, &stack, &mut current_element, node)?;
                 }
                 other => {
                     let node = Node::Value(other);
-                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                    push_node(&mut arena, &stack, &mut current_element, node)?;
                 }
             },
             BinXMLDeserializedTokens::EntityRef(entity) => {
                 let name = resolve_name(binxml, &entity.name)?;
                 let node = Node::EntityRef(name);
-                push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                push_node(&mut arena, &stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::PITarget(target) => {
                 let name = resolve_name(binxml, &target.name)?;
                 let node = Node::PITarget(name);
-                push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                push_node(&mut arena, &stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::PIData(data) => {
-                let node = Node::PIData(Text::new(Cow::Owned(data)));
-                push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                let node = Node::PIData(Text::utf16(data));
+                push_node(&mut arena, &stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::Substitution(sub) => {
                 if let Some(text) = substitution_text(&mode, &sub) {
                     let node = Node::Text(Text::utf8(Cow::Owned(text)));
-                    push_node(&mut arena, &mut stack, &mut current_element, node)?;
+                    push_node(&mut arena, &stack, &mut current_element, node)?;
                 }
             }
             BinXMLDeserializedTokens::CloseStartElement => {
@@ -238,13 +243,13 @@ fn build_wevt_tree<'a>(
                     ))?
                     .finish();
                 let element_id = arena.new_node(element);
-                attach_element(&mut arena, &mut stack, &mut root, element_id)?;
+                attach_element(&mut arena, &stack, &mut root, element_id)?;
             }
             BinXMLDeserializedTokens::CloseElement => {
                 let element_id = stack.pop().ok_or(EvtxError::FailedToCreateRecordModel(
                     "close element - Bad parser state",
                 ))?;
-                attach_element(&mut arena, &mut stack, &mut root, element_id)?;
+                attach_element(&mut arena, &stack, &mut root, element_id)?;
             }
             BinXMLDeserializedTokens::CDATASection | BinXMLDeserializedTokens::CharRef => {
                 return Err(EvtxError::FailedToCreateRecordModel(
@@ -266,8 +271,7 @@ fn build_wevt_tree<'a>(
         ));
     }
 
-    let root_id =
-        root.ok_or(EvtxError::FailedToCreateRecordModel("missing root element"))?;
+    let root_id = root.ok_or(EvtxError::FailedToCreateRecordModel("missing root element"))?;
     Ok(IrTree::new(arena, root_id))
 }
 
@@ -286,10 +290,10 @@ fn substitution_text(
         SubstitutionMode::Placeholders { names } => {
             let idx = sub.substitution_index as usize;
             let mut placeholder = format!("{{sub:{idx}}}");
-            if let Some(names) = names {
-                if let Some(name) = names.get(idx).and_then(|n| n.as_ref().map(|s| s.as_str())) {
-                    placeholder = format!("{{sub:{idx}:{name}}}");
-                }
+            if let Some(names) = names
+                && let Some(name) = names.get(idx).and_then(|n| n.as_deref())
+            {
+                placeholder = format!("{{sub:{idx}:{name}}}");
             }
             Some(placeholder)
         }
@@ -302,16 +306,18 @@ fn resolve_name<'a>(binxml: &'a [u8], name_ref: &BinXmlNameRef) -> Result<Name<'
 }
 
 fn attach_element<'a>(
-    arena: &mut Arena<Element<'a>>,
-    stack: &mut Vec<ElementId>,
+    arena: &mut IrArena<'a>,
+    stack: &[ElementId],
     root: &mut Option<ElementId>,
     element_id: ElementId,
 ) -> Result<()> {
     if let Some(parent_id) = stack.last().copied() {
-        let parent = arena.get_mut(parent_id).ok_or(EvtxError::FailedToCreateRecordModel(
-            "invalid parent element id",
-        ))?;
-        parent.get_mut().push_child(Node::Element(element_id));
+        let parent = arena
+            .get_mut(parent_id)
+            .ok_or(EvtxError::FailedToCreateRecordModel(
+                "invalid parent element id",
+            ))?;
+        parent.push_child(Node::Element(element_id));
         Ok(())
     } else if root.is_none() {
         *root = Some(element_id);
@@ -324,8 +330,8 @@ fn attach_element<'a>(
 }
 
 fn push_node<'a>(
-    arena: &mut Arena<Element<'a>>,
-    stack: &mut Vec<ElementId>,
+    arena: &mut IrArena<'a>,
+    stack: &[ElementId],
     current_element: &mut Option<WevtElementBuilder<'a>>,
     node: Node<'a>,
 ) -> Result<()> {
@@ -344,10 +350,12 @@ fn push_node<'a>(
             .ok_or(EvtxError::FailedToCreateRecordModel(
                 "value outside of element",
             ))?;
-        let parent = arena.get_mut(parent_id).ok_or(EvtxError::FailedToCreateRecordModel(
-            "invalid parent element id",
-        ))?;
-        parent.get_mut().push_child(node);
+        let parent = arena
+            .get_mut(parent_id)
+            .ok_or(EvtxError::FailedToCreateRecordModel(
+                "invalid parent element id",
+            ))?;
+        parent.push_child(node);
         Ok(())
     }
 }
@@ -358,18 +366,20 @@ fn push_node<'a>(
 /// into a concrete `Element` with name/attribute separation.
 struct WevtElementBuilder<'a> {
     name: Name<'a>,
-    attrs: Vec<Attr<'a>>,
+    attrs: IrVec<'a, Attr<'a>>,
     current_attr_name: Option<Name<'a>>,
-    current_attr_value: Vec<Node<'a>>,
+    current_attr_value: IrVec<'a, Node<'a>>,
+    arena: &'a Bump,
 }
 
 impl<'a> WevtElementBuilder<'a> {
-    fn new(name: Name<'a>) -> Self {
+    fn new(name: Name<'a>, arena: &'a Bump) -> Self {
         WevtElementBuilder {
             name,
-            attrs: Vec::new(),
+            attrs: IrVec::new_in(arena),
             current_attr_name: None,
-            current_attr_value: Vec::new(),
+            current_attr_value: IrVec::new_in(arena),
+            arena,
         }
     }
 
@@ -387,7 +397,8 @@ impl<'a> WevtElementBuilder<'a> {
     fn finish_attr_if_any(&mut self) {
         if let Some(name) = self.current_attr_name.take() {
             if !self.current_attr_value.is_empty() {
-                let value = std::mem::take(&mut self.current_attr_value);
+                let value =
+                    std::mem::replace(&mut self.current_attr_value, IrVec::new_in(self.arena));
                 self.attrs.push(Attr { name, value });
             } else {
                 self.current_attr_value.clear();
@@ -400,7 +411,7 @@ impl<'a> WevtElementBuilder<'a> {
         Element {
             name: self.name,
             attrs: self.attrs,
-            children: Vec::new(),
+            children: IrVec::new_in(self.arena),
             has_element_child: false,
         }
     }

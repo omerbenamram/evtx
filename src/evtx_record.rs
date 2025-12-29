@@ -1,5 +1,5 @@
 use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::ir::render_json_record;
+use crate::binxml::ir_json::render_json_record;
 use crate::binxml::ir_xml::render_xml_record;
 use crate::err::{
     DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,

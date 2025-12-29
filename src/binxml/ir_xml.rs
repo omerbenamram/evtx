@@ -2,7 +2,7 @@
 //!
 //! This module provides a fast, allocation-light XML renderer that operates
 //! directly on the IR (`model::ir`). It is the XML counterpart to the JSON
-//! streaming renderer in `binxml::ir` and intentionally avoids building any
+//! streaming renderer in `binxml::ir_json` and intentionally avoids building any
 //! intermediate XML model or token stream.
 //!
 //! The renderer writes directly to an `io::Write` sink, escaping text and value
@@ -18,19 +18,22 @@
 //! - Optional indentation is controlled by `ParserSettings::should_indent()`.
 
 use crate::ParserSettings;
+use crate::binxml::value_render::ValueRenderer;
 use crate::err::{EvtxError, Result};
-use crate::model::ir::{Element, ElementId, IrTree, Name, Node, Text};
-use indextree::Arena;
-use std::io::Write;
+use crate::model::ir::{ElementId, IrArena, IrTree, Name, Node, Text, is_optional_empty};
+use crate::utils::Utf16LeSlice;
+use sonic_rs::writer::WriteExt;
 
 const INDENT_WIDTH: usize = 2;
 
 /// Render a single record element to XML.
-pub(crate) fn render_xml_record<W: Write>(
+pub(crate) fn render_xml_record<W: WriteExt>(
     tree: &IrTree<'_>,
     settings: &ParserSettings,
     writer: &mut W,
 ) -> Result<()> {
+    // Keep output stable (matches snapshot tests / legacy formatting).
+    writer.write_all(b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")?;
     let mut emitter = XmlEmitter::new(writer, settings.should_indent(), tree.arena());
     emitter.render_element(tree.root(), 0)?;
     Ok(())
@@ -40,23 +43,49 @@ pub(crate) fn render_xml_record<W: Write>(
 ///
 /// The emitter owns indentation state and writes escaped content directly to
 /// the underlying writer without allocating intermediate strings.
-struct XmlEmitter<'w, 'a, W: Write> {
+struct XmlEmitter<'w, 'a, W: WriteExt> {
     writer: &'w mut W,
     indent: bool,
-    arena: &'a Arena<Element<'a>>,
+    arena: &'a IrArena<'a>,
+    scratch: utf16_simd::Scratch,
+    values: ValueRenderer,
 }
 
-impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
-    fn new(writer: &'w mut W, indent: bool, arena: &'a Arena<Element<'a>>) -> Self {
+impl<'w, 'a, W: WriteExt> XmlEmitter<'w, 'a, W> {
+    fn new(writer: &'w mut W, indent: bool, arena: &'a IrArena<'a>) -> Self {
         XmlEmitter {
             writer,
             indent,
             arena,
+            scratch: utf16_simd::Scratch::new(),
+            values: ValueRenderer::new(),
         }
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         self.writer.write_all(bytes)?;
+        Ok(())
+    }
+
+    fn write_utf16_escaped(&mut self, value: Utf16LeSlice<'_>, in_attribute: bool) -> Result<()> {
+        let bytes = value.as_bytes();
+        let units = bytes.len() / 2;
+        if units == 0 {
+            return Ok(());
+        }
+        let escaped = self.scratch.escape_xml_utf16le(bytes, units, in_attribute);
+        self.writer.write_all(escaped)?;
+        Ok(())
+    }
+
+    fn write_utf16_raw(&mut self, value: Utf16LeSlice<'_>) -> Result<()> {
+        let bytes = value.as_bytes();
+        let units = bytes.len() / 2;
+        if units == 0 {
+            return Ok(());
+        }
+        let raw = self.scratch.escape_utf16le_raw(bytes, units);
+        self.writer.write_all(raw)?;
         Ok(())
     }
 
@@ -79,10 +108,7 @@ impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
 
     fn render_element(&mut self, element_id: ElementId, indent: usize) -> Result<()> {
         let arena = self.arena;
-        let element = arena
-            .get(element_id)
-            .expect("invalid element id")
-            .get();
+        let element = arena.get(element_id).expect("invalid element id");
         self.write_indent(indent)?;
         self.write_bytes(b"<")?;
         self.write_name(&element.name)?;
@@ -101,8 +127,20 @@ impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
         self.write_bytes(b">")?;
 
         if element.children.is_empty() {
-            self.write_close_tag(&element.name)?;
-            self.write_newline()?;
+            // Preserve legacy formatting: most empty elements are rendered as:
+            //   <Tag ...>
+            //   </Tag>
+            //
+            // But `<Binary>` is emitted on a single line to match existing snapshots.
+            if element.name.as_str() == "Binary" {
+                self.write_close_tag(&element.name)?;
+                self.write_newline()?;
+            } else {
+                self.write_newline()?;
+                self.write_indent(indent)?;
+                self.write_close_tag(&element.name)?;
+                self.write_newline()?;
+            }
             return Ok(());
         }
 
@@ -153,7 +191,7 @@ impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
                     }
                 }
                 Node::Value(value) => {
-                    if !value.as_cow_str().is_empty() {
+                    if !is_optional_empty(value) {
                         return Ok(false);
                     }
                 }
@@ -230,8 +268,8 @@ impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
             )),
             Node::Text(text) => self.write_text_escaped(text, in_attribute),
             Node::Value(value) => {
-                let text = value.as_cow_str();
-                self.write_escaped_str(text.as_ref(), in_attribute)
+                self.values
+                    .write_xml_value_text(self.writer, value, in_attribute)
             }
             Node::EntityRef(name) => {
                 self.write_bytes(b"&")?;
@@ -260,12 +298,14 @@ impl<'w, 'a, W: Write> XmlEmitter<'w, 'a, W> {
 
     fn write_text_raw(&mut self, text: &Text<'_>) -> Result<()> {
         match text {
+            Text::Utf16(value) => self.write_utf16_raw(*value),
             Text::Utf8(value) => self.write_bytes(value.as_bytes()),
         }
     }
 
     fn write_text_escaped(&mut self, text: &Text<'_>, in_attribute: bool) -> Result<()> {
         match text {
+            Text::Utf16(value) => self.write_utf16_escaped(*value, in_attribute),
             Text::Utf8(value) => self.write_escaped_str(value.as_ref(), in_attribute),
         }
     }

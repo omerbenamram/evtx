@@ -10,7 +10,6 @@ readme = "README.md"
 sonic-rs = { version = "0.5.6", optional = true }
 
 [features]
-perf-counters = []
 sonic-writeext = ["dep:sonic-rs"]
 
 [dev-dependencies]

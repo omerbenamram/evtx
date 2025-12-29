@@ -8,12 +8,11 @@ use crate::utils::bytes;
 use log::{debug, info, trace};
 use std::io::Cursor;
 
-use crate::binxml::deserializer::BinXmlDeserializer;
-use crate::binxml::ir::{IrTemplateCache, build_tree_from_iter};
+use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
 use crate::string_cache::StringCache;
-use crate::template_cache::TemplateCache;
 use crate::{ParserSettings, checksum_ieee};
 
+use bumpalo::Bump;
 use std::sync::Arc;
 
 const EVTX_CHUNK_HEADER_SIZE: usize = 512;
@@ -80,6 +79,17 @@ impl EvtxChunkData {
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
         EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
+    }
+
+    /// Parse a chunk while reusing an existing bump arena.
+    ///
+    /// The arena is reset before use, retaining its capacity for reuse across chunks.
+    pub fn parse_with_arena(
+        &mut self,
+        settings: Arc<ParserSettings>,
+        arena: Bump,
+    ) -> EvtxChunkResult<EvtxChunk<'_>> {
+        EvtxChunk::new_with_arena(&self.data, &self.header, Arc::clone(&settings), arena)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -157,7 +167,7 @@ pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
     pub string_cache: StringCache,
-    pub template_table: TemplateCache<'chunk>,
+    pub arena: Bump,
 
     pub settings: Arc<ParserSettings>,
 }
@@ -169,39 +179,60 @@ impl<'chunk> EvtxChunk<'chunk> {
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
+        EvtxChunk::new_with_arena(data, header, settings, Bump::new())
+    }
+
+    /// Will fail if the data starts with an invalid evtx chunk header.
+    ///
+    /// The provided arena is reset before use, so any previously allocated chunk-scoped
+    /// data is cleared while retaining the bump capacity.
+    pub fn new_with_arena(
+        data: &'chunk [u8],
+        header: &'chunk EvtxChunkHeader,
+        settings: Arc<ParserSettings>,
+        mut arena: Bump,
+    ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
+        arena.reset();
+
         let _cursor = Cursor::new(data);
 
         info!("Initializing string cache");
         let string_cache = StringCache::populate(data, &header.strings_offsets)
             .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
 
-        info!("Initializing template cache");
-        let template_table =
-            TemplateCache::populate(data, &header.template_offsets, settings.get_ansi_codec())
-                .map_err(|e| ChunkError::FailedToBuildTemplateCache {
-                    message: e.to_string(),
-                    source: Box::new(e),
-                })?;
-
         Ok(EvtxChunk {
             header,
             data,
             string_cache,
-            template_table,
+            arena,
             settings,
         })
+    }
+
+    /// Consume the chunk and return its bump arena for reuse.
+    pub fn into_arena(self) -> Bump {
+        self.arena
     }
 
     /// Return an iterator of records from the chunk.
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords<'_> {
+        let estimated_template_buckets = self
+            .header
+            .template_offsets
+            .iter()
+            .filter(|&&offset| offset > 0)
+            .count();
         IterChunkRecords {
             settings: Arc::clone(&self.settings),
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
-            ir_template_cache: IrTemplateCache::with_capacity(self.template_table.len()),
+            ir_template_cache: IrTemplateCache::with_capacity(
+                estimated_template_buckets,
+                &self.arena,
+            ),
         }
     }
 }
@@ -211,15 +242,14 @@ impl<'chunk> EvtxChunk<'chunk> {
 ///
 /// The 'a lifetime is (as can be seen in `iter`), smaller than the `chunk lifetime.
 /// This is because we can only guarantee that the `EvtxRecord`s we are creating are valid for
-/// the duration of the `EvtxChunk` borrow (because we reference the `TemplateCache` which is
-/// owned by it).
+/// the duration of the `EvtxChunk` borrow (records reference chunk-scoped data and allocations).
 ///
 /// In practice we have
 ///
 /// | EvtxChunkData ---------------------------------------| Must live the longest, contain the actual data we refer to.
 ///
 /// | EvtxChunk<'chunk>: ---------------------------- | Borrows `EvtxChunkData`.
-///     &'chunk EvtxChunkData, TemplateCache<'chunk>
+///     &'chunk EvtxChunkData, StringCache, Bump
 ///
 /// | IterChunkRecords<'a: 'chunk>:  ----- | Borrows `EvtxChunk` for 'a, but will only yield `EvtxRecord<'a>`.
 ///     &'a EvtxChunkData<'chunk>
@@ -308,32 +338,24 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
 
-        // `EvtxChunk` only owns `template_table`, which we want to loan to the Deserializer.
-        // `data` and `string_cache` are both references and are `Copy`ed when passed to init.
-        // We avoid creating new references so that `BinXmlDeserializer` can still generate 'a data.
-        let deserializer = BinXmlDeserializer::init(
-            self.chunk.data,
-            record_start + EVTX_RECORD_HEADER_SIZE as u64,
-            Some(self.chunk),
-            false,
-            self.settings.get_ansi_codec(),
-        );
-
-        let iter = match deserializer
-            .iter_tokens(Some(binxml_data_size))
-            .map_err(|e| EvtxError::FailedToParseRecord {
+        let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
+        let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
+        if binxml_end as usize > self.chunk.data.len() {
+            return Some(Err(EvtxError::FailedToParseRecord {
                 record_id: record_header.event_record_id,
-                source: Box::new(EvtxError::DeserializationError(e)),
-            }) {
-            Ok(iter) => iter,
-            Err(err) => return Some(Err(err)),
-        };
+                source: Box::new(EvtxError::FailedToCreateRecordModel(
+                    "record BinXML slice is out of bounds",
+                )),
+            }));
+        }
 
-        let tree_result = build_tree_from_iter(iter, self.chunk, &mut self.ir_template_cache)
-            .map_err(|err| EvtxError::FailedToParseRecord {
-                record_id: record_header.event_record_id,
-                source: Box::new(err),
-            });
+        let bytes = &self.chunk.data[binxml_start as usize..binxml_end as usize];
+        let tree_result =
+            build_tree_from_binxml_bytes_direct(bytes, self.chunk, &mut self.ir_template_cache)
+                .map_err(|err| EvtxError::FailedToParseRecord {
+                    record_id: record_header.event_record_id,
+                    source: Box::new(err),
+                });
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 

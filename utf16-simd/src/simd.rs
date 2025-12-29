@@ -21,9 +21,6 @@
 
 use core::mem::MaybeUninit;
 
-#[cfg(feature = "perf-counters")]
-use crate::perf;
-
 // ---------------------------------------------------------------------------
 // Macro structure
 //
@@ -355,8 +352,6 @@ pub fn escape_json_utf16le_simd(
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("sse2") {
-            #[cfg(feature = "perf-counters")]
-            perf::record_json_escape(crate::scalar::max_units(num_units, utf16le.len()), true);
             // SAFETY:
             // - We only call the SSE2 implementation when the CPU reports SSE2
             //   support (`is_x86_feature_detected!("sse2")`).
@@ -374,8 +369,6 @@ pub fn escape_json_utf16le_simd(
         // - NEON is mandatory on aarch64.
         // - The implementation is still `#[target_feature(enable = "neon")]`,
         //   which makes the call `unsafe` in Rust.
-        #[cfg(feature = "perf-counters")]
-        perf::record_json_escape(crate::scalar::max_units(num_units, utf16le.len()), true);
         unsafe {
             return neon::escape_json_utf16le_simd(utf16le, num_units, dst, need_quote);
         }
@@ -383,8 +376,6 @@ pub fn escape_json_utf16le_simd(
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        #[cfg(feature = "perf-counters")]
-        perf::record_json_escape(crate::scalar::max_units(num_units, utf16le.len()), false);
         crate::scalar::escape_json_utf16le_scalar(utf16le, num_units, dst, need_quote)
     }
 }
@@ -462,8 +453,6 @@ pub fn escape_json_utf16_simd(
     #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("sse2") {
-            #[cfg(feature = "perf-counters")]
-            perf::record_json_escape(utf16.len(), true);
             // SAFETY: runtime-detected SSE2 + `#[target_feature(enable = "sse2")]`.
             unsafe {
                 return x86::escape_json_utf16_simd(utf16, dst, need_quote);
@@ -473,8 +462,6 @@ pub fn escape_json_utf16_simd(
 
     #[cfg(target_arch = "aarch64")]
     {
-        #[cfg(feature = "perf-counters")]
-        perf::record_json_escape(utf16.len(), true);
         // SAFETY: NEON baseline on aarch64 + `#[target_feature(enable = "neon")]`.
         unsafe {
             return neon::escape_json_utf16_simd(utf16, dst, need_quote);
@@ -483,8 +470,6 @@ pub fn escape_json_utf16_simd(
 
     #[cfg(not(target_arch = "aarch64"))]
     {
-        #[cfg(feature = "perf-counters")]
-        perf::record_json_escape(utf16.len(), false);
         crate::scalar::escape_json_utf16_scalar(utf16, dst, need_quote)
     }
 }

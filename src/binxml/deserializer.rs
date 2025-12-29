@@ -11,13 +11,13 @@ use crate::binxml::tokens::{
     read_template_cursor,
 };
 use crate::binxml::value_variant::BinXmlValue;
+#[cfg(feature = "bench")]
+use bumpalo::Bump;
 
 use crate::model::{deserialized::*, raw::*};
 
 use crate::evtx_chunk::EvtxChunk;
 use encoding::EncodingRef;
-
-use std::io::Cursor;
 
 pub struct IterTokens<'a> {
     cursor: ByteCursor<'a>,
@@ -32,6 +32,8 @@ pub struct IterTokens<'a> {
     has_dep_id: bool,
     ansi_codec: EncodingRef,
     name_encoding: BinXmlNameEncoding,
+    #[cfg(feature = "bench")]
+    arena: Option<&'a Bump>,
 }
 
 pub struct BinXmlDeserializer<'a> {
@@ -80,41 +82,52 @@ impl<'a> BinXmlDeserializer<'a> {
         }
     }
 
-    /// Returns a tuple of the tokens.
-    pub fn read_binxml_fragment(
-        cursor: &mut Cursor<&'a [u8]>,
-        chunk: Option<&'a EvtxChunk<'a>>,
-        data_size: Option<u32>,
-        has_dep_id: bool,
-        ansi_codec: EncodingRef,
-    ) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
-        let offset = cursor.position();
-
-        let de = BinXmlDeserializer::init(cursor.get_ref(), offset, chunk, has_dep_id, ansi_codec);
-
-        let mut tokens = vec![];
-        let mut iterator = de.iter_tokens(data_size)?;
-
-        loop {
-            let token = iterator.next();
-            match token {
-                Some(t) => {
-                    tokens.push(t?);
-                }
-                _ => {
-                    break;
-                }
-            }
-        }
-
-        // `IterTokens` holds an absolute position in the original slice.
-        cursor.set_position(iterator.position());
-
-        Ok(tokens)
-    }
-
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
+        #[cfg(feature = "bench")]
+        {
+            self.iter_tokens_with_arena(data_size, None)
+        }
+
+        #[cfg(not(feature = "bench"))]
+        {
+            let cursor = ByteCursor::with_pos(
+                self.data,
+                usize::try_from(self.offset).map_err(|_| DeserializationError::Truncated {
+                    what: "BinXmlDeserializer.offset",
+                    offset: self.offset,
+                    need: 0,
+                    have: 0,
+                })?,
+            )?;
+
+            Ok(IterTokens {
+                cursor,
+                chunk: self.chunk,
+                data_size,
+                data_read_so_far: 0,
+                eof: false,
+                has_dep_id: self.has_dep_id,
+                ansi_codec: self.ansi_codec,
+                name_encoding: self.name_encoding,
+                #[cfg(feature = "bench")]
+                arena: None,
+            })
+        }
+    }
+
+    /// Reads `data_size` bytes of binary xml, allocating strings in the provided bump arena.
+    #[cfg(feature = "bench")]
+    pub fn iter_tokens_in(self, data_size: Option<u32>, arena: &'a Bump) -> Result<IterTokens<'a>> {
+        self.iter_tokens_with_arena(data_size, Some(arena))
+    }
+
+    #[cfg(feature = "bench")]
+    fn iter_tokens_with_arena(
+        self,
+        data_size: Option<u32>,
+        arena: Option<&'a Bump>,
+    ) -> Result<IterTokens<'a>> {
         let cursor = ByteCursor::with_pos(
             self.data,
             usize::try_from(self.offset).map_err(|_| DeserializationError::Truncated {
@@ -134,6 +147,7 @@ impl<'a> BinXmlDeserializer<'a> {
             has_dep_id: self.has_dep_id,
             ansi_codec: self.ansi_codec,
             name_encoding: self.name_encoding,
+            arena,
         })
     }
 }
@@ -176,7 +190,16 @@ impl<'a> IterTokens<'a> {
             BinXMLRawToken::CloseEmptyElement => Ok(BinXMLDeserializedTokens::CloseEmptyElement),
             BinXMLRawToken::CloseElement => Ok(BinXMLDeserializedTokens::CloseElement),
             BinXMLRawToken::Value => Ok(BinXMLDeserializedTokens::Value(
-                BinXmlValue::from_binxml_cursor(cursor, self.chunk, None, self.ansi_codec)?,
+                BinXmlValue::from_binxml_cursor_in(
+                    cursor,
+                    self.chunk,
+                    None,
+                    self.ansi_codec,
+                    #[cfg(feature = "bench")]
+                    self.arena,
+                    #[cfg(not(feature = "bench"))]
+                    None,
+                )?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
                 Ok(BinXMLDeserializedTokens::Attribute(read_attribute_cursor(
@@ -202,7 +225,15 @@ impl<'a> IterTokens<'a> {
                 read_processing_instruction_data_cursor(cursor)?,
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template_cursor(cursor, self.chunk, self.ansi_codec)?,
+                read_template_cursor(
+                    cursor,
+                    self.chunk,
+                    self.ansi_codec,
+                    #[cfg(feature = "bench")]
+                    self.arena,
+                    #[cfg(not(feature = "bench"))]
+                    None,
+                )?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution_descriptor_cursor(cursor, false)?,
@@ -385,9 +416,9 @@ mod tests {
             BinXmlNameEncoding::WevtInline,
         );
 
-        let mut iterator = de.iter_tokens(None).expect("iter_tokens");
+        let iterator = de.iter_tokens(None).expect("iter_tokens");
         let mut tokens = vec![];
-        while let Some(t) = iterator.next() {
+        for t in iterator {
             tokens.push(t.expect("token"));
         }
 
@@ -439,8 +470,8 @@ mod tests {
             BinXmlNameEncoding::WevtInline,
         );
 
-        let mut iterator = de.iter_tokens(None).expect("iter_tokens");
-        while let Some(t) = iterator.next() {
+        let iterator = de.iter_tokens(None).expect("iter_tokens");
+        for t in iterator {
             match t {
                 Ok(_) => continue,
                 Err(crate::err::DeserializationError::WevtInlineNameHashMismatch { .. }) => return,

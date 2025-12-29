@@ -5,6 +5,7 @@ use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
+use bumpalo::Bump;
 
 use log::trace;
 #[cfg(not(feature = "multithreading"))]
@@ -412,12 +413,18 @@ impl<T: ReadSeek> EvtxParser<T> {
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
     ) -> impl Iterator<Item = Result<U>> + 'a {
+        struct ChunkBatch<U> {
+            results: Vec<Result<U>>,
+            arena: Bump,
+        }
+
         // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = Arc::clone(&self.config);
 
         // `self` is mutably borrowed from here on.
         let mut chunks = self.chunks();
+        let mut arena_pool: Vec<Bump> = (0..num_threads).map(|_| Bump::new()).collect();
 
         let records_per_chunk = std::iter::from_fn(move || {
             // Allocate some chunks in advance, so they can be parsed in parallel.
@@ -425,7 +432,8 @@ impl<T: ReadSeek> EvtxParser<T> {
 
             for _ in 0..num_threads {
                 if let Some(chunk) = chunks.next() {
-                    chunk_of_chunks.push(chunk);
+                    let arena = arena_pool.pop().unwrap_or_default();
+                    chunk_of_chunks.push((chunk, arena));
                 };
             }
 
@@ -440,27 +448,45 @@ impl<T: ReadSeek> EvtxParser<T> {
                 let chunk_iter = chunk_of_chunks.into_iter();
 
                 // Serialize the records in each chunk.
-                let iterators: Vec<Vec<Result<U>>> = chunk_iter
+                let iterators: Vec<ChunkBatch<U>> = chunk_iter
                     .enumerate()
-                    .map(|(i, chunk_res)| match chunk_res {
-                        Err(err) => vec![Err(err)],
+                    .map(|(i, (chunk_res, arena))| match chunk_res {
+                        Err(err) => ChunkBatch {
+                            results: vec![Err(err)],
+                            arena,
+                        },
                         Ok(mut chunk) => {
-                            let chunk_records_res = chunk.parse(chunk_settings.clone());
+                            let chunk_records_res =
+                                chunk.parse_with_arena(chunk_settings.clone(), arena);
 
                             match chunk_records_res {
-                                Err(err) => vec![Err(EvtxError::FailedToParseChunk {
-                                    chunk_id: i as u64,
-                                    source: Box::new(err),
-                                })],
+                                Err(err) => ChunkBatch {
+                                    results: vec![Err(EvtxError::FailedToParseChunk {
+                                        chunk_id: i as u64,
+                                        source: Box::new(err),
+                                    })],
+                                    arena: Bump::new(),
+                                },
                                 Ok(mut chunk_records) => {
-                                    chunk_records.iter().map(f.clone()).collect()
+                                    let results = {
+                                        let records = chunk_records.iter();
+                                        records.map(f.clone()).collect()
+                                    };
+                                    let arena = chunk_records.into_arena();
+                                    ChunkBatch { results, arena }
                                 }
                             }
                         }
                     })
                     .collect();
 
-                Some(iterators.into_iter().flatten())
+                let mut flattened = Vec::new();
+                for batch in iterators {
+                    arena_pool.push(batch.arena);
+                    flattened.extend(batch.results);
+                }
+
+                Some(flattened.into_iter())
             }
         });
 
