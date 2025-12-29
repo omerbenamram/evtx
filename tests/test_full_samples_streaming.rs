@@ -66,19 +66,15 @@ fn test_streaming_equivalent_to_regular(path: impl AsRef<Path>) {
     // Parse with regular JSON parser
     let mut parser_regular = EvtxParser::from_path(&path).unwrap();
     let mut regular_results: Vec<String> = Vec::new();
-    for r in parser_regular.records_json() {
-        if let Ok(record) = r {
-            regular_results.push(record.data);
-        }
+    for record in parser_regular.records_json().flatten() {
+        regular_results.push(record.data);
     }
 
     // Parse with streaming JSON parser
     let mut parser_streaming = EvtxParser::from_path(&path).unwrap();
     let mut streaming_results: Vec<String> = Vec::new();
-    for r in parser_streaming.records_json_stream() {
-        if let Ok(record) = r {
-            streaming_results.push(record.data);
-        }
+    for record in parser_streaming.records_json_stream().flatten() {
+        streaming_results.push(record.data);
     }
 
     // Compare counts
@@ -96,9 +92,9 @@ fn test_streaming_equivalent_to_regular(path: impl AsRef<Path>) {
         .enumerate()
     {
         let regular_value: Value = serde_json::from_str(regular)
-            .expect(&format!("Regular JSON should be valid at record {}", i));
+            .unwrap_or_else(|e| panic!("Regular JSON should be valid at record {i}: {e}"));
         let streaming_value: Value = serde_json::from_str(streaming)
-            .expect(&format!("Streaming JSON should be valid at record {}", i));
+            .unwrap_or_else(|e| panic!("Streaming JSON should be valid at record {i}: {e}"));
 
         if regular_value != streaming_value {
             eprintln!(

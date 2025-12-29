@@ -3,33 +3,21 @@ use crate::err::{DeserializationError, DeserializationResult as Result};
 use winstructs::guid::Guid;
 
 use crate::model::deserialized::*;
-use crate::utils::ByteCursor;
-use std::io::Cursor;
-
-use crate::binxml::deserializer::BinXmlDeserializer;
+use crate::utils::{ByteCursor, Utf16LeSlice};
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 
 use log::{error, trace, warn};
 
 use crate::evtx_chunk::EvtxChunk;
+use bumpalo::Bump;
 use encoding::EncodingRef;
-
-fn with_cursor<'a, T>(
-    cursor: &mut ByteCursor<'a>,
-    f: impl FnOnce(&mut Cursor<&'a [u8]>) -> Result<T>,
-) -> Result<T> {
-    let mut c = Cursor::new(cursor.buf());
-    c.set_position(cursor.position());
-    let out = f(&mut c)?;
-    cursor.set_pos_u64(c.position(), "advance after cursor-backed parse")?;
-    Ok(out)
-}
 
 pub(crate) fn read_template_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
+    arena: Option<&'a Bump>,
 ) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
@@ -81,12 +69,13 @@ pub(crate) fn read_template_cursor<'a>(
             substitution = descriptor.value_type,
         );
 
-        let value = BinXmlValue::deserialize_value_type_cursor(
+        let value = BinXmlValue::deserialize_value_type_cursor_in(
             &descriptor.value_type,
             cursor,
             chunk,
             Some(descriptor.size),
             ansi_codec,
+            arena,
         )?;
 
         trace!("\t {:?}", value);
@@ -129,6 +118,114 @@ pub(crate) fn read_template_cursor<'a>(
     })
 }
 
+/// Read a `TemplateInstance` and parse its substitution values directly.
+///
+/// This avoids allocating `BinXMLDeserializedTokens::Value` wrappers and is used
+/// by the direct IR builder path.
+pub(crate) fn read_template_values_cursor<'a>(
+    cursor: &mut ByteCursor<'a>,
+    chunk: Option<&'a EvtxChunk<'a>>,
+    ansi_codec: EncodingRef,
+    arena: Option<&'a Bump>,
+) -> Result<BinXmlTemplateValues<'a>> {
+    trace!("TemplateInstance at {}", cursor.position());
+
+    let _ = cursor.u8()?;
+    let template_id = cursor.u32()?;
+    let template_definition_data_offset = cursor.u32()?;
+    let mut template_guid: Option<Guid> = None;
+
+    // Need to skip over the template data.
+    if (cursor.position() as u32) == template_definition_data_offset {
+        let template_header = read_template_definition_header_cursor(cursor)?;
+        template_guid = Some(template_header.guid.clone());
+        cursor.set_pos_u64(
+            cursor.position() + u64::from(template_header.data_size),
+            "Skip cached template",
+        )?;
+    }
+
+    let number_of_substitutions = cursor.u32()?;
+    let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
+
+    for _ in 0..number_of_substitutions {
+        let size = cursor.u16()?;
+        let value_type_token = cursor.u8()?;
+
+        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
+            DeserializationError::InvalidValueVariant {
+                value: value_type_token,
+                offset: cursor.position(),
+            },
+        )?;
+
+        // Empty
+        let _ = cursor.u8()?;
+
+        value_descriptors.push(TemplateValueDescriptor { size, value_type })
+    }
+
+    trace!("{:?}", value_descriptors);
+
+    let mut values = Vec::with_capacity(number_of_substitutions as usize);
+
+    for descriptor in value_descriptors {
+        let position_before_reading_value = cursor.position();
+        trace!(
+            "Offset `0x{offset:08x} ({offset})`: Substitution: {substitution:?}",
+            offset = position_before_reading_value,
+            substitution = descriptor.value_type,
+        );
+
+        let value = BinXmlValue::deserialize_value_type_cursor_in(
+            &descriptor.value_type,
+            cursor,
+            chunk,
+            Some(descriptor.size),
+            ansi_codec,
+            arena,
+        )?;
+
+        trace!("\t {:?}", value);
+        // NullType can mean deleted substitution (and data need to be skipped)
+        if value == BinXmlValue::NullType {
+            trace!("\t Skipping `NullType` descriptor");
+            cursor.set_pos_u64(
+                cursor.position() + u64::from(descriptor.size),
+                "NullType Descriptor",
+            )?;
+        }
+
+        let current_position = cursor.position();
+        let expected_position = position_before_reading_value + u64::from(descriptor.size);
+
+        if expected_position != current_position {
+            let diff = expected_position as i128 - current_position as i128;
+            // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
+            // Sometimes however the log will contain a lot of zero fields.
+            warn!(
+                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                current_position, expected_position, &descriptor
+            );
+
+            match u64::try_from(diff) {
+                Ok(u64_diff) => {
+                    cursor.set_pos_u64(current_position + u64_diff, "Broken record")?;
+                }
+                Err(_) => error!("Broken record"),
+            }
+        }
+        values.push(value);
+    }
+
+    Ok(BinXmlTemplateValues {
+        template_id,
+        template_def_offset: template_definition_data_offset,
+        template_guid,
+        values,
+    })
+}
+
 fn read_template_definition_header_cursor(
     cursor: &mut ByteCursor<'_>,
 ) -> Result<BinXmlTemplateDefinitionHeader> {
@@ -150,34 +247,6 @@ fn read_template_definition_header_cursor(
         guid: template_guid,
         data_size,
     })
-}
-
-pub(crate) fn read_template_definition_cursor<'a>(
-    cursor: &mut ByteCursor<'a>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-    ansi_codec: EncodingRef,
-) -> Result<BinXMLTemplateDefinition<'a>> {
-    let header = read_template_definition_header_cursor(cursor)?;
-
-    trace!(
-        "Offset `0x{:08x}` - TemplateDefinition {}",
-        cursor.position(),
-        header
-    );
-
-    let template = match with_cursor(cursor, |c| {
-        BinXmlDeserializer::read_binxml_fragment(c, chunk, Some(header.data_size), true, ansi_codec)
-    }) {
-        Ok(tokens) => BinXMLTemplateDefinition { header, tokens },
-        Err(e) => {
-            return Err(DeserializationError::FailedToDeserializeTemplate {
-                template_id: header.guid,
-                source: Box::new(e),
-            });
-        }
-    };
-
-    Ok(template)
 }
 
 /// Strictly read a `TemplateDefinitionHeader` at a known offset in an EVTX chunk buffer.
@@ -295,18 +364,18 @@ pub(crate) fn read_processing_instruction_target_cursor(
     Ok(BinXMLProcessingInstructionTarget { name })
 }
 
-pub(crate) fn read_processing_instruction_data_cursor(
-    cursor: &mut ByteCursor<'_>,
-) -> Result<String> {
+pub(crate) fn read_processing_instruction_data_cursor<'a>(
+    cursor: &mut ByteCursor<'a>,
+) -> Result<Utf16LeSlice<'a>> {
     trace!(
         "Offset `0x{:08x}` - ProcessingInstructionTarget",
         cursor.position(),
     );
 
     let data = cursor
-        .len_prefixed_utf16_string_utf8(false, "pi_data")?
-        .unwrap_or_default();
-    trace!("PIData - {}", data,);
+        .len_prefixed_utf16_string(false, "pi_data")?
+        .unwrap_or_else(Utf16LeSlice::empty);
+    trace!("PIData - {} chars", data.num_chars());
     Ok(data)
 }
 

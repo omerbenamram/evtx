@@ -17,3 +17,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test
+      - name: Run utf16-simd tests
+        run: cargo test --manifest-path utf16-simd/Cargo.toml

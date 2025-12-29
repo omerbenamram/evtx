@@ -45,10 +45,10 @@ fn streaming_matches_legacy_for_all_samples_default_settings() {
     for path in evtx_samples() {
         // `security_big_sample.evtx` is intended for profiling and is large enough
         // to make tests unnecessarily slow; skip it in the parity harness.
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == "security_big_sample.evtx" {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name == "security_big_sample.evtx"
+        {
+            continue;
         }
 
         run_compare(&path, &[]);
@@ -58,17 +58,17 @@ fn streaming_matches_legacy_for_all_samples_default_settings() {
 #[test]
 fn streaming_matches_legacy_for_all_samples_with_separate_attributes() {
     for path in evtx_samples() {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name == "security_big_sample.evtx" {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (name == "security_big_sample.evtx" || name.contains("CAPI2"))
+        {
+            // `security_big_sample.evtx` is intended for profiling and is large enough
+            // to make tests unnecessarily slow; skip it in the parity harness.
+            //
             // CAPI2 files have known differences in separate_json_attributes mode:
             // mixed-content elements (text between child elements) are handled
             // differently by streaming vs legacy. This is acceptable as the data
             // is preserved, just structured slightly differently.
-            if name.contains("CAPI2") {
-                continue;
-            }
+            continue;
         }
 
         run_compare(&path, &["-s"]);

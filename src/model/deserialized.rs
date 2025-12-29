@@ -1,5 +1,6 @@
 use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::utils::Utf16LeSlice;
 
 use crate::ChunkOffset;
 use std::fmt::{self, Formatter};
@@ -20,7 +21,7 @@ pub enum BinXMLDeserializedTokens<'a> {
     CharRef,
     EntityRef(BinXmlEntityReference),
     PITarget(BinXMLProcessingInstructionTarget),
-    PIData(String),
+    PIData(Utf16LeSlice<'a>),
     Substitution(TemplateSubstitutionDescriptor),
     EndOfStream,
     StartOfStream,
@@ -59,13 +60,6 @@ impl fmt::Display for BinXmlTemplateDefinitionHeader {
     }
 }
 
-/// Parsed template definition with its token stream.
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub struct BinXMLTemplateDefinition<'a> {
-    pub header: BinXmlTemplateDefinitionHeader,
-    pub tokens: Vec<BinXMLDeserializedTokens<'a>>,
-}
-
 /// Entity reference token payload.
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub struct BinXmlEntityReference {
@@ -82,6 +76,18 @@ pub struct BinXmlTemplateRef<'a> {
     /// definition referenced by `template_def_offset` (typically in the chunk template table).
     pub template_guid: Option<Guid>,
     pub substitution_array: Vec<BinXMLDeserializedTokens<'a>>,
+}
+
+/// Template instance payload parsed into substitution values.
+///
+/// This avoids allocating `BinXMLDeserializedTokens::Value` wrappers for every
+/// substitution. The values are parsed directly and consumed by the IR builder.
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXmlTemplateValues<'a> {
+    pub template_id: u32,
+    pub template_def_offset: ChunkOffset,
+    pub template_guid: Option<Guid>,
+    pub values: Vec<BinXmlValue<'a>>,
 }
 
 /// Descriptor for a template substitution value payload.

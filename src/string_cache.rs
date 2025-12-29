@@ -3,15 +3,15 @@ use crate::binxml::name::{BinXmlName, BinXmlNameLink};
 use crate::err::DeserializationResult;
 use crate::utils::ByteCursor;
 
+use ahash::AHashMap;
 use log::trace;
-use std::collections::HashMap;
 
 #[derive(Debug)]
-pub struct StringCache(HashMap<ChunkOffset, BinXmlName>);
+pub struct StringCache(AHashMap<ChunkOffset, BinXmlName>);
 
 impl StringCache {
     pub fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
-        let mut cache = HashMap::new();
+        let mut cache = AHashMap::new();
 
         for &offset in offsets.iter().filter(|&&offset| offset > 0) {
             let mut cursor = ByteCursor::with_pos(data, offset as usize)?;

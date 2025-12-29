@@ -14,9 +14,6 @@ pub use scalar::{
     escape_utf16le_raw_scalar, escape_xml_utf16_scalar, escape_xml_utf16le_scalar,
 };
 
-#[cfg(feature = "perf-counters")]
-pub mod perf;
-
 /// Reusable scratch buffer for UTF-16 escaping without zero-filling.
 ///
 /// This owns a `Vec<MaybeUninit<u8>>` so we can resize without clearing and

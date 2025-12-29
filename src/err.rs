@@ -242,12 +242,6 @@ pub enum ChunkError {
 
     #[error("Failed to build string cache")]
     FailedToBuildStringCache { source: DeserializationError },
-
-    #[error("Failed to build template cache")]
-    FailedToBuildTemplateCache {
-        message: String,
-        source: Box<DeserializationError>,
-    },
 }
 
 /// Public result API.

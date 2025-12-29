@@ -1,11 +1,12 @@
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::evtx_chunk::EvtxChunk;
-use crate::utils::ByteCursor;
 use crate::utils::invalid_data;
 use crate::utils::windows::{filetime_to_timestamp, read_sid, read_systime, systime_from_bytes};
+use crate::utils::{ByteCursor, Utf16LeSlice};
 
-use jiff::{Timestamp, tz::Offset};
+use bumpalo::Bump;
 use encoding::EncodingRef;
+use jiff::{Timestamp, tz::Offset};
 use log::{trace, warn};
 use serde_json::{Value, json};
 use std::borrow::Cow;
@@ -18,8 +19,8 @@ use winstructs::security::Sid;
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub enum BinXmlValue<'a> {
     NullType,
-    // String may originate in substitution.
-    StringType(Cow<'a, str>),
+    /// UTF-16LE string slice (BinXML `StringType`).
+    StringType(Utf16LeSlice<'a>),
     AnsiStringType(Cow<'a, str>),
     Int8Type(i8),
     UInt8Type(u8),
@@ -46,7 +47,8 @@ pub enum BinXmlValue<'a> {
     /// This is stored as a slice into the chunk data and parsed on demand by higher-level code.
     BinXmlType(&'a [u8]),
     EvtXml,
-    StringArrayType(Vec<Cow<'a, str>>),
+    /// Array of UTF-16LE strings (null-terminated items).
+    StringArrayType(Vec<Utf16LeSlice<'a>>),
     AnsiStringArrayType,
     Int8ArrayType(Vec<i8>),
     UInt8ArrayType(Vec<u8>),
@@ -186,6 +188,16 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
+        Self::from_binxml_cursor_in(cursor, chunk, size, ansi_codec, None)
+    }
+
+    pub(crate) fn from_binxml_cursor_in(
+        cursor: &mut ByteCursor<'a>,
+        chunk: Option<&'a EvtxChunk<'a>>,
+        size: Option<u16>,
+        ansi_codec: EncodingRef,
+        arena: Option<&'a Bump>,
+    ) -> Result<BinXmlValue<'a>> {
         let value_type_token = cursor.u8()?;
 
         let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
@@ -195,8 +207,14 @@ impl<'a> BinXmlValue<'a> {
             }
         })?;
 
-        let data =
-            Self::deserialize_value_type_cursor(&value_type, cursor, chunk, size, ansi_codec)?;
+        let data = Self::deserialize_value_type_cursor_in(
+            &value_type,
+            cursor,
+            chunk,
+            size,
+            ansi_codec,
+            arena,
+        )?;
 
         Ok(data)
     }
@@ -222,6 +240,17 @@ impl<'a> BinXmlValue<'a> {
         size: Option<u16>,
         ansi_codec: EncodingRef,
     ) -> Result<BinXmlValue<'a>> {
+        Self::deserialize_value_type_cursor_in(value_type, cursor, chunk, size, ansi_codec, None)
+    }
+
+    pub(crate) fn deserialize_value_type_cursor_in(
+        value_type: &BinXmlValueType,
+        cursor: &mut ByteCursor<'a>,
+        chunk: Option<&'a EvtxChunk<'a>>,
+        size: Option<u16>,
+        ansi_codec: EncodingRef,
+        arena: Option<&'a Bump>,
+    ) -> Result<BinXmlValue<'a>> {
         let _ = chunk;
         trace!(
             "Offset `0x{offset:08x} ({offset}): {value_type:?}, {size:?}",
@@ -240,16 +269,14 @@ impl<'a> BinXmlValue<'a> {
                 } else if !sz_bytes.is_multiple_of(2) {
                     return Err(invalid_data("sized utf-16 string", cursor.position()));
                 } else {
-                    cursor.utf16_by_char_count_trimmed_utf8(sz_bytes / 2, "<string_value>")?
+                    cursor.utf16_by_char_count(sz_bytes / 2, "<string_value>")?
                 };
-                BinXmlValue::StringType(s.map(Cow::Owned).unwrap_or(Cow::Borrowed("")))
+                BinXmlValue::StringType(s.unwrap_or_else(Utf16LeSlice::empty))
             }
-            (BinXmlValueType::StringType, None) => BinXmlValue::StringType(
-                cursor
-                    .len_prefixed_utf16_string_utf8(false, "<string_value>")?
-                    .map(Cow::Owned)
-                    .unwrap_or(Cow::Borrowed("")),
-            ),
+            (BinXmlValueType::StringType, None) => {
+                let s = cursor.len_prefixed_utf16_string(false, "<string_value>")?;
+                BinXmlValue::StringType(s.unwrap_or_else(Utf16LeSlice::empty))
+            }
 
             (BinXmlValueType::AnsiStringType, Some(sz)) => {
                 let sz_bytes = usize::from(sz);
@@ -262,7 +289,12 @@ impl<'a> BinXmlValue<'a> {
                         encoding_used: ansi_codec.name(),
                         inner_message: m.to_string(),
                     })?;
-                BinXmlValue::AnsiStringType(Cow::Owned(s))
+                let s = if let Some(arena) = arena {
+                    Cow::Borrowed(arena.alloc_str(&s))
+                } else {
+                    Cow::Owned(s)
+                };
+                BinXmlValue::AnsiStringType(s)
             }
             // AnsiString are always sized according to docs
             (BinXmlValueType::AnsiStringType, None) => {
@@ -325,11 +357,23 @@ impl<'a> BinXmlValue<'a> {
 
             (BinXmlValueType::SizeTType, Some(4)) => {
                 let v = i32::from_le_bytes(cursor.array::<4>("sizet32")?);
-                BinXmlValue::HexInt32Type(Cow::Owned(format!("0x{:x}", v)))
+                let s = format!("0x{:x}", v);
+                let s = if let Some(arena) = arena {
+                    Cow::Borrowed(arena.alloc_str(&s))
+                } else {
+                    Cow::Owned(s)
+                };
+                BinXmlValue::HexInt32Type(s)
             }
             (BinXmlValueType::SizeTType, Some(8)) => {
                 let v = i64::from_le_bytes(cursor.array::<8>("sizet64")?);
-                BinXmlValue::HexInt64Type(Cow::Owned(format!("0x{:x}", v)))
+                let s = format!("0x{:x}", v);
+                let s = if let Some(arena) = arena {
+                    Cow::Borrowed(arena.alloc_str(&s))
+                } else {
+                    Cow::Owned(s)
+                };
+                BinXmlValue::HexInt64Type(s)
             }
             (BinXmlValueType::SizeTType, _) => {
                 return Err(DeserializationError::UnimplementedValueVariant {
@@ -347,11 +391,23 @@ impl<'a> BinXmlValue<'a> {
 
             (BinXmlValueType::HexInt32Type, _) => {
                 let v = i32::from_le_bytes(cursor.array::<4>("hex32")?);
-                BinXmlValue::HexInt32Type(Cow::Owned(format!("0x{:x}", v)))
+                let s = format!("0x{:x}", v);
+                let s = if let Some(arena) = arena {
+                    Cow::Borrowed(arena.alloc_str(&s))
+                } else {
+                    Cow::Owned(s)
+                };
+                BinXmlValue::HexInt32Type(s)
             }
             (BinXmlValueType::HexInt64Type, _) => {
                 let v = i64::from_le_bytes(cursor.array::<8>("hex64")?);
-                BinXmlValue::HexInt64Type(Cow::Owned(format!("0x{:x}", v)))
+                let s = format!("0x{:x}", v);
+                let s = if let Some(arena) = arena {
+                    Cow::Borrowed(arena.alloc_str(&s))
+                } else {
+                    Cow::Owned(s)
+                };
+                BinXmlValue::HexInt64Type(s)
             }
 
             (BinXmlValueType::BinXmlType, size) => {
@@ -385,10 +441,10 @@ impl<'a> BinXmlValue<'a> {
                 let size_usize = usize::from(sz);
                 let start = cursor.pos();
                 let end = start.saturating_add(size_usize);
-                let mut out: Vec<Cow<'a, str>> = Vec::new();
+                let mut out: Vec<Utf16LeSlice<'a>> = Vec::new();
                 while cursor.pos() < end {
-                    let s = cursor.null_terminated_utf16_string_utf8("string_array")?;
-                    out.push(Cow::Owned(s));
+                    let s = cursor.null_terminated_utf16_string("string_array")?;
+                    out.push(s);
                 }
                 BinXmlValue::StringArrayType(out)
             }
@@ -477,15 +533,27 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::SidArrayType(cursor.read_sized_vec(sz, 8, |c| read_sid(c))?)
             }
             (BinXmlValueType::HexInt32ArrayType, Some(sz)) => BinXmlValue::HexInt32ArrayType(
-                cursor.read_sized_vec_aligned::<4, _>(sz, "hex32_array", |_off, b| {
+                cursor.read_sized_vec_aligned::<4, _>(sz, "hex32_array", move |_off, b| {
                     let v = i32::from_le_bytes(*b);
-                    Ok(Cow::Owned(format!("0x{:x}", v)))
+                    let s = format!("0x{:x}", v);
+                    let s = if let Some(arena) = arena {
+                        Cow::Borrowed(arena.alloc_str(&s))
+                    } else {
+                        Cow::Owned(s)
+                    };
+                    Ok(s)
                 })?,
             ),
             (BinXmlValueType::HexInt64ArrayType, Some(sz)) => BinXmlValue::HexInt64ArrayType(
-                cursor.read_sized_vec_aligned::<8, _>(sz, "hex64_array", |_off, b| {
+                cursor.read_sized_vec_aligned::<8, _>(sz, "hex64_array", move |_off, b| {
                     let v = i64::from_le_bytes(*b);
-                    Ok(Cow::Owned(format!("0x{:x}", v)))
+                    let s = format!("0x{:x}", v);
+                    let s = if let Some(arena) = arena {
+                        Cow::Borrowed(arena.alloc_str(&s))
+                    } else {
+                        Cow::Owned(s)
+                    };
+                    Ok(s)
                 })?,
             ),
 
@@ -583,11 +651,15 @@ fn push_6_digits(out: &mut String, value: u32) {
     out.push(char::from(b'0' + ones as u8));
 }
 
+fn utf16_slice_to_string(value: Utf16LeSlice<'_>) -> String {
+    value.to_string().unwrap_or_default()
+}
+
 impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
     fn from(value: BinXmlValue<'c>) -> Self {
         match value {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s.as_ref()),
+            BinXmlValue::StringType(s) => json!(utf16_slice_to_string(s)),
             BinXmlValue::AnsiStringType(s) => json!(s.into_owned()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -617,9 +689,12 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
-            BinXmlValue::StringArrayType(items) => {
-                json!(items.iter().map(|item| item.as_ref()).collect::<Vec<&str>>())
-            }
+            BinXmlValue::StringArrayType(items) => json!(
+                items
+                    .iter()
+                    .map(|item| utf16_slice_to_string(*item))
+                    .collect::<Vec<String>>()
+            ),
             BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
             BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
             BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
@@ -637,13 +712,13 @@ impl<'c> From<BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::FileTimeArrayType(filetimes) => json!(
                 filetimes
                     .iter()
-                    .map(|ts| format_timestamp(ts))
+                    .map(format_timestamp)
                     .collect::<Vec<String>>()
             ),
             BinXmlValue::SysTimeArrayType(systimes) => json!(
                 systimes
                     .iter()
-                    .map(|ts| format_timestamp(ts))
+                    .map(format_timestamp)
                     .collect::<Vec<String>>()
             ),
             BinXmlValue::SidArrayType(sids) => {
@@ -667,7 +742,7 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
     fn from(value: &'c BinXmlValue) -> Self {
         match value {
             BinXmlValue::NullType => Value::Null,
-            BinXmlValue::StringType(s) => json!(s.as_ref()),
+            BinXmlValue::StringType(s) => json!(utf16_slice_to_string(*s)),
             BinXmlValue::AnsiStringType(s) => json!(s.as_ref()),
             BinXmlValue::Int8Type(num) => json!(num),
             BinXmlValue::UInt8Type(num) => json!(num),
@@ -697,9 +772,12 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::SidType(sid) => json!(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => json!(hex_string),
             BinXmlValue::HexInt64Type(hex_string) => json!(hex_string),
-            BinXmlValue::StringArrayType(items) => {
-                json!(items.iter().map(|item| item.as_ref()).collect::<Vec<&str>>())
-            }
+            BinXmlValue::StringArrayType(items) => json!(
+                items
+                    .iter()
+                    .map(|item| utf16_slice_to_string(*item))
+                    .collect::<Vec<String>>()
+            ),
             BinXmlValue::Int8ArrayType(numbers) => json!(numbers),
             BinXmlValue::UInt8ArrayType(numbers) => json!(numbers),
             BinXmlValue::Int16ArrayType(numbers) => json!(numbers),
@@ -717,13 +795,13 @@ impl<'c> From<&'c BinXmlValue<'c>> for serde_json::Value {
             BinXmlValue::FileTimeArrayType(filetimes) => json!(
                 filetimes
                     .iter()
-                    .map(|ts| format_timestamp(ts))
+                    .map(format_timestamp)
                     .collect::<Vec<String>>()
             ),
             BinXmlValue::SysTimeArrayType(systimes) => json!(
                 systimes
                     .iter()
-                    .map(|ts| format_timestamp(ts))
+                    .map(format_timestamp)
                     .collect::<Vec<String>>()
             ),
             BinXmlValue::SidArrayType(sids) => {
@@ -747,7 +825,7 @@ impl BinXmlValue<'_> {
     pub fn as_cow_str(&self) -> Cow<'_, str> {
         match self {
             BinXmlValue::NullType => Cow::Borrowed(""),
-            BinXmlValue::StringType(s) => Cow::Borrowed(s.as_ref()),
+            BinXmlValue::StringType(s) => Cow::Owned(utf16_slice_to_string(*s)),
             BinXmlValue::AnsiStringType(s) => Cow::Borrowed(s.as_ref()),
             BinXmlValue::Int8Type(num) => Cow::Owned(num.to_string()),
             BinXmlValue::UInt8Type(num) => Cow::Owned(num.to_string()),
@@ -774,9 +852,13 @@ impl BinXmlValue<'_> {
             BinXmlValue::SidType(sid) => Cow::Owned(sid.to_string()),
             BinXmlValue::HexInt32Type(hex_string) => hex_string.clone(),
             BinXmlValue::HexInt64Type(hex_string) => hex_string.clone(),
-            BinXmlValue::StringArrayType(items) => {
-                Cow::Owned(items.iter().map(|item| item.as_ref()).collect::<Vec<&str>>().join(","))
-            }
+            BinXmlValue::StringArrayType(items) => Cow::Owned(
+                items
+                    .iter()
+                    .map(|item| utf16_slice_to_string(*item))
+                    .collect::<Vec<String>>()
+                    .join(","),
+            ),
             BinXmlValue::Int8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::UInt8ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
             BinXmlValue::Int16ArrayType(numbers) => Cow::Owned(to_delimited_list(numbers)),
@@ -792,14 +874,14 @@ impl BinXmlValue<'_> {
             BinXmlValue::FileTimeArrayType(filetimes) => Cow::Owned(
                 filetimes
                     .iter()
-                    .map(|ts| format_timestamp(ts))
+                    .map(format_timestamp)
                     .collect::<Vec<String>>()
                     .join(","),
             ),
             BinXmlValue::SysTimeArrayType(systimes) => Cow::Owned(
                 systimes
                     .iter()
-                    .map(|ts| format_timestamp(ts))
+                    .map(format_timestamp)
                     .collect::<Vec<String>>()
                     .join(","),
             ),

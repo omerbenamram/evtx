@@ -22,6 +22,7 @@ thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
 hashbrown = { version = "^0.15", features = ["inline-more"] }
+ahash = "0.8"
 # Optional: PE parsing for `evtx_dump extract-wevt-templates` resource extraction.
 goblin = { version = "0.10", optional = true }
 # Optional: used by `evtx_dump extract-wevt-templates` for cross-platform glob expansion.
@@ -41,8 +42,12 @@ serde = "1"
 serde_json = { version = "1", features = ["preserve_order"]}
 sonic-rs = "0.5.6"
 zmij = "1.0.1"
-indextree = { version = "4.7.4", features = ["serde"] }
 jiff = { version = "0.2.17", features = ["logging", "serde"] }
+bumpalo = { version = "3.19.1", features = ["collections"] }
+# `utf16-simd` is designed to be usable as a standalone crate. We opt into its
+# `sonic-writeext` feature here to integrate with `sonic-rs::writer::WriteExt`
+# in the hot-path JSON/XML renderers.
+utf16-simd = { path = "utf16-simd", features = ["sonic-writeext"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
@@ -60,6 +65,8 @@ evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "tempfile", "w
 multithreading = ["rayon"]
 # Enable WEVT_TEMPLATE extraction helpers (used by `evtx_dump extract-wevt-templates`).
 wevt_templates = ["glob", "goblin"]
+bench = []
+perf-counters = ["utf16-simd/perf-counters"]
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
@@ -90,3 +97,15 @@ required-features = ["evtx_dump"]
 name = "benchmark"
 path = "./src/benches/benchmark.rs"
 harness = false
+
+[[bench]]
+name = "json_text_content"
+path = "./src/benches/json_text_content.rs"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "tree_build"
+path = "./src/benches/tree_build.rs"
+harness = false
+required-features = ["bench"]

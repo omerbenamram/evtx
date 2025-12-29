@@ -129,7 +129,6 @@ assert_eq!(out, b"\"A\\nB\"");
 
 | Feature | Default | What it does |
 |--------:|:-------:|--------------|
-| `perf-counters` | off | enable lightweight counters for JSON escaping call distribution |
 | `sonic-writeext` | off | (optional) exposes `write_*_utf16le()` functions that write directly into `sonic-rs::writer::WriteExt` spare capacity |
 
 ---
