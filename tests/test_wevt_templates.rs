@@ -1464,12 +1464,14 @@ mod wevt_templates_research {
         // Parse the full manifest and ensure every TEMP BinXML fragment parses cleanly with strict
         // NameHash validation (MS-EVEN6) and the current token support.
         let manifest = CrimManifest::parse(&r.data).expect("manifest parse should succeed");
+        let arena = bumpalo::Bump::new();
         let mut parsed_templates = 0usize;
         for provider in &manifest.providers {
             if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                 for tpl in &ttbl.templates {
-                    let _ = parse_wevt_binxml_fragment(tpl.binxml, encoding::all::WINDOWS_1252)
-                        .expect("BinXML parse should succeed");
+                    let _ =
+                        parse_wevt_binxml_fragment(tpl.binxml, encoding::all::WINDOWS_1252, &arena)
+                            .expect("BinXML parse should succeed");
                     parsed_templates += 1;
                 }
             }

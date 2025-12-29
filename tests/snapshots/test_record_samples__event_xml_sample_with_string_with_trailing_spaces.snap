@@ -35,7 +35,7 @@ expression: record.data
     <Data Name="TargetDomainName">NT AUTHORITY</Data>
     <Data Name="TargetLogonId">0x3e7</Data>
     <Data Name="LogonType">5</Data>
-    <Data Name="LogonProcessName">Advapi</Data>
+    <Data Name="LogonProcessName">Advapi  </Data>
     <Data Name="AuthenticationPackageName">Negotiate</Data>
     <Data Name="WorkstationName"></Data>
     <Data Name="LogonGuid">00000000-0000-0000-0000-000000000000</Data>

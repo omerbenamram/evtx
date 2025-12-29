@@ -89,27 +89,27 @@ expression: "&value"
             }
           },
           "HTTPRequestHeadersInfo": {
-            "Header": "Connection: Keep-Alive",
-            "Header_1": "GET /pki/crl/products/microsoftrootcert.crl HTTP/1.1",
-            "Header_2": "Accept: */*",
-            "Header_3": "If-None-Match:\"ea9ee7b1bc43d21:0\"",
-            "Header_4": "If-Modified-Since: Mon, 21 Nov 2016 06:01:26 GMT",
-            "Header_5": "Cache-Control: max-age = 900",
-            "Header_6": "User-Agent: Microsoft-CryptoAPI/6.1"
+            "Header": "GET /pki/crl/products/microsoftrootcert.crl HTTP/1.1",
+            "Header_1": "Accept: */*",
+            "Header_2": "If-None-Match: \"ea9ee7b1bc43d21:0\"",
+            "Header_3": "If-Modified-Since: Mon, 21 Nov 2016 06:01:26 GMT",
+            "Header_4": "Cache-Control: max-age = 900",
+            "Header_5": "User-Agent: Microsoft-CryptoAPI/6.1",
+            "Header_6": "Connection: Keep-Alive"
           },
           "HTTPResponseHeadersInfo": {
-            "Header": "x-ms-blob-type: BlockBlob",
-            "Header_1": "HTTP/1.1 200 OK",
-            "Header_2": "Connection: keep-alive",
-            "Header_3": "Date: Thu, 18 May 2017 11:37:58 GMT",
-            "Header_4": "Content-Length: 813",
-            "Header_5": "Content-Type: application/pkix-crl",
-            "Header_6": "Last-Modified: Tue, 02 May 2017 22:24:24 GMT",
-            "Header_7": "ETag: 0x8D491A9FD112A27",
-            "Header_8": "Server: Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0",
-            "Header_9": "x-ms-request-id: 477c132d-0001-0045-443b-c49ae1000000",
-            "Header_10": "x-ms-version: 2009-09-19",
-            "Header_11": "x-ms-lease-status: unlocked"
+            "Header": "HTTP/1.1 200 OK",
+            "Header_1": "Connection: keep-alive",
+            "Header_2": "Date: Thu, 18 May 2017 11:37:58 GMT",
+            "Header_3": "Content-Length: 813",
+            "Header_4": "Content-Type: application/pkix-crl",
+            "Header_5": "Last-Modified: Tue, 02 May 2017 22:24:24 GMT",
+            "Header_6": "ETag: 0x8D491A9FD112A27",
+            "Header_7": "Server: Windows-Azure-Blob/1.0 Microsoft-HTTPAPI/2.0",
+            "Header_8": "x-ms-request-id: 477c132d-0001-0045-443b-c49ae1000000",
+            "Header_9": "x-ms-version: 2009-09-19",
+            "Header_10": "x-ms-lease-status: unlocked",
+            "Header_11": "x-ms-blob-type: BlockBlob"
           }
         },
         "CacheInfo": {

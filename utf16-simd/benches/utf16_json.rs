@@ -74,6 +74,17 @@ fn build_cases() -> Vec<Case> {
         utf16le: controls,
     });
 
+    let mut dirty_block_str = String::new();
+    for _ in 0..1000 {
+        dirty_block_str.push_str("aaaa\"bbb");
+    }
+    let dirty_block = utf16le_from_str(&dirty_block_str);
+    cases.push(Case {
+        name: "dirty_block_repetitive",
+        units: units_from_utf16le(&dirty_block),
+        utf16le: dirty_block,
+    });
+
     cases
 }
 
