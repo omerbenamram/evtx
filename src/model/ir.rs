@@ -10,37 +10,29 @@
 //!   is resolved during template instantiation (IR build), before rendering.
 //! - `Element::has_element_child` is maintained to optimize rendering decisions.
 
-use crate::binxml::name::BinXmlName;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::Utf16LeSlice;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
-use std::borrow::Cow;
 
-/// An XML name backed by a BinXML name entry.
+/// An XML name backed by a UTF-8 string slice.
 ///
 /// Names are guaranteed to be valid XML names as produced by the BinXML
-/// stream. The underlying value may be borrowed from the chunk string table
-/// or owned when decoded inline.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// stream.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Name<'a> {
-    value: Cow<'a, BinXmlName>,
+    value: &'a str,
 }
 
 impl<'a> Name<'a> {
-    /// Wrap a `BinXmlName` as an IR name.
-    pub fn new(value: Cow<'a, BinXmlName>) -> Self {
+    /// Wrap a string slice as an IR name.
+    pub fn new(value: &'a str) -> Self {
         Name { value }
-    }
-
-    /// Returns the underlying `BinXmlName`.
-    pub fn as_binxml_name(&self) -> &BinXmlName {
-        self.value.as_ref()
     }
 
     /// Returns the name as a UTF-8 string slice.
     pub fn as_str(&self) -> &str {
-        self.value.as_ref().as_str()
+        self.value
     }
 }
 
@@ -54,8 +46,8 @@ impl<'a> Name<'a> {
 pub enum Text<'a> {
     /// UTF-16LE text slice borrowed from the chunk.
     Utf16(Utf16LeSlice<'a>),
-    /// UTF-8 text, borrowed or owned.
-    Utf8(Cow<'a, str>),
+    /// UTF-8 text (borrowed from chunk/bump storage).
+    Utf8(&'a str),
 }
 
 impl<'a> Text<'a> {
@@ -65,7 +57,7 @@ impl<'a> Text<'a> {
     }
 
     /// Wrap UTF-8 text as an IR text node.
-    pub fn utf8(value: Cow<'a, str>) -> Self {
+    pub fn utf8(value: &'a str) -> Self {
         Text::Utf8(value)
     }
 
@@ -81,7 +73,7 @@ impl<'a> Text<'a> {
     pub fn as_utf8(&self) -> Option<&str> {
         match self {
             Text::Utf16(_) => None,
-            Text::Utf8(value) => Some(value.as_ref()),
+            Text::Utf8(value) => Some(value),
         }
     }
 

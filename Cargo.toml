@@ -66,7 +66,6 @@ multithreading = ["rayon"]
 # Enable WEVT_TEMPLATE extraction helpers (used by `evtx_dump extract-wevt-templates`).
 wevt_templates = ["glob", "goblin"]
 bench = []
-perf-counters = ["utf16-simd/perf-counters"]
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }

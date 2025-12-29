@@ -68,7 +68,7 @@ impl ValueRenderer {
         match value {
             BinXmlValue::NullType => Ok(()),
             BinXmlValue::StringType(s) => self.write_utf16_escaped(writer, *s, string_mode),
-            BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, s.as_ref(), string_mode),
+            BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, *s, string_mode),
             BinXmlValue::Int8Type(v) => self
                 .formatter
                 .write_i8(writer, *v)
@@ -116,12 +116,11 @@ impl ValueRenderer {
                 self.write_datetime(writer, tm)
             }
             BinXmlValue::SidType(sid) => write!(writer, "{}", sid).map_err(EvtxError::from),
-            BinXmlValue::HexInt32Type(s) | BinXmlValue::HexInt64Type(s) => {
-                self.write_str_escaped(writer, s.as_ref(), string_mode)
-            }
+            BinXmlValue::HexInt32Type(v) => self.write_hex_prefixed_u32_lower(writer, *v),
+            BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
             BinXmlValue::StringArrayType(items) => {
                 let mut first = true;
-                for item in items {
+                for item in items.iter() {
                     if !first {
                         self.write_byte(writer, b',')?;
                     }
@@ -146,17 +145,8 @@ impl ValueRenderer {
                 self.write_datetime_list(writer, items)
             }
             BinXmlValue::SidArrayType(items) => self.write_delimited(writer, items),
-            BinXmlValue::HexInt32ArrayType(items) | BinXmlValue::HexInt64ArrayType(items) => {
-                let mut first = true;
-                for item in items {
-                    if !first {
-                        self.write_byte(writer, b',')?;
-                    }
-                    first = false;
-                    self.write_str_escaped(writer, item.as_ref(), string_mode)?;
-                }
-                Ok(())
-            }
+            BinXmlValue::HexInt32ArrayType(items) => self.write_hex_list_u32(writer, items),
+            BinXmlValue::HexInt64ArrayType(items) => self.write_hex_list_u64(writer, items),
             BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
                 EvtxError::FailedToCreateRecordModel("unsupported BinXML value in renderer"),
             ),
@@ -239,6 +229,81 @@ impl ValueRenderer {
             let lo = b & 0x0f;
             self.write_byte(writer, to_hex_digit(hi))?;
             self.write_byte(writer, to_hex_digit(lo))?;
+        }
+        Ok(())
+    }
+
+    fn write_hex_prefixed_u32_lower<W: WriteExt>(&mut self, writer: &mut W, value: u32) -> Result<()> {
+        self.write_bytes(writer, b"0x")?;
+        self.write_hex_u32_lower(writer, value)
+    }
+
+    fn write_hex_prefixed_u64_lower<W: WriteExt>(&mut self, writer: &mut W, value: u64) -> Result<()> {
+        self.write_bytes(writer, b"0x")?;
+        self.write_hex_u64_lower(writer, value)
+    }
+
+    fn write_hex_u32_lower<W: WriteExt>(&mut self, writer: &mut W, mut value: u32) -> Result<()> {
+        let mut buf = [0_u8; 8];
+        let mut len = 0usize;
+        if value == 0 {
+            buf[0] = b'0';
+            len = 1;
+        } else {
+            while value != 0 {
+                let nib = (value & 0x0f) as u8;
+                buf[len] = to_hex_digit_lower(nib);
+                len += 1;
+                value >>= 4;
+            }
+            // Reverse in-place.
+            for i in 0..(len / 2) {
+                buf.swap(i, len - 1 - i);
+            }
+        }
+        writer.write_all(&buf[..len]).map_err(EvtxError::from)
+    }
+
+    fn write_hex_u64_lower<W: WriteExt>(&mut self, writer: &mut W, mut value: u64) -> Result<()> {
+        let mut buf = [0_u8; 16];
+        let mut len = 0usize;
+        if value == 0 {
+            buf[0] = b'0';
+            len = 1;
+        } else {
+            while value != 0 {
+                let nib = (value & 0x0f) as u8;
+                buf[len] = to_hex_digit_lower(nib);
+                len += 1;
+                value >>= 4;
+            }
+            for i in 0..(len / 2) {
+                buf.swap(i, len - 1 - i);
+            }
+        }
+        writer.write_all(&buf[..len]).map_err(EvtxError::from)
+    }
+
+    fn write_hex_list_u32<W: WriteExt>(&mut self, writer: &mut W, items: &[u32]) -> Result<()> {
+        let mut first = true;
+        for &item in items {
+            if !first {
+                self.write_byte(writer, b',')?;
+            }
+            first = false;
+            self.write_hex_prefixed_u32_lower(writer, item)?;
+        }
+        Ok(())
+    }
+
+    fn write_hex_list_u64<W: WriteExt>(&mut self, writer: &mut W, items: &[u64]) -> Result<()> {
+        let mut first = true;
+        for &item in items {
+            if !first {
+                self.write_byte(writer, b',')?;
+            }
+            first = false;
+            self.write_hex_prefixed_u64_lower(writer, item)?;
         }
         Ok(())
     }
@@ -356,6 +421,13 @@ fn to_hex_digit(value: u8) -> u8 {
     match value {
         0..=9 => b'0' + value,
         _ => b'A' + (value - 10),
+    }
+}
+
+fn to_hex_digit_lower(value: u8) -> u8 {
+    match value {
+        0..=9 => b'0' + value,
+        _ => b'a' + (value - 10),
     }
 }
 

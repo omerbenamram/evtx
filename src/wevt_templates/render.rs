@@ -14,13 +14,13 @@ use encoding::EncodingRef;
 use super::binxml::{TEMP_BINXML_OFFSET, parse_temp_binxml_fragment, parse_wevt_binxml_fragment};
 use crate::ParserSettings;
 use crate::binxml::ir_xml::render_xml_record;
-use crate::binxml::name::{BinXmlNameRef, read_wevt_inline_name_at};
+use crate::binxml::name::BinXmlNameRef;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::deserialized::{BinXMLDeserializedTokens, TemplateSubstitutionDescriptor};
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Text};
 use bumpalo::Bump;
-use std::borrow::Cow;
+use crate::utils::ByteCursor;
 
 /// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
 ///
@@ -168,7 +168,7 @@ fn build_wevt_tree<'a>(
                         "open start - Bad parser state",
                     ));
                 }
-                let name = resolve_name(binxml, &elem.name)?;
+                let name = resolve_name(binxml, &elem.name, bump)?;
                 current_element = Some(WevtElementBuilder::new(name, bump));
             }
             BinXMLDeserializedTokens::Attribute(attr) => {
@@ -178,7 +178,7 @@ fn build_wevt_tree<'a>(
                         .ok_or(EvtxError::FailedToCreateRecordModel(
                             "attribute - Bad parser state",
                         ))?;
-                let name = resolve_name(binxml, &attr.name)?;
+                let name = resolve_name(binxml, &attr.name, bump)?;
                 builder.start_attribute(name);
             }
             BinXMLDeserializedTokens::Value(value) => match value {
@@ -206,12 +206,12 @@ fn build_wevt_tree<'a>(
                 }
             },
             BinXMLDeserializedTokens::EntityRef(entity) => {
-                let name = resolve_name(binxml, &entity.name)?;
+                let name = resolve_name(binxml, &entity.name, bump)?;
                 let node = Node::EntityRef(name);
                 push_node(&mut arena, &stack, &mut current_element, node)?;
             }
             BinXMLDeserializedTokens::PITarget(target) => {
-                let name = resolve_name(binxml, &target.name)?;
+                let name = resolve_name(binxml, &target.name, bump)?;
                 let node = Node::PITarget(name);
                 push_node(&mut arena, &stack, &mut current_element, node)?;
             }
@@ -221,7 +221,8 @@ fn build_wevt_tree<'a>(
             }
             BinXMLDeserializedTokens::Substitution(sub) => {
                 if let Some(text) = substitution_text(&mode, &sub) {
-                    let node = Node::Text(Text::utf8(Cow::Owned(text)));
+                    let text = bump.alloc_str(&text);
+                    let node = Node::Text(Text::utf8(text));
                     push_node(&mut arena, &stack, &mut current_element, node)?;
                 }
             }
@@ -300,9 +301,15 @@ fn substitution_text(
     }
 }
 
-fn resolve_name<'a>(binxml: &'a [u8], name_ref: &BinXmlNameRef) -> Result<Name<'a>> {
-    let name = read_wevt_inline_name_at(binxml, name_ref.offset)?;
-    Ok(Name::new(Cow::Owned(name)))
+fn resolve_name<'a>(binxml: &'a [u8], name_ref: &BinXmlNameRef, bump: &'a Bump) -> Result<Name<'a>> {
+    // Inline WEVT name structure: u16 hash + u16 char_count + UTF-16LE chars + u16 NUL.
+    // NameRef parsing already validates the hash; we just decode here.
+    let mut cursor = ByteCursor::with_pos(binxml, name_ref.offset as usize)?;
+    let _ = cursor.u16_named("wevt_inline_name_hash")?;
+    let name = cursor
+        .len_prefixed_utf16_string_bump(true, "wevt_inline_name", bump)?
+        .unwrap_or("");
+    Ok(Name::new(name))
 }
 
 fn attach_element<'a>(

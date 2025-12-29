@@ -2,10 +2,10 @@ use crate::err::{DeserializationError, DeserializationResult as Result};
 
 use winstructs::guid::Guid;
 
-use crate::model::deserialized::*;
-use crate::utils::{ByteCursor, Utf16LeSlice};
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::model::deserialized::*;
+use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use log::{error, trace, warn};
 
@@ -17,7 +17,7 @@ pub(crate) fn read_template_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
-    arena: Option<&'a Bump>,
+    arena: &'a Bump,
 ) -> Result<BinXmlTemplateRef<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
@@ -126,7 +126,7 @@ pub(crate) fn read_template_values_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: EncodingRef,
-    arena: Option<&'a Bump>,
+    arena: &'a Bump,
 ) -> Result<BinXmlTemplateValues<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
