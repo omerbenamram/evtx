@@ -71,7 +71,6 @@ impl<'a> NameKey<'a> {
 /// Tracks how often a child name appears so arrays are emitted once.
 struct NameCount<'a> {
     key: NameKey<'a>,
-    count: u16,
     emitted_count: u16,
 }
 
@@ -436,43 +435,10 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
             false
         };
 
-        // Count child element names so we can apply legacy `_N` suffixes (Header, Header_1, ...).
+        // Count child element names on the fly so we can apply legacy `_N` suffixes (Header, Header_1, ...).
         let mut name_counts: [Option<NameCount<'_>>; MAX_UNIQUE_NAMES] =
             std::array::from_fn(|_| None);
         let mut num_unique = 0usize;
-
-        for node in &element.children {
-            let Node::Element(child_id) = node else {
-                continue;
-            };
-            let child = arena.get(*child_id).expect("invalid element id");
-
-            // Data elements inside EventData/UserData are handled specially.
-            if in_data_container && is_data_element(child.name.as_str()) {
-                continue;
-            }
-
-            let key = NameKey::from_name(&child.name);
-            let mut found = false;
-            for nc_opt in name_counts.iter_mut().take(num_unique) {
-                let Some(nc) = nc_opt.as_mut() else {
-                    continue;
-                };
-                if nc.key.eql(key) {
-                    nc.count = nc.count.saturating_add(1);
-                    found = true;
-                    break;
-                }
-            }
-            if !found && num_unique < MAX_UNIQUE_NAMES {
-                name_counts[num_unique] = Some(NameCount {
-                    key,
-                    count: 1,
-                    emitted_count: 0,
-                });
-                num_unique += 1;
-            }
-        }
 
         self.write_byte(b'{')?;
         let mut wrote_any = false;
@@ -569,6 +535,8 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
             // Normal child element: apply `_N` suffixes.
             let key = NameKey::from_name(&child.name);
             let mut suffix: u16 = 0;
+            let mut found = false;
+
             for nc_opt in name_counts.iter_mut().take(num_unique) {
                 let Some(nc) = nc_opt.as_mut() else {
                     continue;
@@ -576,8 +544,18 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                 if nc.key.eql(key) {
                     suffix = nc.emitted_count;
                     nc.emitted_count = nc.emitted_count.saturating_add(1);
+                    found = true;
                     break;
                 }
+            }
+
+            if !found && num_unique < MAX_UNIQUE_NAMES {
+                name_counts[num_unique] = Some(NameCount {
+                    key,
+                    emitted_count: 1,
+                });
+                num_unique += 1;
+                suffix = 0;
             }
 
             if wrote_any {

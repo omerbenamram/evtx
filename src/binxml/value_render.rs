@@ -68,15 +68,13 @@ impl ValueRenderer {
         match value {
             BinXmlValue::NullType => Ok(()),
             BinXmlValue::StringType(s) => self.write_utf16_escaped(writer, *s, string_mode),
-            BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, *s, string_mode),
-            BinXmlValue::Int8Type(v) => self
-                .formatter
-                .write_i8(writer, *v)
-                .map_err(EvtxError::from),
-            BinXmlValue::UInt8Type(v) => self
-                .formatter
-                .write_u8(writer, *v)
-                .map_err(EvtxError::from),
+            BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, s, string_mode),
+            BinXmlValue::Int8Type(v) => {
+                self.formatter.write_i8(writer, *v).map_err(EvtxError::from)
+            }
+            BinXmlValue::UInt8Type(v) => {
+                self.formatter.write_u8(writer, *v).map_err(EvtxError::from)
+            }
             BinXmlValue::Int16Type(v) => self
                 .formatter
                 .write_i16(writer, *v)
@@ -103,11 +101,11 @@ impl ValueRenderer {
                 .map_err(EvtxError::from),
             BinXmlValue::Real32Type(v) => self.write_float(writer, *v),
             BinXmlValue::Real64Type(v) => self.write_float(writer, *v),
-            BinXmlValue::BoolType(v) => self.write_bytes(writer, if *v { b"true" } else { b"false" }),
-            BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
-            BinXmlValue::GuidType(guid) => {
-                write!(writer, "{}", guid).map_err(EvtxError::from)
+            BinXmlValue::BoolType(v) => {
+                self.write_bytes(writer, if *v { b"true" } else { b"false" })
             }
+            BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
+            BinXmlValue::GuidType(guid) => write!(writer, "{}", guid).map_err(EvtxError::from),
             BinXmlValue::SizeTType(v) => self
                 .formatter
                 .write_u64(writer, *v as u64)
@@ -176,8 +174,9 @@ impl ValueRenderer {
             return Ok(());
         }
         match mode {
-            StringEscapeMode::Json => utf16_simd::write_json_utf16le(writer, bytes, units, false)
-                .map_err(EvtxError::from),
+            StringEscapeMode::Json => {
+                utf16_simd::write_json_utf16le(writer, bytes, units, false).map_err(EvtxError::from)
+            }
             StringEscapeMode::Xml { in_attribute } => {
                 utf16_simd::write_xml_utf16le(writer, bytes, units, in_attribute)
                     .map_err(EvtxError::from)
@@ -196,7 +195,9 @@ impl ValueRenderer {
                 .formatter
                 .write_string_fast(writer, value, false)
                 .map_err(EvtxError::from),
-            StringEscapeMode::Xml { in_attribute } => self.write_xml_escaped_str(writer, value, in_attribute),
+            StringEscapeMode::Xml { in_attribute } => {
+                self.write_xml_escaped_str(writer, value, in_attribute)
+            }
         }
     }
 
@@ -233,12 +234,20 @@ impl ValueRenderer {
         Ok(())
     }
 
-    fn write_hex_prefixed_u32_lower<W: WriteExt>(&mut self, writer: &mut W, value: u32) -> Result<()> {
+    fn write_hex_prefixed_u32_lower<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        value: u32,
+    ) -> Result<()> {
         self.write_bytes(writer, b"0x")?;
         self.write_hex_u32_lower(writer, value)
     }
 
-    fn write_hex_prefixed_u64_lower<W: WriteExt>(&mut self, writer: &mut W, value: u64) -> Result<()> {
+    fn write_hex_prefixed_u64_lower<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        value: u64,
+    ) -> Result<()> {
         self.write_bytes(writer, b"0x")?;
         self.write_hex_u64_lower(writer, value)
     }
@@ -352,7 +361,11 @@ impl ValueRenderer {
         Ok(())
     }
 
-    fn write_datetime_list<W: WriteExt>(&mut self, writer: &mut W, items: &[Timestamp]) -> Result<()> {
+    fn write_datetime_list<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        items: &[Timestamp],
+    ) -> Result<()> {
         let mut first = true;
         for item in items {
             if !first {
@@ -430,4 +443,3 @@ fn to_hex_digit_lower(value: u8) -> u8 {
         _ => b'a' + (value - 10),
     }
 }
-

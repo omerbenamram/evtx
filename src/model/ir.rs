@@ -14,6 +14,7 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::Utf16LeSlice;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
+use std::mem::ManuallyDrop;
 
 /// An XML name backed by a UTF-8 string slice.
 ///
@@ -233,14 +234,17 @@ impl<'a> IrArena<'a> {
 /// arena.
 #[derive(Debug, Clone)]
 pub struct IrTree<'a> {
-    arena: IrArena<'a>,
+    arena: ManuallyDrop<IrArena<'a>>,
     root: ElementId,
 }
 
 impl<'a> IrTree<'a> {
     /// Create a new IR tree from the provided arena and root ID.
     pub fn new(arena: IrArena<'a>, root: ElementId) -> Self {
-        IrTree { arena, root }
+        IrTree {
+            arena: ManuallyDrop::new(arena),
+            root,
+        }
     }
 
     /// Returns the root element ID.
@@ -265,12 +269,12 @@ impl<'a> IrTree<'a> {
 
     /// Returns a reference to the element for the given ID.
     pub fn element(&self, id: ElementId) -> &Element<'a> {
-        self.arena.get(id).expect("invalid element id")
+        self.arena().get(id).expect("invalid element id")
     }
 
     /// Returns a mutable reference to the element for the given ID.
     pub fn element_mut(&mut self, id: ElementId) -> &mut Element<'a> {
-        self.arena.get_mut(id).expect("invalid element id")
+        self.arena_mut().get_mut(id).expect("invalid element id")
     }
 }
 
@@ -309,5 +313,20 @@ pub(crate) fn is_optional_empty_template_value(value: &TemplateValue<'_>) -> boo
     match value {
         TemplateValue::BinXmlElement(_) => false,
         TemplateValue::Value(value) => is_optional_empty(value),
+    }
+}
+
+#[cfg(test)]
+mod drop_free_tests {
+    use super::*;
+    use crate::binxml::value_variant::BinXmlValue;
+
+    #[test]
+    fn ir_and_value_types_are_drop_free() {
+        assert!(!std::mem::needs_drop::<Name<'static>>());
+        assert!(!std::mem::needs_drop::<Text<'static>>());
+        assert!(!std::mem::needs_drop::<BinXmlValue<'static>>());
+        assert!(!std::mem::needs_drop::<Node<'static>>());
+        assert!(!std::mem::needs_drop::<IrTree<'static>>());
     }
 }

@@ -1,8 +1,4 @@
-use std::io;
-use std::io::Cursor;
-
 use jiff::{Timestamp, civil::DateTime, tz::Offset};
-use winstructs::security::Sid;
 
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::ByteCursor;
@@ -57,24 +53,4 @@ pub(crate) fn systime_from_bytes(bytes: &[u8; 16]) -> DeserializationResult<Time
     Offset::UTC
         .to_timestamp(dt)
         .map_err(|_| DeserializationError::InvalidDateTimeError)
-}
-
-pub(crate) fn read_sid(cursor: &mut ByteCursor<'_>) -> DeserializationResult<Sid> {
-    let start = cursor.pos();
-    let remaining = cursor
-        .buf()
-        .get(start..)
-        .ok_or_else(|| DeserializationError::Truncated {
-            what: "sid",
-            offset: start as u64,
-            need: 1,
-            have: 0,
-        })?;
-
-    let mut c = Cursor::new(remaining);
-    let sid = Sid::from_reader(&mut c).map_err(|e| {
-        DeserializationError::Io(io::Error::new(io::ErrorKind::InvalidData, e))
-    })?;
-    cursor.advance(c.position() as usize, "sid")?;
-    Ok(sid)
 }

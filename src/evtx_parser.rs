@@ -3,9 +3,9 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
+use bumpalo::Bump;
 #[cfg(feature = "multithreading")]
 use rayon::prelude::*;
-use bumpalo::Bump;
 
 use log::trace;
 #[cfg(not(feature = "multithreading"))]
@@ -424,7 +424,9 @@ impl<T: ReadSeek> EvtxParser<T> {
 
         // `self` is mutably borrowed from here on.
         let mut chunks = self.chunks();
-        let mut arena_pool: Vec<Bump> = (0..num_threads).map(|_| Bump::new()).collect();
+        let mut arena_pool: Vec<Bump> = (0..num_threads)
+            .map(|_| Bump::with_capacity(EVTX_CHUNK_SIZE))
+            .collect();
 
         let records_per_chunk = std::iter::from_fn(move || {
             // Allocate some chunks in advance, so they can be parsed in parallel.
@@ -750,7 +752,7 @@ mod tests {
         }
     }
 
-     #[test]
+    #[test]
     fn test_parse_event_with_zero_() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/new-user-security.evtx");

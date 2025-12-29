@@ -1,3 +1,4 @@
+use crate::binxml::value_variant::SidRef;
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::bytes;
 use crate::utils::{Utf16LeSlice, decode_utf16le_bytes_to_bump_str, trim_utf16le_whitespace};
@@ -177,6 +178,96 @@ impl<'a> ByteCursor<'a> {
             }
             out.push(read_one(self)?);
         }
+        Ok(out)
+    }
+
+    pub(crate) fn read_sid_ref(&mut self) -> DeserializationResult<SidRef<'a>> {
+        let start = self.pos();
+        let remaining = self
+            .buf()
+            .get(start..)
+            .ok_or_else(|| DeserializationError::Truncated {
+                what: "sid",
+                offset: start as u64,
+                need: 1,
+                have: 0,
+            })?;
+
+        if remaining.len() < 8 {
+            return Err(DeserializationError::Truncated {
+                what: "sid",
+                offset: start as u64,
+                need: 8,
+                have: remaining.len(),
+            });
+        }
+
+        let sub_count = remaining[1] as usize;
+        let len = 8usize
+            .checked_add(sub_count.saturating_mul(4))
+            .ok_or_else(|| DeserializationError::Truncated {
+                what: "sid",
+                offset: start as u64,
+                need: usize::MAX,
+                have: remaining.len(),
+            })?;
+
+        if remaining.len() < len {
+            return Err(DeserializationError::Truncated {
+                what: "sid",
+                offset: start as u64,
+                need: len,
+                have: remaining.len(),
+            });
+        }
+
+        let bytes = self.take_bytes(len, "sid")?;
+        Ok(SidRef::new(bytes))
+    }
+
+    pub(crate) fn read_sized_slice_aligned_in<const ELEM_BYTES: usize, T>(
+        &mut self,
+        size_bytes: u16,
+        what: &'static str,
+        arena: &'a Bump,
+        mut parse_one: impl FnMut(u64, &[u8; ELEM_BYTES]) -> DeserializationResult<T>,
+    ) -> DeserializationResult<&'a [T]> {
+        let size_usize = usize::from(size_bytes);
+        if size_usize == 0 {
+            return Ok(&[]);
+        }
+        if ELEM_BYTES == 0 {
+            return Err(DeserializationError::Truncated {
+                what,
+                offset: self.position(),
+                need: size_usize,
+                have: self.buf().len().saturating_sub(self.pos()),
+            });
+        }
+        if (size_usize % ELEM_BYTES) != 0 {
+            return Err(DeserializationError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "{what}: misaligned sized array (size_bytes={size_usize}, elem_bytes={ELEM_BYTES}) at offset {}",
+                    self.pos()
+                ),
+            )));
+        }
+
+        let start_pos = self.pos();
+        let bytes = self.take_bytes(size_usize, what)?;
+        let count = size_usize / ELEM_BYTES;
+
+        let out = arena.alloc_slice_try_fill_with(count, |i| {
+            let off = start_pos + i * ELEM_BYTES;
+            let start = i * ELEM_BYTES;
+            let end = start + ELEM_BYTES;
+            let chunk: &[u8; ELEM_BYTES] = bytes[start..end]
+                .try_into()
+                .expect("validated ELEM_BYTES alignment");
+            parse_one(off as u64, chunk)
+        })?;
+
         Ok(out)
     }
 
@@ -440,7 +531,6 @@ impl<'a> ByteCursor<'a> {
     }
 
     /// Read a length-prefixed UTF-16LE string and decode into a bump string.
-    #[allow(dead_code)]
     pub(crate) fn len_prefixed_utf16_string_bump(
         &mut self,
         is_null_terminated: bool,
