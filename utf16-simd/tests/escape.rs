@@ -202,7 +202,9 @@ fn run_case_raw(bytes: &[u8], num_units: usize) {
     assert_eq!(scratch_out_le, expected.as_slice());
 
     let mut w = Vec::new();
-    scratch.write_utf16le_raw_to(&mut w, bytes, num_units).unwrap();
+    scratch
+        .write_utf16le_raw_to(&mut w, bytes, num_units)
+        .unwrap();
     assert_eq!(w, expected);
 
     // UTF-16 (u16) API parity.
@@ -356,4 +358,28 @@ fn high_surrogate_at_simd_block_end_not_followed_by_low_is_dropped() {
     run_case_json(&bytes, bytes.len() / 2, false);
     run_case_xml(&bytes, bytes.len() / 2, false);
     run_case_raw(&bytes, bytes.len() / 2);
+}
+
+#[test]
+fn dirty_simd_block_optimization() {
+    // A SIMD block (8 chars) with one "bad" char in the middle.
+    // "aaaa" (4 chars), then '"', then "bbb" (3 chars).
+    // Total 8 chars.
+    // This hits the partial SIMD logic.
+    let s = "aaaa\"bbb";
+    let bytes = utf16le_from_str(s);
+    run_case_json(&bytes, bytes.len() / 2, true);
+    run_case_xml(&bytes, bytes.len() / 2, false);
+
+    // Also test non-ASCII
+    let s2 = "aaaa\u{00E9}bbb"; // \u00E9 is é
+    let bytes2 = utf16le_from_str(s2);
+    run_case_json(&bytes2, bytes2.len() / 2, true);
+    run_case_xml(&bytes2, bytes2.len() / 2, false);
+    run_case_raw(&bytes2, bytes2.len() / 2);
+
+    // Test with multiple bad chars
+    let s3 = "aa\"bb\"cc";
+    let bytes3 = utf16le_from_str(s3);
+    run_case_json(&bytes3, bytes3.len() / 2, true);
 }
