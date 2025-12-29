@@ -1,0 +1,5 @@
+/artifacts/
+/corpus/
+/target/
+*.profraw
+

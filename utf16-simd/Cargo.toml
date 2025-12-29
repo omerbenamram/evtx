@@ -1,0 +1,22 @@
+[package]
+name = "utf16-simd"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "SIMD-accelerated UTF-16/UTF-16LE -> UTF-8 escaping (JSON/XML)"
+readme = "README.md"
+
+[dependencies]
+sonic-rs = { version = "0.5.6", optional = true }
+
+[features]
+perf-counters = []
+sonic-writeext = ["dep:sonic-rs"]
+
+[dev-dependencies]
+criterion = "0.5"
+sonic-rs = "0.5.6"
+
+[[bench]]
+name = "utf16_json"
+harness = false
