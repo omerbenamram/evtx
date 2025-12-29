@@ -27,89 +27,6 @@ use sonic_rs::writer::WriteExt;
 
 const MAX_UNIQUE_NAMES: usize = 64;
 
-#[cfg(feature = "perf-counters")]
-pub(super) mod perf {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    pub(crate) const BUCKET_COUNT: usize = 9;
-
-    static CALLS: AtomicU64 = AtomicU64::new(0);
-    static BYTES: AtomicU64 = AtomicU64::new(0);
-    static MAX_WRITE: AtomicU64 = AtomicU64::new(0);
-    static BUCKETS: OnceLock<[AtomicU64; BUCKET_COUNT]> = OnceLock::new();
-
-    #[derive(Clone, Copy, Debug)]
-    pub(crate) struct WriterStats {
-        pub calls: u64,
-        pub bytes: u64,
-        pub max_write: u64,
-        pub buckets: [u64; BUCKET_COUNT],
-    }
-
-    fn bucket_index(len: usize) -> usize {
-        match len {
-            0..=1 => 0,
-            2..=4 => 1,
-            5..=8 => 2,
-            9..=16 => 3,
-            17..=32 => 4,
-            33..=64 => 5,
-            65..=128 => 6,
-            129..=256 => 7,
-            _ => 8,
-        }
-    }
-
-    fn buckets() -> &'static [AtomicU64; BUCKET_COUNT] {
-        BUCKETS.get_or_init(|| std::array::from_fn(|_| AtomicU64::new(0)))
-    }
-
-    pub(crate) fn record_write(len: usize) {
-        CALLS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(len as u64, Ordering::Relaxed);
-
-        let len_u64 = len as u64;
-        let mut current = MAX_WRITE.load(Ordering::Relaxed);
-        while len_u64 > current {
-            match MAX_WRITE.compare_exchange_weak(
-                current,
-                len_u64,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(next) => current = next,
-            }
-        }
-
-        let idx = bucket_index(len);
-        buckets()[idx].fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn reset() {
-        CALLS.store(0, Ordering::Relaxed);
-        BYTES.store(0, Ordering::Relaxed);
-        MAX_WRITE.store(0, Ordering::Relaxed);
-        for bucket in buckets().iter() {
-            bucket.store(0, Ordering::Relaxed);
-        }
-    }
-
-    pub(crate) fn snapshot() -> WriterStats {
-        let mut out = [0u64; BUCKET_COUNT];
-        for (idx, bucket) in buckets().iter().enumerate() {
-            out[idx] = bucket.load(Ordering::Relaxed);
-        }
-        WriterStats {
-            calls: CALLS.load(Ordering::Relaxed),
-            bytes: BYTES.load(Ordering::Relaxed),
-            max_write: MAX_WRITE.load(Ordering::Relaxed),
-            buckets: out,
-        }
-    }
-}
-
 /// Render a single record tree to JSON.
 pub(crate) fn render_json_record<W: WriteExt>(
     tree: &IrTree<'_>,
@@ -180,14 +97,10 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     }
 
     fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-        #[cfg(feature = "perf-counters")]
-        perf::record_write(bytes.len());
         self.writer.write_all(bytes).map_err(EvtxError::from)
     }
 
     fn write_byte(&mut self, byte: u8) -> Result<()> {
-        #[cfg(feature = "perf-counters")]
-        perf::record_write(1);
         self.writer.write_all(&[byte]).map_err(EvtxError::from)
     }
 

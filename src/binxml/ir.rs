@@ -16,7 +16,7 @@
 //! `binxml::ir_xml`.
 
 use crate::EvtxChunk;
-use crate::binxml::name::{BinXmlName, BinXmlNameEncoding, BinXmlNameRef};
+use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::tokens::{
     read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
     read_open_start_element_cursor, read_processing_instruction_data_cursor,
@@ -38,7 +38,6 @@ use crate::model::ir::{
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use bumpalo::Bump;
-use std::borrow::Cow;
 use std::rc::Rc;
 
 const BINXML_NAME_LINK_SIZE: u32 = 6;
@@ -300,7 +299,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                 "open start - Bad parser state",
             ));
         }
-        let name = Name::new(expand_string_ref(&elem.name, self.chunk)?);
+        let name = Name::new(expand_string_ref(&elem.name, self.chunk, self.bump)?);
         self.current_element = Some(ElementBuilder::new(name, self.bump));
         Ok(())
     }
@@ -310,18 +309,18 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             .current_element
             .as_mut()
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("attribute - Bad parser state"))?;
-        let name = Name::new(expand_string_ref(&attr.name, self.chunk)?);
+        let name = Name::new(expand_string_ref(&attr.name, self.chunk, self.bump)?);
         builder.start_attribute(name);
         Ok(())
     }
 
     fn process_entity_ref(&mut self, entity: BinXmlEntityReference) -> Result<()> {
-        let name = Name::new(expand_string_ref(&entity.name, self.chunk)?);
+        let name = Name::new(expand_string_ref(&entity.name, self.chunk, self.bump)?);
         self.push_node(Node::EntityRef(name))
     }
 
     fn process_pi_target(&mut self, name: BinXMLProcessingInstructionTarget) -> Result<()> {
-        let target = Name::new(expand_string_ref(&name.name, self.chunk)?);
+        let target = Name::new(expand_string_ref(&name.name, self.chunk, self.bump)?);
         self.push_node(Node::PITarget(target))
     }
 
@@ -485,7 +484,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             BuildMode::Record => {
                 // Some corrupted records can contain an empty/invalid BinXML fragment (e.g. only
                 // an EOF token). Keep iteration fail-soft by synthesizing an empty root element.
-                let name = Name::new(Cow::Owned(BinXmlName::from_str("Event")));
+                let name = Name::new("Event");
                 let element = Element::new_in(name, self.bump);
                 let root = self.arena.new_node(element);
                 Ok(root)
@@ -527,7 +526,7 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a>(
             }
             0x0c => {
                 let template =
-                    read_template_values_cursor(&mut cursor, Some(chunk), ansi_codec, Some(bump))?;
+                    read_template_values_cursor(&mut cursor, Some(chunk), ansi_codec, bump)?;
                 builder.process_template_instance_values(template, bump)?;
             }
             0x01 => {
@@ -555,7 +554,7 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a>(
                     Some(chunk),
                     None,
                     ansi_codec,
-                    Some(bump),
+                    bump,
                 )?;
                 builder.process_value(value)?;
             }
@@ -930,16 +929,21 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
 fn expand_string_ref<'a>(
     string_ref: &BinXmlNameRef,
     chunk: &'a EvtxChunk<'a>,
-) -> Result<Cow<'a, BinXmlName>> {
+    bump: &'a Bump,
+) -> Result<&'a str> {
     match chunk.string_cache.get_cached_string(string_ref.offset) {
-        Some(s) => Ok(Cow::Borrowed(s)),
+        Some(s) => Ok(s.as_str()),
         None => {
+            // Fail-soft fallback for corrupted chunks / missing string cache entries:
+            // decode the name into the caller-provided bump arena.
             let name_off = string_ref.offset.checked_add(BINXML_NAME_LINK_SIZE).ok_or(
                 EvtxError::FailedToCreateRecordModel("string table offset overflow"),
             )?;
             let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
-            let string = BinXmlName::from_cursor(&mut cursor)?;
-            Ok(Cow::Owned(string))
+            let s = cursor
+                .len_prefixed_utf16_string_bump(true, "name", bump)?
+                .unwrap_or("");
+            Ok(s)
         }
     }
 }

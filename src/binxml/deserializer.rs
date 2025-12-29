@@ -11,7 +11,6 @@ use crate::binxml::tokens::{
     read_template_cursor,
 };
 use crate::binxml::value_variant::BinXmlValue;
-#[cfg(feature = "bench")]
 use bumpalo::Bump;
 
 use crate::model::{deserialized::*, raw::*};
@@ -32,8 +31,7 @@ pub struct IterTokens<'a> {
     has_dep_id: bool,
     ansi_codec: EncodingRef,
     name_encoding: BinXmlNameEncoding,
-    #[cfg(feature = "bench")]
-    arena: Option<&'a Bump>,
+    arena: &'a Bump,
 }
 
 pub struct BinXmlDeserializer<'a> {
@@ -84,50 +82,17 @@ impl<'a> BinXmlDeserializer<'a> {
 
     /// Reads `data_size` bytes of binary xml, or until EOF marker.
     pub fn iter_tokens(self, data_size: Option<u32>) -> Result<IterTokens<'a>> {
-        #[cfg(feature = "bench")]
-        {
-            self.iter_tokens_with_arena(data_size, None)
-        }
-
-        #[cfg(not(feature = "bench"))]
-        {
-            let cursor = ByteCursor::with_pos(
-                self.data,
-                usize::try_from(self.offset).map_err(|_| DeserializationError::Truncated {
-                    what: "BinXmlDeserializer.offset",
-                    offset: self.offset,
-                    need: 0,
-                    have: 0,
-                })?,
-            )?;
-
-            Ok(IterTokens {
-                cursor,
-                chunk: self.chunk,
-                data_size,
-                data_read_so_far: 0,
-                eof: false,
-                has_dep_id: self.has_dep_id,
-                ansi_codec: self.ansi_codec,
-                name_encoding: self.name_encoding,
-                #[cfg(feature = "bench")]
-                arena: None,
-            })
-        }
+        let arena = self.chunk.map(|c| &c.arena).ok_or_else(|| {
+            DeserializationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "BinXmlDeserializer::iter_tokens requires an arena when chunk is None (use iter_tokens_in)",
+            ))
+        })?;
+        self.iter_tokens_in(data_size, arena)
     }
 
-    /// Reads `data_size` bytes of binary xml, allocating strings in the provided bump arena.
-    #[cfg(feature = "bench")]
+    /// Reads `data_size` bytes of BinXML, allocating any needed strings/slices in `arena`.
     pub fn iter_tokens_in(self, data_size: Option<u32>, arena: &'a Bump) -> Result<IterTokens<'a>> {
-        self.iter_tokens_with_arena(data_size, Some(arena))
-    }
-
-    #[cfg(feature = "bench")]
-    fn iter_tokens_with_arena(
-        self,
-        data_size: Option<u32>,
-        arena: Option<&'a Bump>,
-    ) -> Result<IterTokens<'a>> {
         let cursor = ByteCursor::with_pos(
             self.data,
             usize::try_from(self.offset).map_err(|_| DeserializationError::Truncated {
@@ -195,10 +160,7 @@ impl<'a> IterTokens<'a> {
                     self.chunk,
                     None,
                     self.ansi_codec,
-                    #[cfg(feature = "bench")]
                     self.arena,
-                    #[cfg(not(feature = "bench"))]
-                    None,
                 )?,
             )),
             BinXMLRawToken::Attribute(_token_information) => {
@@ -225,15 +187,7 @@ impl<'a> IterTokens<'a> {
                 read_processing_instruction_data_cursor(cursor)?,
             )),
             BinXMLRawToken::TemplateInstance => Ok(BinXMLDeserializedTokens::TemplateInstance(
-                read_template_cursor(
-                    cursor,
-                    self.chunk,
-                    self.ansi_codec,
-                    #[cfg(feature = "bench")]
-                    self.arena,
-                    #[cfg(not(feature = "bench"))]
-                    None,
-                )?,
+                read_template_cursor(cursor, self.chunk, self.ansi_codec, self.arena)?,
             )),
             BinXMLRawToken::NormalSubstitution => Ok(BinXMLDeserializedTokens::Substitution(
                 read_substitution_descriptor_cursor(cursor, false)?,
@@ -416,7 +370,8 @@ mod tests {
             BinXmlNameEncoding::WevtInline,
         );
 
-        let iterator = de.iter_tokens(None).expect("iter_tokens");
+        let arena = bumpalo::Bump::new();
+        let iterator = de.iter_tokens_in(None, &arena).expect("iter_tokens_in");
         let mut tokens = vec![];
         for t in iterator {
             tokens.push(t.expect("token"));
@@ -470,7 +425,8 @@ mod tests {
             BinXmlNameEncoding::WevtInline,
         );
 
-        let iterator = de.iter_tokens(None).expect("iter_tokens");
+        let arena = bumpalo::Bump::new();
+        let iterator = de.iter_tokens_in(None, &arena).expect("iter_tokens_in");
         for t in iterator {
             match t {
                 Ok(_) => continue,
