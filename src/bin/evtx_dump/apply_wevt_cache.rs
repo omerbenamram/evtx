@@ -232,7 +232,7 @@ mod imp {
             BinXmlValue::EvtHandle => String::new(),
             BinXmlValue::BinXmlType(_) => String::new(),
             BinXmlValue::EvtXml => String::new(),
-            _ => value.as_cow_str().into_owned(),
+            _ => value.to_string(),
         }
     }
 

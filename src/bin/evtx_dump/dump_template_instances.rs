@@ -58,10 +58,8 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 #[cfg(feature = "wevt_templates")]
 mod imp {
     use super::*;
-    use evtx::binxml::value_variant::format_timestamp;
     use evtx::{EvtxParser, ParserSettings};
     use serde::Serialize;
-    use serde_json::Value as JsonValue;
     use std::path::PathBuf;
 
     #[derive(Debug, Serialize)]
@@ -73,37 +71,13 @@ mod imp {
         template_id: u32,
         template_def_offset: u32,
         template_guid: Option<String>,
-        substitutions: Vec<JsonValue>,
+        substitutions: Vec<String>,
     }
 
-    fn binxml_value_to_json_lossy(
+    fn binxml_value_to_string_lossy(
         value: &evtx::binxml::value_variant::BinXmlValue<'_>,
-    ) -> JsonValue {
-        use evtx::binxml::value_variant::BinXmlValue;
-        match value {
-            BinXmlValue::EvtHandle => JsonValue::Object(
-                [(
-                    "type".to_string(),
-                    JsonValue::String("EvtHandle".to_string()),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-            BinXmlValue::BinXmlType(_) => JsonValue::Object(
-                [(
-                    "type".to_string(),
-                    JsonValue::String("BinXmlType".to_string()),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-            BinXmlValue::EvtXml => JsonValue::Object(
-                [("type".to_string(), JsonValue::String("EvtXml".to_string()))]
-                    .into_iter()
-                    .collect(),
-            ),
-            other => JsonValue::from(other),
-        }
+    ) -> String {
+        value.to_string()
     }
 
     pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
@@ -168,16 +142,16 @@ mod imp {
                 for s in &tpl.substitution_array {
                     match s {
                         BinXMLDeserializedTokens::Value(v) => {
-                            substitutions.push(binxml_value_to_json_lossy(v))
+                            substitutions.push(binxml_value_to_string_lossy(v))
                         }
-                        other => substitutions.push(JsonValue::String(format!("{other:?}"))),
+                        other => substitutions.push(format!("{other:?}")),
                     }
                 }
 
                 let line = DumpTemplateInstanceOutputLine {
                     source: source.clone(),
                     record_id: record.event_record_id,
-                    timestamp: format_timestamp(&record.timestamp),
+                    timestamp: record.timestamp.to_string(),
                     template_instance_index,
                     template_id: tpl.template_id,
                     template_def_offset: tpl.template_def_offset,

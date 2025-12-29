@@ -1,5 +1,5 @@
 use crate::SerializedEvtxRecord;
-use crate::binxml::value_variant::format_timestamp;
+use crate::binxml::value_render::ValueRenderer;
 
 use crate::model::deserialized::BinXMLDeserializedTokens;
 
@@ -24,9 +24,13 @@ fn extract_template_guid_from_error(err: &crate::err::EvtxError) -> Option<Strin
 
 fn binxml_value_to_string_lossy(value: &crate::binxml::value_variant::BinXmlValue<'_>) -> String {
     use crate::binxml::value_variant::BinXmlValue;
+    let mut vr = ValueRenderer::new();
+    let mut writer = Vec::new();
+    vr.write_json_value_text(&mut writer, value).unwrap();
+
     match value {
         BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => String::new(),
-        _ => value.as_cow_str().into_owned(),
+        _ => String::from_utf8(writer).unwrap(),
     }
 }
 
@@ -215,7 +219,7 @@ impl crate::EvtxRecord<'_> {
                             "_wevt_cache_used": true,
                             "template_guid": guid,
                             "record_id": record_id,
-                            "timestamp": format_timestamp(&timestamp),
+                            "timestamp": timestamp.to_string(),
                             "xml": xml_fragment,
                         });
 
@@ -281,7 +285,7 @@ impl crate::EvtxRecord<'_> {
                             "_wevt_cache_used": true,
                             "template_guid": guid,
                             "record_id": record_id,
-                            "timestamp": format_timestamp(&timestamp),
+                            "timestamp": timestamp.to_string(),
                             "xml": xml_fragment,
                         });
 

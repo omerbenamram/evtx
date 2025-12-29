@@ -19,8 +19,8 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::deserialized::{BinXMLDeserializedTokens, TemplateSubstitutionDescriptor};
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Text};
-use bumpalo::Bump;
 use crate::utils::ByteCursor;
+use bumpalo::Bump;
 
 /// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
 ///
@@ -37,10 +37,10 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> Result<
     }
 
     let binxml = &temp_bytes[TEMP_BINXML_OFFSET..];
-    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec, &arena)?;
 
     let mode = SubstitutionMode::Placeholders { names: None };
-    let arena = Bump::new();
     let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
@@ -66,10 +66,10 @@ pub fn render_temp_to_xml_with_substitution_values(
     }
 
     let binxml = &temp_bytes[TEMP_BINXML_OFFSET..];
-    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_temp_binxml_fragment(temp_bytes, ansi_codec, &arena)?;
 
     let mode = SubstitutionMode::Values(substitution_values);
-    let arena = Bump::new();
     let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
@@ -86,7 +86,8 @@ pub fn render_template_definition_to_xml(
     ansi_codec: EncodingRef,
 ) -> Result<String> {
     let binxml = template.binxml;
-    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec, &arena)?;
 
     let names = template
         .items
@@ -97,7 +98,6 @@ pub fn render_template_definition_to_xml(
     let mode = SubstitutionMode::Placeholders {
         names: Some(&names),
     };
-    let arena = Bump::new();
     let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
@@ -115,10 +115,10 @@ pub fn render_template_definition_to_xml_with_substitution_values(
     ansi_codec: EncodingRef,
 ) -> Result<String> {
     let binxml = template.binxml;
-    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec)?;
+    let arena = Bump::new();
+    let (tokens, _bytes_consumed) = parse_wevt_binxml_fragment(binxml, ansi_codec, &arena)?;
 
     let mode = SubstitutionMode::Values(substitution_values);
-    let arena = Bump::new();
     let tree = build_wevt_tree(binxml, tokens, mode, &arena)?;
     render_ir_xml(&tree, ansi_codec)
 }
@@ -301,7 +301,11 @@ fn substitution_text(
     }
 }
 
-fn resolve_name<'a>(binxml: &'a [u8], name_ref: &BinXmlNameRef, bump: &'a Bump) -> Result<Name<'a>> {
+fn resolve_name<'a>(
+    binxml: &'a [u8],
+    name_ref: &BinXmlNameRef,
+    bump: &'a Bump,
+) -> Result<Name<'a>> {
     // Inline WEVT name structure: u16 hash + u16 char_count + UTF-16LE chars + u16 NUL.
     // NameRef parsing already validates the hash; we just decode here.
     let mut cursor = ByteCursor::with_pos(binxml, name_ref.offset as usize)?;

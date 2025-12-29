@@ -10,6 +10,7 @@
 //! - MS-EVEN6 (BinXml `Name` structure and NameHash)
 
 use encoding::EncodingRef;
+use bumpalo::Bump;
 
 pub(super) const TEMP_BINXML_OFFSET: usize = 40;
 
@@ -23,6 +24,7 @@ pub(super) const TEMP_BINXML_OFFSET: usize = 40;
 pub fn parse_temp_binxml_fragment<'a>(
     temp_bytes: &'a [u8],
     ansi_codec: EncodingRef,
+    arena: &'a Bump,
 ) -> crate::err::Result<(
     Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>,
     u32,
@@ -49,7 +51,7 @@ pub fn parse_temp_binxml_fragment<'a>(
         BinXmlNameEncoding::WevtInline,
     );
 
-    let mut iterator = de.iter_tokens(None)?;
+    let mut iterator = de.iter_tokens_in(None, arena)?;
     let mut tokens = vec![];
     for t in iterator.by_ref() {
         tokens.push(t?);
@@ -70,6 +72,7 @@ pub fn parse_temp_binxml_fragment<'a>(
 pub fn parse_wevt_binxml_fragment<'a>(
     binxml: &'a [u8],
     ansi_codec: EncodingRef,
+    arena: &'a Bump,
 ) -> crate::err::Result<(
     Vec<crate::model::deserialized::BinXMLDeserializedTokens<'a>>,
     u32,
@@ -87,7 +90,7 @@ pub fn parse_wevt_binxml_fragment<'a>(
         BinXmlNameEncoding::WevtInline,
     );
 
-    let mut iterator = de.iter_tokens(None)?;
+    let mut iterator = de.iter_tokens_in(None, arena)?;
     let mut tokens = vec![];
     for t in iterator.by_ref() {
         tokens.push(t?);
