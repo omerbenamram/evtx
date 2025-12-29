@@ -1,0 +1,63 @@
+[package]
+name = "utf16-simd-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.utf16-simd]
+path = ".."
+
+[[bin]]
+name = "json_utf16le"
+path = "fuzz_targets/json_utf16le.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml_utf16le"
+path = "fuzz_targets/xml_utf16le.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raw_utf16le"
+path = "fuzz_targets/raw_utf16le.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_utf16"
+path = "fuzz_targets/json_utf16.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml_utf16"
+path = "fuzz_targets/xml_utf16.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raw_utf16"
+path = "fuzz_targets/raw_utf16.rs"
+test = false
+doc = false
+bench = false
+
+# `cargo fuzz` stores corpora and artifacts under `fuzz/`.
+# We keep this as its own workspace root so it doesn't interfere with the
+# repository workspace.
+[workspace]
+members = ["."]
+
