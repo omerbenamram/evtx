@@ -1,21 +1,76 @@
 //! BinXML IR construction and template instantiation.
 //!
-//! This module provides:
-//! - A streaming builder that converts BinXML tokens into the IR tree.
-//! - A per-iterator template cache that stores parsed templates with placeholders.
-//! - Template instantiation that resolves placeholders into concrete nodes.
+//! This module converts the BinXML token stream in an EVTX record (or template definition)
+//! into the IR tree defined in [`crate::model::ir`].
 //!
-//! The production builder parses BinXML bytes directly (cursor-based) to avoid
-//! iterator overhead and intermediate token allocations. For benchmarks we keep
-//! a token-iterator path that consumes `BinXmlDeserializer` output.
+//! ## Key data structures (worth skimming before the code)
 //!
-//! Template definitions are parsed once and reused across records in a chunk via
-//! `IrTemplateCache`.
+//! - [`IrArena`]: bump-backed storage for [`Element`] nodes (dense vector).
+//! - [`ElementId`]: index into an [`IrArena`].
+//! - [`Node`]: child items inside an element (text/value/entity refs, or `Node::Element(id)`).
+//! - [`IrVec`]: bump-allocated `Vec` used for attributes and children.
 //!
-//! The JSON and XML streaming renderers live in `binxml::ir_json` and
-//! `binxml::ir_xml`.
+//! ## Two parsing modes: records vs template definitions
+//!
+//! BinXML separates **structure** (template definition) from **data** (template instance).
+//!
+//! - **`BuildMode::TemplateDefinition`**:
+//!   - `SubstitutionDescriptor` tokens are recorded as `Node::Placeholder` nodes.
+//!   - Template instances are rejected (a template definition can't contain instances).
+//!   - Exactly one root element is required (hard error otherwise).
+//!
+//! - **`BuildMode::Record`**:
+//!   - Template instances are instantiated immediately and inserted into the tree.
+//!   - `SubstitutionDescriptor` tokens are rejected (they only occur in template defs).
+//!   - Multiple top-level fragments are tolerated (fail-soft; first root wins).
+//!
+//! Templates are parsed once and cached per chunk iterator (`IrTemplateCache`) as IR trees
+//! containing placeholders.
+//!
+//! ## Splicing: the “what just happened?” mechanism
+//!
+//! There is intentionally **no** "template instance node" in the final IR. When we encounter:
+//!
+//! - a **template instance token** (`0x0c`), or
+//! - a **`BinXmlType` value** (an embedded BinXML fragment inside a value/substitution),
+//!
+//! we immediately parse/instantiate it into a normal IR element tree and then **attach it**
+//! to the current parent (or use it as the record root). This is what the file means by
+//! “splicing in-place”: the surrounding parse continues as if those elements had appeared
+//! directly in the token stream.
+//!
+//! There are *two* layers of splicing during template instantiation:
+//!
+//! 1. **Placeholder splicing**: each `Node::Placeholder` expands to **0 or 1** `Node`s in the
+//!    output `IrVec` (0 when `optional` and the value is empty, 1 when resolved).
+//! 2. **Array substitution splicing** (MS-EVEN6 §3.1.4.7.5): if a resolved substitution is an
+//!    **array** value (e.g. `StringArrayType`), the *containing element is repeated* once per
+//!    array item. In IR terms, cloning a single `Node::Element` from the template can yield
+//!    **N** element IDs, which are then pushed into the parent’s `children` vector.
+//!
+//! Example (array substitution expands into repeated elements):
+//!
+//! ```text
+//! Template: <Data>%{0}</Data>
+//! Values[0]: StringArrayType(["a", "b"])
+//!
+//! Result under parent:
+//!   children += [ Element(Data{ "a" }), Element(Data{ "b" }) ]
+//! ```
+//!
+//! The JSON/XML renderers (`binxml::ir_json`, `binxml::ir_xml`) assume templates have already
+//! been instantiated and all placeholders have been resolved/expanded.
+//!
+//! ## Parser implementation notes
+//!
+//! The production builder parses BinXML bytes directly (cursor-based) to avoid iterator
+//! overhead and intermediate token allocations. For benchmarks we keep a token-iterator path
+//! that consumes `BinXmlDeserializer` output.
 
 use crate::EvtxChunk;
+use crate::binxml::array_expand::{
+    expand_array_substitutions_in_element, node_needs_array_expansion,
+};
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::tokens::{
     read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
@@ -40,6 +95,10 @@ use ahash::AHashMap;
 use bumpalo::Bump;
 use std::rc::Rc;
 
+/// Size (in bytes) of the "name link" header that precedes an inline string table entry.
+///
+/// This is used by [`expand_string_ref`] when falling back to decode a missing string-cache
+/// entry directly from the chunk.
 const BINXML_NAME_LINK_SIZE: u32 = 6;
 
 /// Incremental element builder for streaming token parsing.
@@ -99,6 +158,7 @@ impl<'a> ElementBuilder<'a> {
     }
 }
 
+/// Size (in bytes) of a template definition header (next offset + guid + size).
 const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
 
 /// Cache of parsed BinXML templates keyed by template GUID.
@@ -124,6 +184,17 @@ impl<'a> IrTemplateCache<'a> {
         }
     }
 
+    /// Instantiate a template instance and return the root `ElementId` of the instantiated tree.
+    ///
+    /// This is where template expansion stops being abstract:
+    /// - The cached template definition is an IR tree that may contain `Node::Placeholder`.
+    /// - The provided substitution values are converted to [`TemplateValue`]s (including parsing
+    ///   embedded `BinXmlType` fragments into `TemplateValue::BinXmlElement`).
+    /// - The template tree is deep-cloned into the record arena and all placeholders are resolved.
+    /// - Any array substitutions are expanded into repeated elements (see `resolve_node_into`).
+    ///
+    /// The returned `ElementId` is then *spliced* into the record's tree at the template
+    /// instance token location.
     fn instantiate_template_direct_values(
         &mut self,
         template_ref: BinXmlTemplateValues<'a>,
@@ -135,15 +206,21 @@ impl<'a> IrTemplateCache<'a> {
             self.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
         arena.reserve(template.arena().count());
         let values = template_values_from_values(template_ref.values, chunk, self, arena, bump)?;
-        clone_and_resolve(
+        let (root, _needs_array_expansion) = clone_and_resolve(
             template.arena(),
             template.root(),
             values.as_slice(),
             self.arena,
             arena,
-        )
+        )?;
+        Ok(root)
     }
 
+    /// Load a template definition from the chunk (or return a cached copy).
+    ///
+    /// The returned [`IrTree`] is stored in the cache and contains `Node::Placeholder` nodes.
+    /// It is never rendered directly; instead it is used as the source for
+    /// [`instantiate_template_direct_values`].
     fn get_or_parse_template_direct(
         &mut self,
         chunk: &'a EvtxChunk<'a>,
@@ -183,6 +260,8 @@ impl<'a> IrTemplateCache<'a> {
 }
 
 /// Parsing mode for the streaming builder.
+///
+/// See the module-level docs for the "record vs template definition" behavior matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BuildMode {
     Record,
@@ -191,8 +270,16 @@ enum BuildMode {
 
 /// Streaming token consumer that builds the IR tree.
 ///
-/// In `TemplateDefinition` mode, substitutions are captured as placeholders.
-/// In `Record` mode, template instances are instantiated and spliced in-place.
+/// This builder maintains a typical XML stack of "open elements" (`stack`) and emits
+/// `Node`s either into the current attribute being built (`current_element`) or into the
+/// current element's `children`.
+///
+/// Splicing-related behavior:
+/// - In `TemplateDefinition` mode, `SubstitutionDescriptor` tokens become `Node::Placeholder`.
+/// - In `Record` mode, template instances are instantiated immediately and attached to the
+///   current parent/root (no special node remains in the IR).
+/// - Array substitutions can cause a single template element to expand into multiple elements;
+///   this happens during cloning/instantiation, not during streaming token consumption.
 struct TreeBuilder<'a, 'cache, 'arena> {
     chunk: &'a EvtxChunk<'a>,
     cache: &'cache mut IrTemplateCache<'a>,
@@ -376,6 +463,11 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             ));
         }
 
+        // In template definitions, substitutions are *structural*: we can't resolve them yet,
+        // so we store a placeholder node that records:
+        // - the substitution index into the instance value array
+        // - the declared value type
+        // - whether the substitution is optional (may be omitted if empty)
         let placeholder = Node::Placeholder(Placeholder {
             id: substitution.substitution_index,
             value_type: substitution.value_type,
@@ -392,6 +484,11 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                         "nested BinXML inside attribute value",
                     ));
                 }
+                // A `BinXmlType` value is an embedded BinXML fragment. We parse it into a normal
+                // IR subtree and then attach the resulting element at the current location.
+                //
+                // This is another form of "splicing": the fragment becomes regular child elements
+                // rather than being kept as a typed value node.
                 if bytes.is_empty() {
                     return Ok(());
                 }
@@ -437,6 +534,8 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                 "template instance inside attribute value",
             ));
         }
+        // Template instances are *not* represented as a distinct IR node. We expand them into a
+        // regular element tree and attach that tree at the current parse location.
         let element_id = self
             .cache
             .instantiate_template_direct_values(template, self.chunk, self.arena, bump)?;
@@ -456,9 +555,11 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                     "element inside attribute value",
                 ));
             }
+            // Attribute context: append to the attribute value node list (no elements allowed).
             builder.push_attr_value(node);
             Ok(())
         } else {
+            // Element context: append to the current open element's children.
             push_child(self.arena, &self.stack, node)
         }
     }
@@ -496,6 +597,22 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     }
 }
 
+/// Parse a BinXML byte slice into an IR element tree using the cursor-based fast path.
+///
+/// This is the "token loop" for the production parser. It:
+/// - computes the slice's offset relative to the chunk (`binxml_slice_offset`)
+/// - iterates token bytes using [`ByteCursor`]
+/// - delegates stateful construction to [`TreeBuilder`]
+///
+/// Splicing behavior shows up here via token types:
+/// - `0x0c` (TemplateInstance): instantiate the template and attach it immediately
+///   (`TreeBuilder::process_template_instance_values`).
+/// - `Value(BinXmlType(..))`: parsed inside `TreeBuilder::process_value`, which builds a
+///   nested IR subtree and attaches it as child elements.
+///
+/// `mode` controls whether substitutions become placeholders (template definitions) or are
+/// rejected (records). `has_dep_id` controls parsing of element start tokens for streams that
+/// include dependency IDs.
 fn build_tree_from_binxml_bytes_direct_with_mode<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
@@ -697,6 +814,22 @@ fn read_template_definition_header_at(data: &[u8], offset: u32) -> Result<Templa
     Ok(TemplateHeader { guid, data_size })
 }
 
+/// Convert raw template-instance substitution values into [`TemplateValue`]s.
+///
+/// Most values are kept as-is (`TemplateValue::Value(..)`), but `BinXmlType` is special:
+/// in a substitution array, `BinXmlType` means "this substitution is itself a BinXML fragment".
+/// We parse that fragment into a normal IR subtree and store its root as
+/// `TemplateValue::BinXmlElement(id)`.
+///
+/// This is one of the main "splicing" optimizations in this module: placeholder resolution can
+/// later insert an embedded fragment by simply pushing `Node::Element(id)` into the parent.
+///
+/// Example:
+///
+/// ```text
+/// values_raw = [ StringType("x"), BinXmlType(<C>y</C>) ]
+/// values     = [ Value(StringType("x")), BinXmlElement(id_of_C) ]
+/// ```
 fn template_values_from_values<'a>(
     values_raw: Vec<BinXmlValue<'a>>,
     chunk: &'a EvtxChunk<'a>,
@@ -729,13 +862,35 @@ fn template_values_from_values<'a>(
     Ok(values)
 }
 
+/// Deep-clone a template element into the record arena while resolving placeholders.
+///
+/// This is the core template-instantiation routine. It walks the template element's
+/// attribute values and child nodes in order, and appends the resolved representation
+/// into new bump-allocated vectors.
+///
+/// The key design choice is that resolution is done via `*_into(.., out: &mut IrVec<Node>)`
+/// helpers. This enables **splicing**:
+/// - optional placeholders can disappear (0 output nodes),
+/// - array substitutions can repeat an element (1 input child element → N output elements).
+///
+/// `has_element_child` is recomputed based on what was actually appended after resolution.
+///
+/// Example (conceptual):
+///
+/// ```text
+/// Template children: [ Text("hello "), Placeholder(0), Element(B), Placeholder(1 optional) ]
+/// Values[0] = StringType("world")
+/// Values[1] = NullType (optional)  => removed
+///
+/// Resolved children: [ Text("hello "), Text("world"), Element(B) ]
+/// ```
 fn clone_and_resolve<'a>(
     template_arena: &IrArena<'a>,
     element_id: ElementId,
     values: &[TemplateValue<'a>],
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
-) -> Result<ElementId> {
+) -> Result<(ElementId, bool)> {
     let element = template_arena
         .get(element_id)
         .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid template element id"))?;
@@ -747,12 +902,18 @@ fn clone_and_resolve<'a>(
         has_element_child: false,
     };
 
+    // Fast-path hint for array expansion:
+    // If we never append an expandable array value (`Node::Value(<ArrayType>)` with len > 1)
+    // into this element's attrs/children, we can skip the array-expansion scan entirely.
+    let mut needs_array_expansion = false;
+
     for attr in &element.attrs {
         let mut new_attr = Attr {
             name: attr.name.clone(),
             value: IrVec::with_capacity_in(attr.value.len(), bump),
         };
         for node in &attr.value {
+            let before = new_attr.value.len();
             resolve_node_into(
                 template_arena,
                 node,
@@ -761,6 +922,13 @@ fn clone_and_resolve<'a>(
                 arena,
                 &mut new_attr.value,
             )?;
+            if !needs_array_expansion
+                && new_attr.value[before..]
+                    .iter()
+                    .any(node_needs_array_expansion)
+            {
+                needs_array_expansion = true;
+            }
         }
         if !new_attr.value.is_empty() {
             resolved.attrs.push(new_attr);
@@ -784,11 +952,25 @@ fn clone_and_resolve<'a>(
         {
             resolved.has_element_child = true;
         }
+        if !needs_array_expansion
+            && resolved.children[before..]
+                .iter()
+                .any(node_needs_array_expansion)
+        {
+            needs_array_expansion = true;
+        }
     }
 
-    Ok(arena.new_node(resolved))
+    Ok((arena.new_node(resolved), needs_array_expansion))
 }
 
+/// Resolve one template [`Node`] and append the result into `out`.
+///
+/// This function is intentionally "append-only" because some input nodes expand to multiple
+/// output nodes:
+/// - `Node::Placeholder(..)` → 0 or 1 nodes (optional empties disappear).
+/// - `Node::Element(..)` → 1 or many nodes (array substitution expansion may repeat the element).
+/// - Everything else → exactly 1 node (shallow clone).
 fn resolve_node_into<'a>(
     template_arena: &IrArena<'a>,
     node: &Node<'a>,
@@ -800,8 +982,24 @@ fn resolve_node_into<'a>(
     match node {
         Node::Placeholder(ph) => resolve_placeholder_into(ph, values, bump, arena, out),
         Node::Element(element_id) => {
-            let cloned = clone_and_resolve(template_arena, *element_id, values, bump, arena)?;
-            out.push(Node::Element(cloned));
+            let (cloned, needs_array_expansion) =
+                clone_and_resolve(template_arena, *element_id, values, bump, arena)?;
+            // MS-EVEN6 §3.1.4.7.5: array substitutions expand by repeating the containing element.
+            // After placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)`
+            // inside an element's content/attributes. Expand them here so renderers see the proper
+            // repeated-element structure (matching common tools like libevtx).
+            if needs_array_expansion {
+                if let Some(expanded) = expand_array_substitutions_in_element(arena, bump, cloned)?
+                {
+                    for id in expanded {
+                        out.push(Node::Element(id));
+                    }
+                    return Ok(());
+                }
+            }
+            {
+                out.push(Node::Element(cloned));
+            }
             Ok(())
         }
         Node::Text(text) => {
@@ -835,6 +1033,29 @@ fn resolve_node_into<'a>(
     }
 }
 
+/// Resolve a template `Placeholder` and append its concrete representation into `out`.
+///
+/// Placeholders are emitted only while parsing a template definition. During instantiation
+/// (cloning), we look up `placeholder.id` in the instance value array and:
+///
+/// - **out of bounds**: treat as missing → emit nothing (fail-soft)
+/// - **optional + empty**: emit nothing (this is the common "omitted" path)
+/// - **embedded BinXML**: emit `Node::Element(id)` (subtree already parsed in record arena)
+/// - **scalar value**: convert via `value_to_node` and emit `Text`/`Value`
+///
+/// Note that placeholder resolution itself does **not** perform array-substitution expansion.
+/// If the resolved value is an array type, it will be emitted as `Node::Value(<ArrayType>)`,
+/// and the *containing element* will later be expanded/repeated by
+/// [`expand_array_substitutions_in_element`] when that element is cloned.
+///
+/// Example (conceptual):
+///
+/// ```text
+/// Template: <Data>%{0}</Data>
+/// Placeholder(0) resolves to Value(StringArrayType(["a","b"]))
+/// => out += [ Value(StringArrayType(["a","b"])) ]
+/// => Data element is then repeated into two <Data> nodes.
+/// ```
 fn resolve_placeholder_into<'a>(
     placeholder: &Placeholder,
     values: &[TemplateValue<'a>],
@@ -873,6 +1094,17 @@ fn resolve_placeholder_into<'a>(
     }
 }
 
+/// Attach an element to the current parent (or set it as root).
+///
+/// This is used by both "normal" element closure and by splicing operations:
+/// - template instance expansion
+/// - nested `BinXmlType` fragment expansion
+///
+/// Behavior:
+/// - if there is an open parent on `stack`, append as a child element
+/// - else, if `root` is unset, set it
+/// - else, if `mode == Record`, ignore additional roots (fail-soft for corrupted records)
+/// - else, error (template definitions must have exactly one root)
 fn attach_element<'a>(
     arena: &mut IrArena<'a>,
     stack: &[ElementId],
@@ -903,6 +1135,10 @@ fn attach_element<'a>(
     }
 }
 
+/// Append `node` into the current open element's `children`.
+///
+/// This is the common "emit" primitive for streaming token consumption.
+/// Callers are expected to enforce context rules (e.g. elements are not allowed in attributes).
 fn push_child<'a>(arena: &mut IrArena<'a>, stack: &[ElementId], node: Node<'a>) -> Result<()> {
     let parent_id = stack
         .last()
