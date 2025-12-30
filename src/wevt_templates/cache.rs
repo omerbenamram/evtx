@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use encoding::EncodingRef;
+use bumpalo::Bump;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
@@ -48,10 +48,13 @@ pub enum WevtCacheError {
     )]
     TemplateNotFound { guid: String, index_path: PathBuf },
 
-    #[error("failed to render TEMP for template_guid={guid}: {source}")]
-    RenderTemp {
+    #[error(
+        "TEMP too small to contain BinXML fragment for template_guid={guid} (len={len}, need >= {need})"
+    )]
+    TempTooSmall {
         guid: String,
-        source: crate::err::EvtxError,
+        len: usize,
+        need: usize,
     },
 }
 
@@ -173,35 +176,31 @@ impl WevtCache {
         })
     }
 
-    /// Render a template by GUID using the default Windows-1252 ANSI codec.
-    pub fn render_by_template_guid(
+    /// Load the raw TEMP BinXML fragment (starting at offset 40) into `arena` and return it.
+    ///
+    /// The returned slice has the lifetime of `arena`, making it suitable for parsing into
+    /// IR structures that borrow from the template bytes.
+    pub(crate) fn load_temp_binxml_fragment_in<'a>(
         &self,
         template_guid: &str,
-        substitutions: &[String],
-    ) -> Result<String, WevtCacheError> {
-        self.render_by_template_guid_with_ansi_codec(
-            template_guid,
-            substitutions,
-            encoding::all::WINDOWS_1252,
-        )
-    }
+        arena: &'a Bump,
+    ) -> Result<&'a [u8], WevtCacheError> {
+        // TEMP layout: first 40 bytes are header, BinXML starts at offset 40.
+        const TEMP_BINXML_OFFSET: usize = 40;
 
-    /// Render a template by GUID using an explicit ANSI codec.
-    pub fn render_by_template_guid_with_ansi_codec(
-        &self,
-        template_guid: &str,
-        substitutions: &[String],
-        ansi_codec: EncodingRef,
-    ) -> Result<String, WevtCacheError> {
         let guid = normalize_guid(template_guid);
         let temp_bytes = self.get_temp_bytes_for_guid(&guid)?;
+        let temp = temp_bytes.as_slice();
 
-        crate::wevt_templates::render_temp_to_xml_with_substitution_values(
-            temp_bytes.as_slice(),
-            substitutions,
-            ansi_codec,
-        )
-        .map_err(|source| WevtCacheError::RenderTemp { guid, source })
+        if temp.len() < TEMP_BINXML_OFFSET {
+            return Err(WevtCacheError::TempTooSmall {
+                guid,
+                len: temp.len(),
+                need: TEMP_BINXML_OFFSET,
+            });
+        }
+
+        Ok(arena.alloc_slice_copy(&temp[TEMP_BINXML_OFFSET..]))
     }
 
     fn get_temp_bytes_for_guid(&self, guid: &str) -> Result<TempBytes, WevtCacheError> {

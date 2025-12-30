@@ -9,8 +9,9 @@ mod wevt_templates {
     use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
     use evtx::wevt_templates::{
         render_template_definition_to_xml,
-        render_template_definition_to_xml_with_substitution_values,
+        render_template_definition_to_xml_with_values,
     };
+    use evtx::binxml::value_variant::BinXmlValue;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -565,11 +566,13 @@ mod wevt_templates {
             "expected substitution placeholder to include item name, got: {xml}"
         );
 
-        let subs = vec!["BAR".to_string()];
-        let applied = render_template_definition_to_xml_with_substitution_values(
+        let subs = vec![BinXmlValue::AnsiStringType("BAR")];
+        let bump = bumpalo::Bump::new();
+        let applied = render_template_definition_to_xml_with_values(
             tpl,
             &subs,
             encoding::all::WINDOWS_1252,
+            &bump,
         )
         .expect("render with substitutions should succeed");
         assert!(
@@ -1314,9 +1317,9 @@ mod wevt_templates {
 #[cfg(feature = "wevt_templates")]
 mod wevt_templates_research {
     use evtx::wevt_templates::manifest::CrimManifest;
-    use evtx::wevt_templates::parse_wevt_binxml_fragment;
     use evtx::wevt_templates::{
         ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
+        render_template_definition_to_xml,
     };
     use std::fs;
     use std::path::Path;
@@ -1464,14 +1467,13 @@ mod wevt_templates_research {
         // Parse the full manifest and ensure every TEMP BinXML fragment parses cleanly with strict
         // NameHash validation (MS-EVEN6) and the current token support.
         let manifest = CrimManifest::parse(&r.data).expect("manifest parse should succeed");
-        let arena = bumpalo::Bump::new();
+        let _arena = bumpalo::Bump::new();
         let mut parsed_templates = 0usize;
         for provider in &manifest.providers {
             if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                 for tpl in &ttbl.templates {
-                    let _ =
-                        parse_wevt_binxml_fragment(tpl.binxml, encoding::all::WINDOWS_1252, &arena)
-                            .expect("BinXML parse should succeed");
+                    let _ = render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+                        .expect("BinXML parse/render should succeed");
                     parsed_templates += 1;
                 }
             }

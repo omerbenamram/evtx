@@ -13,8 +13,8 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
     let mut actual_ok_count = 0;
     let mut actual_err_count = 0;
 
-    // Test streaming JSON parser
-    for r in parser.records_json_stream() {
+    // Test JSON parser (streaming IR renderer)
+    for r in parser.records_json() {
         if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
@@ -33,13 +33,13 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
         "Streaming JSON: Expected errors"
     );
 
-    // Test streaming JSON parser with separate_json_attributes
+    // Test JSON parser with separate_json_attributes
     let mut actual_ok_count = 0;
     let mut actual_err_count = 0;
     let separate_json_attributes = ParserSettings::default().separate_json_attributes(true);
     parser = parser.with_configuration(separate_json_attributes);
 
-    for r in parser.records_json_stream() {
+    for r in parser.records_json() {
         if let Ok(r) = r {
             actual_ok_count += 1;
             if log::log_enabled!(Level::Debug) {
@@ -59,70 +59,8 @@ fn test_full_sample_streaming(path: impl AsRef<Path>, ok_count: usize, err_count
     );
 }
 
-/// Compare streaming JSON output with regular JSON output to ensure they produce equivalent results
-fn test_streaming_equivalent_to_regular(path: impl AsRef<Path>) {
-    ensure_env_logger_initialized();
-
-    // Parse with regular JSON parser
-    let mut parser_regular = EvtxParser::from_path(&path).unwrap();
-    let mut regular_results: Vec<String> = Vec::new();
-    for record in parser_regular.records_json().flatten() {
-        regular_results.push(record.data);
-    }
-
-    // Parse with streaming JSON parser
-    let mut parser_streaming = EvtxParser::from_path(&path).unwrap();
-    let mut streaming_results: Vec<String> = Vec::new();
-    for record in parser_streaming.records_json_stream().flatten() {
-        streaming_results.push(record.data);
-    }
-
-    // Compare counts
-    assert_eq!(
-        regular_results.len(),
-        streaming_results.len(),
-        "Streaming parser should produce same number of records as regular parser"
-    );
-
-    // Compare JSON values (parse and compare as Value to handle formatting differences)
-    use serde_json::Value;
-    for (i, (regular, streaming)) in regular_results
-        .iter()
-        .zip(streaming_results.iter())
-        .enumerate()
-    {
-        let regular_value: Value = serde_json::from_str(regular)
-            .unwrap_or_else(|e| panic!("Regular JSON should be valid at record {i}: {e}"));
-        let streaming_value: Value = serde_json::from_str(streaming)
-            .unwrap_or_else(|e| panic!("Streaming JSON should be valid at record {i}: {e}"));
-
-        if regular_value != streaming_value {
-            eprintln!(
-                "Regular JSON record {}:\n{}\nStreaming JSON record {}:\n{}",
-                i,
-                serde_json::to_string_pretty(&regular_value).unwrap(),
-                i,
-                serde_json::to_string_pretty(&streaming_value).unwrap()
-            );
-        }
-
-        assert_eq!(
-            regular_value, streaming_value,
-            "Streaming parser should produce equivalent JSON to regular parser at record {}",
-            i
-        );
-    }
-}
-
-#[test]
-fn test_streaming_equivalent_to_regular_security() {
-    test_streaming_equivalent_to_regular(regular_sample());
-}
-
-#[test]
-fn test_streaming_equivalent_to_regular_system() {
-    test_streaming_equivalent_to_regular(samples_dir().join("system.evtx"));
-}
+// (Removed: streaming vs legacy JSON parity tests. The library now only exposes the streaming
+// IR JSON renderer.)
 
 #[test]
 fn test_parses_sample_with_irregular_boolean_values_streaming() {

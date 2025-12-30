@@ -12,11 +12,3 @@ flamegraph-prod:
 	BIN="$(BIN)" FLAME_FILE="$(FLAME_FILE)" FORMAT="$(FORMAT)" DURATION="$(DURATION)" \
 		bash scripts/flamegraph_prod.sh
 
-.PHONY: compare-streaming-legacy
-compare-streaming-legacy:
-	@echo "Building comparison tool with fast allocator..."
-	cargo build --release --features fast-alloc --bin compare_streaming_legacy
-	@echo "Running legacy vs streaming JSON comparison..."
-	./target/release/compare_streaming_legacy $(FILE)
-
-

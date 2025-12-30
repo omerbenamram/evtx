@@ -2,9 +2,9 @@ use crate::err::{DeserializationError, DeserializationResult as Result};
 
 use winstructs::guid::Guid;
 
+use crate::ChunkOffset;
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
-use crate::model::deserialized::*;
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use log::{error, trace, warn};
@@ -12,116 +12,95 @@ use log::{error, trace, warn};
 use crate::evtx_chunk::EvtxChunk;
 use bumpalo::Bump;
 use encoding::EncodingRef;
+use std::fmt::{self, Formatter};
 
-pub(crate) fn read_template_cursor<'a>(
-    cursor: &mut ByteCursor<'a>,
-    chunk: Option<&'a EvtxChunk<'a>>,
-    ansi_codec: EncodingRef,
-    arena: &'a Bump,
-) -> Result<BinXmlTemplateRef<'a>> {
-    trace!("TemplateInstance at {}", cursor.position());
+/// Processing instruction target name.
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+pub(crate) struct BinXMLProcessingInstructionTarget {
+    pub name: BinXmlNameRef,
+}
 
-    let _ = cursor.u8()?;
-    let template_id = cursor.u32()?;
-    let template_definition_data_offset = cursor.u32()?;
-    let mut template_guid: Option<Guid> = None;
+/// Open-start element token payload (name and data size).
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+pub(crate) struct BinXMLOpenStartElement {
+    pub data_size: u32,
+    pub name: BinXmlNameRef,
+}
 
-    // Need to skip over the template data.
-    if (cursor.position() as u32) == template_definition_data_offset {
-        let template_header = read_template_definition_header_cursor(cursor)?;
-        template_guid = Some(template_header.guid.clone());
-        cursor.set_pos_u64(
-            cursor.position() + u64::from(template_header.data_size),
-            "Skip cached template",
-        )?;
+/// Template definition header stored in the chunk template table.
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub(crate) struct BinXmlTemplateDefinitionHeader {
+    /// A pointer to the next template in the bucket.
+    pub next_template_offset: ChunkOffset,
+    pub guid: Guid,
+    pub data_size: u32,
+}
+
+impl fmt::Display for BinXmlTemplateDefinitionHeader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "<BinXmlTemplateDefinitionHeader - id: {guid}, data_size: {size}>",
+            guid = self.guid,
+            size = self.data_size
+        )
     }
+}
 
-    let number_of_substitutions = cursor.u32()?;
+/// Entity reference token payload.
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+pub(crate) struct BinXmlEntityReference {
+    pub name: BinXmlNameRef,
+}
 
-    let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
+/// Template instance payload parsed into substitution values.
+///
+/// This avoids allocating legacy token wrappers for every substitution. The values are parsed
+/// directly and consumed by the IR builder.
+#[derive(Debug, PartialOrd, PartialEq, Clone)]
+pub struct BinXmlTemplateValues<'a> {
+    pub template_id: u32,
+    pub template_def_offset: ChunkOffset,
+    pub template_guid: Option<Guid>,
+    pub values: Vec<BinXmlValue<'a>>,
+}
 
-    for _ in 0..number_of_substitutions {
-        let size = cursor.u16()?;
-        let value_type_token = cursor.u8()?;
+/// Descriptor for a template substitution value payload.
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+struct TemplateValueDescriptor {
+    size: u16,
+    value_type: BinXmlValueType,
+}
 
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
-            DeserializationError::InvalidValueVariant {
-                value: value_type_token,
-                offset: cursor.position(),
-            },
-        )?;
+/// Placeholder descriptor within a template definition.
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+pub(crate) struct TemplateSubstitutionDescriptor {
+    /// Zero-based index of the substitution value.
+    pub substitution_index: u16,
+    pub value_type: BinXmlValueType,
+    pub ignore: bool,
+    /// True for conditional substitutions; optional values may be omitted when empty.
+    pub optional: bool,
+}
 
-        // Empty
-        let _ = cursor.u8()?;
+/// Fragment header at the start of a BinXML stream.
+#[repr(C)]
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+pub(crate) struct BinXMLFragmentHeader {
+    pub major_version: u8,
+    pub minor_version: u8,
+    pub flags: u8,
+}
 
-        value_descriptors.push(TemplateValueDescriptor { size, value_type })
-    }
-
-    trace!("{:?}", value_descriptors);
-
-    let mut substitution_array = Vec::with_capacity(number_of_substitutions as usize);
-
-    for descriptor in value_descriptors {
-        let position_before_reading_value = cursor.position();
-        trace!(
-            "Offset `0x{offset:08x} ({offset})`: Substitution: {substitution:?}",
-            offset = position_before_reading_value,
-            substitution = descriptor.value_type,
-        );
-
-        let value = BinXmlValue::deserialize_value_type_cursor_in(
-            &descriptor.value_type,
-            cursor,
-            chunk,
-            Some(descriptor.size),
-            ansi_codec,
-            arena,
-        )?;
-
-        trace!("\t {:?}", value);
-        // NullType can mean deleted substitution (and data need to be skipped)
-        if value == BinXmlValue::NullType {
-            trace!("\t Skipping `NullType` descriptor");
-            cursor.set_pos_u64(
-                cursor.position() + u64::from(descriptor.size),
-                "NullType Descriptor",
-            )?;
-        }
-
-        let current_position = cursor.position();
-        let expected_position = position_before_reading_value + u64::from(descriptor.size);
-
-        if expected_position != current_position {
-            let diff = expected_position as i128 - current_position as i128;
-            // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
-            // Sometimes however the log will contain a lot of zero fields.
-            warn!(
-                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                current_position, expected_position, &descriptor
-            );
-
-            match u64::try_from(diff) {
-                Ok(u64_diff) => {
-                    cursor.set_pos_u64(current_position + u64_diff, "Broken record")?;
-                }
-                Err(_) => error!("Broken record"),
-            }
-        }
-        substitution_array.push(BinXMLDeserializedTokens::Value(value));
-    }
-
-    Ok(BinXmlTemplateRef {
-        template_id,
-        template_def_offset: template_definition_data_offset,
-        template_guid,
-        substitution_array,
-    })
+/// Attribute token payload.
+#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
+pub(crate) struct BinXMLAttribute {
+    pub name: BinXmlNameRef,
 }
 
 /// Read a `TemplateInstance` and parse its substitution values directly.
 ///
-/// This avoids allocating `BinXMLDeserializedTokens::Value` wrappers and is used
-/// by the direct IR builder path.
+/// This is used by the direct IR builder path.
 pub(crate) fn read_template_values_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
@@ -247,74 +226,6 @@ fn read_template_definition_header_cursor(
         guid: template_guid,
         data_size,
     })
-}
-
-/// Strictly read a `TemplateDefinitionHeader` at a known offset in an EVTX chunk buffer.
-///
-/// This does **not** scan for signatures or guess offsets. It only succeeds when the bytes at the
-/// provided `offset` look like a valid template definition header followed by a BinXML fragment
-/// header (`StartOfStream` + version tuple). This is used by higher-level "offline WEVT cache"
-/// logic to match a record's `TemplateInstance` to a template GUID without fully deserializing the
-/// template.
-pub(crate) fn try_read_template_definition_header_at(
-    chunk_data: &[u8],
-    offset: u32,
-) -> Result<BinXmlTemplateDefinitionHeader> {
-    let off = offset as usize;
-    let mut cursor = ByteCursor::with_pos(chunk_data, off)?;
-
-    // Read the header using the canonical parser.
-    let header = read_template_definition_header_cursor(&mut cursor)?;
-
-    // Validate next_template_offset is either:
-    // - 0 (end of list)
-    // - equal to itself (observed termination sentinel)
-    // - a forward in-chunk offset
-    if header.next_template_offset != 0 && header.next_template_offset != offset {
-        if header.next_template_offset <= offset {
-            return Err(DeserializationError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "template next_template_offset is not forward",
-            )));
-        }
-        if (header.next_template_offset as usize) >= chunk_data.len() {
-            return Err(DeserializationError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "template next_template_offset out of bounds",
-            )));
-        }
-    }
-
-    // We should now be positioned immediately after the template header.
-    let data_size_usize = header.data_size as usize;
-    if data_size_usize < 4 {
-        return Err(DeserializationError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "template data_size too small",
-        )));
-    }
-
-    // Ensure the full template fragment range is in-bounds (strict; we do not accept a header that
-    // points past the chunk end).
-    let data_start = cursor.pos();
-    let data_end = data_start.saturating_add(data_size_usize);
-    if data_end > chunk_data.len() {
-        return Err(DeserializationError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "template data_size out of bounds",
-        )));
-    }
-
-    // Verify BinXML fragment header: StartOfStream (0x0f) + major/minor/flags.
-    let frag = cursor.take_bytes(4, "template fragment header")?;
-    if frag[0] != 0x0f || frag[1] != 0x01 || frag[2] != 0x01 {
-        return Err(DeserializationError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "template does not start with BinXML fragment header (StartOfStream 1.1)",
-        )));
-    }
-
-    Ok(header)
 }
 
 pub(crate) fn read_entity_ref_cursor(

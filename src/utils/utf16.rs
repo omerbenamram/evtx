@@ -114,6 +114,7 @@ pub(crate) fn decode_utf16le_bytes_to_bump_str<'a>(
 }
 
 /// Decode a UTF-16LE byte slice until the first NUL (0x0000), if present.
+#[cfg(feature = "wevt_templates")]
 pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDecodeError> {
     if !bytes.len().is_multiple_of(2) {
         return Err(Utf16LeDecodeError::OddLength);
@@ -128,6 +129,7 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
 }
 
 /// Decode UTF-16 code units until the first NUL (0x0000), if present.
+#[cfg(feature = "wevt_templates")]
 pub(crate) fn decode_utf16_units_z(units: &[u16]) -> Result<String, Utf16LeDecodeError> {
     let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
     String::from_utf16(&units[..end]).map_err(|_| Utf16LeDecodeError::InvalidData)
@@ -170,7 +172,6 @@ pub(crate) fn trim_utf16le_whitespace(
     Ok(if saw_non_ws { last_non_ws } else { 0 })
 }
 
-
 fn decode_utf16le_at_unit(
     bytes: &[u8],
     unit_index: usize,
@@ -190,7 +191,6 @@ fn decode_utf16le_at_unit(
     let cu = u16::from_le_bytes([lo, hi]);
     decode_utf16le_unit_value(bytes, cu, unit_index, max_units)
 }
-
 
 fn decode_utf16le_unit_value(
     bytes: &[u8],

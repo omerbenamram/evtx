@@ -112,9 +112,8 @@ mod imp {
     use evtx::EvtxParser;
     use evtx::ParserSettings;
     use evtx::binxml::value_variant::BinXmlValue;
-    use evtx::model::deserialized::BinXMLDeserializedTokens;
     use evtx::wevt_templates::manifest::CrimManifest;
-    use evtx::wevt_templates::render_template_definition_to_xml_with_substitution_values;
+    use evtx::wevt_templates::render_template_definition_to_xml_with_values;
     use serde_json::Value as JsonValue;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -227,76 +226,33 @@ mod imp {
         Ok(out)
     }
 
-    fn value_to_string_lossy(value: &BinXmlValue<'_>) -> String {
-        match value {
-            BinXmlValue::EvtHandle => String::new(),
-            BinXmlValue::BinXmlType(_) => String::new(),
-            BinXmlValue::EvtXml => String::new(),
-            _ => value.to_string(),
-        }
-    }
-
-    fn substitutions_from_evtx(
-        evtx_path: &Path,
-        record_id: u64,
-        template_instance_index: usize,
-    ) -> Result<Vec<String>> {
-        let settings = ParserSettings::default();
-        let mut parser = EvtxParser::from_path(evtx_path)
-            .with_context(|| format!("Failed to open evtx file at: {}", evtx_path.display()))?
-            .with_configuration(settings.clone());
-
-        for chunk_res in parser.chunks() {
-            let mut chunk_data = chunk_res?;
-            let mut chunk = chunk_data.parse(std::sync::Arc::new(settings.clone()))?;
-            for record_res in chunk.iter() {
-                let record = record_res?;
-                if record.event_record_id != record_id {
-                    continue;
-                }
-
-                let mut instances = vec![];
-                let tokens = record.tokens()?;
-                for t in &tokens {
-                    if let BinXMLDeserializedTokens::TemplateInstance(tpl) = t {
-                        instances.push(tpl);
-                    }
-                }
-
-                let tpl = instances.get(template_instance_index).ok_or_else(|| {
-                    format_err!(
-                        "record {record_id} has no TemplateInstance at index {template_instance_index}"
-                    )
-                })?;
-
-                let mut out = Vec::with_capacity(tpl.substitution_array.len());
-                for s in &tpl.substitution_array {
-                    match s {
-                        BinXMLDeserializedTokens::Value(v) => out.push(value_to_string_lossy(v)),
-                        _ => out.push(String::new()),
-                    }
-                }
-                return Ok(out);
-            }
-        }
-
-        bail!("record_id {record_id} not found in {}", evtx_path.display());
-    }
-
-    fn substitutions_from_json_array(v: &JsonValue) -> Result<Vec<String>> {
+    fn values_from_json_array<'a>(
+        v: &JsonValue,
+        bump: &'a bumpalo::Bump,
+    ) -> Result<Vec<BinXmlValue<'a>>> {
         let Some(arr) = v.as_array() else {
             bail!("substitutions JSON must be an array");
         };
         Ok(arr
             .iter()
             .map(|v| match v {
-                JsonValue::Null => String::new(),
-                JsonValue::String(s) => s.clone(),
-                JsonValue::Number(n) => n.to_string(),
-                JsonValue::Bool(b) => b.to_string(),
-                other => other.to_string(),
+                JsonValue::Null => BinXmlValue::NullType,
+                JsonValue::Bool(b) => BinXmlValue::BoolType(*b),
+                JsonValue::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        BinXmlValue::Int64Type(i)
+                    } else if let Some(u) = n.as_u64() {
+                        BinXmlValue::UInt64Type(u)
+                    } else if let Some(f) = n.as_f64() {
+                        BinXmlValue::Real64Type(f)
+                    } else {
+                        BinXmlValue::NullType
+                    }
+                }
+                JsonValue::String(s) => BinXmlValue::AnsiStringType(bump.alloc_str(s)),
+                other => BinXmlValue::AnsiStringType(bump.alloc_str(&other.to_string())),
             })
-            .collect())
+            .collect::<Vec<_>>())
     }
 
     pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
@@ -309,26 +265,40 @@ mod imp {
             .get_one::<usize>("template-instance-index")
             .expect("has default");
 
-        let substitutions = if let (Some(evtx_path), Some(record_id)) = (
+        let evtx_subs = if let (Some(evtx_path), Some(record_id)) = (
             matches.get_one::<String>("evtx").map(PathBuf::from),
             matches.get_one::<u64>("record-id").copied(),
         ) {
-            substitutions_from_evtx(&evtx_path, record_id, template_instance_index)?
-        } else if let Some(s) = matches.get_one::<String>("substitutions") {
-            let v: JsonValue =
-                serde_json::from_str(s).context("failed to parse --substitutions as JSON")?;
-            substitutions_from_json_array(&v)?
-        } else if let Some(p) = matches.get_one::<String>("substitutions-file") {
-            let text = fs::read_to_string(p)
-                .with_context(|| format!("failed to read substitutions file `{p}`"))?;
-            let v: JsonValue = serde_json::from_str(&text)
-                .context("failed to parse substitutions file as JSON")?;
-            substitutions_from_json_array(&v)?
+            Some((evtx_path, record_id))
         } else {
+            None
+        };
+
+        let json_subs = if evtx_subs.is_none() {
+            if let Some(s) = matches.get_one::<String>("substitutions") {
+                Some(
+                    serde_json::from_str::<JsonValue>(s)
+                        .context("failed to parse --substitutions as JSON")?,
+                )
+            } else if let Some(p) = matches.get_one::<String>("substitutions-file") {
+                let text = fs::read_to_string(p)
+                    .with_context(|| format!("failed to read substitutions file `{p}`"))?;
+                Some(
+                    serde_json::from_str::<JsonValue>(&text)
+                        .context("failed to parse substitutions file as JSON")?,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if evtx_subs.is_none() && json_subs.is_none() {
             bail!(
                 "Must provide substitutions via --evtx+--record-id or --substitutions/--substitutions-file"
             );
-        };
+        }
 
         // Resolve template guid.
         let template_guid = if let Some(g) = matches.get_one::<String>("template-guid") {
@@ -354,8 +324,8 @@ mod imp {
             );
         };
 
-        // Find the template definition in one of the CRIM blobs and render.
-        let mut rendered: Option<String> = None;
+        // Locate the template definition in one of the CRIM blobs.
+        let mut template_crim_bytes: Option<Vec<u8>> = None;
         for crim_path in &cache.crim_paths {
             let bytes = match fs::read(crim_path) {
                 Ok(b) => b,
@@ -365,37 +335,103 @@ mod imp {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-
+            let mut found = false;
             for provider in &manifest.providers {
-                if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
-                    for tpl in &ttbl.templates {
-                        if normalize_guid(&tpl.guid.to_string()) == template_guid {
-                            let xml = render_template_definition_to_xml_with_substitution_values(
-                                tpl,
-                                &substitutions,
-                                encoding::all::WINDOWS_1252,
-                            )?;
-                            rendered = Some(xml);
-                            break;
-                        }
-                    }
-                }
-                if rendered.is_some() {
+                if let Some(ttbl) = provider.wevt.elements.templates.as_ref()
+                    && ttbl
+                        .templates
+                        .iter()
+                        .any(|tpl| normalize_guid(&tpl.guid.to_string()) == template_guid)
+                {
+                    found = true;
                     break;
                 }
             }
-            if rendered.is_some() {
+            if found {
+                template_crim_bytes = Some(bytes);
                 break;
             }
         }
 
-        let xml = rendered.ok_or_else(|| {
+        let template_crim_bytes = template_crim_bytes.ok_or_else(|| {
             format_err!(
                 "template GUID `{}` not found in any CRIM blobs referenced by `{}`",
                 template_guid,
                 cache_index_path.display()
             )
         })?;
+
+        let manifest = CrimManifest::parse(&template_crim_bytes)
+            .context("failed to parse selected CRIM blob")?;
+        let tpl = manifest
+            .providers
+            .iter()
+            .find_map(|provider| {
+                provider.wevt.elements.templates.as_ref().and_then(|ttbl| {
+                    ttbl.templates
+                        .iter()
+                        .find(|tpl| normalize_guid(&tpl.guid.to_string()) == template_guid)
+                })
+            })
+            .ok_or_else(|| {
+                format_err!(
+                    "template GUID `{}` not found in selected CRIM blob (unexpected)",
+                    template_guid
+                )
+            })?;
+
+        let xml = if let Some((evtx_path, record_id)) = evtx_subs {
+            let settings = ParserSettings::default();
+            let mut parser = EvtxParser::from_path(&evtx_path)
+                .with_context(|| format!("Failed to open evtx file at: {}", evtx_path.display()))?
+                .with_configuration(settings.clone());
+
+            for chunk_res in parser.chunks() {
+                let mut chunk_data = chunk_res?;
+                let mut chunk = chunk_data.parse(std::sync::Arc::new(settings.clone()))?;
+                for record_res in chunk.iter() {
+                    let record = record_res?;
+                    if record.event_record_id != record_id {
+                        continue;
+                    }
+
+                    let instances = record.template_instances()?;
+                    let instance = instances.get(template_instance_index).ok_or_else(|| {
+                        format_err!(
+                            "record {} has no TemplateInstance at index {}",
+                            record.event_record_id,
+                            template_instance_index
+                        )
+                    })?;
+                    let xml = render_template_definition_to_xml_with_values(
+                        tpl,
+                        &instance.values,
+                        encoding::all::WINDOWS_1252,
+                        &record.chunk.arena,
+                    )?;
+                    // Found and rendered; stop searching.
+                    if let Some(out_path) = matches.get_one::<String>("output") {
+                        fs::write(out_path, xml.as_bytes())
+                            .with_context(|| format!("failed to write output `{out_path}`"))?;
+                    } else {
+                        print!("{xml}");
+                    }
+                    return Ok(());
+                }
+            }
+
+            bail!("record_id {record_id} not found in {}", evtx_path.display());
+        } else {
+            let json = json_subs.expect("checked above");
+            let bump = bumpalo::Bump::new();
+            let values = values_from_json_array(&json, &bump)?;
+            render_template_definition_to_xml_with_values(
+                tpl,
+                &values,
+                encoding::all::WINDOWS_1252,
+                &bump,
+            )?
+        };
 
         if let Some(out_path) = matches.get_one::<String>("output") {
             fs::write(out_path, xml.as_bytes())

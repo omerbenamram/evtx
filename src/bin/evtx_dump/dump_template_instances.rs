@@ -81,8 +81,6 @@ mod imp {
     }
 
     pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
-        use evtx::model::deserialized::BinXMLDeserializedTokens;
-
         let input = PathBuf::from(matches.get_one::<String>("input").expect("required"));
         let record_id_filter = matches.get_one::<u64>("record-id").copied();
         let template_instance_index: usize = *matches
@@ -126,27 +124,16 @@ mod imp {
                     continue;
                 }
 
-                let mut instances = vec![];
-                let tokens = record.tokens()?;
-                for t in &tokens {
-                    if let BinXMLDeserializedTokens::TemplateInstance(tpl) = t {
-                        instances.push(tpl);
-                    }
-                }
-
+                let instances = record.template_instances()?;
                 let Some(tpl) = instances.get(template_instance_index) else {
                     continue;
                 };
 
-                let mut substitutions = Vec::with_capacity(tpl.substitution_array.len());
-                for s in &tpl.substitution_array {
-                    match s {
-                        BinXMLDeserializedTokens::Value(v) => {
-                            substitutions.push(binxml_value_to_string_lossy(v))
-                        }
-                        other => substitutions.push(format!("{other:?}")),
-                    }
-                }
+                let substitutions = tpl
+                    .values
+                    .iter()
+                    .map(binxml_value_to_string_lossy)
+                    .collect::<Vec<_>>();
 
                 let line = DumpTemplateInstanceOutputLine {
                     source: source.clone(),

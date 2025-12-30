@@ -41,7 +41,7 @@ mod imp {
         (path, loops, threads, stats)
     }
 
-    pub fn run() -> anyhow::Result<()> {
+    pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let (path, loops, threads, want_stats) = parse_args();
         let mut sink = io::sink();
 
@@ -54,7 +54,7 @@ mod imp {
                 .indent(false);
             parser = parser.with_configuration(settings);
 
-            for record in parser.records_json_stream() {
+            for record in parser.records_json() {
                 match record {
                     Ok(rec) => {
                         sink.write_all(rec.data.as_bytes())?;
@@ -76,7 +76,7 @@ mod imp {
 }
 
 #[cfg(feature = "bench")]
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     imp::run()
 }
 

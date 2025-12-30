@@ -41,27 +41,16 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum JsonParserKind {
-    /// Original JSON path: builds a full `serde_json::Value` per record.
-    Legacy,
-    /// Streaming JSON path: writes JSON directly to the output writer.
-    Streaming,
-}
-
 struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
-    json_parser: JsonParserKind,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
     /// When set, only the specified events (offseted reltaive to file) will be outputted.
     ranges: Option<Ranges>,
-    #[cfg(feature = "wevt_templates")]
-    wevt_cache: Option<std::sync::Arc<evtx::wevt_templates::WevtCache>>,
 }
 
 impl EvtxDump {
@@ -80,12 +69,6 @@ impl EvtxDump {
             "xml" => EvtxOutputFormat::XML,
             "json" | "jsonl" => EvtxOutputFormat::JSON,
             _ => EvtxOutputFormat::XML,
-        };
-
-        let json_parser = match matches.get_one::<String>("json-parser").map(|s| s.as_str()) {
-            Some("legacy") => JsonParserKind::Legacy,
-            Some("streaming") | None => JsonParserKind::Streaming,
-            _ => JsonParserKind::Streaming,
         };
 
         let no_indent = match (
@@ -181,23 +164,27 @@ impl EvtxDump {
             .map(|p| evtx::wevt_templates::WevtCache::load(p).map(std::sync::Arc::new))
             .transpose()?;
 
+        let mut parser_settings = ParserSettings::new()
+            .num_threads(num_threads.try_into().expect("u32 -> usize"))
+            .validate_checksums(validate_checksums)
+            .separate_json_attributes(separate_json_attrib_flag)
+            .indent(!no_indent)
+            .ansi_codec(*ansi_codec);
+
+        #[cfg(feature = "wevt_templates")]
+        {
+            parser_settings = parser_settings.wevt_cache(wevt_cache);
+        }
+
         Ok(EvtxDump {
-            parser_settings: ParserSettings::new()
-                .num_threads(num_threads.try_into().expect("u32 -> usize"))
-                .validate_checksums(validate_checksums)
-                .separate_json_attributes(separate_json_attrib_flag)
-                .indent(!no_indent)
-                .ansi_codec(*ansi_codec),
+            parser_settings,
             input,
             show_record_number: !no_show_record_number,
             output_format,
             output,
-            json_parser,
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
-            #[cfg(feature = "wevt_templates")]
-            wevt_cache,
         })
     }
 
@@ -213,73 +200,14 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
-                #[cfg(feature = "wevt_templates")]
-                if let Some(cache) = self.wevt_cache.clone() {
-                    let iter = parser.serialized_records(move |record_res| {
-                        record_res
-                            .and_then(|record| record.into_xml_with_wevt_cache(cache.as_ref()))
-                    });
-                    for record in iter {
-                        self.dump_record(record)?
-                    }
-                } else {
-                    for record in parser.records() {
-                        self.dump_record(record)?
-                    }
-                }
-
-                #[cfg(not(feature = "wevt_templates"))]
                 for record in parser.records() {
                     self.dump_record(record)?
                 }
             }
             EvtxOutputFormat::JSON => {
-                match self.json_parser {
-                    JsonParserKind::Streaming => {
-                        #[cfg(feature = "wevt_templates")]
-                        if let Some(cache) = self.wevt_cache.clone() {
-                            let iter = parser.serialized_records(move |record_res| {
-                                record_res.and_then(|record| {
-                                    record.into_json_stream_with_wevt_cache(cache.as_ref())
-                                })
-                            });
-                            for record in iter {
-                                self.dump_record(record)?
-                            }
-                        } else {
-                            for record in parser.records_json_stream() {
-                                self.dump_record(record)?
-                            }
-                        }
-
-                        #[cfg(not(feature = "wevt_templates"))]
-                        for record in parser.records_json_stream() {
-                            self.dump_record(record)?
-                        }
-                    }
-                    JsonParserKind::Legacy => {
-                        #[cfg(feature = "wevt_templates")]
-                        if let Some(cache) = self.wevt_cache.clone() {
-                            let iter = parser.serialized_records(move |record_res| {
-                                record_res.and_then(|record| {
-                                    record.into_json_with_wevt_cache(cache.as_ref())
-                                })
-                            });
-                            for record in iter {
-                                self.dump_record(record)?
-                            }
-                        } else {
-                            for record in parser.records_json() {
-                                self.dump_record(record)?
-                            }
-                        }
-
-                        #[cfg(not(feature = "wevt_templates"))]
-                        for record in parser.records_json() {
-                            self.dump_record(record)?
-                        }
-                    }
-                };
+                for record in parser.records_json() {
+                    self.dump_record(record)?
+                }
             }
         };
 
@@ -518,13 +446,6 @@ fn main() -> Result<()> {
                      "json"  - prints JSON output.
                      "jsonl" - (jsonlines) same as json with --no-indent --dont-show-record-number
                 "#)),
-        )
-        .arg(
-            Arg::new("json-parser")
-                .long("json-parser")
-                .value_parser(["legacy", "streaming"])
-                .default_value("streaming")
-                .help("Select JSON parser implementation: legacy (tree-based) or streaming"),
         )
         .arg(
             Arg::new("output-target")

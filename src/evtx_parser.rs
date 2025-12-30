@@ -137,17 +137,25 @@ pub struct ParserSettings {
     indent: bool,
     /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
     ansi_codec: EncodingRef,
+    /// Optional offline WEVT template cache used as a fallback when embedded EVTX templates
+    /// are missing/corrupt (common in carved/dirty logs).
+    #[cfg(feature = "wevt_templates")]
+    wevt_cache: Option<Arc<crate::wevt_templates::WevtCache>>,
 }
 
 impl Debug for ParserSettings {
     fn fmt(&self, f: &mut fmt::Formatter) -> ::std::fmt::Result {
-        f.debug_struct("ParserSettings")
-            .field("num_threads", &self.num_threads)
+        let mut ds = f.debug_struct("ParserSettings");
+        ds.field("num_threads", &self.num_threads)
             .field("validate_checksums", &self.validate_checksums)
             .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
-            .field("ansi_codec", &self.ansi_codec.name())
-            .finish()
+            .field("ansi_codec", &self.ansi_codec.name());
+
+        #[cfg(feature = "wevt_templates")]
+        ds.field("wevt_cache", &self.wevt_cache.is_some());
+
+        ds.finish()
     }
 }
 
@@ -169,6 +177,8 @@ impl Default for ParserSettings {
             separate_json_attributes: false,
             indent: true,
             ansi_codec: WINDOWS_1252,
+            #[cfg(feature = "wevt_templates")]
+            wevt_cache: None,
         }
     }
 }
@@ -207,6 +217,13 @@ impl ParserSettings {
         self
     }
 
+    /// Attach an offline WEVT template cache used as a fallback during parsing.
+    #[cfg(feature = "wevt_templates")]
+    pub fn wevt_cache(mut self, cache: Option<Arc<crate::wevt_templates::WevtCache>>) -> Self {
+        self.wevt_cache = cache;
+        self
+    }
+
     pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
         self.validate_checksums = validate_checksums;
 
@@ -228,6 +245,11 @@ impl ParserSettings {
     /// Gets the current ansi codec
     pub fn get_ansi_codec(&self) -> EncodingRef {
         self.ansi_codec
+    }
+
+    #[cfg(feature = "wevt_templates")]
+    pub(crate) fn get_wevt_cache(&self) -> Option<&Arc<crate::wevt_templates::WevtCache>> {
+        self.wevt_cache.as_ref()
     }
 
     pub fn should_separate_json_attributes(&self) -> bool {
@@ -517,14 +539,6 @@ impl<T: ReadSeek> EvtxParser<T> {
     ) -> impl Iterator<Item = Result<SerializedEvtxRecord<serde_json::Value>>> + '_ {
         self.serialized_records(|record| record.and_then(|record| record.into_json_value()))
     }
-
-    /// Return an iterator over all the records.
-    /// Records will be JSON-formatted using a streaming writer that skips full JSON value construction.
-    pub fn records_json_stream(
-        &mut self,
-    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
-        self.serialized_records(|record| record.and_then(|record| record.into_json_stream()))
-    }
 }
 
 pub struct IterChunks<'c, T: ReadSeek> {
@@ -572,18 +586,13 @@ mod tests {
 
     use super::*;
     use crate::ensure_env_logger_initialized;
-    use anyhow::anyhow;
 
-    fn process_90_records(buffer: &'static [u8]) -> anyhow::Result<()> {
+    fn process_90_records(buffer: &'static [u8]) -> crate::err::Result<()> {
         let mut parser = EvtxParser::from_buffer(buffer.to_vec())?;
 
         for (i, record) in parser.records().take(90).enumerate() {
-            match record {
-                Ok(r) => {
-                    assert_eq!(r.event_record_id, i as u64 + 1);
-                }
-                Err(e) => return Err(anyhow!("Error while reading record {}, {:?}", i, e)),
-            }
+            let r = record?;
+            assert_eq!(r.event_record_id, i as u64 + 1);
         }
 
         Ok(())
@@ -591,7 +600,7 @@ mod tests {
 
     // For clion profiler
     #[test]
-    fn test_process_single_chunk() -> anyhow::Result<()> {
+    fn test_process_single_chunk() -> crate::err::Result<()> {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
         process_90_records(evtx_file)?;

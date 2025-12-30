@@ -25,3 +25,7 @@ samples_local/
 # Local vendor checkouts (for format research / patching upstream).
 external/
 perf/
+
+# Large local benchmark/sample corpora (do not commit)
+benchmark_parsers/
+samples/EVTX-ATTACK-SAMPLES/
