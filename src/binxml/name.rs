@@ -6,7 +6,6 @@ use crate::utils::ByteCursor;
 
 use std::{fmt::Formatter, io::Cursor};
 
-use quick_xml::events::{BytesEnd, BytesStart};
 use std::fmt;
 
 const WEVT_INLINE_NAME_HASH_MULTIPLIER: u32 = 65599;
@@ -181,17 +180,5 @@ impl BinXmlName {
 
     pub fn as_str(&self) -> &str {
         &self.str
-    }
-}
-
-impl<'a> From<&'a BinXmlName> for quick_xml::events::BytesStart<'a> {
-    fn from(name: &'a BinXmlName) -> Self {
-        BytesStart::new(name.as_str())
-    }
-}
-
-impl<'a> From<&'a BinXmlName> for quick_xml::events::BytesEnd<'a> {
-    fn from(name: &'a BinXmlName) -> Self {
-        BytesEnd::new(name.as_str())
     }
 }

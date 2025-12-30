@@ -6,7 +6,7 @@ repository = "https://github.com/omerbenamram/EVTX"
 license = "MIT/Apache-2.0"
 readme = "README.md"
 
-version = "0.9.0"
+version = "0.10.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 
@@ -17,11 +17,9 @@ bitflags = "2"
 crc32fast = "1"
 encoding = "0.2.33"
 byteorder = "1"
-quick-xml = "^0.37"
 thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
-hashbrown = { version = "^0.15", features = ["inline-more"] }
 ahash = "0.8"
 # Optional: PE parsing for `evtx_dump extract-wevt-templates` resource extraction.
 goblin = { version = "0.10", optional = true }
@@ -34,7 +32,7 @@ rayon = { version = "1", optional = true }
 anyhow = { version = "1", optional = true }
 simplelog = { version = "0.12.0", optional = true }
 clap = { version = "4", optional = true }
-dialoguer = { version = "0.11", optional = true }
+dialoguer = { version = "0.12", optional = true }
 indoc = { version = "2", optional = true }
 tempfile = { version = "3.3.0", optional = true }
 
@@ -47,7 +45,7 @@ bumpalo = { version = "3.19.1", features = ["collections"] }
 # `utf16-simd` is designed to be usable as a standalone crate. We opt into its
 # `sonic-writeext` feature here to integrate with `sonic-rs::writer::WriteExt`
 # in the hot-path JSON/XML renderers.
-utf16-simd = { path = "utf16-simd", features = ["sonic-writeext"] }
+utf16-simd = { version = "0.1.0", path = "utf16-simd", features = ["sonic-writeext"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
@@ -70,7 +68,7 @@ bench = []
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1.2.1"
-criterion = "0.5.1"
+criterion = "0.8.1"
 assert_cmd = "2.1.1"
 predicates = "3.1"
 env_logger = "0.11.0"

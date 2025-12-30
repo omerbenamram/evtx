@@ -199,7 +199,7 @@ This last “apply substitutions” step is not yet wired as a single CLI comman
   - `src/wevt_templates/manifest/error.rs` (parse error types)\n
 - BinXML dialect support:\n
   - `src/binxml/name.rs` (WEVT inline-name parsing + strict NameHash)\n
-  - `src/binxml/deserializer.rs` (threading `BinXmlNameEncoding` through token parsing)\n
+  - `src/binxml/tokens.rs` (threading `BinXmlNameEncoding` through token parsing)\n
 
 ## Testing strategy
 

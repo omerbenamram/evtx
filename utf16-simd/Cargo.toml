@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "SIMD-accelerated UTF-16/UTF-16LE -> UTF-8 escaping (JSON/XML)"
+repository = "https://github.com/omerbenamram/evtx"
+homepage = "https://github.com/omerbenamram/evtx"
 readme = "README.md"
 
 [dependencies]
