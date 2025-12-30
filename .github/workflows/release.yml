@@ -4,15 +4,14 @@ on:
   push:
     # Enable when testing release infrastructure on a branch.
     # branches:
-      # - gh-actions
+    # - gh-actions
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Override version - useful to test workflows'
+        description: "Override version - useful to test workflows"
         required: true
-
 
 jobs:
   create-release:
@@ -96,7 +95,15 @@ jobs:
 
     strategy:
       matrix:
-        build: [linux, linux-aarch64, linux-static, macos-aarch64, macos-x86, windows]
+        build:
+          [
+            linux,
+            linux-aarch64,
+            linux-static,
+            macos-aarch64,
+            macos-x86,
+            windows,
+          ]
         include:
           - build: linux
             os: ubuntu-20.04
@@ -193,17 +200,17 @@ jobs:
 
       - name: Build release binary (linux MUSL)
         if: matrix.build == 'linux-static'
-        run: cargo build --target ${{ matrix.target }} --release
+        run: cargo build --target ${{ matrix.target }} --release --features wevt_templates
 
       - name: Build release binary (Windows)
         if: matrix.build == 'windows'
-        run: cargo build --target ${{ matrix.target }} --release --features fast-alloc
+        run: cargo build --target ${{ matrix.target }} --release --features fast-alloc,wevt_templates
 
       - name: Build release binary (Linux AARCH64)
         if: matrix.build == 'linux-aarch64'
         run: |
           cargo install cargo-zigbuild
-          cargo zigbuild --target ${{ matrix.target }} --release --features fast-alloc
+          cargo zigbuild --target ${{ matrix.target }} --release --features fast-alloc,wevt_templates
 
       - name: Build archive
         shell: bash

@@ -36,7 +36,7 @@ echo "Using llvm-profdata at: $(which llvm-profdata)"
 
 echo "Building binary for instrumented run"
 RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
-    cargo build --release --bin evtx_dump --target $TARGET
+    cargo build --release --bin evtx_dump --target $TARGET --features wevt_templates
 
 echo "Running instrumented binary"
 find samples -name "*.evtx" -print0 | while IFS= read -r -d '' i; do
@@ -51,6 +51,6 @@ llvm-profdata merge -o /tmp/pgo-data/merged.profdata /tmp/pgo-data
 
 echo "Building binary with profile data"
 RUSTFLAGS="-Cprofile-use=/tmp/pgo-data/merged.profdata" \
-    cargo build --release --bin evtx_dump --target $TARGET --features fast-alloc
+    cargo build --release --bin evtx_dump --target $TARGET --features fast-alloc,wevt_templates
 
 echo "PGO-optimized binary written to: ./target/$TARGET/release/evtx_dump"
