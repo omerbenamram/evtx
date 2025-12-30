@@ -64,20 +64,6 @@ impl<'a> ByteCursor<'a> {
     }
 
     #[inline]
-    pub(crate) fn advance(&mut self, n: usize, what: &'static str) -> DeserializationResult<()> {
-        let new_pos = self
-            .pos
-            .checked_add(n)
-            .ok_or_else(|| DeserializationError::Truncated {
-                what,
-                offset: self.pos as u64,
-                need: n,
-                have: self.buf.len().saturating_sub(self.pos),
-            })?;
-        self.set_pos(new_pos, what)
-    }
-
-    #[inline]
     pub(crate) fn take_bytes(
         &mut self,
         len: usize,
@@ -150,35 +136,6 @@ impl<'a> ByteCursor<'a> {
         let v = bytes::read_u64_le_r(self.buf, self.pos, what)?;
         self.pos += 8;
         Ok(v)
-    }
-
-    /// Read a sized array encoded as "N bytes of consecutive elements".
-    ///
-    /// This matches the historical behavior of the old `try_read_sized_array` helpers:
-    /// we stop when we've *consumed at least* `size_bytes` bytes since the start of this call.
-    ///
-    /// `elem_bytes` is only used for capacity preallocation.
-    pub(crate) fn read_sized_vec<T>(
-        &mut self,
-        size_bytes: u16,
-        elem_bytes: usize,
-        mut read_one: impl FnMut(&mut Self) -> DeserializationResult<T>,
-    ) -> DeserializationResult<Vec<T>> {
-        let size_usize = usize::from(size_bytes);
-        if size_usize == 0 {
-            return Ok(Vec::new());
-        }
-
-        let start = self.pos;
-        let mut out = Vec::with_capacity(size_usize / elem_bytes.max(1));
-        loop {
-            let cur = self.pos;
-            if (cur - start) >= size_usize {
-                break;
-            }
-            out.push(read_one(self)?);
-        }
-        Ok(out)
     }
 
     pub(crate) fn read_sid_ref(&mut self) -> DeserializationResult<SidRef<'a>> {
@@ -268,57 +225,6 @@ impl<'a> ByteCursor<'a> {
             parse_one(off as u64, chunk)
         })?;
 
-        Ok(out)
-    }
-
-    /// Read a sized array encoded as `size_bytes` bytes of consecutive **fixed-width** elements,
-    /// with strict alignment validation.
-    ///
-    /// - Validates `size_bytes % ELEM_BYTES == 0`
-    /// - Reads *exactly* `size_bytes / ELEM_BYTES` elements
-    /// - Uses a single bounds check (`take_bytes`) and then parses by iterating `chunks_exact`
-    ///
-    /// The parse closure also receives the **absolute byte offset** (within this cursor’s backing
-    /// slice) of the current element, which is useful for precise error reporting.
-    pub(crate) fn read_sized_vec_aligned<const ELEM_BYTES: usize, T>(
-        &mut self,
-        size_bytes: u16,
-        what: &'static str,
-        mut parse_one: impl FnMut(u64, &[u8; ELEM_BYTES]) -> DeserializationResult<T>,
-    ) -> DeserializationResult<Vec<T>> {
-        let size_usize = usize::from(size_bytes);
-        if size_usize == 0 {
-            return Ok(Vec::new());
-        }
-        if ELEM_BYTES == 0 {
-            return Err(DeserializationError::Truncated {
-                what,
-                offset: self.pos as u64,
-                need: size_usize,
-                have: self.buf.len().saturating_sub(self.pos),
-            });
-        }
-        if (size_usize % ELEM_BYTES) != 0 {
-            return Err(DeserializationError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "{what}: misaligned sized array (size_bytes={size_usize}, elem_bytes={ELEM_BYTES}) at offset {}",
-                    self.pos
-                ),
-            )));
-        }
-
-        let start_pos = self.pos;
-        let bytes = self.take_bytes(size_usize, what)?;
-        let count = size_usize / ELEM_BYTES;
-        let mut out = Vec::with_capacity(count);
-        for (i, chunk) in bytes.chunks_exact(ELEM_BYTES).enumerate() {
-            let off = start_pos + i * ELEM_BYTES;
-            let arr: &[u8; ELEM_BYTES] = chunk
-                .try_into()
-                .expect("chunks_exact yields slices of the requested size");
-            out.push(parse_one(off as u64, arr)?);
-        }
         Ok(out)
     }
 

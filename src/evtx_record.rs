@@ -1,11 +1,8 @@
-use crate::binxml::deserializer::BinXmlDeserializer;
 use crate::binxml::ir_json::render_json_record;
 use crate::binxml::ir_xml::render_xml_record;
-use crate::err::{
-    DeserializationError, DeserializationResult, EvtxError, Result, SerializationError,
-};
-use crate::model::deserialized::BinXMLDeserializedTokens;
+use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
 use crate::model::ir::IrTree;
+use crate::utils::ByteCursor;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
 use crate::{EvtxChunk, ParserSettings};
@@ -92,7 +89,7 @@ impl EvtxRecordHeader {
 }
 
 impl<'a> EvtxRecord<'a> {
-    /// Consumes the record, returning a `EvtxRecordWithJsonValue` with the `serde_json::Value` data.
+    /// Consumes the record and returns the rendered JSON as a `serde_json::Value`.
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;
@@ -106,28 +103,8 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
-    /// Consumes the record and parse it, producing a JSON serialized record.
+    /// Consumes the record and renders it as compact JSON (streaming IR renderer).
     pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
-        let indent = self.settings.should_indent();
-        let record_with_json = self.into_json_stream()?;
-
-        if !indent {
-            return Ok(record_with_json);
-        }
-
-        let value: serde_json::Value =
-            serde_json::from_str(&record_with_json.data).map_err(SerializationError::from)?;
-        let data = serde_json::to_string_pretty(&value).map_err(SerializationError::from)?;
-
-        Ok(SerializedEvtxRecord {
-            event_record_id: record_with_json.event_record_id,
-            timestamp: record_with_json.timestamp,
-            data,
-        })
-    }
-
-    /// Consumes the record and streams JSON directly into a buffer using the IR tree renderer.
-    pub fn into_json_stream(self) -> Result<SerializedEvtxRecord<String>> {
         // Estimate buffer size based on BinXML size
         let capacity_hint = self.binxml_size as usize * 2;
         let buf = Vec::with_capacity(capacity_hint);
@@ -176,32 +153,123 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
-    /// Rebuild the flattened token stream on demand (legacy tooling only).
-    pub fn tokens(&self) -> Result<Vec<BinXMLDeserializedTokens<'a>>> {
-        let deserializer = BinXmlDeserializer::init(
-            self.chunk.data,
-            self.binxml_offset,
-            Some(self.chunk),
-            false,
-            self.settings.get_ansi_codec(),
-        );
+    /// Parse all `TemplateInstance` substitution arrays from this record.
+    ///
+    /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
+    /// values without building a legacy token vector.
+    pub fn template_instances(&self) -> Result<Vec<crate::binxml::BinXmlTemplateValues<'a>>> {
+        use crate::binxml::name::BinXmlNameEncoding;
+        use crate::binxml::tokens::{
+            read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
+            read_open_start_element_cursor, read_processing_instruction_data_cursor,
+            read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
+            read_template_values_cursor,
+        };
 
-        let iter = deserializer
-            .iter_tokens(Some(self.binxml_size))
-            .map_err(|e| EvtxError::FailedToParseRecord {
-                record_id: self.event_record_id,
-                source: Box::new(EvtxError::DeserializationError(e)),
-            })?;
+        let ansi_codec = self.settings.get_ansi_codec();
+        let mut out: Vec<crate::binxml::BinXmlTemplateValues<'a>> = Vec::new();
 
-        let mut tokens = Vec::new();
-        for token in iter {
-            let token = token.map_err(|e| EvtxError::FailedToParseRecord {
-                source: Box::new(EvtxError::DeserializationError(e)),
-                record_id: self.event_record_id,
-            })?;
-            tokens.push(token);
+        let mut cursor = ByteCursor::with_pos(self.chunk.data, self.binxml_offset as usize)?;
+        let mut data_read: u32 = 0;
+        let data_size = self.binxml_size;
+        let mut eof = false;
+
+        while !eof && data_read < data_size {
+            let start = cursor.position();
+            let token_byte = cursor.u8()?;
+
+            match token_byte {
+                0x00 => {
+                    eof = true;
+                }
+                0x0c => {
+                    let template = read_template_values_cursor(
+                        &mut cursor,
+                        Some(self.chunk),
+                        ansi_codec,
+                        &self.chunk.arena,
+                    )?;
+                    out.push(template);
+                }
+                0x01 => {
+                    let _ = read_open_start_element_cursor(
+                        &mut cursor,
+                        false,
+                        false,
+                        BinXmlNameEncoding::Offset,
+                    )?;
+                }
+                0x41 => {
+                    let _ = read_open_start_element_cursor(
+                        &mut cursor,
+                        true,
+                        false,
+                        BinXmlNameEncoding::Offset,
+                    )?;
+                }
+                0x02..=0x04 => {
+                    // Structural tokens; no payload.
+                }
+                0x05 | 0x45 => {
+                    let _ = crate::binxml::value_variant::BinXmlValue::from_binxml_cursor_in(
+                        &mut cursor,
+                        Some(self.chunk),
+                        None,
+                        ansi_codec,
+                        &self.chunk.arena,
+                    )?;
+                }
+                0x06 | 0x46 => {
+                    let _ = read_attribute_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
+                }
+                0x09 | 0x49 => {
+                    let _ = read_entity_ref_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
+                }
+                0x0a => {
+                    let _ = read_processing_instruction_target_cursor(
+                        &mut cursor,
+                        BinXmlNameEncoding::Offset,
+                    )?;
+                }
+                0x0b => {
+                    let _ = read_processing_instruction_data_cursor(&mut cursor)?;
+                }
+                0x0d => {
+                    let _ = read_substitution_descriptor_cursor(&mut cursor, false)?;
+                }
+                0x0e => {
+                    let _ = read_substitution_descriptor_cursor(&mut cursor, true)?;
+                }
+                0x0f => {
+                    let _ = read_fragment_header_cursor(&mut cursor)?;
+                }
+                0x07 | 0x47 => {
+                    return Err(DeserializationError::UnimplementedToken {
+                        name: "CDataSection",
+                        offset: cursor.position(),
+                    }
+                    .into());
+                }
+                0x08 | 0x48 => {
+                    return Err(DeserializationError::UnimplementedToken {
+                        name: "CharReference",
+                        offset: cursor.position(),
+                    }
+                    .into());
+                }
+                _ => {
+                    return Err(DeserializationError::InvalidToken {
+                        value: token_byte,
+                        offset: cursor.position(),
+                    }
+                    .into());
+                }
+            }
+
+            let total_read = cursor.position() - start;
+            data_read = data_read.saturating_add(total_read as u32);
         }
 
-        Ok(tokens)
+        Ok(out)
     }
 }

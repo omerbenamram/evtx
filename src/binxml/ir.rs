@@ -64,8 +64,7 @@
 //! ## Parser implementation notes
 //!
 //! The production builder parses BinXML bytes directly (cursor-based) to avoid iterator
-//! overhead and intermediate token allocations. For benchmarks we keep a token-iterator path
-//! that consumes `BinXmlDeserializer` output.
+//! overhead and intermediate token allocations.
 
 use crate::EvtxChunk;
 use crate::binxml::array_expand::{
@@ -73,6 +72,8 @@ use crate::binxml::array_expand::{
 };
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::tokens::{
+    BinXMLAttribute, BinXMLOpenStartElement, BinXMLProcessingInstructionTarget,
+    BinXmlEntityReference, BinXmlTemplateValues, TemplateSubstitutionDescriptor,
     read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
     read_open_start_element_cursor, read_processing_instruction_data_cursor,
     read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
@@ -80,12 +81,6 @@ use crate::binxml::tokens::{
 };
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{DeserializationError, EvtxError, Result};
-#[cfg(feature = "bench")]
-use crate::model::deserialized::BinXMLDeserializedTokens;
-use crate::model::deserialized::{
-    BinXMLAttribute, BinXMLOpenStartElement, BinXMLProcessingInstructionTarget,
-    BinXmlEntityReference, BinXmlTemplateValues, TemplateSubstitutionDescriptor,
-};
 use crate::model::ir::{
     Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Placeholder, TemplateValue, Text,
     is_optional_empty_template_value,
@@ -93,6 +88,7 @@ use crate::model::ir::{
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use bumpalo::Bump;
+use encoding::EncodingRef;
 use std::rc::Rc;
 
 /// Size (in bytes) of the "name link" header that precedes an inline string table entry.
@@ -231,31 +227,95 @@ impl<'a> IrTemplateCache<'a> {
             return Ok(Rc::clone(existing));
         }
 
-        let data_start = template_def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
-        let data_end = data_start.checked_add(header.data_size as usize).ok_or(
-            EvtxError::FailedToCreateRecordModel("template data size overflow"),
-        )?;
-        if data_end > chunk.data.len() {
-            return Err(EvtxError::FailedToCreateRecordModel(
-                "template data out of bounds",
-            ));
-        }
+        let parse_from_chunk = (|| -> Result<Rc<IrTree<'a>>> {
+            let data_start = template_def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
+            let data_end = data_start.checked_add(header.data_size as usize).ok_or(
+                EvtxError::FailedToCreateRecordModel("template data size overflow"),
+            )?;
+            if data_end > chunk.data.len() {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "template data out of bounds",
+                ));
+            }
 
-        let mut arena =
-            IrArena::with_capacity_in(estimate_node_capacity(header.data_size), self.arena);
-        let bytes = &chunk.data[data_start..data_end];
-        let root = build_tree_from_binxml_bytes_direct_with_mode(
-            bytes,
-            chunk,
-            self,
-            self.arena,
-            &mut arena,
-            BuildMode::TemplateDefinition,
-            true,
-        )?;
-        let template = Rc::new(IrTree::new(arena, root));
-        self.templates.insert(header.guid, Rc::clone(&template));
-        Ok(template)
+            let mut arena =
+                IrArena::with_capacity_in(estimate_node_capacity(header.data_size), self.arena);
+            let bytes = &chunk.data[data_start..data_end];
+            let bump = self.arena;
+            let ansi_codec = chunk.settings.get_ansi_codec();
+            let root = build_tree_from_binxml_bytes_direct_with_mode(
+                BuildTreeFromBinXmlBytesDirectArgs {
+                    bytes,
+                    data: chunk.data,
+                    chunk: Some(chunk),
+                    cache: self,
+                    ansi_codec,
+                    bump,
+                    arena: &mut arena,
+                    mode: BuildMode::TemplateDefinition,
+                    has_dep_id: true,
+                    name_encoding: BinXmlNameEncoding::Offset,
+                },
+            )?;
+            let template = Rc::new(IrTree::new(arena, root));
+            self.templates.insert(header.guid, Rc::clone(&template));
+            Ok(template)
+        })();
+
+        match parse_from_chunk {
+            Ok(t) => Ok(t),
+            Err(parse_err) => {
+                // If the embedded chunk template is corrupt/missing, optionally fall back to an
+                // offline WEVT cache (provider resources) when configured.
+                #[cfg(feature = "wevt_templates")]
+                {
+                    if let Some(cache) = chunk.settings.get_wevt_cache() {
+                        let guid = match winstructs::guid::Guid::from_buffer(&header.guid) {
+                            Ok(g) => g,
+                            Err(_) => return Err(parse_err),
+                        };
+
+                        let binxml = match cache
+                            .load_temp_binxml_fragment_in(&guid.to_string(), self.arena)
+                        {
+                            Ok(b) => b,
+                            Err(_) => return Err(parse_err),
+                        };
+
+                        let mut arena = IrArena::with_capacity_in(
+                            estimate_node_capacity(binxml.len() as u32),
+                            self.arena,
+                        );
+
+                        let bump = self.arena;
+                        let ansi_codec = chunk.settings.get_ansi_codec();
+                        let root = match build_tree_from_binxml_bytes_direct_with_mode(
+                            BuildTreeFromBinXmlBytesDirectArgs {
+                                bytes: binxml,
+                                data: binxml,
+                                chunk: None,
+                                cache: self,
+                                ansi_codec,
+                                bump,
+                                arena: &mut arena,
+                                mode: BuildMode::TemplateDefinition,
+                                has_dep_id: true,
+                                name_encoding: BinXmlNameEncoding::WevtInline,
+                            },
+                        ) {
+                            Ok(r) => r,
+                            Err(_) => return Err(parse_err),
+                        };
+
+                        let template = Rc::new(IrTree::new(arena, root));
+                        self.templates.insert(header.guid, Rc::clone(&template));
+                        return Ok(template);
+                    }
+                }
+
+                Err(parse_err)
+            }
+        }
     }
 }
 
@@ -281,102 +341,49 @@ enum BuildMode {
 /// - Array substitutions can cause a single template element to expand into multiple elements;
 ///   this happens during cloning/instantiation, not during streaming token consumption.
 struct TreeBuilder<'a, 'cache, 'arena> {
-    chunk: &'a EvtxChunk<'a>,
+    /// Optional EVTX chunk context (needed for Offset-name resolution and some value parsing).
+    chunk: Option<&'a EvtxChunk<'a>>,
+    /// Base buffer that BinXML offsets are relative to for this parse.
+    ///
+    /// - For normal record parsing this is `chunk.data`.
+    /// - For WEVT_TEMPLATE parsing this is the BinXML fragment slice (starts at offset 0).
+    data: &'a [u8],
     cache: &'cache mut IrTemplateCache<'a>,
     mode: BuildMode,
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
+    ansi_codec: EncodingRef,
+    name_encoding: BinXmlNameEncoding,
     stack: Vec<ElementId>,
     current_element: Option<ElementBuilder<'a>>,
     root: Option<ElementId>,
 }
 
+struct TreeBuilderInit<'a, 'cache, 'arena> {
+    chunk: Option<&'a EvtxChunk<'a>>,
+    data: &'a [u8],
+    cache: &'cache mut IrTemplateCache<'a>,
+    mode: BuildMode,
+    ansi_codec: EncodingRef,
+    name_encoding: BinXmlNameEncoding,
+    bump: &'a Bump,
+    arena: &'arena mut IrArena<'a>,
+}
+
 impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
-    fn new(
-        chunk: &'a EvtxChunk<'a>,
-        cache: &'cache mut IrTemplateCache<'a>,
-        mode: BuildMode,
-        bump: &'a Bump,
-        arena: &'arena mut IrArena<'a>,
-    ) -> Self {
+    fn new(init: TreeBuilderInit<'a, 'cache, 'arena>) -> Self {
         TreeBuilder {
-            chunk,
-            cache,
-            mode,
-            bump,
-            arena,
+            chunk: init.chunk,
+            data: init.data,
+            cache: init.cache,
+            mode: init.mode,
+            bump: init.bump,
+            arena: init.arena,
+            ansi_codec: init.ansi_codec,
+            name_encoding: init.name_encoding,
             stack: Vec::new(),
             current_element: None,
             root: None,
-        }
-    }
-
-    #[cfg(feature = "bench")]
-    fn process_token(&mut self, token: BinXMLDeserializedTokens<'a>) -> Result<()> {
-        match token {
-            BinXMLDeserializedTokens::FragmentHeader(_)
-            | BinXMLDeserializedTokens::AttributeList
-            | BinXMLDeserializedTokens::StartOfStream
-            | BinXMLDeserializedTokens::EndOfStream => Ok(()),
-            BinXMLDeserializedTokens::TemplateInstance(template) => {
-                if self.mode != BuildMode::Record {
-                    return Err(EvtxError::FailedToCreateRecordModel(
-                        "template instance inside template definition",
-                    ));
-                }
-                if self.current_element.is_some() {
-                    return Err(EvtxError::FailedToCreateRecordModel(
-                        "template instance inside attribute value",
-                    ));
-                }
-                let mut values = Vec::with_capacity(template.substitution_array.len());
-                for token in template.substitution_array {
-                    match token {
-                        BinXMLDeserializedTokens::Value(v) => values.push(v),
-                        _ => {
-                            return Err(EvtxError::FailedToCreateRecordModel(
-                                "template substitution value was not a value token",
-                            ));
-                        }
-                    }
-                }
-
-                let element_id = self.cache.instantiate_template_direct_values(
-                    BinXmlTemplateValues {
-                        template_id: template.template_id,
-                        template_def_offset: template.template_def_offset,
-                        template_guid: template.template_guid,
-                        values,
-                    },
-                    self.chunk,
-                    self.arena,
-                    self.bump,
-                )?;
-                attach_element(
-                    self.arena,
-                    &self.stack,
-                    &mut self.root,
-                    element_id,
-                    self.mode,
-                )
-            }
-            BinXMLDeserializedTokens::Substitution(substitution) => {
-                self.process_substitution(substitution)
-            }
-            BinXMLDeserializedTokens::OpenStartElement(elem) => {
-                self.process_open_start_element(elem)
-            }
-            BinXMLDeserializedTokens::Attribute(attr) => self.process_attribute(attr),
-            BinXMLDeserializedTokens::Value(value) => self.process_value(value),
-            BinXMLDeserializedTokens::EntityRef(entity) => self.process_entity_ref(entity),
-            BinXMLDeserializedTokens::PITarget(name) => self.process_pi_target(name),
-            BinXMLDeserializedTokens::PIData(data) => self.process_pi_data(data),
-            BinXMLDeserializedTokens::CloseStartElement => self.process_close_start_element(),
-            BinXMLDeserializedTokens::CloseEmptyElement => self.process_close_empty_element(),
-            BinXMLDeserializedTokens::CloseElement => self.process_close_element(),
-            BinXMLDeserializedTokens::CDATASection | BinXMLDeserializedTokens::CharRef => Err(
-                EvtxError::FailedToCreateRecordModel("Unimplemented - CDATA/CharRef"),
-            ),
         }
     }
 
@@ -386,28 +393,29 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                 "open start - Bad parser state",
             ));
         }
-        let name = Name::new(expand_string_ref(&elem.name, self.chunk, self.bump)?);
+        let name = Name::new(self.expand_name_ref(&elem.name)?);
         self.current_element = Some(ElementBuilder::new(name, self.bump));
         Ok(())
     }
 
     fn process_attribute(&mut self, attr: BinXMLAttribute) -> Result<()> {
+        // Compute name before borrowing `current_element` mutably (avoid borrow conflict).
+        let name = Name::new(self.expand_name_ref(&attr.name)?);
         let builder = self
             .current_element
             .as_mut()
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("attribute - Bad parser state"))?;
-        let name = Name::new(expand_string_ref(&attr.name, self.chunk, self.bump)?);
         builder.start_attribute(name);
         Ok(())
     }
 
     fn process_entity_ref(&mut self, entity: BinXmlEntityReference) -> Result<()> {
-        let name = Name::new(expand_string_ref(&entity.name, self.chunk, self.bump)?);
+        let name = Name::new(self.expand_name_ref(&entity.name)?);
         self.push_node(Node::EntityRef(name))
     }
 
     fn process_pi_target(&mut self, name: BinXMLProcessingInstructionTarget) -> Result<()> {
-        let target = Name::new(expand_string_ref(&name.name, self.chunk, self.bump)?);
+        let target = Name::new(self.expand_name_ref(&name.name)?);
         self.push_node(Node::PITarget(target))
     }
 
@@ -493,13 +501,18 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                     return Ok(());
                 }
                 let element_id = build_tree_from_binxml_bytes_direct_with_mode(
-                    bytes,
-                    self.chunk,
-                    self.cache,
-                    self.bump,
-                    self.arena,
-                    BuildMode::Record,
-                    false,
+                    BuildTreeFromBinXmlBytesDirectArgs {
+                        bytes,
+                        data: self.data,
+                        chunk: self.chunk,
+                        cache: &mut *self.cache,
+                        ansi_codec: self.ansi_codec,
+                        bump: self.bump,
+                        arena: &mut *self.arena,
+                        mode: BuildMode::Record,
+                        has_dep_id: false,
+                        name_encoding: self.name_encoding,
+                    },
                 )?;
                 attach_element(
                     self.arena,
@@ -536,9 +549,12 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         }
         // Template instances are *not* represented as a distinct IR node. We expand them into a
         // regular element tree and attach that tree at the current parse location.
+        let chunk = self.chunk.ok_or_else(|| {
+            EvtxError::FailedToCreateRecordModel("template instance requires an EVTX chunk context")
+        })?;
         let element_id = self
             .cache
-            .instantiate_template_direct_values(template, self.chunk, self.arena, bump)?;
+            .instantiate_template_direct_values(template, chunk, self.arena, bump)?;
         attach_element(
             self.arena,
             &self.stack,
@@ -546,6 +562,22 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             element_id,
             self.mode,
         )
+    }
+
+    fn expand_name_ref(&self, name_ref: &BinXmlNameRef) -> Result<&'a str> {
+        match self.name_encoding {
+            BinXmlNameEncoding::Offset => {
+                let chunk = self.chunk.ok_or_else(|| {
+                    EvtxError::FailedToCreateRecordModel(
+                        "Offset name encoding requires an EVTX chunk context",
+                    )
+                })?;
+                expand_string_ref(name_ref, chunk, self.bump)
+            }
+            BinXmlNameEncoding::WevtInline => {
+                expand_wevt_inline_name_ref(self.data, name_ref, self.bump)
+            }
+        }
     }
 
     fn push_node(&mut self, node: Node<'a>) -> Result<()> {
@@ -613,25 +645,50 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
 /// `mode` controls whether substitutions become placeholders (template definitions) or are
 /// rejected (records). `has_dep_id` controls parsing of element start tokens for streams that
 /// include dependency IDs.
-fn build_tree_from_binxml_bytes_direct_with_mode<'a>(
+struct BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena> {
     bytes: &'a [u8],
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
+    data: &'a [u8],
+    chunk: Option<&'a EvtxChunk<'a>>,
+    cache: &'cache mut IrTemplateCache<'a>,
+    ansi_codec: EncodingRef,
     bump: &'a Bump,
-    arena: &mut IrArena<'a>,
+    arena: &'arena mut IrArena<'a>,
     mode: BuildMode,
     has_dep_id: bool,
+    name_encoding: BinXmlNameEncoding,
+}
+
+fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
+    args: BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena>,
 ) -> Result<ElementId> {
-    let offset = binxml_slice_offset(chunk, bytes)?;
-    let mut cursor = ByteCursor::with_pos(chunk.data, offset as usize)?;
+    let BuildTreeFromBinXmlBytesDirectArgs {
+        bytes,
+        data,
+        chunk,
+        cache,
+        ansi_codec,
+        bump,
+        arena,
+        mode,
+        has_dep_id,
+        name_encoding,
+    } = args;
+    let offset = binxml_slice_offset_in(data, bytes)?;
+    let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
     let mut data_read: u32 = 0;
     let data_size = bytes.len() as u32;
     let mut eof = false;
 
-    let ansi_codec = chunk.settings.get_ansi_codec();
-    let name_encoding = BinXmlNameEncoding::Offset;
-
-    let mut builder = TreeBuilder::new(chunk, cache, mode, bump, arena);
+    let mut builder = TreeBuilder::new(TreeBuilderInit {
+        chunk,
+        data,
+        cache,
+        mode,
+        ansi_codec,
+        name_encoding,
+        bump,
+        arena,
+    });
 
     while !eof && data_read < data_size {
         let start = cursor.position();
@@ -642,8 +699,7 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a>(
                 eof = true;
             }
             0x0c => {
-                let template =
-                    read_template_values_cursor(&mut cursor, Some(chunk), ansi_codec, bump)?;
+                let template = read_template_values_cursor(&mut cursor, chunk, ansi_codec, bump)?;
                 builder.process_template_instance_values(template, bump)?;
             }
             0x01 => {
@@ -666,13 +722,8 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a>(
                 builder.process_close_element()?;
             }
             0x05 | 0x45 => {
-                let value = BinXmlValue::from_binxml_cursor_in(
-                    &mut cursor,
-                    Some(chunk),
-                    None,
-                    ansi_codec,
-                    bump,
-                )?;
+                let value =
+                    BinXmlValue::from_binxml_cursor_in(&mut cursor, chunk, None, ansi_codec, bump)?;
                 builder.process_value(value)?;
             }
             0x06 | 0x46 => {
@@ -740,15 +791,18 @@ fn build_tree_from_binxml_bytes_direct_root<'a>(
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
 ) -> Result<ElementId> {
-    build_tree_from_binxml_bytes_direct_with_mode(
+    build_tree_from_binxml_bytes_direct_with_mode(BuildTreeFromBinXmlBytesDirectArgs {
         bytes,
-        chunk,
+        data: chunk.data,
+        chunk: Some(chunk),
         cache,
+        ansi_codec: chunk.settings.get_ansi_codec(),
         bump,
         arena,
-        BuildMode::Record,
-        false,
-    )
+        mode: BuildMode::Record,
+        has_dep_id: false,
+        name_encoding: BinXmlNameEncoding::Offset,
+    })
 }
 
 /// Build an IR tree directly from BinXML bytes without an iterator.
@@ -759,34 +813,79 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
 ) -> Result<IrTree<'a>> {
     let mut arena =
         IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), &chunk.arena);
-    let root = build_tree_from_binxml_bytes_direct_with_mode(
+    let root = build_tree_from_binxml_bytes_direct_with_mode(BuildTreeFromBinXmlBytesDirectArgs {
         bytes,
-        chunk,
+        data: chunk.data,
+        chunk: Some(chunk),
         cache,
-        &chunk.arena,
-        &mut arena,
-        BuildMode::Record,
-        false,
-    )?;
+        ansi_codec: chunk.settings.get_ansi_codec(),
+        bump: &chunk.arena,
+        arena: &mut arena,
+        mode: BuildMode::Record,
+        has_dep_id: false,
+        name_encoding: BinXmlNameEncoding::Offset,
+    })?;
     Ok(IrTree::new(arena, root))
 }
 
-fn binxml_slice_offset(chunk: &EvtxChunk<'_>, bytes: &[u8]) -> Result<u64> {
+/// Build an IR tree from a WEVT_TEMPLATE BinXML fragment (inline-name encoding).
+///
+/// The input `binxml` should start at the BinXML fragment header (token 0x0f).
+/// This parses in `TemplateDefinition` mode, producing a tree that may contain `Node::Placeholder`.
+#[cfg(feature = "wevt_templates")]
+pub(crate) fn build_wevt_template_definition_ir<'a>(
+    binxml: &'a [u8],
+    ansi_codec: EncodingRef,
+    bump: &'a Bump,
+) -> Result<IrTree<'a>> {
+    let mut cache = IrTemplateCache::with_capacity(0, bump);
+    let mut arena = IrArena::with_capacity_in(estimate_node_capacity(binxml.len() as u32), bump);
+    let root = build_tree_from_binxml_bytes_direct_with_mode(BuildTreeFromBinXmlBytesDirectArgs {
+        bytes: binxml,
+        data: binxml,
+        chunk: None,
+        cache: &mut cache,
+        ansi_codec,
+        bump,
+        arena: &mut arena,
+        mode: BuildMode::TemplateDefinition,
+        has_dep_id: true,
+        name_encoding: BinXmlNameEncoding::WevtInline,
+    })?;
+    Ok(IrTree::new(arena, root))
+}
+
+/// Instantiate a template-definition IR tree by resolving all placeholders.
+///
+/// This returns a fully-resolved IR tree that is ready for XML/JSON rendering.
+#[cfg(feature = "wevt_templates")]
+pub(crate) fn instantiate_template_definition_ir<'a>(
+    template: &IrTree<'a>,
+    values: &[TemplateValue<'a>],
+    bump: &'a Bump,
+) -> Result<IrTree<'a>> {
+    let mut arena = IrArena::with_capacity_in(template.arena().count(), bump);
+    let (root, _needs_array_expansion) =
+        clone_and_resolve(template.arena(), template.root(), values, bump, &mut arena)?;
+    Ok(IrTree::new(arena, root))
+}
+
+fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
     if bytes.is_empty() {
         return Err(EvtxError::FailedToCreateRecordModel("empty BinXML slice"));
     }
-    let chunk_start = chunk.data.as_ptr() as usize;
+    let data_start = data.as_ptr() as usize;
     let slice_start = bytes.as_ptr() as usize;
     let slice_end = slice_start.saturating_add(bytes.len());
-    let chunk_end = chunk_start.saturating_add(chunk.data.len());
+    let data_end = data_start.saturating_add(data.len());
 
-    if slice_start < chunk_start || slice_end > chunk_end {
+    if slice_start < data_start || slice_end > data_end {
         return Err(EvtxError::FailedToCreateRecordModel(
-            "BinXML slice is outside chunk data",
+            "BinXML slice is outside base data buffer",
         ));
     }
 
-    Ok((slice_start - chunk_start) as u64)
+    Ok((slice_start - data_start) as u64)
 }
 
 /// Minimal template header used for cache lookups.
@@ -845,13 +944,18 @@ fn template_values_from_values<'a>(
                     values.push(TemplateValue::Value(BinXmlValue::NullType));
                 } else {
                     let element_id = build_tree_from_binxml_bytes_direct_with_mode(
-                        bytes,
-                        chunk,
-                        cache,
-                        bump,
-                        arena,
-                        BuildMode::Record,
-                        false,
+                        BuildTreeFromBinXmlBytesDirectArgs {
+                            bytes,
+                            data: chunk.data,
+                            chunk: Some(chunk),
+                            cache,
+                            ansi_codec: chunk.settings.get_ansi_codec(),
+                            bump,
+                            arena,
+                            mode: BuildMode::Record,
+                            has_dep_id: false,
+                            name_encoding: BinXmlNameEncoding::Offset,
+                        },
                     )?;
                     values.push(TemplateValue::BinXmlElement(element_id));
                 }
@@ -896,7 +1000,7 @@ fn clone_and_resolve<'a>(
         .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid template element id"))?;
 
     let mut resolved = Element {
-        name: element.name.clone(),
+        name: element.name,
         attrs: IrVec::with_capacity_in(element.attrs.len(), bump),
         children: IrVec::with_capacity_in(element.children.len(), bump),
         has_element_child: false,
@@ -909,7 +1013,7 @@ fn clone_and_resolve<'a>(
 
     for attr in &element.attrs {
         let mut new_attr = Attr {
-            name: attr.name.clone(),
+            name: attr.name,
             value: IrVec::with_capacity_in(attr.value.len(), bump),
         };
         for node in &attr.value {
@@ -988,18 +1092,15 @@ fn resolve_node_into<'a>(
             // After placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)`
             // inside an element's content/attributes. Expand them here so renderers see the proper
             // repeated-element structure (matching common tools like libevtx).
-            if needs_array_expansion {
-                if let Some(expanded) = expand_array_substitutions_in_element(arena, bump, cloned)?
-                {
-                    for id in expanded {
-                        out.push(Node::Element(id));
-                    }
-                    return Ok(());
-                }
-            }
+            if needs_array_expansion
+                && let Some(expanded) = expand_array_substitutions_in_element(arena, bump, cloned)?
             {
-                out.push(Node::Element(cloned));
+                for id in expanded {
+                    out.push(Node::Element(id));
+                }
+                return Ok(());
             }
+            out.push(Node::Element(cloned));
             Ok(())
         }
         Node::Text(text) => {
@@ -1011,7 +1112,7 @@ fn resolve_node_into<'a>(
             Ok(())
         }
         Node::EntityRef(name) => {
-            out.push(Node::EntityRef(name.clone()));
+            out.push(Node::EntityRef(*name));
             Ok(())
         }
         Node::CharRef(ch) => {
@@ -1023,7 +1124,7 @@ fn resolve_node_into<'a>(
             Ok(())
         }
         Node::PITarget(name) => {
-            out.push(Node::PITarget(name.clone()));
+            out.push(Node::PITarget(*name));
             Ok(())
         }
         Node::PIData(text) => {
@@ -1184,30 +1285,17 @@ fn expand_string_ref<'a>(
     }
 }
 
-/// Benchmark-only helper to build an IR tree from BinXML bytes using a caller-provided bump.
-#[cfg(feature = "bench")]
-pub(crate) fn bench_build_tree_from_binxml_bytes<'a>(
-    bytes: &'a [u8],
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
+fn expand_wevt_inline_name_ref<'a>(
+    data: &'a [u8],
+    string_ref: &BinXmlNameRef,
     bump: &'a Bump,
-) -> Result<ElementId> {
-    let offset = binxml_slice_offset(chunk, bytes)?;
-    let deserializer = crate::binxml::deserializer::BinXmlDeserializer::init(
-        chunk.data,
-        offset,
-        Some(chunk),
-        false,
-        chunk.settings.get_ansi_codec(),
-    );
-    let iter = deserializer.iter_tokens_in(Some(bytes.len() as u32), bump)?;
-    let mut arena = IrArena::new_in(bump);
-    let mut builder = TreeBuilder::new(chunk, cache, BuildMode::Record, bump, &mut arena);
-    for token in iter {
-        let token = token.map_err(EvtxError::from)?;
-        builder.process_token(token)?;
-    }
-    builder.finish()
+) -> Result<&'a str> {
+    let mut cursor = ByteCursor::with_pos(data, string_ref.offset as usize)?;
+    let _ = cursor.u16_named("wevt_inline_name_hash")?;
+    let s = cursor
+        .len_prefixed_utf16_string_bump(true, "wevt_inline_name", bump)?
+        .unwrap_or("");
+    Ok(s)
 }
 
 /// Benchmark-only helper to build an IR tree directly from BinXML bytes without an iterator.

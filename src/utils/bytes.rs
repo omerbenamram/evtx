@@ -42,6 +42,7 @@ pub(crate) fn read_u8(buf: &[u8], offset: usize) -> Option<u8> {
 }
 
 /// Read a 4-byte signature at `offset` (e.g. `b\"ElfChnk\\0\"[..4]` style).
+#[cfg(feature = "wevt_templates")]
 pub(crate) fn read_sig(buf: &[u8], offset: usize) -> Option<[u8; 4]> {
     read_array::<4>(buf, offset)
 }

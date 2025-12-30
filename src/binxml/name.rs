@@ -11,20 +11,6 @@ use std::fmt;
 
 const WEVT_INLINE_NAME_HASH_MULTIPLIER: u32 = 65599;
 
-/// MS-EVEN6 NameHash (low 16 bits of: hash=0; for each UTF-16 code unit: hash = hash*65599 + code_unit).
-#[cfg(test)]
-pub(crate) fn compute_wevt_inline_name_hash_utf16(
-    code_units: impl IntoIterator<Item = u16>,
-) -> u16 {
-    let mut hash: u32 = 0;
-    for cu in code_units {
-        hash = hash
-            .wrapping_mul(WEVT_INLINE_NAME_HASH_MULTIPLIER)
-            .wrapping_add(u32::from(cu));
-    }
-    (hash & 0xffff) as u16
-}
-
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Hash)]
 pub struct BinXmlName {
     str: String,
@@ -175,24 +161,7 @@ impl BinXmlNameRef {
     }
 }
 
-/// Resolve a WEVT inline name at the given offset.
-///
-/// The offset should point to the start of the inline name structure, i.e. the `name_hash` field.
-#[cfg(any(test, feature = "wevt_templates"))]
-pub(crate) fn read_wevt_inline_name_at(data: &[u8], offset: ChunkOffset) -> Result<BinXmlName> {
-    let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
-    let _ = cursor.u16_named("wevt_inline_name_hash")?;
-    let name = cursor
-        .len_prefixed_utf16_string_utf8(true, "wevt_inline_name")?
-        .unwrap_or_default();
-    Ok(BinXmlName { str: name })
-}
-
 impl BinXmlName {
-    pub(crate) fn from_str(s: &str) -> Self {
-        BinXmlName { str: s.to_string() }
-    }
-
     /// Reads a tuple of (String, Hash, Offset) from a stream.
     pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
         let start = cursor.position() as usize;

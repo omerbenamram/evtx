@@ -27,15 +27,15 @@ fn read_bytes<'a>(bytes: &'a [u8], idx: &mut usize, len: usize) -> &'a [u8] {
     out
 }
 
-fn load_cases(path: &str) -> anyhow::Result<Vec<Case>> {
+fn load_cases(path: &str) -> Result<Vec<Case>, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
     let mut idx = 0usize;
     if bytes.len() < 12 {
-        anyhow::bail!("dataset too small");
+        return Err("dataset too small".into());
     }
     let magic = read_bytes(&bytes, &mut idx, 4);
     if magic != b"UTFB" {
-        anyhow::bail!("bad magic");
+        return Err("bad magic".into());
     }
     let _version = read_u32(&bytes, &mut idx);
     let count = read_u32(&bytes, &mut idx) as usize;
@@ -56,7 +56,7 @@ fn load_cases(path: &str) -> anyhow::Result<Vec<Case>> {
     Ok(cases)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut data_path = String::from("perf/utf16_escape_data.bin");
     let mut target_bytes: usize = 256 * 1024 * 1024;
     let mut min_iters: usize = 100_000;
@@ -111,8 +111,12 @@ fn main() -> anyhow::Result<()> {
         let start = Instant::now();
         let mut checksum: usize = 0;
         for _ in 0..iters {
-            let written =
-                utf16_simd::escape_json_utf16le(&case.utf16le, case.units as usize, &mut dst, false);
+            let written = utf16_simd::escape_json_utf16le(
+                &case.utf16le,
+                case.units as usize,
+                &mut dst,
+                false,
+            );
             checksum = checksum.wrapping_add(written);
         }
         let elapsed = start.elapsed();
