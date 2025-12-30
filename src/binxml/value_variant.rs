@@ -6,11 +6,8 @@ use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use bumpalo::Bump;
 use encoding::EncodingRef;
-use jiff::{Timestamp, tz::Offset};
+use jiff::Timestamp;
 use log::{trace, warn};
-use serde_json::{Value, json};
-use std::borrow::Cow;
-use std::fmt::Write;
 use std::fmt::{self, Display};
 use std::io::Cursor;
 use std::string::ToString;
@@ -666,6 +663,97 @@ impl<'a> BinXmlValue<'a> {
         )?;
         cursor.set_position(c.position());
         Ok(v)
+    }
+}
+
+impl<'a> BinXmlValue<'a> {
+    /// Return `Some(len)` when this value is one of the array types we support for
+    /// MS-EVEN6 §3.1.4.7.5 "array substitution" expansion.
+    #[inline]
+    pub(crate) fn expandable_array_len(&self) -> Option<usize> {
+        match self {
+            // Strings are stored as UTF-16LE slices in EVTX.
+            BinXmlValue::StringArrayType(v) => Some(v.len()),
+
+            // Numeric/bool GUID/time/SID arrays.
+            BinXmlValue::Int8ArrayType(v) => Some(v.len()),
+            BinXmlValue::UInt8ArrayType(v) => Some(v.len()),
+            BinXmlValue::Int16ArrayType(v) => Some(v.len()),
+            BinXmlValue::UInt16ArrayType(v) => Some(v.len()),
+            BinXmlValue::Int32ArrayType(v) => Some(v.len()),
+            BinXmlValue::UInt32ArrayType(v) => Some(v.len()),
+            BinXmlValue::Int64ArrayType(v) => Some(v.len()),
+            BinXmlValue::UInt64ArrayType(v) => Some(v.len()),
+            BinXmlValue::Real32ArrayType(v) => Some(v.len()),
+            BinXmlValue::Real64ArrayType(v) => Some(v.len()),
+            BinXmlValue::BoolArrayType(v) => Some(v.len()),
+            BinXmlValue::GuidArrayType(v) => Some(v.len()),
+            BinXmlValue::FileTimeArrayType(v) => Some(v.len()),
+            BinXmlValue::SysTimeArrayType(v) => Some(v.len()),
+            BinXmlValue::SidArrayType(v) => Some(v.len()),
+            BinXmlValue::HexInt32ArrayType(v) => Some(v.len()),
+            BinXmlValue::HexInt64ArrayType(v) => Some(v.len()),
+
+            // Not currently expanded:
+            // - `AnsiStringArrayType`, `BinaryArrayType`, `SizeTArrayType`, and the handle/binxml
+            //   array-ish variants don't have a typed slice representation here.
+            _ => None,
+        }
+    }
+
+    /// For an expandable array value, return the scalar `BinXmlValue` for item `idx`.
+    #[inline]
+    pub(crate) fn array_item_as_value(&self, idx: usize) -> Option<BinXmlValue<'a>> {
+        match self {
+            BinXmlValue::StringArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::StringType)
+            }
+            BinXmlValue::Int8ArrayType(items) => items.get(idx).copied().map(BinXmlValue::Int8Type),
+            BinXmlValue::UInt8ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::UInt8Type)
+            }
+            BinXmlValue::Int16ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::Int16Type)
+            }
+            BinXmlValue::UInt16ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::UInt16Type)
+            }
+            BinXmlValue::Int32ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::Int32Type)
+            }
+            BinXmlValue::UInt32ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::UInt32Type)
+            }
+            BinXmlValue::Int64ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::Int64Type)
+            }
+            BinXmlValue::UInt64ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::UInt64Type)
+            }
+            BinXmlValue::Real32ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::Real32Type)
+            }
+            BinXmlValue::Real64ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::Real64Type)
+            }
+            BinXmlValue::BoolArrayType(items) => items.get(idx).copied().map(BinXmlValue::BoolType),
+            // `Guid` is not `Copy` in this codebase.
+            BinXmlValue::GuidArrayType(items) => items.get(idx).cloned().map(BinXmlValue::GuidType),
+            BinXmlValue::FileTimeArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::FileTimeType)
+            }
+            BinXmlValue::SysTimeArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::SysTimeType)
+            }
+            BinXmlValue::SidArrayType(items) => items.get(idx).copied().map(BinXmlValue::SidType),
+            BinXmlValue::HexInt32ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::HexInt32Type)
+            }
+            BinXmlValue::HexInt64ArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::HexInt64Type)
+            }
+            _ => None,
+        }
     }
 }
 

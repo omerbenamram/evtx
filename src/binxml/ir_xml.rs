@@ -19,7 +19,6 @@
 
 use crate::ParserSettings;
 use crate::binxml::value_render::ValueRenderer;
-use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{ElementId, IrArena, IrTree, Name, Node, Text, is_optional_empty};
 use crate::utils::Utf16LeSlice;
@@ -157,34 +156,6 @@ impl<'w, 'a, W: WriteExt> XmlEmitter<'w, 'a, W> {
         for node in &element.children {
             match node {
                 Node::Element(child_id) => {
-                    // Special-case: some EventData containers encode positional values as a single
-                    // `StringArrayType` value inside one `<Data>` element. Expand it into multiple
-                    // `<Data>` siblings to match common XML renderers (e.g. libevtx).
-                    if element.name.as_str() == "EventData" {
-                        let child = arena.get(*child_id).expect("invalid element id");
-                        if child.name.as_str() == "Data"
-                            && child.attrs.is_empty()
-                            && !child.has_element_child
-                        {
-                            if let Some(items) = extract_string_array_value(&child.children) {
-                                for item in items {
-                                    self.write_indent(indent + INDENT_WIDTH)?;
-                                    self.write_bytes(b"<Data>")?;
-                                    if item.is_empty() {
-                                        self.write_newline()?;
-                                        self.write_indent(indent + INDENT_WIDTH)?;
-                                        self.write_bytes(b"</Data>")?;
-                                        self.write_newline()?;
-                                    } else {
-                                        self.write_utf16_escaped(*item, false)?;
-                                        self.write_bytes(b"</Data>")?;
-                                        self.write_newline()?;
-                                    }
-                                }
-                                continue;
-                            }
-                        }
-                    }
                     self.render_element(*child_id, indent + INDENT_WIDTH)?;
                 }
                 _ => {
@@ -358,34 +329,5 @@ impl<'w, 'a, W: WriteExt> XmlEmitter<'w, 'a, W> {
     }
 }
 
-fn extract_string_array_value<'a>(nodes: &[Node<'a>]) -> Option<&'a [Utf16LeSlice<'a>]> {
-    let mut found: Option<&'a [Utf16LeSlice<'a>]> = None;
-    for node in nodes {
-        match node {
-            Node::Element(_) => return None,
-            Node::PITarget(_) | Node::PIData(_) => {}
-            Node::Text(text) | Node::CData(text) => {
-                if !text.is_empty() {
-                    return None;
-                }
-            }
-            Node::Value(value) => {
-                if is_optional_empty(value) {
-                    continue;
-                }
-                match value {
-                    BinXmlValue::StringArrayType(items) => {
-                        if found.is_some() {
-                            return None;
-                        }
-                        found = Some(items);
-                    }
-                    _ => return None,
-                }
-            }
-            Node::EntityRef(_) | Node::CharRef(_) => return None,
-            Node::Placeholder(_) => return None,
-        }
-    }
-    found
-}
+// NOTE: Array substitution expansion is handled during template instantiation
+// (`binxml::ir::clone_and_resolve`), not in the XML renderer.
