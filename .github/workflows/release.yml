@@ -118,7 +118,7 @@ jobs:
             os: macos-14
             target: aarch64-apple-darwin
           - build: macos-x86
-            os: macos-13
+            os: macos-15
             target: x86_64-apple-darwin
           - build: windows
             os: windows-2019
@@ -133,7 +133,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.85.0
+          toolchain: 1.92.0
           targets: ${{ matrix.target }}
           components: llvm-tools
 
