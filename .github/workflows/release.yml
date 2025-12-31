@@ -223,12 +223,11 @@ jobs:
             echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $GITHUB_ENV
           fi
       - name: Upload release archive
-        uses: actions/upload-release-asset@v1.0.1
+        uses: shogo82148/actions-upload-release-asset@v1
         if: env.MANUAL != '1'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ env.RELEASE_UPLOAD_URL }}
           asset_path: ${{ env.ASSET }}
           asset_name: ${{ env.ASSET_NAME }}
           asset_content_type: application/octet-stream
+          overwrite: true
