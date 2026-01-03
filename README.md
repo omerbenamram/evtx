@@ -140,6 +140,8 @@ Bench run: **January 2026**.
 
 System: **Arch Linux** (`Linux 6.17.9-arch1-1 x86_64`).
 
+Benchmark commit: `e01782a`.
+
 Libraries benched:
 
 - `python-evtx`(https://github.com/williballenthin/python-evtx) - With CPython and PyPy
