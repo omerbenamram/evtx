@@ -123,12 +123,12 @@ cargo run --release --features wevt_templates --bin evtx_dump -- \
   extract-wevt-templates --help
 ```
 
-Example using the public `services.exe` sample (stored as a `.gif` in this repo):
+Example using the committed `services.exe` fixture (tracked via git-lfs):
 
 ```bash
 cargo run --release --features wevt_templates --bin evtx_dump -- \
   extract-wevt-templates \
-  --input samples_local/services.exe.gif \
+  --input samples/dlls/services.exe \
   --output /tmp/wevt_cache.wevtcache \
   --overwrite
 ```
@@ -183,13 +183,11 @@ evtx_dump apply-wevt-cache \
 
 ## Testing strategy
 
-We avoid shipping proprietary Windows binaries:
-
 - Committed minimal synthetic PE fixture for `WEVT_TEMPLATE` extraction.
 - Synthetic CRIM/WEVT/TTBL/TEMP blobs for structural correctness + join tests.
-- Ignored integration tests against real provider binaries when present under `samples_local/`:
-  - `services.exe.gif` (downloadable by the test when enabled)
-  - `wevtsvc.dll` (must be provided locally; used to regress MAPS offset ordering quirks)
+- Committed provider fixtures under `samples/dlls/` (git-lfs) + insta snapshot tests (canonical stats validated against libfwevt):
+  - `adtschema.dll`, `lsasrv.dll`, `scesrv.dll`, `services.exe`, `wevtsvc.dll`
+- Optional ignored integration test against the public `services.exe.gif` sample (downloadable by the test when enabled).
 
 ## Future work
 
