@@ -129,59 +129,39 @@ Example using the public `services.exe` sample (stored as a `.gif` in this repo)
 cargo run --release --features wevt_templates --bin evtx_dump -- \
   extract-wevt-templates \
   --input samples_local/services.exe.gif \
-  --output-dir /tmp/wevt_cache \
-  --overwrite \
-  --split-ttbl \
-  --dump-temp-xml \
-  --dump-events \
-  --dump-items \
-  > /tmp/wevt_cache/index.jsonl
+  --output /tmp/wevt_cache.wevtcache \
+  --overwrite
 ```
 
 What you get:
 
-- `/tmp/wevt_cache/*.bin`: raw `WEVT_TEMPLATE` resource blobs (CRIM payloads)
-- `/tmp/wevt_cache/temp/*.bin`: raw `TEMP` slices
-- `/tmp/wevt_cache/temp_xml/*.xml`: rendered template XML skeletons
-- `/tmp/wevt_cache/index.jsonl`: JSONL describing resources, events, template GUIDs, and template items
+- `/tmp/wevt_cache.wevtcache`: a single portable cache file containing raw `WEVT_TEMPLATE` resource blobs (CRIM payloads)
 
-### 2) Look up a template GUID for an event (offline join)
+Notes:
 
-Assuming you know:
+- You **do not** need the original provider DLL/EXE once the cache is built.
+- To move the cache across machines/OSes, copy the `.wevtcache` file.
 
-- `provider_guid` (from the record’s `<System><Provider Guid="...">`)
-- `event_id` and `version` (from the record’s `<System><EventID>` and version field)
+### 2) Use the cache
 
-You can find the template GUID from the JSONL:
+Use the cache as a fallback when dumping EVTX (only used when embedded templates are missing/corrupt).
 
-```bash
-jq -r '
-  select(has("provider_guid")) |
-  select(.provider_guid=="{PROVIDER_GUID}" and .event_id=={EVENT_ID} and .version=={VERSION}) |
-  .template_guid
-' /tmp/wevt_cache/index.jsonl | head -n1
-```
-
-Then locate the corresponding rendered template XML skeleton:
+This is especially useful for **DFIR / carving** workflows, where you may have:
+- Records reconstructed from raw disk/memory without their original embedded templates
+- Logs copied to an analysis workstation without the original provider binaries
 
 ```bash
-jq -r '
-  select(has("output_path") and (.output_path|endswith(".xml"))) |
-  select(.guid=="{TEMPLATE_GUID}") |
-  .output_path
-' /tmp/wevt_cache/index.jsonl | head -n1
+evtx_dump --wevt-cache /tmp/wevt_cache.wevtcache /path/to/log.evtx
 ```
 
-### 3) Apply it to a carved record (what remains)
+You can also render a single record/template offline using the cache + substitution values:
 
-The cache solves the hard part: **offline extraction and parsing of provider templates**, plus **stable joins**.
-
-To fully render a carved record end-to-end you still need the record’s **substitution values array** (the `{sub:N}` values). Once you have those values (from the record’s BinXML TemplateInstance data), you can:
-
-- pick the template (by GUID or by event→template join)
-- substitute `{sub:N(:Name)?}` slots with actual values (with proper escaping)
-
-This last “apply substitutions” step is not yet wired as a single CLI command, but the format pieces are now in place to build it cleanly without heuristics.
+```bash
+evtx_dump apply-wevt-cache \
+  --cache /tmp/wevt_cache.wevtcache \
+  --evtx /path/to/log.evtx \
+  --record-id 12345
+```
 
 ## Implementation map (where to read the code)
 

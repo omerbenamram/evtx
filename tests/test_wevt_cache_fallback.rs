@@ -5,7 +5,6 @@ mod wevt_cache_fallback {
     use evtx::EvtxParser;
     use evtx::ParserSettings;
     use evtx::wevt_templates::WevtCache;
-    use tempfile::tempdir;
 
     const EVTX_FILE_HEADER_SIZE: usize = 4096;
     const EVTX_CHUNK_SIZE: usize = 65536;
@@ -135,25 +134,11 @@ mod wevt_cache_fallback {
         let (chunk_index, record_id, template_def_offset, guid) =
             find_first_template_instance_guid_and_offset(sample);
 
-        // Build a minimal WEVT cache that can serve this GUID.
-        let dir = tempdir().expect("tempdir");
-        let temp_path = dir.path().join("temp.bin");
-        let index_path = dir.path().join("index.jsonl");
-
+        // Build a minimal in-memory WEVT cache that can serve this GUID.
         let mut temp_bytes = vec![0u8; 40];
         temp_bytes.extend_from_slice(&build_minimal_wevt_template_binxml());
-        std::fs::write(&temp_path, &temp_bytes).expect("write TEMP");
-
-        let line = serde_json::json!({
-            "guid": guid.to_string(),
-            "output_path": "temp.bin",
-            "temp_offset": 0,
-            "temp_size": temp_bytes.len(),
-        });
-        std::fs::write(&index_path, format!("{}\n", line)).expect("write index");
-
-        let cache = WevtCache::load(&index_path).expect("load wevt cache");
-        let cache = Arc::new(cache);
+        let cache = Arc::new(WevtCache::new());
+        cache.insert_temp_bytes(&guid.to_string(), Arc::new(temp_bytes));
 
         // Corrupt the EVTX buffer so chunk-template parsing fails.
         let mut corrupted = sample.to_vec();

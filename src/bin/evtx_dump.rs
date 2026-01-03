@@ -24,6 +24,31 @@ mod dump_template_instances;
 #[path = "evtx_dump/extract_wevt_templates.rs"]
 mod extract_wevt_templates;
 
+#[cfg(feature = "wevt_templates")]
+fn load_wevt_cache_from_wevtcache_file(
+    path: &str,
+) -> Result<std::sync::Arc<evtx::wevt_templates::WevtCache>> {
+    use std::sync::Arc;
+
+    let cache = Arc::new(evtx::wevt_templates::WevtCache::new());
+    {
+        use evtx::wevt_templates::wevtcache::{EntryKind, WevtCacheReader};
+
+        let mut reader = WevtCacheReader::open(Path::new(path))?;
+        while let Some((kind, bytes)) = reader.next_entry()? {
+            match kind {
+                EntryKind::Crim => {
+                    cache
+                        .add_wevt_blob(Arc::new(bytes))
+                        .map_err(|e| format_err!("{e}"))?;
+                }
+            }
+        }
+    }
+
+    Ok(cache)
+}
+
 #[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
 use tikv_jemallocator::Jemalloc;
 
@@ -160,8 +185,8 @@ impl EvtxDump {
 
         #[cfg(feature = "wevt_templates")]
         let wevt_cache = matches
-            .get_one::<String>("wevt-cache-index")
-            .map(|p| evtx::wevt_templates::WevtCache::load(p).map(std::sync::Arc::new))
+            .get_one::<String>("wevt-cache")
+            .map(|p| load_wevt_cache_from_wevtcache_file(p))
             .transpose()?;
 
         let mut parser_settings = ParserSettings::new()
@@ -510,10 +535,10 @@ fn main() -> Result<()> {
     // whose embedded EVTX templates are missing/corrupt (common in carved/dirty logs).
     #[cfg(feature = "wevt_templates")]
     let cmd = cmd.arg(
-        Arg::new("wevt-cache-index")
-            .long("wevt-cache-index")
-            .value_name("INDEX_JSONL")
-            .help("Path to a WEVT template cache index JSONL (from `extract-wevt-templates`). When set, evtx_dump will try to render records using this cache if the embedded EVTX template expansion fails."),
+        Arg::new("wevt-cache")
+            .long("wevt-cache")
+            .value_name("WEVTCACHE")
+            .help("Path to a WEVT template cache file (`.wevtcache`). When set, evtx_dump will try to render records using this cache if the embedded EVTX template expansion fails."),
     );
 
     let matches = cmd

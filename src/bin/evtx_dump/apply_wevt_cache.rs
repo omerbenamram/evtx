@@ -9,17 +9,17 @@ pub fn command() -> Command {
             Render a WEVT template using an offline cache + substitution values.
 
             Inputs:
-            - A cache index JSONL (stdout from `extract-wevt-templates`).
+            - A cache file (`.wevtcache`) produced by `extract-wevt-templates`.
             - A template selector: either --template-guid, or (provider_guid,event_id,version).
             - Substitution values: either extracted from an EVTX record (--evtx + --record-id),
               or provided as a JSON array (--substitutions / --substitutions-file).
         "#))
         .arg(
-            Arg::new("cache-index")
-                .long("cache-index")
+            Arg::new("cache")
+                .long("cache")
                 .required(true)
                 .value_name("PATH")
-                .help("Path to cache index JSONL (stdout from `extract-wevt-templates`)."),
+                .help("Path to cache file (`.wevtcache`)."),
         )
         .arg(
             Arg::new("template-guid")
@@ -118,16 +118,9 @@ mod imp {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct ResourceKey {
-        source: String,
-        resource: String,
-        lang_id: u32,
-    }
-
     #[derive(Debug, Default)]
-    struct CacheIndex {
-        crim_paths: Vec<String>,
+    struct CacheData {
+        crim_blobs: Vec<Vec<u8>>,
         event_to_template_guid: std::collections::HashMap<(String, u16, u8), String>,
     }
 
@@ -135,94 +128,36 @@ mod imp {
         evtx::wevt_templates::normalize_guid(s)
     }
 
-    fn parse_resource_id(v: &JsonValue) -> Option<String> {
-        match v {
-            JsonValue::Number(n) => n.as_u64().map(|id| format!("id:{id}")),
-            JsonValue::String(s) => Some(format!("name:{s}")),
-            _ => None,
-        }
-    }
+    fn load_wevtcache(path: &Path) -> Result<CacheData> {
+        let mut out = CacheData::default();
 
-    fn load_cache_index(path: &Path) -> Result<CacheIndex> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("failed to read cache index `{}`", path.display()))?;
-        let mut out = CacheIndex::default();
+        evtx::wevt_templates::wevtcache::for_each_crim_blob(path, |bytes| {
+            out.crim_blobs.push(bytes);
+            Ok(())
+        })?;
 
-        // Also map (source,resource,lang) -> CRIM output path.
-        let mut crim_by_key: std::collections::HashMap<ResourceKey, String> =
-            std::collections::HashMap::new();
-
-        fn resolve_output_path(index_path: &Path, output_path: &str) -> String {
-            let p = Path::new(output_path);
-            if p.is_absolute() {
-                return output_path.to_string();
-            }
-            let base = index_path.parent().unwrap_or_else(|| Path::new("."));
-            base.join(p).to_string_lossy().to_string()
-        }
-
-        for (line_no, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let v: JsonValue = serde_json::from_str(line)
-                .with_context(|| format!("invalid JSONL at {}:{}", path.display(), line_no + 1))?;
-
-            let source = v
-                .get("source")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let resource = v.get("resource").and_then(parse_resource_id);
-            let lang_id = v
-                .get("lang_id")
-                .and_then(|v| v.as_u64())
-                .and_then(|n| u32::try_from(n).ok());
-
-            // ExtractWevtTemplatesOutputLine: has output_path + size, but no guid/provider_guid/template_guid.
-            if v.get("output_path").and_then(|p| p.as_str()).is_some()
-                && v.get("size").is_some()
-                && v.get("guid").is_none()
-                && v.get("provider_guid").is_none()
-                && v.get("template_guid").is_none()
-            {
-                if let (Some(source), Some(resource), Some(lang_id)) = (source, resource, lang_id) {
-                    let key = ResourceKey {
-                        source,
-                        resource,
-                        lang_id,
-                    };
-                    if let Some(p) = v.get("output_path").and_then(|p| p.as_str()) {
-                        crim_by_key.insert(key, resolve_output_path(path, p));
+        // Build (provider_guid,event_id,version) -> template_guid mapping by parsing manifests.
+        for bytes in &out.crim_blobs {
+            let manifest = CrimManifest::parse(bytes).context("failed to parse CRIM/WEVT blob")?;
+            for provider in &manifest.providers {
+                let provider_guid = normalize_guid(&provider.guid.to_string());
+                if let Some(evnt) = provider.wevt.elements.events.as_ref() {
+                    for ev in &evnt.events {
+                        let Some(off) = ev.template_offset else {
+                            continue;
+                        };
+                        let Some(tpl) = provider.template_by_offset(off) else {
+                            continue;
+                        };
+                        out.event_to_template_guid.insert(
+                            (provider_guid.clone(), ev.identifier, ev.version),
+                            normalize_guid(&tpl.guid.to_string()),
+                        );
                     }
                 }
-                continue;
-            }
-
-            // ExtractWevtEventOutputLine: has provider_guid/event_id/version/template_guid.
-            let template_guid = v
-                .get("template_guid")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty());
-
-            if let (Some(provider_guid), Some(event_id), Some(version), Some(template_guid)) = (
-                v.get("provider_guid").and_then(|v| v.as_str()),
-                v.get("event_id")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|n| u16::try_from(n).ok()),
-                v.get("version")
-                    .and_then(|v| v.as_u64())
-                    .and_then(|n| u8::try_from(n).ok()),
-                template_guid,
-            ) {
-                out.event_to_template_guid.insert(
-                    (normalize_guid(provider_guid), event_id, version),
-                    normalize_guid(template_guid),
-                );
             }
         }
 
-        out.crim_paths = crim_by_key.values().cloned().collect();
         Ok(out)
     }
 
@@ -256,9 +191,8 @@ mod imp {
     }
 
     pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
-        let cache_index_path =
-            PathBuf::from(matches.get_one::<String>("cache-index").expect("required"));
-        let cache = load_cache_index(&cache_index_path)?;
+        let cache_path = PathBuf::from(matches.get_one::<String>("cache").expect("required"));
+        let cache = load_wevtcache(&cache_path)?;
 
         // Resolve substitutions.
         let template_instance_index: usize = *matches
@@ -326,12 +260,8 @@ mod imp {
 
         // Locate the template definition in one of the CRIM blobs.
         let mut template_crim_bytes: Option<Vec<u8>> = None;
-        for crim_path in &cache.crim_paths {
-            let bytes = match fs::read(crim_path) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            let manifest = match CrimManifest::parse(&bytes) {
+        for bytes in &cache.crim_blobs {
+            let manifest = match CrimManifest::parse(bytes) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -348,16 +278,16 @@ mod imp {
                 }
             }
             if found {
-                template_crim_bytes = Some(bytes);
+                template_crim_bytes = Some(bytes.clone());
                 break;
             }
         }
 
         let template_crim_bytes = template_crim_bytes.ok_or_else(|| {
             format_err!(
-                "template GUID `{}` not found in any CRIM blobs referenced by `{}`",
+                "template GUID `{}` not found in cache `{}`",
                 template_guid,
-                cache_index_path.display()
+                cache_path.display()
             )
         })?;
 
@@ -446,7 +376,6 @@ mod imp {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::io::Write;
 
         #[test]
         fn normalize_guid_strips_braces_and_is_case_insensitive() {
@@ -455,29 +384,6 @@ mod imp {
 
             assert_eq!(normalize_guid(braced), unbraced);
             assert_eq!(normalize_guid(unbraced), unbraced);
-        }
-
-        #[test]
-        fn load_cache_index_normalizes_provider_and_template_guids() -> Result<()> {
-            let mut f = tempfile::NamedTempFile::new().context("tempfile")?;
-            writeln!(
-                f,
-                r#"{{"provider_guid":"{{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}}","event_id":1,"version":2,"template_guid":"{{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}}"}}"#
-            )
-            .context("write jsonl")?;
-
-            let cache = load_cache_index(f.path()).context("load_cache_index")?;
-
-            let key = (
-                normalize_guid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-                1u16,
-                2u8,
-            );
-            assert_eq!(
-                cache.event_to_template_guid.get(&key).map(|s| s.as_str()),
-                Some("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-            );
-            Ok(())
         }
     }
 }
