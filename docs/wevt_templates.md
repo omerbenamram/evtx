@@ -187,7 +187,9 @@ We avoid shipping proprietary Windows binaries:
 
 - Committed minimal synthetic PE fixture for `WEVT_TEMPLATE` extraction.
 - Synthetic CRIM/WEVT/TTBL/TEMP blobs for structural correctness + join tests.
-- Ignored integration test against the `services.exe` sample if present locally (or downloaded by the test when enabled).
+- Ignored integration tests against real provider binaries when present under `samples_local/`:
+  - `services.exe.gif` (downloadable by the test when enabled)
+  - `wevtsvc.dll` (must be provided locally; used to regress MAPS offset ordering quirks)
 
 ## Future work
 
