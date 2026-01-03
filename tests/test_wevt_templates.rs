@@ -1379,9 +1379,8 @@ mod wevt_templates_research {
 
                     // Verify each template renders without error
                     for tpl in &ttbl.templates {
-                        let _ =
-                            render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
-                                .expect("template render should succeed");
+                        let _ = render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+                            .expect("template render should succeed");
                     }
                 }
 
@@ -1417,32 +1416,28 @@ mod wevt_templates_research {
 
     #[test]
     fn wevt_dll_adtschema() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("samples/dlls/adtschema.dll");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/dlls/adtschema.dll");
         let stats = extract_dll_stats(&path).expect("fixture should parse");
         insta::assert_json_snapshot!(stats);
     }
 
     #[test]
     fn wevt_dll_lsasrv() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("samples/dlls/lsasrv.dll");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/dlls/lsasrv.dll");
         let stats = extract_dll_stats(&path).expect("fixture should parse");
         insta::assert_json_snapshot!(stats);
     }
 
     #[test]
     fn wevt_dll_services() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("samples/dlls/services.exe");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/dlls/services.exe");
         let stats = extract_dll_stats(&path).expect("fixture should parse");
         insta::assert_json_snapshot!(stats);
     }
 
     #[test]
     fn wevt_dll_wevtsvc() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("samples/dlls/wevtsvc.dll");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/dlls/wevtsvc.dll");
         let stats = extract_dll_stats(&path).expect("fixture should parse");
         insta::assert_json_snapshot!(stats);
     }
