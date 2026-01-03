@@ -853,73 +853,6 @@ mod wevt_templates {
     }
 
     #[test]
-    fn it_parses_maps_with_out_of_order_offsets() {
-        // Regression test: some providers (e.g. `wevtsvc.dll`) have MAPS offset arrays that are not
-        // sorted. We should compute boundaries in file order, not array order.
-        let provider_guid = [0x55u8; 16];
-        let wevt_message_id: u32 = 0xffffffff;
-        let unknown2: [u32; 0] = [];
-
-        let descriptor_count = 1usize; // MAPS only
-        let (provider_data_off, wevt_size) =
-            wevt_layout_for_single_provider(descriptor_count, unknown2.len());
-        let maps_off = provider_data_off + wevt_size;
-
-        let map_count: u32 = 3;
-        let vmap_entry_count: u32 = 1;
-        let vmap_size: u32 = 16 + 8 * vmap_entry_count;
-
-        let implied_first = maps_off + 16 + 8;
-        let map0_off = implied_first;
-        let map1_off = map0_off + vmap_size;
-        let map2_off = map1_off + 4;
-
-        let maps_len: usize = 16 + 8 + (vmap_size as usize) + 4 + 4;
-        let map_string_off = maps_off + (maps_len as u32);
-
-        let mut maps = Vec::with_capacity(maps_len);
-        maps.extend_from_slice(b"MAPS");
-        maps.extend_from_slice(&(maps_len as u32).to_le_bytes());
-        maps.extend_from_slice(&map_count.to_le_bytes());
-        maps.extend_from_slice(&map0_off.to_le_bytes()); // first map offset is valid...
-
-        // ...but the remaining offsets array is intentionally out-of-order.
-        maps.extend_from_slice(&map2_off.to_le_bytes());
-        maps.extend_from_slice(&map1_off.to_le_bytes());
-
-        maps.extend_from_slice(b"VMAP");
-        maps.extend_from_slice(&vmap_size.to_le_bytes());
-        maps.extend_from_slice(&map_string_off.to_le_bytes());
-        maps.extend_from_slice(&vmap_entry_count.to_le_bytes());
-        maps.extend_from_slice(&0u32.to_le_bytes());
-        maps.extend_from_slice(&0xffffffffu32.to_le_bytes());
-
-        maps.extend_from_slice(b"BMAP");
-        maps.extend_from_slice(b"ZZZZ");
-        assert_eq!(maps.len(), maps_len);
-
-        let tail = sized_utf16_z_bytes("X");
-        let element_offsets = vec![maps_off];
-        let elements = vec![maps];
-        let blob = build_crim_single_provider_blob(
-            provider_guid,
-            wevt_message_id,
-            &unknown2,
-            &element_offsets,
-            &elements,
-            &tail,
-        );
-
-        let manifest = CrimManifest::parse(&blob).expect("manifest parse should succeed");
-        let provider = &manifest.providers[0];
-        let maps = provider.wevt.elements.maps.as_ref().expect("MAPS present");
-        assert_eq!(maps.maps.len(), 3);
-        assert!(matches!(maps.maps[0], MapDefinition::ValueMap(_)));
-        assert!(matches!(maps.maps[1], MapDefinition::Bitmap(_)));
-        assert!(matches!(maps.maps[2], MapDefinition::Unknown { .. }));
-    }
-
-    #[test]
     fn it_captures_unknown_provider_elements() {
         let provider_guid = [0x66u8; 16];
         let wevt_message_id: u32 = 0xffffffff;
@@ -1319,7 +1252,7 @@ mod wevt_templates {
 
 #[cfg(feature = "wevt_templates")]
 mod wevt_templates_research {
-    use evtx::wevt_templates::manifest::CrimManifest;
+    use evtx::wevt_templates::manifest::{CrimManifest, MapDefinition};
     use evtx::wevt_templates::{
         ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
         render_template_definition_to_xml,
@@ -1399,6 +1332,130 @@ mod wevt_templates_research {
         assert_eq!(t.header.item_name_count, 0);
         assert_eq!(t.header.template_items_offset, ttbl_off + 12 + temp_size);
         assert_eq!(t.header.event_type, 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn it_parses_local_dll_fixtures() {
+        // This test is intentionally ignored by default:
+        // - it requires local copies of Windows system DLLs (large, proprietary)
+        //
+        // Run with:
+        //   cargo test --features wevt_templates -- --ignored
+        //
+        // Setup:
+        //   Copy the following files to samples_local/:
+        //   - adtschema.dll
+        //   - lsasrv.dll
+        //   - scesrv.dll
+        //   - services.exe
+        //   - wevtsvc.dll
+
+        let samples_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples_local");
+
+        let fixtures = [
+            "adtschema.dll",
+            "lsasrv.dll",
+            "scesrv.dll",
+            "services.exe",
+            "wevtsvc.dll",
+        ];
+
+        let mut total_templates = 0usize;
+        let mut total_providers = 0usize;
+        let mut total_vmaps = 0usize;
+        let mut total_bmaps = 0usize;
+
+        for fixture in fixtures {
+            let path = samples_dir.join(fixture);
+            if !path.exists() {
+                eprintln!("skipping missing fixture: {path:?}");
+                continue;
+            }
+
+            let bytes = fs::read(&path).expect("read fixture");
+            let resources =
+                extract_wevt_template_resources(&bytes).expect("extract WEVT_TEMPLATE resources");
+
+            if resources.is_empty() {
+                eprintln!("{fixture}: no WEVT_TEMPLATE resources");
+                continue;
+            }
+
+            for r in &resources {
+                let manifest = CrimManifest::parse(&r.data).unwrap_or_else(|e| {
+                    panic!(
+                        "{fixture}: manifest parse failed for resource={:?} lang_id={} size={}: {e}",
+                        r.resource, r.lang_id, r.data.len(),
+                    )
+                });
+
+                for provider in &manifest.providers {
+                    total_providers += 1;
+
+                    // Count templates
+                    if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
+                        total_templates += ttbl.templates.len();
+
+                        // Verify each template renders without error
+                        for tpl in &ttbl.templates {
+                            let _ =
+                                render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+                                    .unwrap_or_else(|e| {
+                                        panic!(
+                                            "{fixture}: template render failed for guid={}: {e}",
+                                            tpl.guid
+                                        )
+                                    });
+                        }
+                    }
+
+                    // Count and validate MAPS
+                    if let Some(maps) = provider.wevt.elements.maps.as_ref() {
+                        for map in &maps.maps {
+                            match map {
+                                MapDefinition::ValueMap(vmap) => {
+                                    total_vmaps += 1;
+                                    // VMAPs should have a valid size (>= 16 bytes header)
+                                    assert!(
+                                        vmap.size >= 16,
+                                        "{fixture}: VMAP size too small: {}",
+                                        vmap.size
+                                    );
+                                    // Entry count should be consistent with size
+                                    let expected_min_size = 16 + vmap.entries.len() * 8;
+                                    assert!(
+                                        vmap.size as usize >= expected_min_size,
+                                        "{fixture}: VMAP size {} too small for {} entries",
+                                        vmap.size,
+                                        vmap.entries.len()
+                                    );
+                                }
+                                MapDefinition::Bitmap(_) => {
+                                    total_bmaps += 1;
+                                }
+                                MapDefinition::Unknown { signature, .. } => {
+                                    panic!(
+                                        "{fixture}: unexpected unknown map type: {:?}",
+                                        std::str::from_utf8(signature)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            eprintln!("{fixture}: parsed successfully");
+        }
+
+        eprintln!(
+            "totals: providers={total_providers} templates={total_templates} vmaps={total_vmaps} bmaps={total_bmaps}"
+        );
+
+        // At least some fixtures should have been processed
+        assert!(total_providers > 0, "no providers parsed from any fixture");
+        assert!(total_templates > 0, "no templates parsed from any fixture");
     }
 
     #[test]

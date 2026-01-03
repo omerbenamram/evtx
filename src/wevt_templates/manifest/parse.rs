@@ -1188,7 +1188,22 @@ fn parse_template_items(
 }
 
 fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
-    // Maps parsing in libfwevt is TODO; we implement VMAP per spec and keep others opaque.
+    // MAPS contains value maps (VMAP) and bitmap maps (BMAP) that define enumeration/flag types
+    // for event parameters. See libfwevt documentation:
+    // https://github.com/libyal/libfwevt/blob/main/documentation/Windows%20Event%20manifest%20binary%20format.asciidoc
+    //
+    // Layout (libfwevt struct `fwevt_template_maps`):
+    //   0:4   "MAPS" signature
+    //   4:4   size (including header)
+    //   8:4   count (number of maps)
+    //   12:4  data_offset (unused by libfwevt — we ignore it too)
+    //   16:   (count-1) * 4 bytes: offsets for maps 1..count
+    //   ...:  map 0 starts immediately after the offsets array (implied)
+    //   ...:  map 1+ at offsets from the array
+    //
+    // Each VMAP has its own `size` field, so we read that to determine extent — no sorting or
+    // boundary guessing needed.
+
     let off_usize = u32_to_usize(off, "MAPS offset", crim.len())?;
     require_len(crim, off_usize, 16, "MAPS header")?;
     let sig = read_sig_named(crim, off_usize, "MAPS signature")?;
@@ -1201,7 +1216,8 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     }
     let size = read_u32_named(crim, off_usize + 4, "MAPS.size")?;
     let count = read_u32_named(crim, off_usize + 8, "MAPS.count")?;
-    let first_map_offset = read_u32_named(crim, off_usize + 12, "MAPS.first_map_offset")?;
+    // Note: bytes 12-15 are `data_offset` in the struct but libfwevt ignores it; so do we.
+
     let end = if size == 0 {
         // libfwevt accepts size==0 and parses by offsets/count.
         crim.len()
@@ -1222,36 +1238,39 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
         count,
     })?;
 
-    let mut map_offsets: Vec<u32> = Vec::with_capacity(count_usize);
-    if count_usize > 0 {
-        // Interpret first_map_offset as map_offsets[0] when non-zero; otherwise fallback to implied offset.
-        let implied_first = (off_usize + 16 + (count_usize.saturating_sub(1) * 4)) as u32;
-        let first = if first_map_offset == 0 {
-            implied_first
-        } else {
-            first_map_offset
-        };
-        map_offsets.push(first);
+    if count_usize == 0 {
+        return Ok(MapsDefinitions {
+            offset: off,
+            size,
+            maps: Vec::new(),
+        });
     }
 
-    // Remaining offsets array (count-1).
+    // Read (count-1) offsets array at MAPS+16.
     let offs_array_off = off_usize + 16;
     let offs_array_bytes = count_usize.saturating_sub(1).checked_mul(4).unwrap_or(0);
-    if offs_array_off + offs_array_bytes > end {
+    if offs_array_off + offs_array_bytes > crim.len() {
         return Err(WevtManifestError::SizeOutOfBounds {
             what: "MAPS offsets array",
             offset: off,
             size,
         });
     }
+
+    // Build map offsets deterministically:
+    // - map 0: implied at MAPS + 16 + (count-1)*4
+    // - map 1+: from offsets array in order
+    let implied_first = (offs_array_off + offs_array_bytes) as u32;
+    let mut map_offsets = Vec::with_capacity(count_usize);
+    map_offsets.push(implied_first);
     for i in 0..count_usize.saturating_sub(1) {
         let o = read_u32_named(crim, offs_array_off + i * 4, "MAPS.map_offset")?;
         map_offsets.push(o);
     }
 
-    // Parse each map by offset; boundaries are unknown, so for unknown map types we capture until next map offset or MAPS end.
+    // Parse each map. Each VMAP declares its own size; BMAP format is unknown (we capture 4 bytes).
     let mut maps = Vec::with_capacity(count_usize);
-    for (i, &map_off) in map_offsets.iter().enumerate() {
+    for &map_off in &map_offsets {
         let map_off_usize = u32_to_usize(map_off, "MAPS map offset", crim.len())?;
         if map_off_usize + 4 > crim.len() {
             return Err(WevtManifestError::Truncated {
@@ -1262,42 +1281,46 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
             });
         }
         let sig = read_sig_named(crim, map_off_usize, "MAPS map signature")?;
-        let next_off = map_offsets
-            .get(i + 1)
-            .copied()
-            .unwrap_or_else(|| usize_to_u32(end));
-        let next_usize = u32_to_usize(next_off, "MAPS map end", crim.len())?;
-        let slice_end = next_usize.min(end);
-        if slice_end < map_off_usize {
-            return Err(WevtManifestError::OffsetOutOfBounds {
-                what: "MAPS map boundary",
-                offset: next_off,
-                len: crim.len(),
-            });
-        }
-        let map_slice = match &sig {
-            b"VMAP" => &crim[map_off_usize..slice_end],
-            // Avoid capturing an unbounded tail for unknown map types when MAPS.size == 0.
-            _ => &crim[map_off_usize..std::cmp::min(map_off_usize + 4, slice_end)],
-        };
 
         match &sig {
             b"VMAP" => {
+                // VMAP has its own size field at offset 4.
+                if map_off_usize + 8 > crim.len() {
+                    return Err(WevtManifestError::Truncated {
+                        what: "VMAP size field",
+                        offset: map_off,
+                        need: 8,
+                        have: crim.len().saturating_sub(map_off_usize),
+                    });
+                }
+                let vmap_size = read_u32_named(crim, map_off_usize + 4, "VMAP.size")?;
+                let vmap_size_usize =
+                    usize::try_from(vmap_size).map_err(|_| WevtManifestError::SizeOutOfBounds {
+                        what: "VMAP.size",
+                        offset: map_off,
+                        size: vmap_size,
+                    })?;
+                let slice_end = map_off_usize.saturating_add(vmap_size_usize).min(end);
+                let map_slice = &crim[map_off_usize..slice_end];
                 maps.push(MapDefinition::ValueMap(parse_vmap(
                     crim, map_off, map_slice,
                 )?));
             }
             b"BMAP" => {
+                // BMAP format is undocumented (TODO in libfwevt). Capture just the signature.
+                let slice_end = (map_off_usize + 4).min(end);
                 maps.push(MapDefinition::Bitmap(BitmapMap {
                     offset: map_off,
-                    data: map_slice,
+                    data: &crim[map_off_usize..slice_end],
                 }));
             }
             _ => {
+                // Unknown map type — capture just the signature.
+                let slice_end = (map_off_usize + 4).min(end);
                 maps.push(MapDefinition::Unknown {
                     signature: sig,
                     offset: map_off,
-                    data: map_slice,
+                    data: &crim[map_off_usize..slice_end],
                 });
             }
         }
