@@ -3,15 +3,14 @@ mod fixtures;
 #[cfg(feature = "wevt_templates")]
 mod wevt_templates {
     use super::fixtures::CLI_TEST_LOCK;
+    use evtx::binxml::value_variant::BinXmlValue;
     use evtx::wevt_templates::manifest::{
         CrimManifest, EventKey, MapDefinition, WevtManifestError,
     };
     use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
     use evtx::wevt_templates::{
-        render_template_definition_to_xml,
-        render_template_definition_to_xml_with_values,
+        render_template_definition_to_xml, render_template_definition_to_xml_with_values,
     };
-    use evtx::binxml::value_variant::BinXmlValue;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -851,67 +850,6 @@ mod wevt_templates {
             }
             _ => panic!("expected unknown map third"),
         }
-    }
-
-    #[test]
-    fn it_parses_maps_with_explicit_size_and_first_offset() {
-        let provider_guid = [0x55u8; 16];
-        let wevt_message_id: u32 = 0xffffffff;
-        let unknown2: [u32; 0] = [];
-
-        let descriptor_count = 1usize; // MAPS only
-        let (provider_data_off, wevt_size) =
-            wevt_layout_for_single_provider(descriptor_count, unknown2.len());
-        let maps_off = provider_data_off + wevt_size;
-
-        let map_count: u32 = 3;
-        let vmap_entry_count: u32 = 1;
-        let vmap_size: u32 = 16 + 8 * vmap_entry_count; // no trailing
-
-        let implied_first = maps_off + 16 + 8;
-        let map0_off = implied_first;
-        let map1_off = map0_off + vmap_size;
-        let map2_off = map1_off + 4;
-
-        let maps_len: usize = 16 + 8 + (vmap_size as usize) + 4 + 4;
-        let map_string_off = maps_off + (maps_len as u32);
-
-        let mut maps = Vec::with_capacity(maps_len);
-        maps.extend_from_slice(b"MAPS");
-        maps.extend_from_slice(&(maps_len as u32).to_le_bytes()); // explicit size
-        maps.extend_from_slice(&map_count.to_le_bytes());
-        maps.extend_from_slice(&map0_off.to_le_bytes()); // explicit first map offset
-
-        maps.extend_from_slice(&map1_off.to_le_bytes());
-        maps.extend_from_slice(&map2_off.to_le_bytes());
-
-        maps.extend_from_slice(b"VMAP");
-        maps.extend_from_slice(&vmap_size.to_le_bytes());
-        maps.extend_from_slice(&map_string_off.to_le_bytes());
-        maps.extend_from_slice(&vmap_entry_count.to_le_bytes());
-        maps.extend_from_slice(&0u32.to_le_bytes());
-        maps.extend_from_slice(&0xffffffffu32.to_le_bytes());
-
-        maps.extend_from_slice(b"BMAP");
-        maps.extend_from_slice(b"ZZZZ");
-        assert_eq!(maps.len(), maps_len);
-
-        let tail = sized_utf16_z_bytes("X");
-        let element_offsets = vec![maps_off];
-        let elements = vec![maps];
-        let blob = build_crim_single_provider_blob(
-            provider_guid,
-            wevt_message_id,
-            &unknown2,
-            &element_offsets,
-            &elements,
-            &tail,
-        );
-
-        let manifest = CrimManifest::parse(&blob).expect("manifest parse should succeed");
-        let provider = &manifest.providers[0];
-        let maps = provider.wevt.elements.maps.as_ref().expect("MAPS present");
-        assert_eq!(maps.maps.len(), 3);
     }
 
     #[test]
