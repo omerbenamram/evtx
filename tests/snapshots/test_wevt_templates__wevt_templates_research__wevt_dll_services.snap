@@ -1,0 +1,15 @@
+---
+source: tests/test_wevt_templates.rs
+expression: stats
+---
+{
+  "providers": 3,
+  "templates": 51,
+  "events": 60,
+  "maps": 0,
+  "channels": 3,
+  "levels": 2,
+  "opcodes": 5,
+  "tasks": 9,
+  "keywords": 6
+}

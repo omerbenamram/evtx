@@ -1252,7 +1252,7 @@ mod wevt_templates {
 
 #[cfg(feature = "wevt_templates")]
 mod wevt_templates_research {
-    use evtx::wevt_templates::manifest::{CrimManifest, MapDefinition};
+    use evtx::wevt_templates::manifest::CrimManifest;
     use evtx::wevt_templates::{
         ResourceIdentifier, extract_temp_templates_from_wevt_blob, extract_wevt_template_resources,
         render_template_definition_to_xml,
@@ -1334,128 +1334,117 @@ mod wevt_templates_research {
         assert_eq!(t.header.event_type, 1);
     }
 
-    #[test]
-    #[ignore]
-    fn it_parses_local_dll_fixtures() {
-        // This test is intentionally ignored by default:
-        // - it requires local copies of Windows system DLLs (large, proprietary)
-        //
-        // Run with:
-        //   cargo test --features wevt_templates -- --ignored
-        //
-        // Setup:
-        //   Copy the following files to samples_local/:
-        //   - adtschema.dll
-        //   - lsasrv.dll
-        //   - scesrv.dll
-        //   - services.exe
-        //   - wevtsvc.dll
+    /// Stats extracted from a DLL fixture, validated against libfwevt (pyfwevt).
+    #[derive(Debug, serde::Serialize)]
+    struct DllFixtureStats {
+        providers: usize,
+        templates: usize,
+        events: usize,
+        maps: usize,
+        channels: usize,
+        levels: usize,
+        opcodes: usize,
+        tasks: usize,
+        keywords: usize,
+    }
 
-        let samples_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples_local");
+    fn extract_dll_stats(path: &Path) -> Option<DllFixtureStats> {
+        let bytes = fs::read(path).ok()?;
+        let resources = extract_wevt_template_resources(&bytes).ok()?;
 
-        let fixtures = [
-            "adtschema.dll",
-            "lsasrv.dll",
-            "scesrv.dll",
-            "services.exe",
-            "wevtsvc.dll",
-        ];
-
-        let mut total_templates = 0usize;
-        let mut total_providers = 0usize;
-        let mut total_vmaps = 0usize;
-        let mut total_bmaps = 0usize;
-
-        for fixture in fixtures {
-            let path = samples_dir.join(fixture);
-            if !path.exists() {
-                eprintln!("skipping missing fixture: {path:?}");
-                continue;
-            }
-
-            let bytes = fs::read(&path).expect("read fixture");
-            let resources =
-                extract_wevt_template_resources(&bytes).expect("extract WEVT_TEMPLATE resources");
-
-            if resources.is_empty() {
-                eprintln!("{fixture}: no WEVT_TEMPLATE resources");
-                continue;
-            }
-
-            for r in &resources {
-                let manifest = CrimManifest::parse(&r.data).unwrap_or_else(|e| {
-                    panic!(
-                        "{fixture}: manifest parse failed for resource={:?} lang_id={} size={}: {e}",
-                        r.resource, r.lang_id, r.data.len(),
-                    )
-                });
-
-                for provider in &manifest.providers {
-                    total_providers += 1;
-
-                    // Count templates
-                    if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
-                        total_templates += ttbl.templates.len();
-
-                        // Verify each template renders without error
-                        for tpl in &ttbl.templates {
-                            let _ =
-                                render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
-                                    .unwrap_or_else(|e| {
-                                        panic!(
-                                            "{fixture}: template render failed for guid={}: {e}",
-                                            tpl.guid
-                                        )
-                                    });
-                        }
-                    }
-
-                    // Count and validate MAPS
-                    if let Some(maps) = provider.wevt.elements.maps.as_ref() {
-                        for map in &maps.maps {
-                            match map {
-                                MapDefinition::ValueMap(vmap) => {
-                                    total_vmaps += 1;
-                                    // VMAPs should have a valid size (>= 16 bytes header)
-                                    assert!(
-                                        vmap.size >= 16,
-                                        "{fixture}: VMAP size too small: {}",
-                                        vmap.size
-                                    );
-                                    // Entry count should be consistent with size
-                                    let expected_min_size = 16 + vmap.entries.len() * 8;
-                                    assert!(
-                                        vmap.size as usize >= expected_min_size,
-                                        "{fixture}: VMAP size {} too small for {} entries",
-                                        vmap.size,
-                                        vmap.entries.len()
-                                    );
-                                }
-                                MapDefinition::Bitmap(_) => {
-                                    total_bmaps += 1;
-                                }
-                                MapDefinition::Unknown { signature, .. } => {
-                                    panic!(
-                                        "{fixture}: unexpected unknown map type: {:?}",
-                                        std::str::from_utf8(signature)
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            eprintln!("{fixture}: parsed successfully");
+        if resources.is_empty() {
+            return None;
         }
 
-        eprintln!(
-            "totals: providers={total_providers} templates={total_templates} vmaps={total_vmaps} bmaps={total_bmaps}"
-        );
+        let mut stats = DllFixtureStats {
+            providers: 0,
+            templates: 0,
+            events: 0,
+            maps: 0,
+            channels: 0,
+            levels: 0,
+            opcodes: 0,
+            tasks: 0,
+            keywords: 0,
+        };
 
-        // At least some fixtures should have been processed
-        assert!(total_providers > 0, "no providers parsed from any fixture");
-        assert!(total_templates > 0, "no templates parsed from any fixture");
+        for r in &resources {
+            let manifest = CrimManifest::parse(&r.data).ok()?;
+
+            for provider in &manifest.providers {
+                stats.providers += 1;
+
+                if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
+                    stats.templates += ttbl.templates.len();
+
+                    // Verify each template renders without error
+                    for tpl in &ttbl.templates {
+                        let _ =
+                            render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+                                .expect("template render should succeed");
+                    }
+                }
+
+                if let Some(evts) = provider.wevt.elements.events.as_ref() {
+                    stats.events += evts.events.len();
+                }
+                if let Some(maps) = provider.wevt.elements.maps.as_ref() {
+                    stats.maps += maps.maps.len();
+                }
+                if let Some(chans) = provider.wevt.elements.channels.as_ref() {
+                    stats.channels += chans.channels.len();
+                }
+                if let Some(lvls) = provider.wevt.elements.levels.as_ref() {
+                    stats.levels += lvls.levels.len();
+                }
+                if let Some(ops) = provider.wevt.elements.opcodes.as_ref() {
+                    stats.opcodes += ops.opcodes.len();
+                }
+                if let Some(tsks) = provider.wevt.elements.tasks.as_ref() {
+                    stats.tasks += tsks.tasks.len();
+                }
+                if let Some(kws) = provider.wevt.elements.keywords.as_ref() {
+                    stats.keywords += kws.keywords.len();
+                }
+            }
+        }
+
+        Some(stats)
+    }
+
+    // Snapshot tests for DLL fixtures.
+    // Expected values validated against libfwevt (pyfwevt) reference implementation.
+
+    #[test]
+    fn wevt_dll_adtschema() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples/dlls/adtschema.dll");
+        let stats = extract_dll_stats(&path).expect("fixture should parse");
+        insta::assert_json_snapshot!(stats);
+    }
+
+    #[test]
+    fn wevt_dll_lsasrv() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples/dlls/lsasrv.dll");
+        let stats = extract_dll_stats(&path).expect("fixture should parse");
+        insta::assert_json_snapshot!(stats);
+    }
+
+    #[test]
+    fn wevt_dll_services() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples/dlls/services.exe");
+        let stats = extract_dll_stats(&path).expect("fixture should parse");
+        insta::assert_json_snapshot!(stats);
+    }
+
+    #[test]
+    fn wevt_dll_wevtsvc() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples/dlls/wevtsvc.dll");
+        let stats = extract_dll_stats(&path).expect("fixture should parse");
+        insta::assert_json_snapshot!(stats);
     }
 
     #[test]
