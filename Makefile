@@ -12,3 +12,10 @@ flamegraph-prod:
 	BIN="$(BIN)" FLAME_FILE="$(FLAME_FILE)" FORMAT="$(FORMAT)" DURATION="$(DURATION)" \
 		bash scripts/flamegraph_prod.sh
 
+# Generate Python stub files (.pyi) for the evtx Python module
+# The stub_gen binary must be built WITHOUT extension-module feature
+# to allow linking against Python
+.PHONY: pyi-stubs
+pyi-stubs:
+	cd external/pyevtx-rs && cargo run --bin stub_gen --no-default-features --features wevt_templates
+

@@ -1249,9 +1249,19 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
         map_offsets.push(o);
     }
 
-    // Parse each map by offset; boundaries are unknown, so for unknown map types we capture until next map offset or MAPS end.
-    let mut maps = Vec::with_capacity(count_usize);
-    for (i, &map_off) in map_offsets.iter().enumerate() {
+    // Parse each map by offset.
+    //
+    // Some real-world providers (e.g. `wevtsvc.dll`) store the offsets array out-of-order. Map
+    // boundaries are based on the next map in *file order*, not the next entry in the offsets
+    // array, so we sort offsets before iterating.
+    let mut map_offsets_sorted = map_offsets;
+    map_offsets_sorted.sort_unstable();
+    map_offsets_sorted.dedup();
+
+    // Boundaries are unknown, so for unknown map types we capture until the next map offset or
+    // MAPS end.
+    let mut maps = Vec::with_capacity(map_offsets_sorted.len());
+    for (i, &map_off) in map_offsets_sorted.iter().enumerate() {
         let map_off_usize = u32_to_usize(map_off, "MAPS map offset", crim.len())?;
         if map_off_usize + 4 > crim.len() {
             return Err(WevtManifestError::Truncated {
@@ -1262,7 +1272,7 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
             });
         }
         let sig = read_sig_named(crim, map_off_usize, "MAPS map signature")?;
-        let next_off = map_offsets
+        let next_off = map_offsets_sorted
             .get(i + 1)
             .copied()
             .unwrap_or_else(|| usize_to_u32(end));

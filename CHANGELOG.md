@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking changes (WEVT_TEMPLATE cache)
+- The offline WEVT template cache is now a **single `.wevtcache` file** (directory + `index.jsonl` is no longer supported).
+  - `evtx_dump extract-wevt-templates --output /tmp/wevt_cache.wevtcache --overwrite`
+  - `evtx_dump --wevt-cache /tmp/wevt_cache.wevtcache <log.evtx>`
+- `WevtCache` is now **pure in-memory** (no internal filesystem I/O). Load cache blobs at your boundary and pass an `Arc<WevtCache>` into `ParserSettings`.
+- CLI flag renames:
+  - `--wevt-cache-index` → `--wevt-cache`
+  - `apply-wevt-cache --cache-index` → `apply-wevt-cache --cache`
+
 ## [0.10.0 - 2025-12-31]
 
 ### Highlights

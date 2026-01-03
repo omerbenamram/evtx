@@ -13,7 +13,7 @@ mod wevt_templates {
     };
     use evtx::binxml::value_variant::BinXmlValue;
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
     use tempfile::tempdir;
 
@@ -140,8 +140,7 @@ mod wevt_templates {
     fn cli_extracts_wevt_template_from_minimal_synthetic_pe() {
         let _guard = CLI_TEST_LOCK.lock().unwrap();
         let d = tempdir().unwrap();
-        let out_dir = d.path().join("out");
-        std::fs::create_dir_all(&out_dir).unwrap();
+        let out_file = d.path().join("cache.wevtcache");
 
         let pe_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -153,8 +152,8 @@ mod wevt_templates {
             "extract-wevt-templates",
             "--input",
             pe_path.to_str().unwrap(),
-            "--output-dir",
-            out_dir.to_str().unwrap(),
+            "--output",
+            out_file.to_str().unwrap(),
             "--overwrite",
         ]);
 
@@ -166,19 +165,18 @@ mod wevt_templates {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        // Expect a single JSONL line on stdout.
-        let stdout = String::from_utf8(out.stdout).unwrap();
-        let line = stdout.lines().next().expect("expected one JSONL line");
-        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        // Expect a single CRIM blob in the cache file.
+        let bytes = fs::read(&out_file).unwrap();
+        assert!(bytes.len() > 16 + 1 + 8);
+        assert_eq!(&bytes[0..8], b"WEVTCACH");
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 1);
 
-        assert_eq!(v["resource"], 1);
-        assert_eq!(v["lang_id"], 1033);
-
-        let out_path = PathBuf::from(v["output_path"].as_str().unwrap());
-        assert!(out_path.starts_with(&out_dir));
-
-        let extracted = fs::read(&out_path).unwrap();
-        assert_eq!(extracted.as_slice(), MINIMAL_RESOURCE_DATA);
+        // Entry: kind (1 byte) + len (8 bytes) + payload.
+        assert_eq!(bytes[16], 1);
+        let len = u64::from_le_bytes(bytes[17..25].try_into().unwrap()) as usize;
+        let payload = &bytes[25..25 + len];
+        assert_eq!(payload, MINIMAL_RESOURCE_DATA);
     }
 
     #[test]
@@ -914,6 +912,73 @@ mod wevt_templates {
         let provider = &manifest.providers[0];
         let maps = provider.wevt.elements.maps.as_ref().expect("MAPS present");
         assert_eq!(maps.maps.len(), 3);
+    }
+
+    #[test]
+    fn it_parses_maps_with_out_of_order_offsets() {
+        // Regression test: some providers (e.g. `wevtsvc.dll`) have MAPS offset arrays that are not
+        // sorted. We should compute boundaries in file order, not array order.
+        let provider_guid = [0x55u8; 16];
+        let wevt_message_id: u32 = 0xffffffff;
+        let unknown2: [u32; 0] = [];
+
+        let descriptor_count = 1usize; // MAPS only
+        let (provider_data_off, wevt_size) =
+            wevt_layout_for_single_provider(descriptor_count, unknown2.len());
+        let maps_off = provider_data_off + wevt_size;
+
+        let map_count: u32 = 3;
+        let vmap_entry_count: u32 = 1;
+        let vmap_size: u32 = 16 + 8 * vmap_entry_count;
+
+        let implied_first = maps_off + 16 + 8;
+        let map0_off = implied_first;
+        let map1_off = map0_off + vmap_size;
+        let map2_off = map1_off + 4;
+
+        let maps_len: usize = 16 + 8 + (vmap_size as usize) + 4 + 4;
+        let map_string_off = maps_off + (maps_len as u32);
+
+        let mut maps = Vec::with_capacity(maps_len);
+        maps.extend_from_slice(b"MAPS");
+        maps.extend_from_slice(&(maps_len as u32).to_le_bytes());
+        maps.extend_from_slice(&map_count.to_le_bytes());
+        maps.extend_from_slice(&map0_off.to_le_bytes()); // first map offset is valid...
+
+        // ...but the remaining offsets array is intentionally out-of-order.
+        maps.extend_from_slice(&map2_off.to_le_bytes());
+        maps.extend_from_slice(&map1_off.to_le_bytes());
+
+        maps.extend_from_slice(b"VMAP");
+        maps.extend_from_slice(&vmap_size.to_le_bytes());
+        maps.extend_from_slice(&map_string_off.to_le_bytes());
+        maps.extend_from_slice(&vmap_entry_count.to_le_bytes());
+        maps.extend_from_slice(&0u32.to_le_bytes());
+        maps.extend_from_slice(&0xffffffffu32.to_le_bytes());
+
+        maps.extend_from_slice(b"BMAP");
+        maps.extend_from_slice(b"ZZZZ");
+        assert_eq!(maps.len(), maps_len);
+
+        let tail = sized_utf16_z_bytes("X");
+        let element_offsets = vec![maps_off];
+        let elements = vec![maps];
+        let blob = build_crim_single_provider_blob(
+            provider_guid,
+            wevt_message_id,
+            &unknown2,
+            &element_offsets,
+            &elements,
+            &tail,
+        );
+
+        let manifest = CrimManifest::parse(&blob).expect("manifest parse should succeed");
+        let provider = &manifest.providers[0];
+        let maps = provider.wevt.elements.maps.as_ref().expect("MAPS present");
+        assert_eq!(maps.maps.len(), 3);
+        assert!(matches!(maps.maps[0], MapDefinition::ValueMap(_)));
+        assert!(matches!(maps.maps[1], MapDefinition::Bitmap(_)));
+        assert!(matches!(maps.maps[2], MapDefinition::Unknown { .. }));
     }
 
     #[test]
