@@ -136,27 +136,30 @@ Performance was benched on my machine using `hyperfine` (statistical measurement
 
 I'm running tests on a 12-Core AMD Ryzen 3900X.
 
-Tests are running under WSL2, on a linux filesystem (so there shouldn't be any overhead incurred from reading windows mounts).
+Bench run: **January 2026**.
+
+System: **Arch Linux** (`Linux 6.17.9-arch1-1 x86_64`).
 
 Libraries benched:
 
 - `python-evtx`(https://github.com/williballenthin/python-evtx) - With CPython and PyPy
+- `pyevtx-rs`(https://github.com/omerbenamram/pyevtx-rs) / `evtx`(https://pypi.org/project/evtx/) - Python bindings for this library
 - `libevtx`(https://github.com/libyal/libevtx)
 - `golang-evtx`(https://github.com/0xrawsec/golang-evtx.git) - only JSON (uses multithreading)
 - `evtx`(https://github.com/Velocidex/evtx) - only JSON.
 - `evtx` (This library)
 
 
-|                  | evtx (1 thread)      | evtx (8 threads)      | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (uses multiprocessing) | python-evtx (CPython 3.7.6) | python-evtx (PyPy 7.3.0) |
-|------------------|----------------------|-----------------------|---------------------------|----------------------|----------------------|------------------------------------|-----------------------------|--------------------------|
-| 30MB evtx (XML)  | 1.155 s  ±   0.008 s | 277.4 ms  ±    5.8 ms | **177.1 ms  ±    4.5 ms** | 4.509 s  ±   0.100 s | No support           | No support                         | 4m11.046s (ran once)        | 1m12.828s (ran once)     |
-| 30MB evtx (JSON) | 1.631 s  ±   0.006 s | 341.6 ms  ±    7.3 ms | **207.2 ms  ±    7.2 ms** | No support           | 5.587 s  ±   0.086 s | 2.216 s  ±   0.027 s               | No support                  | No support               |
+|                  | evtx (1 thread)      | evtx (8 threads)      | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (uses multiprocessing) | pyevtx-rs (CPython 3.13.11) | python-evtx (CPython 3.13.11) | python-evtx (PyPy 7.3.19) |
+|------------------|----------------------|-----------------------|---------------------------|----------------------|----------------------|------------------------------------|-----------------------------|------------------------------|--------------------------|
+| 30MB evtx (XML)  | 275.9 ms ±   2.1 ms  | 96.9 ms ±   1.3 ms    | **79.5 ms ±   3.0 ms**    | 2.439 s ±   0.035 s  | No support           | No support                         | 0.367s (ran once)           | 2m41.075s (ran once)         | 40.096s (ran once)       |
+| 30MB evtx (JSON) | 280.7 ms ±   1.2 ms  | 94.1 ms ±   1.5 ms    | **77.9 ms ±   5.5 ms**    | No support           | 5.467 s ±   0.038 s  | 1.344 s ±   0.005 s               | 0.398s (ran once)           | No support                    | No support               |
 
 **Note**: numbers shown are `real-time` measurements (time it takes for invocation to complete). `user-time` measurements are higher when more using multithreading/multiprocessing, because of the synchronization overhead.
 
-With 8 threads - `evtx` is more than **650x** faster than `python-evtx` when dumping xml logs.
+With 8 threads - `evtx` is more than **1600x** faster than `python-evtx` when dumping xml logs.
 
-With maximum viable threads (number of logical cores) - `evtx` is about **8-10x** faster `golang-evtx`. Both implementations utilize similar multithreading strategies.
+With maximum viable threads (number of logical cores) - `evtx` is about **14-17x** faster `golang-evtx`. Both implementations utilize similar multithreading strategies.
 
 ## Caveats
 
