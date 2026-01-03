@@ -8,14 +8,26 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.11.0 - 2026-01-03]
+
 ### Breaking changes (WEVT_TEMPLATE cache)
 - The offline WEVT template cache is now a **single `.wevtcache` file** (directory + `index.jsonl` is no longer supported).
-  - `evtx_dump extract-wevt-templates --output /tmp/wevt_cache.wevtcache --overwrite`
+  - `evtx_dump extract-wevt-templates --input <provider.{dll,exe,sys}> --output /tmp/wevt_cache.wevtcache --overwrite`
   - `evtx_dump --wevt-cache /tmp/wevt_cache.wevtcache <log.evtx>`
 - `WevtCache` is now **pure in-memory** (no internal filesystem I/O). Load cache blobs at your boundary and pass an `Arc<WevtCache>` into `ParserSettings`.
 - CLI flag renames:
   - `--wevt-cache-index` → `--wevt-cache`
   - `apply-wevt-cache --cache-index` → `apply-wevt-cache --cache`
+
+### Fixed
+- Fix MAPS parsing for providers whose MAPS offsets are not monotonic (e.g. `wevtsvc.dll`).
+  - Parse maps deterministically (implied first map + offsets array order).
+  - Use each VMAP’s declared `size` field (no “next offset” boundary guessing / sorting).
+
+### Added
+- Git-LFS tracked DLL/EXE fixtures under `samples/dlls/` + insta snapshot tests for canonical WEVT_TEMPLATE extraction stats (validated against libfwevt via pyfwevt).
+
+**Full Changelog**: [`v0.10.0...v0.11.0`](https://github.com/omerbenamram/evtx/compare/v0.10.0...v0.11.0)
 
 ## [0.10.0 - 2025-12-31]
 

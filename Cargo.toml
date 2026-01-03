@@ -6,7 +6,7 @@ repository = "https://github.com/omerbenamram/EVTX"
 license = "MIT/Apache-2.0"
 readme = "README.md"
 
-version = "0.10.0"
+version = "0.11.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 
