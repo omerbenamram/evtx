@@ -326,22 +326,15 @@ fn extract_event_record_id_from_tree(tree: &crate::model::ir::IrTree<'_>) -> Opt
 
 /// Extract `EventRecordID` from a serialized record string (JSON or XML).
 fn extract_event_record_id_from_str(data: &str) -> Option<u32> {
-    // JSON: "EventRecordID": 123 or "EventRecordID": "123"
-    if let Some(pos) = data.find("\"EventRecordID\"") {
-        let rest = &data[pos + "\"EventRecordID\"".len()..];
-        let rest = rest.trim_start();
-        let rest = rest.strip_prefix(':')?;
-        let rest = rest.trim_start();
-        if let Some(rest) = rest.strip_prefix('"') {
-            let end = rest.find('"')?;
-            return rest[..end].parse::<u32>().ok();
-        }
-        let end = rest
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(rest.len());
-        if end > 0 {
-            return rest[..end].parse::<u32>().ok();
-        }
+    // Try JSON first: deserialize and walk Event.System.EventRecordID
+    if data.starts_with('{') {
+        let v: serde_json::Value = serde_json::from_str(data).ok()?;
+        let id = v.get("Event")?.get("System")?.get("EventRecordID")?;
+        return match id {
+            serde_json::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+            serde_json::Value::String(s) => s.parse::<u32>().ok(),
+            _ => None,
+        };
     }
     // XML: <EventRecordID>123</EventRecordID>
     if let Some(pos) = data.find("<EventRecordID") {
