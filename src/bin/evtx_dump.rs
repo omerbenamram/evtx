@@ -72,6 +72,7 @@ struct EvtxDump {
     input: PathBuf,
     show_record_number: bool,
     show_message: bool,
+    mta_cache: Option<Arc<MtaFile>>,
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
@@ -207,8 +208,7 @@ impl EvtxDump {
             .validate_checksums(validate_checksums)
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
-            .ansi_codec(*ansi_codec)
-            .mta_cache(mta_cache);
+            .ansi_codec(*ansi_codec);
 
         #[cfg(feature = "wevt_templates")]
         {
@@ -220,6 +220,7 @@ impl EvtxDump {
             input,
             show_record_number: !no_show_record_number,
             show_message,
+            mta_cache,
             output_format,
             output,
             verbosity_level,
@@ -240,13 +241,13 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
-                for (index, record) in parser.records().enumerate() {
-                    self.dump_record(index as u64, record)?
+                for record in parser.records() {
+                    self.dump_record(record)?
                 }
             }
             EvtxOutputFormat::JSON => {
-                for (index, record) in parser.records_json().enumerate() {
-                    self.dump_record(index as u64, record)?
+                for record in parser.records_json() {
+                    self.dump_record(record)?
                 }
             }
         };
@@ -337,7 +338,6 @@ impl EvtxDump {
 
     fn dump_record(
         &mut self,
-        record_index: u64,
         record: EvtxResult<SerializedEvtxRecord<String>>,
     ) -> Result<()> {
         match record.with_context(|| "Failed to dump the next record.") {
@@ -353,7 +353,7 @@ impl EvtxDump {
                         writeln!(self.output, "Record {}", r.event_record_id)?;
                     }
 
-                    let message = self.record_message(record_index, &r)?;
+                    let message = self.record_message(&r)?;
                     match self.output_format {
                         EvtxOutputFormat::JSON => {
                             let json = if let Some(message) = message.as_deref() {
@@ -387,21 +387,18 @@ impl EvtxDump {
 
     fn record_message(
         &mut self,
-        record_index: u64,
         record: &SerializedEvtxRecord<String>,
     ) -> Result<Option<String>> {
         if !self.show_message {
             return Ok(None);
         }
 
-        let Some(cache) = self.parser_settings.get_mta_cache() else {
+        let Some(cache) = self.mta_cache.as_ref() else {
             return Ok(None);
         };
 
-        let message = u32::try_from(record_index)
-            .ok()
-            .and_then(|index| cache.message_for_entry_index(index))
-            .or_else(|| cache.message_for_record_id(record.event_record_id))
+        let message = cache
+            .message_for_record(record)
             .map(|text| text.to_string());
 
         Ok(message)

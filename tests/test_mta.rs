@@ -1,6 +1,6 @@
 mod fixtures;
 
-use evtx::{EvtxParser, MtaFile, ParserSettings};
+use evtx::{EvtxParser, MtaFile};
 use fixtures::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -67,14 +67,13 @@ fn test_mta_localized_messages_match_csv() {
     let mut row_index = 0usize;
 
     let mut parser = EvtxParser::from_path(mta_test_evtx()).expect("failed to open MTA evtx");
-    let settings = Arc::new(ParserSettings::default().mta_cache(Some(Arc::clone(&mta))));
-    parser = parser.with_configuration((*settings).clone());
 
     for chunk in parser.chunks() {
         let mut chunk = match chunk {
             Ok(chunk) => chunk,
             Err(_) => continue,
         };
+        let settings = Arc::new(Default::default());
         let mut chunk = match chunk.parse(Arc::clone(&settings)) {
             Ok(chunk) => chunk,
             Err(_) => continue,
@@ -89,9 +88,8 @@ fn test_mta_localized_messages_match_csv() {
             let Some(row) = csv_rows.get(row_index) else {
                 panic!("found more records than csv rows (record_id={})", record.event_record_id);
             };
-            let entry_index = u32::try_from(row_index).expect("row index overflow");
             let message = mta
-                .message_for_entry_index(entry_index)
+                .message_for_evtx_record(&record)
                 .unwrap_or("")
                 .trim()
                 .to_string();

@@ -1,3 +1,4 @@
+use crate::evtx_record::{EvtxRecord, SerializedEvtxRecord};
 use crate::utils::bytes;
 use crate::utils::utf16::decode_utf16le_bytes;
 use std::collections::HashMap;
@@ -206,6 +207,16 @@ impl MtaFile {
     pub fn message_for_entry_index(&self, entry_index: u32) -> Option<&str> {
         let msg_index = *self.event_index_to_msg_index.get(entry_index as usize)?;
         self.message_by_index(msg_index?)
+    }
+
+    /// Look up a localized message for a serialized EVTX record using its `event_record_id`.
+    pub fn message_for_record<T>(&self, record: &SerializedEvtxRecord<T>) -> Option<&str> {
+        self.message_for_record_id(record.event_record_id)
+    }
+
+    /// Look up a localized message for an EVTX record using its `event_record_id`.
+    pub fn message_for_evtx_record(&self, record: &EvtxRecord<'_>) -> Option<&str> {
+        self.message_for_record_id(record.event_record_id)
     }
 
     pub fn message_by_index(&self, msg_index: u32) -> Option<&str> {
