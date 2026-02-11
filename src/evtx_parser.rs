@@ -150,8 +150,7 @@ impl Debug for ParserSettings {
             .field("validate_checksums", &self.validate_checksums)
             .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
-            .field("ansi_codec", &self.ansi_codec.name())
-;
+            .field("ansi_codec", &self.ansi_codec.name());
 
         #[cfg(feature = "wevt_templates")]
         ds.field("wevt_cache", &self.wevt_cache.is_some());
