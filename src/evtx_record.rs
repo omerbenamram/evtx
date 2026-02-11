@@ -29,13 +29,13 @@ pub struct EvtxRecord<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvtxRecordHeader {
     pub data_size: u32,
-    pub event_record_id: RecordId,
+    pub event_record_id: RecordId, // Not same as EventRecordId in payload
     pub timestamp: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerializedEvtxRecord<T> {
-    pub event_record_id: RecordId,
+    pub event_record_id: RecordId, // Not same as EventRecordId in payload
     pub timestamp: Timestamp,
     pub data: T,
 }

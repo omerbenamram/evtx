@@ -1,4 +1,6 @@
+use crate::binxml::value_variant::BinXmlValue;
 use crate::evtx_record::{EvtxRecord, SerializedEvtxRecord};
+use crate::model::ir::{Node, Text};
 use crate::utils::bytes;
 use crate::utils::utf16::decode_utf16le_bytes;
 use std::collections::HashMap;
@@ -52,9 +54,7 @@ pub type MtaResult<T> = std::result::Result<T, MtaError>;
 
 #[derive(Debug, Clone)]
 pub struct MtaFile {
-    messages: Vec<Option<String>>,
-    event_to_msg_index: Vec<Option<u32>>,
-    event_index_to_msg_index: Vec<Option<u32>>,
+    event_record_id_to_msg: HashMap<u32, String>,
 }
 
 impl MtaFile {
@@ -162,68 +162,117 @@ impl MtaFile {
             Ok(())
         })?;
 
-        let mut event_to_msg_index: Vec<Option<u32>> = Vec::new();
-        let mut event_index_to_msg_index: Vec<Option<u32>> = Vec::new();
+        let mut event_record_id_to_msg: HashMap<u32, String> = HashMap::new();
         parse_paged_records(evt, |entry_index, payload| {
             if payload.len() < 16 {
                 return Err(MtaError::InvalidSection {
                     message: "evt payload too small",
                 });
             }
-            let event_value = read_u32(payload, 0, "evt.event_value")?;
+
+            // EventRecordId field in event
+            let event_record_id = read_u32(payload, 0, "evt.event_record_id")?;
+
+            // Index of the message in the MSG section that corresponds to this event
             let msg_index = read_u32(payload, 8, "evt.msg_index")?;
 
-            let entry = entry_index as usize;
-            if entry >= event_index_to_msg_index.len() {
-                event_index_to_msg_index.resize(entry + 1, None);
-            }
-            event_index_to_msg_index[entry] = Some(msg_index);
+            let message = messages
+                .get(msg_index as usize)
+                .and_then(|opt| opt.as_ref())
+                .ok_or(MtaError::InvalidSection {
+                    message: "evt references non-existent msg index",
+                })?;            
 
-            let idx = event_value as usize;
-            if idx >= event_to_msg_index.len() {
-                event_to_msg_index.resize(idx + 1, None);
-            }
-            event_to_msg_index[idx] = Some(msg_index);
+            event_record_id_to_msg.insert(event_record_id, message.clone());
             Ok(())
         })?;
 
         Ok(MtaFile {
-            messages,
-            event_to_msg_index,
-            event_index_to_msg_index,
+            event_record_id_to_msg
         })
     }
 
-    pub fn message_for_event_value(&self, event_value: u32) -> Option<&str> {
-        let msg_index = *self.event_to_msg_index.get(event_value as usize)?;
-        self.message_by_index(msg_index?)
+    pub fn message_for_record_id(&self, record_id: u32) -> Option<&str> {
+        self.event_record_id_to_msg.get(&record_id).map(|s| s.as_str())
     }
 
-    pub fn message_for_record_id(&self, record_id: u64) -> Option<&str> {
-        let event_value = u32::try_from(record_id).ok()?;
-        self.message_for_event_value(event_value)
+    /// Look up a localized message for a serialized EVTX record by extracting
+    /// `EventRecordID` from the serialized payload (JSON or XML string).
+    pub fn message_for_record(&self, record: &SerializedEvtxRecord<String>) -> Option<&str> {
+        let id = extract_event_record_id_from_str(&record.data)?;
+        self.message_for_record_id(id)
     }
 
-    pub fn message_for_entry_index(&self, entry_index: u32) -> Option<&str> {
-        let msg_index = *self.event_index_to_msg_index.get(entry_index as usize)?;
-        self.message_by_index(msg_index?)
-    }
-
-    /// Look up a localized message for a serialized EVTX record using its `event_record_id`.
-    pub fn message_for_record<T>(&self, record: &SerializedEvtxRecord<T>) -> Option<&str> {
-        self.message_for_record_id(record.event_record_id)
-    }
-
-    /// Look up a localized message for an EVTX record using its `event_record_id`.
+    /// Look up a localized message for an EVTX record by extracting
+    /// `EventRecordID` from the IR tree (Event > System > EventRecordID).
     pub fn message_for_evtx_record(&self, record: &EvtxRecord<'_>) -> Option<&str> {
-        self.message_for_record_id(record.event_record_id)
+        let id = extract_event_record_id_from_tree(&record.tree)? as u32;
+        self.message_for_record_id(id)
     }
+}
 
-    pub fn message_by_index(&self, msg_index: u32) -> Option<&str> {
-        self.messages
-            .get(msg_index as usize)
-            .and_then(|value| value.as_deref())
+/// Extract `EventRecordID` from the IR tree (Event > System > EventRecordID).
+fn extract_event_record_id_from_tree(tree: &crate::model::ir::IrTree<'_>) -> Option<u64> {
+    let root = tree.root_element();
+    let arena = tree.arena();
+
+    let system_id = root.children.iter().find_map(|node| match node {
+        Node::Element(id) => {
+            let el = arena.get(*id)?;
+            (el.name.as_str() == "System").then_some(*id)
+        }
+        _ => None,
+    })?;
+
+    let system = arena.get(system_id)?;
+
+    let erid_el_id = system.children.iter().find_map(|node| match node {
+        Node::Element(id) => {
+            let el = arena.get(*id)?;
+            (el.name.as_str() == "EventRecordID").then_some(*id)
+        }
+        _ => None,
+    })?;
+
+    let erid_el = arena.get(erid_el_id)?;
+
+    erid_el.children.iter().find_map(|node| match node {
+        Node::Text(Text::Utf8(s)) => s.parse::<u64>().ok(),
+        Node::Text(Text::Utf16(s)) => s.to_string().ok()?.parse::<u64>().ok(),
+        Node::Value(BinXmlValue::UInt64Type(v)) => Some(*v),
+        Node::Value(BinXmlValue::UInt32Type(v)) => Some(*v as u64),
+        Node::Value(BinXmlValue::Int64Type(v)) => u64::try_from(*v).ok(),
+        Node::Value(BinXmlValue::Int32Type(v)) => u64::try_from(*v).ok(),
+        _ => None,
+    })
+}
+
+/// Extract `EventRecordID` from a serialized record string (JSON or XML).
+fn extract_event_record_id_from_str(data: &str) -> Option<u32> {
+    // JSON: "EventRecordID": 123 or "EventRecordID": "123"
+    if let Some(pos) = data.find("\"EventRecordID\"") {
+        let rest = &data[pos + "\"EventRecordID\"".len()..];
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix(':')?;
+        let rest = rest.trim_start();
+        if let Some(rest) = rest.strip_prefix('"') {
+            let end = rest.find('"')?;
+            return rest[..end].parse::<u32>().ok();
+        }
+        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        if end > 0 {
+            return rest[..end].parse::<u32>().ok();
+        }
     }
+    // XML: <EventRecordID>123</EventRecordID>
+    if let Some(pos) = data.find("<EventRecordID") {
+        let rest = &data[pos..];
+        let gt = rest.find('>')?;
+        let after = &rest[gt + 1..];
+        let end = after.find('<')?;
+        return after[..end].trim().parse::<u32>().ok();
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -510,10 +559,7 @@ mod tests {
         let bytes = build_mta_bytes();
         let mta = MtaFile::from_bytes(&bytes).expect("failed to parse MTA bytes");
 
-        assert_eq!(mta.message_for_event_value(42), Some("hello"));
-        assert_eq!(mta.message_for_entry_index(0), Some("hello"));
         assert_eq!(mta.message_for_record_id(42), Some("hello"));
-        assert_eq!(mta.message_for_event_value(7), None);
     }
 
     #[test]
