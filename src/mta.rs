@@ -223,7 +223,12 @@ impl MtaFile {
                 });
             }
             let raw = &payload[4..4 + byte_len];
-            let string = decode_utf16le_nul(raw)?;
+            // Strip trailing UTF-16 null if present, then decode by known length.
+            let trimmed = raw
+                .strip_suffix(&[0, 0])
+                .unwrap_or(raw);
+            let string =
+                decode_utf16le_bytes(trimmed).map_err(|_| MtaError::InvalidUtf16)?;
             let index = entry_index as usize;
             if index >= messages.len() {
                 messages.resize(index + 1, None);
@@ -509,21 +514,6 @@ fn slice<'a>(buf: &'a [u8], offset: usize, len: usize, what: &'static str) -> Mt
     })
 }
 
-fn decode_utf16le_nul(bytes: &[u8]) -> MtaResult<String> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err(MtaError::InvalidUtf16);
-    }
-    let mut end = bytes.len();
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == 0 && bytes[i + 1] == 0 {
-            end = i;
-            break;
-        }
-        i += 2;
-    }
-    decode_utf16le_bytes(&bytes[..end]).map_err(|_| MtaError::InvalidUtf16)
-}
 
 #[cfg(test)]
 mod tests {
@@ -629,9 +619,4 @@ mod tests {
         assert_eq!(mta.message_for_record_id(42), Some("hello"));
     }
 
-    #[test]
-    fn test_decode_utf16le_nul_rejects_odd_length() {
-        let err = decode_utf16le_nul(&[0x61]).expect_err("expected invalid utf16");
-        assert!(matches!(err, MtaError::InvalidUtf16));
-    }
 }
