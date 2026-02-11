@@ -8,14 +8,13 @@ use indoc::indoc;
 use encoding::all::encodings;
 use encoding::types::Encoding;
 use evtx::err::Result as EvtxResult;
-use evtx::{EvtxParser, MtaFile, ParserSettings, SerializedEvtxRecord};
+use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
 use tempfile::tempfile;
 
 #[path = "evtx_dump/apply_wevt_cache.rs"]
@@ -71,8 +70,6 @@ struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
     show_record_number: bool,
-    show_message: bool,
-    mta_cache: Option<Arc<MtaFile>>,
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
@@ -135,8 +132,6 @@ impl EvtxDump {
             (v, None) => v,
         };
 
-        let show_message = matches.get_flag("show-message");
-
         let num_threads: u32 = *matches.get_one("num-threads").expect("has default");
 
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
@@ -194,15 +189,6 @@ impl EvtxDump {
             .map(|p| load_wevt_cache_from_wevtcache_file(p))
             .transpose()?;
 
-        let mta_cache = matches
-            .get_one::<String>("mta")
-            .map(|p| {
-                MtaFile::from_path(p)
-                    .map(Arc::new)
-                    .with_context(|| format!("Failed to read MTA file at `{}`", p))
-            })
-            .transpose()?;
-
         let mut parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
@@ -219,8 +205,6 @@ impl EvtxDump {
             parser_settings,
             input,
             show_record_number: !no_show_record_number,
-            show_message,
-            mta_cache,
             output_format,
             output,
             verbosity_level,
@@ -336,10 +320,7 @@ impl EvtxDump {
         }
     }
 
-    fn dump_record(
-        &mut self,
-        record: EvtxResult<SerializedEvtxRecord<String>>,
-    ) -> Result<()> {
+    fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<String>>) -> Result<()> {
         match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
                 let range_filter = if let Some(ranges) = &self.ranges {
@@ -352,24 +333,7 @@ impl EvtxDump {
                     if self.show_record_number {
                         writeln!(self.output, "Record {}", r.event_record_id)?;
                     }
-
-                    let message = self.record_message(&r)?;
-                    match self.output_format {
-                        EvtxOutputFormat::JSON => {
-                            let json = if let Some(message) = message.as_deref() {
-                                self.inject_json_message(&r.data, message)?
-                            } else {
-                                r.data.clone()
-                            };
-                            writeln!(self.output, "{}", json)?;
-                        }
-                        EvtxOutputFormat::XML => {
-                            if let Some(message) = message {
-                                writeln!(self.output, "Message: {}", message)?;
-                            }
-                            writeln!(self.output, "{}", r.data)?;
-                        }
-                    }
+                    writeln!(self.output, "{}", r.data)?;
                 }
             }
             // This error is non fatal.
@@ -383,51 +347,6 @@ impl EvtxDump {
         };
 
         Ok(())
-    }
-
-    fn record_message(
-        &mut self,
-        record: &SerializedEvtxRecord<String>,
-    ) -> Result<Option<String>> {
-        if !self.show_message {
-            return Ok(None);
-        }
-
-        let Some(cache) = self.mta_cache.as_ref() else {
-            return Ok(None);
-        };
-
-        let message = cache
-            .message_for_record(record)
-            .map(|text| text.to_string());
-
-        Ok(message)
-    }
-
-    fn inject_json_message(&self, record_json: &str, message: &str) -> Result<String> {
-        let record_json = record_json.trim_end();
-        if record_json.len() < 2
-            || !record_json.starts_with('{')
-            || !record_json.ends_with('}')
-        {
-            return Err(format_err!(
-                "Expected JSON object for record output when injecting message"
-            ));
-        }
-
-        let message_json = serde_json::to_string(message)
-            .map_err(|e| format_err!("Failed to serialize message: {e}"))?;
-
-        if record_json.len() == 2 {
-            return Ok(format!("{{\"Message\":{message_json}}}"));
-        }
-
-        let mut out = String::with_capacity(record_json.len() + message_json.len() + 12);
-        out.push_str(&record_json[..record_json.len() - 1]);
-        out.push_str(",\"Message\":");
-        out.push_str(&message_json);
-        out.push('}');
-        Ok(out)
     }
 
     fn try_to_initialize_logging(&self) -> Result<()> {
@@ -605,23 +524,11 @@ fn main() -> Result<()> {
                 .help("When set, `Record <id>` will not be printed."),
         )
         .arg(
-            Arg::new("show-message")
-                .long("show-message")
-                .action(ArgAction::SetTrue)
-                .help("When set, prints a localized message per record (adds Message to JSON/JSONL output)."),
-        )
-        .arg(
             Arg::new("ansi-codec")
                 .long("ansi-codec")
                 .value_parser(all_encoings)
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
-        )
-        .arg(
-            Arg::new("mta")
-                .long("mta")
-                .value_name("MTA")
-                .help("Path to an MTA file for localized message lookups."),
         );
 
     // Optional: when provided, use an offline WEVT template cache as a fallback for records
