@@ -1,7 +1,8 @@
 use crate::binxml::ir_json::render_json_record;
 use crate::binxml::ir_xml::render_xml_record;
+use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
-use crate::model::ir::IrTree;
+use crate::model::ir::{IrTree, Node, Text};
 use crate::utils::ByteCursor;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
@@ -154,9 +155,12 @@ impl<'a> EvtxRecord<'a> {
     }
 
     /// Look up the localized message string for this record using the configured MTA cache.
+    ///
+    /// Extracts the EventID from the IR tree and looks it up in the MTA cache.
     pub fn localized_message(&self) -> Option<&str> {
         let cache = self.settings.get_mta_cache()?;
-        cache.message_for_record_id(self.event_record_id)
+        let event_id = extract_event_id(&self.tree)?;
+        cache.message_for_event_value(event_id as u32)
     }
 
     /// Parse all `TemplateInstance` substitution arrays from this record.
@@ -278,4 +282,42 @@ impl<'a> EvtxRecord<'a> {
 
         Ok(out)
     }
+}
+
+/// Walk `Event > System > EventID` in the IR tree and parse its text content as a `u16`.
+fn extract_event_id(tree: &IrTree<'_>) -> Option<u16> {
+    let root = tree.root_element();
+    let arena = tree.arena();
+
+    // Find the System child element.
+    let system_id = root.children.iter().find_map(|node| match node {
+        Node::Element(id) => {
+            let el = arena.get(*id)?;
+            (el.name.as_str() == "System").then_some(*id)
+        }
+        _ => None,
+    })?;
+
+    let system = arena.get(system_id)?;
+
+    // Find the EventID child element.
+    let event_id_el_id = system.children.iter().find_map(|node| match node {
+        Node::Element(id) => {
+            let el = arena.get(*id)?;
+            (el.name.as_str() == "EventID").then_some(*id)
+        }
+        _ => None,
+    })?;
+
+    let event_id_el = arena.get(event_id_el_id)?;
+
+    // Extract the numeric value from the first child node.
+    event_id_el.children.iter().find_map(|node| match node {
+        Node::Text(Text::Utf8(s)) => s.parse::<u16>().ok(),
+        Node::Text(Text::Utf16(s)) => s.to_string().ok()?.parse::<u16>().ok(),
+        Node::Value(BinXmlValue::UInt16Type(v)) => Some(*v),
+        Node::Value(BinXmlValue::UInt32Type(v)) => u16::try_from(*v).ok(),
+        Node::Value(BinXmlValue::Int32Type(v)) => u16::try_from(*v).ok(),
+        _ => None,
+    })
 }
