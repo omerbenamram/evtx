@@ -87,7 +87,9 @@ const PAGE_SENTINEL: u32 = 0xffffffff;
 
 #[derive(Debug, Error)]
 pub enum MtaError {
-    #[error("MTA file truncated while reading {what} at offset {offset} (need {need}, have {have})")]
+    #[error(
+        "MTA file truncated while reading {what} at offset {offset} (need {need}, have {have})"
+    )]
     Truncated {
         what: &'static str,
         offset: usize,
@@ -147,11 +149,12 @@ impl MtaFile {
         let table_size = read_u32(bytes, 16, "mta.section_table_size")? as usize;
         let num_sections = read_u32(bytes, 20, "mta.num_sections")? as usize;
 
-        let table_end = MTA_HEADER_SIZE
-            .checked_add(table_size)
-            .ok_or(MtaError::InvalidSection {
-                message: "section table size overflow",
-            })?;
+        let table_end =
+            MTA_HEADER_SIZE
+                .checked_add(table_size)
+                .ok_or(MtaError::InvalidSection {
+                    message: "section table size overflow",
+                })?;
         if table_end > bytes.len() {
             return Err(MtaError::Truncated {
                 what: "mta.section_table",
@@ -248,19 +251,21 @@ impl MtaFile {
                 .and_then(|opt| opt.as_ref())
                 .ok_or(MtaError::InvalidSection {
                     message: "evt references non-existent msg index",
-                })?;            
+                })?;
 
             event_record_id_to_msg.insert(event_record_id, message.clone());
             Ok(())
         })?;
 
         Ok(MtaFile {
-            event_record_id_to_msg
+            event_record_id_to_msg,
         })
     }
 
     pub fn message_for_record_id(&self, record_id: u32) -> Option<&str> {
-        self.event_record_id_to_msg.get(&record_id).map(|s| s.as_str())
+        self.event_record_id_to_msg
+            .get(&record_id)
+            .map(|s| s.as_str())
     }
 
     /// Look up a localized message for a serialized EVTX record by extracting
@@ -326,7 +331,9 @@ fn extract_event_record_id_from_str(data: &str) -> Option<u32> {
             let end = rest.find('"')?;
             return rest[..end].parse::<u32>().ok();
         }
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         if end > 0 {
             return rest[..end].parse::<u32>().ok();
         }
@@ -364,11 +371,9 @@ impl Section {
                 have: bytes.len().saturating_sub(self.offset),
             });
         }
-        bytes
-            .get(self.offset..end)
-            .ok_or(MtaError::InvalidSection {
-                message: "section slice out of bounds",
-            })
+        bytes.get(self.offset..end).ok_or(MtaError::InvalidSection {
+            message: "section slice out of bounds",
+        })
     }
 }
 
@@ -412,11 +417,7 @@ where
 
         let offsets_start = meta_offset + PAGE_METADATA_SIZE;
         for idx in 0..PAGE_OFFSETS_COUNT {
-            let off = read_u64(
-                section,
-                offsets_start + idx * 8,
-                "mta.page.offset",
-            )? as usize;
+            let off = read_u64(section, offsets_start + idx * 8, "mta.page.offset")? as usize;
             if off == 0 {
                 continue;
             }
@@ -431,11 +432,12 @@ where
             let entry_index = read_u32(section, off, "mta.record.entry_index")?;
             let payload_size = read_u32(section, off + 4, "mta.record.payload_size")? as usize;
             let payload_start = off + 8;
-            let payload_end = payload_start
-                .checked_add(payload_size)
-                .ok_or(MtaError::InvalidSection {
-                    message: "record payload size overflow",
-                })?;
+            let payload_end =
+                payload_start
+                    .checked_add(payload_size)
+                    .ok_or(MtaError::InvalidSection {
+                        message: "record payload size overflow",
+                    })?;
             if payload_end > section.len() {
                 return Err(MtaError::Truncated {
                     what: "mta.record.payload",
@@ -496,11 +498,9 @@ fn read_u64(buf: &[u8], offset: usize, what: &'static str) -> MtaResult<u64> {
 }
 
 fn slice<'a>(buf: &'a [u8], offset: usize, len: usize, what: &'static str) -> MtaResult<&'a [u8]> {
-    let end = offset
-        .checked_add(len)
-        .ok_or(MtaError::InvalidSection {
-            message: "slice length overflow",
-        })?;
+    let end = offset.checked_add(len).ok_or(MtaError::InvalidSection {
+        message: "slice length overflow",
+    })?;
     buf.get(offset..end).ok_or(MtaError::Truncated {
         what,
         offset,
