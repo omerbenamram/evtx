@@ -1,3 +1,70 @@
+//! Parser for MTA (Message Table Archive) files.
+//!
+//! MTA files are exported by Windows Event Viewer alongside `.evtx` files and
+//! contain localized message strings needed to render human-readable event log
+//! entries. Filename convention: `{prefix}_eventlog_{LogName}_{LCID}.MTA`.
+//!
+//! All multi-byte integers are little-endian.
+//!
+//! ## File header (24 bytes)
+//!
+//! | Offset | Size | Type     | Description                    |
+//! |--------|------|----------|--------------------------------|
+//! | 0x00   | 8    | char[]   | Magic: `MTAFile\0`            |
+//! | 0x08   | 4    | u32      | Version major (1)              |
+//! | 0x0C   | 4    | u32      | Version minor (1)              |
+//! | 0x10   | 4    | u32      | Section descriptor table size  |
+//! | 0x14   | 4    | u32      | Number of sections             |
+//!
+//! ## Section descriptors (variable, immediately after header)
+//!
+//! Each descriptor:
+//!
+//! | Size | Type     | Description                              |
+//! |------|----------|------------------------------------------|
+//! | 8    | u64      | Absolute offset to section data          |
+//! | 8    | u64      | Section data size in bytes               |
+//! | 4    | u32      | Section name byte length                 |
+//! | var  | UTF-16LE | Section name (not null-terminated)        |
+//!
+//! Known sections: **EVT** (event→message mapping), **MSG** (localized
+//! strings), **PUB** (publisher/provider metadata).
+//!
+//! ## Paged array (shared structure for all sections)
+//!
+//! Each section is a linked list of fixed-capacity pages (100 entries each).
+//!
+//! Page layout:
+//!
+//! | Size | Description                                           |
+//! |------|-------------------------------------------------------|
+//! | 4    | Sentinel (`0xFFFFFFFF`)                               |
+//! | 56   | Bucket array (14 × u32, all identical — max index)   |
+//! | 4    | Sentinel (`0xFFFFFFFF`)                               |
+//! | 24   | Metadata: page_index (u64), next_offset (u64), self_offset (u64) |
+//! | 800  | Offset array (100 × u64, 0 = unused)                 |
+//! | var  | Records                                               |
+//!
+//! Last page: `next_offset == self_offset`.
+//!
+//! Each record: entry_index (u32), payload_size (u32), then payload.
+//!
+//! ## EVT record payload (16 bytes, fixed)
+//!
+//! | Offset | Size | Type | Description                           |
+//! |--------|------|------|---------------------------------------|
+//! | 0      | 4    | u32  | Event record ID (from record payload) |
+//! | 4      | 4    | u32  | (padding, 0)                          |
+//! | 8      | 4    | u32  | MSG string index                      |
+//! | 12     | 4    | u32  | (padding, 0)                          |
+//!
+//! ## MSG record payload (variable)
+//!
+//! | Offset | Size | Type     | Description                     |
+//! |--------|------|----------|---------------------------------|
+//! | 0      | 4    | u32      | String byte length (incl. NUL)  |
+//! | 4      | var  | UTF-16LE | Null-terminated message string  |
+
 use crate::binxml::value_variant::BinXmlValue;
 use crate::evtx_record::{EvtxRecord, SerializedEvtxRecord};
 use crate::model::ir::{Node, Text};
