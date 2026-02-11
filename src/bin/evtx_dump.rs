@@ -352,8 +352,24 @@ impl EvtxDump {
                     if self.show_record_number {
                         writeln!(self.output, "Record {}", r.event_record_id)?;
                     }
-                    self.write_record_message(record_index, &r)?;
-                    writeln!(self.output, "{}", r.data)?;
+
+                    let message = self.record_message(record_index, &r)?;
+                    match self.output_format {
+                        EvtxOutputFormat::JSON => {
+                            let json = if let Some(message) = message.as_deref() {
+                                self.inject_json_message(&r.data, message)?
+                            } else {
+                                r.data.clone()
+                            };
+                            writeln!(self.output, "{}", json)?;
+                        }
+                        EvtxOutputFormat::XML => {
+                            if let Some(message) = message {
+                                writeln!(self.output, "Message: {}", message)?;
+                            }
+                            writeln!(self.output, "{}", r.data)?;
+                        }
+                    }
                 }
             }
             // This error is non fatal.
@@ -369,17 +385,17 @@ impl EvtxDump {
         Ok(())
     }
 
-    fn write_record_message(
+    fn record_message(
         &mut self,
         record_index: u64,
         record: &SerializedEvtxRecord<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         if !self.show_message {
-            return Ok(());
+            return Ok(None);
         }
 
         let Some(cache) = self.parser_settings.get_mta_cache() else {
-            return Ok(());
+            return Ok(None);
         };
 
         let message = u32::try_from(record_index)
@@ -388,11 +404,33 @@ impl EvtxDump {
             .or_else(|| cache.message_for_record_id(record.event_record_id))
             .map(|text| text.to_string());
 
-        if let Some(message) = message {
-            writeln!(self.output, "Message: {}", message)?;
+        Ok(message)
+    }
+
+    fn inject_json_message(&self, record_json: &str, message: &str) -> Result<String> {
+        let record_json = record_json.trim_end();
+        if record_json.len() < 2
+            || !record_json.starts_with('{')
+            || !record_json.ends_with('}')
+        {
+            return Err(format_err!(
+                "Expected JSON object for record output when injecting message"
+            ));
         }
 
-        Ok(())
+        let message_json = serde_json::to_string(message)
+            .map_err(|e| format_err!("Failed to serialize message: {e}"))?;
+
+        if record_json.len() == 2 {
+            return Ok(format!("{{\"Message\":{message_json}}}"));
+        }
+
+        let mut out = String::with_capacity(record_json.len() + message_json.len() + 12);
+        out.push_str(&record_json[..record_json.len() - 1]);
+        out.push_str(",\"Message\":");
+        out.push_str(&message_json);
+        out.push('}');
+        Ok(out)
     }
 
     fn try_to_initialize_logging(&self) -> Result<()> {
@@ -573,7 +611,7 @@ fn main() -> Result<()> {
             Arg::new("show-message")
                 .long("show-message")
                 .action(ArgAction::SetTrue)
-                .help("When set, prints a localized message line per record (plain text; breaks JSON/JSONL output)."),
+                .help("When set, prints a localized message per record (adds Message to JSON/JSONL output)."),
         )
         .arg(
             Arg::new("ansi-codec")
