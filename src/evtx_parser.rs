@@ -141,6 +141,8 @@ pub struct ParserSettings {
     /// are missing/corrupt (common in carved/dirty logs).
     #[cfg(feature = "wevt_templates")]
     wevt_cache: Option<Arc<crate::wevt_templates::WevtCache>>,
+    /// Optional MTA cache for localized message lookups.
+    mta_cache: Option<Arc<crate::mta::MtaFile>>,
 }
 
 impl Debug for ParserSettings {
@@ -150,7 +152,8 @@ impl Debug for ParserSettings {
             .field("validate_checksums", &self.validate_checksums)
             .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
-            .field("ansi_codec", &self.ansi_codec.name());
+            .field("ansi_codec", &self.ansi_codec.name())
+            .field("mta_cache", &self.mta_cache.is_some());
 
         #[cfg(feature = "wevt_templates")]
         ds.field("wevt_cache", &self.wevt_cache.is_some());
@@ -166,6 +169,7 @@ impl PartialEq for ParserSettings {
             && self.validate_checksums == other.validate_checksums
             && self.separate_json_attributes == other.separate_json_attributes
             && self.indent == other.indent
+            && self.mta_cache.is_some() == other.mta_cache.is_some()
     }
 }
 
@@ -179,6 +183,7 @@ impl Default for ParserSettings {
             ansi_codec: WINDOWS_1252,
             #[cfg(feature = "wevt_templates")]
             wevt_cache: None,
+            mta_cache: None,
         }
     }
 }
@@ -224,6 +229,12 @@ impl ParserSettings {
         self
     }
 
+    /// Attach an MTA cache for localized message lookups.
+    pub fn mta_cache(mut self, cache: Option<Arc<crate::mta::MtaFile>>) -> Self {
+        self.mta_cache = cache;
+        self
+    }
+
     pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
         self.validate_checksums = validate_checksums;
 
@@ -250,6 +261,10 @@ impl ParserSettings {
     #[cfg(feature = "wevt_templates")]
     pub(crate) fn get_wevt_cache(&self) -> Option<&Arc<crate::wevt_templates::WevtCache>> {
         self.wevt_cache.as_ref()
+    }
+
+    pub fn get_mta_cache(&self) -> Option<&Arc<crate::mta::MtaFile>> {
+        self.mta_cache.as_ref()
     }
 
     pub fn should_separate_json_attributes(&self) -> bool {

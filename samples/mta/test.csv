@@ -1,0 +1,240 @@
+﻿Level,Date and Time,Source,Event ID,Task Category
+Information,12/9/2025 5:37:32 PM,Microsoft-Windows-Servicing,2,(1),Package KB5071959 was successfully changed to the Installed state.
+Information,12/9/2025 9:12:08 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5071959 can be changed to the Installed state.
+Information,12/9/2025 9:11:19 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5071959. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,12/9/2025 9:10:55 AM,Microsoft-Windows-Servicing,2,(1),Package KB5071982 was successfully changed to the Installed state.
+Information,12/9/2025 9:10:51 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5071982. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,11/18/2025 2:30:28 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063523. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,11/18/2025 2:30:28 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5064400. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,11/18/2025 2:30:27 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5056578. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,11/18/2025 2:30:15 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5065429. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,11/18/2025 2:29:47 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063709. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,11/17/2025 10:29:33 PM,Microsoft-Windows-Servicing,2,(1),Package KB5072653 was successfully changed to the Installed state.
+Information,11/17/2025 10:29:03 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5072653 can be changed to the Installed state.
+Information,11/17/2025 9:56:03 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5072653. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,10/15/2025 5:44:47 PM,Microsoft-Windows-Servicing,2,(1),Package KB5066791 was successfully changed to the Installed state.
+Information,10/15/2025 7:12:41 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5066791 can be changed to the Installed state.
+Information,10/15/2025 7:10:44 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5066791. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,10/15/2025 7:10:22 AM,Microsoft-Windows-Servicing,2,(1),Package KB5066790 was successfully changed to the Installed state.
+Information,10/15/2025 7:10:22 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5066790. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,10/15/2025 7:07:55 AM,Microsoft-Windows-Servicing,2,(1),Package KB5068164 was successfully changed to the Installed state.
+Information,10/15/2025 7:07:53 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5068164. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,10/15/2025 7:07:25 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5062554. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,10/15/2025 7:07:13 AM,Microsoft-Windows-Servicing,2,(1),Package KB5066130 was successfully changed to the Installed state.
+Information,10/15/2025 7:07:04 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5066130. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,10/1/2025 5:40:45 PM,Microsoft-Windows-Servicing,2,(1),Package KB5065429 was successfully changed to the Installed state.
+Information,10/1/2025 8:33:53 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5065429 can be changed to the Installed state.
+Information,10/1/2025 8:31:47 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5065429. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,10/1/2025 8:31:27 AM,Microsoft-Windows-Servicing,2,(1),Package KB5063979 was successfully changed to the Installed state.
+Information,10/1/2025 8:31:23 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063979. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,10/1/2025 8:27:37 AM,Microsoft-Windows-Servicing,2,(1),Package KB5064400 was successfully changed to the Installed state.
+Information,10/1/2025 8:27:37 AM,Microsoft-Windows-Servicing,2,(1),Package KB5063709 was successfully changed to the Installed state.
+Information,9/11/2025 11:29:51 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5064400 can be changed to the Installed state.
+Information,9/11/2025 11:29:38 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5064400. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,8/14/2025 8:31:29 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5063709 can be changed to the Installed state.
+Information,8/14/2025 8:29:22 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063709. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,8/14/2025 8:28:59 PM,Microsoft-Windows-Servicing,2,(1),Package KB5063261 was successfully changed to the Installed state.
+Information,8/14/2025 8:28:54 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063261. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,8/12/2025 7:56:09 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5057589. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,8/12/2025 7:55:53 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5060533. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,7/15/2025 3:41:03 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5058379. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,7/9/2025 3:40:44 AM,Microsoft-Windows-Servicing,2,(1),Package KB5062554 was successfully changed to the Installed state.
+Information,7/9/2025 3:15:42 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5062554 can be changed to the Installed state.
+Information,7/9/2025 3:13:23 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5062554. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,7/9/2025 3:13:03 AM,Microsoft-Windows-Servicing,2,(1),Package KB5063706 was successfully changed to the Installed state.
+Information,7/9/2025 3:13:03 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063706. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,7/9/2025 3:11:16 AM,Microsoft-Windows-Servicing,2,(1),Package KB5063523 was successfully changed to the Installed state.
+Information,7/9/2025 3:11:12 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5063523. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,6/17/2025 3:45:05 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5055518. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,6/10/2025 5:44:49 PM,Microsoft-Windows-Servicing,2,(1),Package KB5060533 was successfully changed to the Installed state.
+Information,6/10/2025 10:09:03 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5060533 can be changed to the Installed state.
+Information,6/10/2025 10:06:43 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5060533. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,6/10/2025 10:06:21 AM,Microsoft-Windows-Servicing,2,(1),Package KB5059504 was successfully changed to the Installed state.
+Information,6/10/2025 10:06:17 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5059504. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,6/10/2025 10:04:49 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5054978. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,6/10/2025 10:04:48 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5049621. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,5/14/2025 3:15:55 AM,Microsoft-Windows-Servicing,2,(1),Package KB5058379 was successfully changed to the Installed state.
+Information,5/14/2025 3:03:42 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5058379 can be changed to the Installed state.
+Information,5/14/2025 3:00:48 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5058379. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,5/14/2025 3:00:29 AM,Microsoft-Windows-Servicing,2,(1),Package KB5058526 was successfully changed to the Installed state.
+Information,5/14/2025 3:00:24 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5058526. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,5/14/2025 2:59:12 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5050411. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,5/14/2025 2:58:52 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5053606. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,4/23/2025 5:40:42 PM,Microsoft-Windows-Servicing,2,(1),Package KB5056578 was successfully changed to the Installed state.
+Information,4/23/2025 5:40:04 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5056578 can be changed to the Installed state.
+Information,4/23/2025 5:14:25 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5056578. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,4/15/2025 3:36:21 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5051974. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,4/8/2025 5:36:09 PM,Microsoft-Windows-Servicing,2,(1),Package KB5057589 was successfully changed to the Installed state.
+Information,4/8/2025 5:36:09 PM,Microsoft-Windows-Servicing,2,(1),Package KB5055518 was successfully changed to the Installed state.
+Information,4/8/2025 5:36:09 PM,Microsoft-Windows-Servicing,2,(1),Package KB5054978 was successfully changed to the Installed state.
+Information,4/8/2025 5:35:09 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5054978 can be changed to the Installed state.
+Information,4/8/2025 4:13:48 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5057589 can be changed to the Installed state.
+Information,4/8/2025 4:13:39 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5057589. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,4/8/2025 1:18:01 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5055518 can be changed to the Installed state.
+Information,4/8/2025 1:15:35 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5055518. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,4/8/2025 1:15:32 PM,Microsoft-Windows-Servicing,2,(1),Package KB5054682 was successfully changed to the Installed state.
+Information,4/8/2025 1:15:31 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5054682. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,4/8/2025 1:13:55 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5054978. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,3/18/2025 4:40:21 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5049981. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,3/11/2025 10:39:55 PM,Microsoft-Windows-Servicing,2,(1),Package KB5053606 was successfully changed to the Installed state.
+Information,3/11/2025 10:16:20 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5053606 can be changed to the Installed state.
+Information,3/11/2025 10:14:14 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5053606. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,3/11/2025 10:13:53 PM,Microsoft-Windows-Servicing,2,(1),Package KB5052916 was successfully changed to the Installed state.
+Information,3/11/2025 10:13:49 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5052916. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,2/18/2025 3:40:25 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048239. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,2/18/2025 3:40:24 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5045933. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,2/18/2025 3:40:07 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048652. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,2/11/2025 5:39:49 PM,Microsoft-Windows-Servicing,2,(1),Package KB5051974 was successfully changed to the Installed state.
+Information,2/11/2025 12:41:20 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5051974 can be changed to the Installed state.
+Information,2/11/2025 12:39:09 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5051974. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,2/11/2025 12:38:47 PM,Microsoft-Windows-Servicing,2,(1),Package KB5050111 was successfully changed to the Installed state.
+Information,2/11/2025 12:38:43 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5050111. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,1/15/2025 4:35:09 AM,Microsoft-Windows-Servicing,2,(1),Package KB5050411 was successfully changed to the Installed state.
+Information,1/15/2025 4:35:08 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5050411. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,1/15/2025 2:29:52 AM,Microsoft-Windows-Servicing,2,(1),Package KB5049981 was successfully changed to the Installed state.
+Information,1/15/2025 2:29:52 AM,Microsoft-Windows-Servicing,2,(1),Package KB5049621 was successfully changed to the Installed state.
+Information,1/15/2025 2:29:11 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5049621 can be changed to the Installed state.
+Information,1/15/2025 2:09:10 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5049981 can be changed to the Installed state.
+Information,1/15/2025 2:07:29 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5049981. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,1/15/2025 2:07:26 AM,Microsoft-Windows-Servicing,2,(1),Package KB5050388 was successfully changed to the Installed state.
+Information,1/15/2025 2:07:24 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5050388. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,1/15/2025 2:06:43 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5049621. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,1/15/2025 2:06:05 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5046613. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,1/14/2025 3:40:31 AM,Microsoft-Windows-Servicing,2,(1),Package KB5048239 was successfully changed to the Installed state.
+Information,1/14/2025 3:40:31 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048239. Current state is Installed. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,1/13/2025 5:27:49 AM,Microsoft-Windows-Servicing,2,(1),Package KB5048239 was successfully changed to the Installed state.
+Information,1/13/2025 5:27:46 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048239. Current state is Installed. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,1/12/2025 8:53:24 AM,Microsoft-Windows-Servicing,2,(1),Package KB5048239 was successfully changed to the Installed state.
+Information,1/12/2025 8:53:24 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048239. Current state is Installed. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,1/11/2025 9:53:37 AM,Microsoft-Windows-Servicing,2,(1),Package KB5048239 was successfully changed to the Installed state.
+Information,1/11/2025 9:53:33 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048239. Current state is Installed. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,12/17/2024 3:45:19 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5046400. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,12/17/2024 3:45:18 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5044029. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,12/17/2024 3:45:03 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5044273. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,12/11/2024 5:44:44 PM,Microsoft-Windows-Servicing,2,(1),Package KB5048652 was successfully changed to the Installed state.
+Information,12/11/2024 5:37:45 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5048652 can be changed to the Installed state.
+Information,12/11/2024 5:35:46 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048652. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,11/12/2024 6:54:54 PM,Microsoft-Windows-Servicing,2,(1),Package KB5046613 was successfully changed to the Installed state.
+Information,11/12/2024 6:54:54 PM,Microsoft-Windows-Servicing,2,(1),Package KB5045933 was successfully changed to the Installed state.
+Information,11/12/2024 6:54:08 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5045933 can be changed to the Installed state.
+Information,11/12/2024 6:47:28 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5046613 can be changed to the Installed state.
+Information,11/12/2024 6:45:40 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5046613. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,11/12/2024 6:45:36 PM,Microsoft-Windows-Servicing,2,(1),Package KB5046823 was successfully changed to the Installed state.
+Information,11/12/2024 6:45:34 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5046823. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,11/12/2024 6:45:07 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5045933. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,11/12/2024 6:45:06 PM,Microsoft-Windows-Servicing,2,(1),Package KB5048239 was successfully changed to the Installed state.
+Information,11/12/2024 6:45:01 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5048239. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,11/12/2024 6:44:29 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034441. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,11/12/2024 6:44:29 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5042097. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,11/12/2024 6:44:09 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5043064. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,10/15/2024 3:33:16 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5041580. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,10/8/2024 11:03:24 PM,Microsoft-Windows-Servicing,2,(1),Package KB5046400 was successfully changed to the Installed state.
+Information,10/8/2024 11:03:23 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5046400. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,10/8/2024 9:33:03 PM,Microsoft-Windows-Servicing,2,(1),Package KB5044273 was successfully changed to the Installed state.
+Information,10/8/2024 9:33:03 PM,Microsoft-Windows-Servicing,2,(1),Package KB5044029 was successfully changed to the Installed state.
+Information,10/8/2024 9:32:14 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5044029 can be changed to the Installed state.
+Information,10/8/2024 9:06:08 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5044273 can be changed to the Installed state.
+Information,10/8/2024 9:03:51 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5044273. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,10/8/2024 9:03:48 PM,Microsoft-Windows-Servicing,2,(1),Package KB5043130 was successfully changed to the Installed state.
+Information,10/8/2024 9:03:47 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5043130. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,10/8/2024 9:03:35 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5044029. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,9/17/2024 3:42:29 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5039893. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,9/17/2024 3:42:12 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5040427. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,9/10/2024 5:41:52 PM,Microsoft-Windows-Servicing,2,(1),Package KB5043064 was successfully changed to the Installed state.
+Information,9/10/2024 12:58:43 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5043064 can be changed to the Installed state.
+Information,9/10/2024 12:56:23 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5043064. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,9/10/2024 12:56:01 PM,Microsoft-Windows-Servicing,2,(1),Package KB5043935 was successfully changed to the Installed state.
+Information,9/10/2024 12:55:56 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5043935. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,8/19/2024 12:16:45 PM,Microsoft-Windows-Servicing,9,(1),Selectable update NetFx3 of package Microsoft .NET Framework 3.0 was successfully turned on.
+Information,8/19/2024 12:16:45 PM,Microsoft-Windows-Servicing,2,(1),Package KB5041580 was successfully changed to the Installed state.
+Information,8/19/2024 12:16:42 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5041580. Current state is Installed. Target state is Installed. Client id: LCUReservicing.
+Information,8/19/2024 12:16:12 PM,Microsoft-Windows-Servicing,7,(1),Initiating changes to turn on update NetFx3 of package Microsoft .NET Framework 3.0. Client id: Windows Optional Component Manager Command-Line.
+Information,8/14/2024 1:14:52 AM,Microsoft-Windows-Servicing,2,(1),Package KB5041580 was successfully changed to the Installed state.
+Information,8/14/2024 1:14:52 AM,Microsoft-Windows-Servicing,2,(1),Package KB5042097 was successfully changed to the Installed state.
+Information,8/14/2024 1:14:08 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5042097 can be changed to the Installed state.
+Information,8/14/2024 1:04:51 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5041580 can be changed to the Installed state.
+Information,8/14/2024 1:02:42 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5041580. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,8/14/2024 1:02:39 AM,Microsoft-Windows-Servicing,2,(1),Package KB5041579 was successfully changed to the Installed state.
+Information,8/14/2024 1:02:37 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5041579. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,8/14/2024 1:01:28 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5042097. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,8/14/2024 1:01:19 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037587. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,8/14/2024 1:01:19 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB777778. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,8/14/2024 1:00:59 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5039211. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,7/16/2024 4:39:29 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037768. Current state is Superseded. Target state is Absent. Client id: CbsTask.
+Information,7/10/2024 12:37:47 PM,Microsoft-Windows-Servicing,2,(1),Package KB5039893 was successfully changed to the Installed state.
+Information,7/10/2024 12:37:22 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5039893 can be changed to the Installed state.
+Information,7/10/2024 12:37:18 PM,Microsoft-Windows-Servicing,2,(1),Package KB5040427 was successfully changed to the Installed state.
+Information,7/10/2024 6:54:49 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5040427 can be changed to the Installed state.
+Information,7/10/2024 6:52:27 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5040427. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,7/10/2024 6:52:23 AM,Microsoft-Windows-Servicing,2,(1),Package KB5039336 was successfully changed to the Installed state.
+Information,7/10/2024 6:52:17 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5039336. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,7/10/2024 6:50:15 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5039893. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,7/10/2024 6:50:00 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036618. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,7/10/2024 6:49:37 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036892. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,6/11/2024 11:35:45 PM,Microsoft-Windows-Servicing,2,(1),Package KB5039211 was successfully changed to the Installed state.
+Information,6/11/2024 8:11:26 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5039211 can be changed to the Installed state.
+Information,6/11/2024 8:09:14 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5039211. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,6/11/2024 8:08:53 PM,Microsoft-Windows-Servicing,2,(1),Package KB5037995 was successfully changed to the Installed state.
+Information,6/11/2024 8:08:49 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037995. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,6/7/2024 11:41:05 PM,Microsoft-Windows-Servicing,2,(1),Package KB5037768 was successfully changed to the Installed state.
+Information,6/7/2024 11:41:05 PM,Microsoft-Windows-Servicing,2,(1),Package KB5037587 was successfully changed to the Installed state.
+Information,6/7/2024 11:40:14 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5037587 can be changed to the Installed state.
+Information,6/7/2024 7:44:07 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5037768 can be changed to the Installed state.
+Information,6/7/2024 7:40:55 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037768. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,6/7/2024 7:40:51 AM,Microsoft-Windows-Servicing,2,(1),Package KB5037240 was successfully changed to the Installed state.
+Information,6/7/2024 7:40:50 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037240. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,6/7/2024 7:40:40 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037587. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,6/7/2024 6:55:04 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036034. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,6/7/2024 6:55:03 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034466. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,6/7/2024 6:55:49 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5035845. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,6/7/2024 6:55:17 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034763. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,4/25/2024 5:30:41 AM,Microsoft-Windows-Servicing,2,(1),Package KB5034441 was successfully changed to the Installed state.
+Information,4/25/2024 5:30:36 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034441. Current state is Absent. Target state is Installed. Client id: DISM Package Manager Provider.
+Information,4/11/2024 12:03:11 AM,Microsoft-Windows-Servicing,2,(1),Package KB5036892 was successfully changed to the Installed state.
+Information,4/10/2024 10:51:06 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5036892 can be changed to the Installed state.
+Information,4/10/2024 10:49:04 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036892. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,4/10/2024 10:48:43 AM,Microsoft-Windows-Servicing,2,(1),Package KB5037018 was successfully changed to the Installed state.
+Information,4/10/2024 10:48:42 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5037018. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,4/10/2024 10:48:40 AM,Microsoft-Windows-Servicing,2,(1),Package KB5036618 was successfully changed to the Installed state.
+Information,4/10/2024 10:48:31 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036618. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,4/4/2024 5:59:35 AM,Microsoft-Windows-Servicing,2,(1),Package KB5035845 was successfully changed to the Installed state.
+Information,4/4/2024 5:59:35 AM,Microsoft-Windows-Servicing,2,(1),Package KB5036034 was successfully changed to the Installed state.
+Information,4/4/2024 5:58:53 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5036034 can be changed to the Installed state.
+Information,4/4/2024 5:55:22 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5035845 can be changed to the Installed state.
+Information,4/4/2024 5:52:54 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5035845. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,4/4/2024 5:52:49 AM,Microsoft-Windows-Servicing,2,(1),Package KB5036447 was successfully changed to the Installed state.
+Information,4/4/2024 5:52:37 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036447. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,4/4/2024 5:49:23 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5036034. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,4/4/2024 5:49:01 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5020872. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,4/4/2024 5:49:00 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5033918. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,4/4/2024 5:49:00 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package Microsoft-Windows-MSPaint-FoD-en-US. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,4/4/2024 5:48:45 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034122. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,4/4/2024 5:48:04 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5021233. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,2/16/2024 5:57:00 PM,Microsoft-Windows-Servicing,2,(1),Package KB5034763 was successfully changed to the Installed state.
+Information,2/16/2024 10:29:04 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5034763 can be changed to the Installed state.
+Information,2/16/2024 10:26:34 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034763. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,2/16/2024 10:26:10 AM,Microsoft-Windows-Servicing,2,(1),Package KB5034224 was successfully changed to the Installed state.
+Information,2/16/2024 10:26:10 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034224. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,2/16/2024 10:26:07 AM,Microsoft-Windows-Servicing,2,(1),Package KB5034466 was successfully changed to the Installed state.
+Information,2/16/2024 10:25:59 AM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034466. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,1/27/2024 1:53:25 PM,Microsoft-Windows-Servicing,2,(1),Package KB5033918 was successfully changed to the Installed state.
+Information,1/23/2024 2:36:29 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5033918 can be changed to the Installed state.
+Information,1/23/2024 2:23:46 PM,Microsoft-Windows-Servicing,10,(1),Selectable update Windows-Defender-Default-Definitions of package Windows-Defender-Client was successfully turned off.
+Information,1/23/2024 2:23:43 PM,Microsoft-Windows-Servicing,8,(1),Initiating changes to turn off update Windows-Defender-Default-Definitions of package Windows-Defender-Client. Client id: DISM Package Manager Provider.
+Information,1/23/2024 12:21:23 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5033918. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,1/23/2024 12:24:14 AM,Microsoft-Windows-Servicing,2,(1),Package KB5034122 was successfully changed to the Installed state.
+Information,1/23/2024 12:24:14 AM,Microsoft-Windows-Servicing,2,(1),Package KB5011048 was successfully changed to the Installed state.
+Information,1/23/2024 12:24:14 AM,Microsoft-Windows-Servicing,2,(1),Package KB5033909 was successfully changed to the Installed state.
+Information,1/23/2024 12:22:43 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5011048 can be changed to the Installed state.
+Information,1/23/2024 12:22:24 AM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5033909 can be changed to the Installed state.
+Information,1/22/2024 10:12:13 PM,Microsoft-Windows-Servicing,4,(1),A reboot is necessary before package KB5034122 can be changed to the Installed state.
+Information,1/22/2024 10:08:10 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5034122. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,1/22/2024 10:08:07 PM,Microsoft-Windows-Servicing,2,(1),Package KB5032907 was successfully changed to the Installed state.
+Information,1/22/2024 10:08:06 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5032907. Current state is Absent. Target state is Installed. Client id: UpdateAgentLCU.
+Information,1/22/2024 10:07:30 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5033909. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,1/22/2024 10:06:22 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5011048. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,1/22/2024 4:18:49 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5017308. Current state is Superseded. Target state is Absent. Client id: Arbiter.
+Information,1/22/2024 2:04:30 PM,Microsoft-Windows-Servicing,2,(1),Package KB5026037 was successfully changed to the Installed state.
+Information,1/22/2024 2:04:30 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5026037. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.
+Information,1/22/2024 2:04:29 PM,Microsoft-Windows-Servicing,2,(1),Package KB5020683 was successfully changed to the Installed state.
+Information,1/22/2024 2:04:22 PM,Microsoft-Windows-Servicing,1,(1),Initiating changes for package KB5020683. Current state is Absent. Target state is Installed. Client id: WindowsUpdateAgent.

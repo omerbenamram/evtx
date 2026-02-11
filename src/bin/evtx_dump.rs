@@ -8,13 +8,14 @@ use indoc::indoc;
 use encoding::all::encodings;
 use encoding::types::Encoding;
 use evtx::err::Result as EvtxResult;
-use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
+use evtx::{EvtxParser, MtaFile, ParserSettings, SerializedEvtxRecord};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use tempfile::tempfile;
 
 #[path = "evtx_dump/apply_wevt_cache.rs"]
@@ -70,6 +71,7 @@ struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
     show_record_number: bool,
+    show_message: bool,
     output_format: EvtxOutputFormat,
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
@@ -132,6 +134,8 @@ impl EvtxDump {
             (v, None) => v,
         };
 
+        let show_message = matches.get_flag("show-message");
+
         let num_threads: u32 = *matches.get_one("num-threads").expect("has default");
 
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
@@ -189,12 +193,22 @@ impl EvtxDump {
             .map(|p| load_wevt_cache_from_wevtcache_file(p))
             .transpose()?;
 
+        let mta_cache = matches
+            .get_one::<String>("mta")
+            .map(|p| {
+                MtaFile::from_path(p)
+                    .map(Arc::new)
+                    .with_context(|| format!("Failed to read MTA file at `{}`", p))
+            })
+            .transpose()?;
+
         let mut parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
-            .ansi_codec(*ansi_codec);
+            .ansi_codec(*ansi_codec)
+            .mta_cache(mta_cache);
 
         #[cfg(feature = "wevt_templates")]
         {
@@ -205,6 +219,7 @@ impl EvtxDump {
             parser_settings,
             input,
             show_record_number: !no_show_record_number,
+            show_message,
             output_format,
             output,
             verbosity_level,
@@ -225,13 +240,13 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
-                for record in parser.records() {
-                    self.dump_record(record)?
+                for (index, record) in parser.records().enumerate() {
+                    self.dump_record(index as u64, record)?
                 }
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json() {
-                    self.dump_record(record)?
+                for (index, record) in parser.records_json().enumerate() {
+                    self.dump_record(index as u64, record)?
                 }
             }
         };
@@ -320,7 +335,11 @@ impl EvtxDump {
         }
     }
 
-    fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<String>>) -> Result<()> {
+    fn dump_record(
+        &mut self,
+        record_index: u64,
+        record: EvtxResult<SerializedEvtxRecord<String>>,
+    ) -> Result<()> {
         match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
                 let range_filter = if let Some(ranges) = &self.ranges {
@@ -333,6 +352,7 @@ impl EvtxDump {
                     if self.show_record_number {
                         writeln!(self.output, "Record {}", r.event_record_id)?;
                     }
+                    self.write_record_message(record_index, &r)?;
                     writeln!(self.output, "{}", r.data)?;
                 }
             }
@@ -345,6 +365,32 @@ impl EvtxDump {
                 }
             }
         };
+
+        Ok(())
+    }
+
+    fn write_record_message(
+        &mut self,
+        record_index: u64,
+        record: &SerializedEvtxRecord<String>,
+    ) -> Result<()> {
+        if !self.show_message {
+            return Ok(());
+        }
+
+        let Some(cache) = self.parser_settings.get_mta_cache() else {
+            return Ok(());
+        };
+
+        let message = u32::try_from(record_index)
+            .ok()
+            .and_then(|index| cache.message_for_entry_index(index))
+            .or_else(|| cache.message_for_record_id(record.event_record_id))
+            .map(|text| text.to_string());
+
+        if let Some(message) = message {
+            writeln!(self.output, "Message: {}", message)?;
+        }
 
         Ok(())
     }
@@ -524,11 +570,23 @@ fn main() -> Result<()> {
                 .help("When set, `Record <id>` will not be printed."),
         )
         .arg(
+            Arg::new("show-message")
+                .long("show-message")
+                .action(ArgAction::SetTrue)
+                .help("When set, prints a localized message line per record (plain text; breaks JSON/JSONL output)."),
+        )
+        .arg(
             Arg::new("ansi-codec")
                 .long("ansi-codec")
                 .value_parser(all_encoings)
                 .default_value(encoding::all::WINDOWS_1252.name())
                 .help("When set, controls the codec of ansi encoded strings the file."),
+        )
+        .arg(
+            Arg::new("mta")
+                .long("mta")
+                .value_name("MTA")
+                .help("Path to an MTA file for localized message lookups."),
         );
 
     // Optional: when provided, use an offline WEVT template cache as a fallback for records

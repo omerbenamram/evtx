@@ -153,6 +153,12 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
+    /// Look up the localized message string for this record using the configured MTA cache.
+    pub fn localized_message(&self) -> Option<&str> {
+        let cache = self.settings.get_mta_cache()?;
+        cache.message_for_record_id(self.event_record_id)
+    }
+
     /// Parse all `TemplateInstance` substitution arrays from this record.
     ///
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
