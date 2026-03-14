@@ -9,7 +9,7 @@ extern crate bitflags;
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
 pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
-pub use evtx_record::{EvtxRecord, EvtxRecordHeader, RecordId, SerializedEvtxRecord};
+pub use evtx_record::{EvtxRecord, EvtxRecordHeader, Offset, RecordId, SerializedEvtxRecord, Timestamp};
 pub use utils::utf16::{Utf16LeDecodeError, Utf16LeSlice};
 
 pub mod binxml;
