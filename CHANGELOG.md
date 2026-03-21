@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.11.2 - 2026-03-22]
+
+### Added
+- Re-export `Timestamp` and `Offset` from the crate root to simplify downstream timestamp handling.
+
+### Fixed
+- Stop iterating a chunk after detecting a record whose `data_size` points past the chunk boundary, avoiding an infinite loop on malformed EVTX input.
+- Fix a missing closing quote in the README `evtx_dump` + `fd` XML example.
+
+**Full Changelog**: [`v0.11.1...v0.11.2`](https://github.com/omerbenamram/evtx/compare/v0.11.1...v0.11.2)
+
 ## [0.11.1 - 2026-02-06]
 
 ### Security
