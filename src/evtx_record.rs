@@ -7,7 +7,9 @@ use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
 use crate::{EvtxChunk, ParserSettings};
 
-use jiff::Timestamp;
+pub use jiff::Timestamp;
+#[allow(unused)]
+pub use jiff::tz::Offset;
 use std::io::Cursor;
 use std::sync::Arc;
 
