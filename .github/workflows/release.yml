@@ -21,19 +21,16 @@ jobs:
       - name: Create artifacts directory
         run: mkdir artifacts
 
-      - name: Mark manual
-        if: inputs.version != ''
+      - name: Resolve release version
         run: |
-          echo "MANUAL=1" >> $GITHUB_ENV
-
-      - name: Get the release version from the tag
-        if: env.VERSION == ''
-        run: |
-          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          fi
           echo "version is: ${{ env.VERSION }}"
 
       - name: Check for existing release
-        if: env.MANUAL != '1'
         id: check_release
         uses: actions/github-script@v6
         with:
@@ -58,7 +55,7 @@ jobs:
 
       - name: Create GitHub release
         id: release
-        if: env.MANUAL != '1' && steps.check_release.outputs.exists != 'true'
+        if: steps.check_release.outputs.exists != 'true'
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -78,7 +75,6 @@ jobs:
         run: echo "${{ env.VERSION }}" > artifacts/release-version
 
       - name: Upload artifacts
-        if: env.MANUAL != '1'
         uses: actions/upload-artifact@v4
         with:
           name: artifacts
@@ -121,7 +117,7 @@ jobs:
             os: macos-15
             target: x86_64-apple-darwin
           - build: windows
-            os: windows-2019
+            os: windows-2022
             target: x86_64-pc-windows-msvc
 
     steps:
@@ -164,14 +160,12 @@ jobs:
           version: 0.11.0
 
       - name: Get release download URL
-        if: env.MANUAL != '1'
         uses: actions/download-artifact@v4
         with:
           name: artifacts
           path: artifacts
 
       - name: Set release upload URL and release version
-        if: env.MANUAL != '1'
         shell: bash
         run: |
           release_upload_url="$(cat artifacts/release-upload-url)"
@@ -224,7 +218,6 @@ jobs:
           fi
       - name: Upload release archive
         uses: shogo82148/actions-upload-release-asset@v1
-        if: env.MANUAL != '1'
         with:
           upload_url: ${{ env.RELEASE_UPLOAD_URL }}
           asset_path: ${{ env.ASSET }}
