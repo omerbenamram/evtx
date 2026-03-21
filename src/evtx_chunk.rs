@@ -341,6 +341,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
         let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
         if binxml_end as usize > self.chunk.data.len() {
+            self.exhausted = true;
             return Some(Err(EvtxError::FailedToParseRecord {
                 record_id: record_header.event_record_id,
                 source: Box::new(EvtxError::FailedToCreateRecordModel(
