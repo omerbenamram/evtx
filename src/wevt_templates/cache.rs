@@ -10,7 +10,9 @@ use super::manifest::WevtManifestError;
 
 #[derive(Debug, Error)]
 pub enum WevtCacheError {
-    #[error("TEMP slice out of bounds (crim_index={crim_index}, offset={temp_offset}, size={temp_size}, len={len})")]
+    #[error(
+        "TEMP slice out of bounds (crim_index={crim_index}, offset={temp_offset}, size={temp_size}, len={len})"
+    )]
     TempSliceOutOfBounds {
         crim_index: usize,
         temp_offset: u32,
@@ -103,8 +105,9 @@ impl WevtCache {
     ///
     /// This is **strict**: parse failures return an error and do not modify the cache.
     pub fn add_wevt_blob(&self, bytes: Arc<Vec<u8>>) -> Result<usize, WevtCacheError> {
-        let templates = crate::wevt_templates::extract_temp_templates_from_wevt_blob(bytes.as_slice())
-            .map_err(|source| WevtCacheError::CrimParse { source })?;
+        let templates =
+            crate::wevt_templates::extract_temp_templates_from_wevt_blob(bytes.as_slice())
+                .map_err(|source| WevtCacheError::CrimParse { source })?;
 
         let crim_index = {
             let mut crims = self.crim_blobs.lock().expect("lock poisoned");
@@ -179,13 +182,11 @@ impl WevtCache {
         };
 
         match src {
-            TemplateSource::TempBytes(bytes) => {
-                Ok(Some(TempBytes {
-                    bytes: bytes.clone(),
-                    start: 0,
-                    end: bytes.len(),
-                }))
-            }
+            TemplateSource::TempBytes(bytes) => Ok(Some(TempBytes {
+                bytes: bytes.clone(),
+                start: 0,
+                end: bytes.len(),
+            })),
             TemplateSource::CrimSlice {
                 crim_index,
                 temp_offset,

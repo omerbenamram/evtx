@@ -1,3 +1,14 @@
+//! BinXML parsing and rendering internals.
+//!
+//! The crate exposes a small public `binxml` surface for consumers that need to
+//! inspect decoded names or substitution values directly. Record parsing itself
+//! primarily flows through two internal strategies:
+//!
+//! - `ir`: parse BinXML into the bump-allocated IR in [`crate::model::ir`] and
+//!   render from that tree.
+//! - `compiled_xml`: compile template definitions into static XML fragments and
+//!   render substitution values directly from raw bytes on the hot XML path.
+
 pub mod name;
 pub mod value_variant;
 
@@ -6,8 +17,10 @@ pub(crate) mod compiled_xml;
 pub(crate) mod ir;
 pub(crate) mod ir_json;
 pub(crate) mod ir_xml;
+pub(crate) mod render_common;
 pub(crate) mod tokens;
 pub(crate) mod value_render;
+pub(crate) mod xml_value_format;
 
 pub use tokens::BinXmlTemplateValues;
 

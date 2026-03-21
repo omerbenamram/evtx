@@ -25,11 +25,14 @@ use std::iter::{IntoIterator, Iterator};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Size in bytes of a single EVTX chunk.
 pub const EVTX_CHUNK_SIZE: usize = 65536;
+/// Size in bytes of the fixed EVTX file header.
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
 // Stable shim until https://github.com/rust-lang/rust/issues/59359 is merged.
 // Taken from proposed std code.
+/// Internal compatibility trait for reader/seek sources accepted by [`EvtxParser`].
 pub trait ReadSeek: Read + Seek {
     fn tell(&mut self) -> io::Result<u64> {
         self.stream_position()
@@ -50,8 +53,11 @@ pub trait ReadSeek: Read + Seek {
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-/// Wraps a single `EvtxFileHeader`.
+/// EVTX file parser configured over a `Read + Seek` source.
 ///
+/// The parser owns the underlying input source, exposes chunk iteration, and
+/// can stream records as XML, JSON, or parsed IR without loading the full file
+/// into memory.
 ///
 /// Example usage (single threaded):
 ///
@@ -94,9 +100,10 @@ pub struct EvtxParser<T: ReadSeek> {
     data: T,
     header: EvtxFileHeader,
     config: Arc<ParserSettings>,
-    /// The calculated_chunk_count is the: (<file size> - <header size>) / <chunk size>
-    /// This is needed because the chunk count of an EVTX file can be larger than the u16
-    /// value stored in the file header.
+    /// Calculated as `(<file size> - <header size>) / <chunk size>`.
+    ///
+    /// This is needed because an EVTX file can contain more chunks than fit in
+    /// the on-disk `u16` chunk-count field.
     calculated_chunk_count: u64,
 }
 impl<T: ReadSeek> Debug for EvtxParser<T> {
@@ -109,6 +116,11 @@ impl<T: ReadSeek> Debug for EvtxParser<T> {
 }
 
 #[derive(Clone)]
+/// Builder-style parser configuration.
+///
+/// Settings apply to both IR construction and the XML/JSON renderers. The
+/// struct is intentionally cheap to clone so the parser can share it across
+/// chunk workers.
 pub struct ParserSettings {
     /// Controls the number of threads used for parsing chunks concurrently.
     num_threads: usize,
@@ -184,6 +196,7 @@ impl Default for ParserSettings {
 }
 
 impl ParserSettings {
+    /// Create a new settings value with the default configuration.
     pub fn new() -> Self {
         ParserSettings::default()
     }
@@ -224,25 +237,29 @@ impl ParserSettings {
         self
     }
 
+    /// Enable or disable per-chunk checksum validation.
     pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
         self.validate_checksums = validate_checksums;
 
         self
     }
 
+    /// Control whether JSON attributes are emitted under `#attributes` or as
+    /// sibling `<name>_attributes` keys.
     pub fn separate_json_attributes(mut self, separate: bool) -> Self {
         self.separate_json_attributes = separate;
 
         self
     }
 
+    /// Enable or disable pretty-printed XML output.
     pub fn indent(mut self, pretty: bool) -> Self {
         self.indent = pretty;
 
         self
     }
 
-    /// Gets the current ansi codec
+    /// Return the ANSI codec used to decode ANSI strings in BinXML values.
     pub fn get_ansi_codec(&self) -> EncodingRef {
         self.ansi_codec
     }
@@ -252,21 +269,30 @@ impl ParserSettings {
         self.wevt_cache.as_ref()
     }
 
+    /// Return whether JSON attributes are emitted in the legacy sibling-key form.
     pub fn should_separate_json_attributes(&self) -> bool {
         self.separate_json_attributes
     }
 
+    /// Return whether XML rendering should use indentation/newlines.
     pub fn should_indent(&self) -> bool {
         self.indent
     }
 
+    /// Return whether chunk checksums are validated during chunk allocation.
     pub fn should_validate_checksums(&self) -> bool {
         self.validate_checksums
     }
 
+    /// Return the configured number of worker threads.
     pub fn get_num_threads(&self) -> &usize {
         &self.num_threads
     }
+}
+
+struct ChunkBatch<U> {
+    results: Vec<Result<U>>,
+    arena: Bump,
 }
 
 impl EvtxParser<File> {
@@ -294,6 +320,9 @@ impl EvtxParser<Cursor<Vec<u8>>> {
 }
 
 impl<T: ReadSeek> EvtxParser<T> {
+    /// Build a parser from any `Read + Seek` input.
+    ///
+    /// The EVTX header is parsed immediately so malformed inputs fail fast.
     pub fn from_read_seek(mut read_seek: T) -> Result<Self> {
         let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)?;
 
@@ -324,6 +353,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         })
     }
 
+    /// Replace the parser configuration before iterating records or chunks.
     pub fn with_configuration(mut self, configuration: ParserSettings) -> Self {
         self.config = Arc::new(configuration);
         self
@@ -429,97 +459,184 @@ impl<T: ReadSeek> EvtxParser<T> {
             current_chunk_number: 0,
         }
     }
-    /// Return an iterator over all the records.
-    /// Records will be mapped `f`, which must produce owned data from the records.
-    pub fn serialized_records<'a, U: Send>(
-        &'a mut self,
-        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
-    ) -> impl Iterator<Item = Result<U>> + 'a {
-        struct ChunkBatch<U> {
-            results: Vec<Result<U>>,
-            arena: Bump,
+
+    fn collect_chunk_batch(
+        &mut self,
+        next_chunk_number: &mut u64,
+        arena_pool: &mut Vec<Bump>,
+        batch_size: usize,
+    ) -> Vec<(Result<EvtxChunkData>, u64, Bump)> {
+        let mut pending = Vec::with_capacity(batch_size);
+
+        for _ in 0..batch_size {
+            let Some((chunk_res, chunk_number)) = self.find_next_chunk(*next_chunk_number) else {
+                break;
+            };
+            *next_chunk_number = chunk_number.saturating_add(1);
+            let arena = arena_pool.pop().unwrap_or_default();
+            pending.push((chunk_res, chunk_number, arena));
         }
 
-        // Retrieve parser settings here, while `self` is immutably borrowed.
+        pending
+    }
+
+    fn execute_chunk_batches<'a, U, F>(
+        &'a mut self,
+        process_chunk: F,
+    ) -> impl Iterator<Item = Result<U>> + 'a
+    where
+        U: Send + 'a,
+        F: Fn(Result<EvtxChunkData>, u64, Bump, Arc<ParserSettings>) -> ChunkBatch<U>
+            + Send
+            + Sync
+            + Clone
+            + 'a,
+    {
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = Arc::clone(&self.config);
-
-        // `self` is mutably borrowed from here on.
-        let mut chunks = self.chunks();
+        let mut next_chunk_number = 0u64;
         let mut arena_pool: Vec<Bump> = (0..num_threads)
             .map(|_| Bump::with_capacity(EVTX_CHUNK_SIZE))
             .collect();
 
-        let records_per_chunk = std::iter::from_fn(move || {
-            // Allocate some chunks in advance, so they can be parsed in parallel.
-            let mut chunk_of_chunks = Vec::with_capacity(num_threads);
-
-            for _ in 0..num_threads {
-                if let Some(chunk) = chunks.next() {
-                    let arena = arena_pool.pop().unwrap_or_default();
-                    chunk_of_chunks.push((chunk, arena));
-                };
+        std::iter::from_fn(move || {
+            let pending =
+                self.collect_chunk_batch(&mut next_chunk_number, &mut arena_pool, num_threads);
+            if pending.is_empty() {
+                return None;
             }
 
-            // We only stop once no chunks can be allocated.
-            if chunk_of_chunks.is_empty() {
-                None
-            } else {
-                #[cfg(feature = "multithreading")]
-                let chunk_iter = chunk_of_chunks.into_par_iter();
+            #[cfg(feature = "multithreading")]
+            let batches: Vec<ChunkBatch<U>> = pending
+                .into_par_iter()
+                .map(|(chunk_res, chunk_number, arena)| {
+                    process_chunk.clone()(
+                        chunk_res,
+                        chunk_number,
+                        arena,
+                        Arc::clone(&chunk_settings),
+                    )
+                })
+                .collect();
 
-                #[cfg(not(feature = "multithreading"))]
-                let chunk_iter = chunk_of_chunks.into_iter();
+            #[cfg(not(feature = "multithreading"))]
+            let batches: Vec<ChunkBatch<U>> = pending
+                .into_iter()
+                .map(|(chunk_res, chunk_number, arena)| {
+                    process_chunk.clone()(
+                        chunk_res,
+                        chunk_number,
+                        arena,
+                        Arc::clone(&chunk_settings),
+                    )
+                })
+                .collect();
 
-                // Serialize the records in each chunk.
-                let iterators: Vec<ChunkBatch<U>> = chunk_iter
-                    .enumerate()
-                    .map(|(i, (chunk_res, arena))| match chunk_res {
-                        Err(err) => ChunkBatch {
-                            results: vec![Err(err)],
-                            arena,
-                        },
-                        Ok(mut chunk) => {
-                            let chunk_records_res =
-                                chunk.parse_with_arena(chunk_settings.clone(), arena);
+            let mut flattened = Vec::new();
+            for batch in batches {
+                arena_pool.push(batch.arena);
+                flattened.extend(batch.results);
+            }
 
-                            match chunk_records_res {
-                                Err(err) => ChunkBatch {
-                                    results: vec![Err(EvtxError::FailedToParseChunk {
-                                        chunk_id: i as u64,
-                                        source: Box::new(err),
-                                    })],
-                                    arena: Bump::new(),
-                                },
-                                Ok(mut chunk_records) => {
-                                    let results = {
-                                        chunk_records.iter().map(f.clone()).collect()
-                                    };
-                                    let arena = chunk_records.into_arena();
-                                    ChunkBatch { results, arena }
+            Some(flattened.into_iter())
+        })
+        .flatten()
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will be mapped `f`, which must produce owned data from the records.
+    pub fn serialized_records<'a, U: Send + 'a>(
+        &'a mut self,
+        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
+    ) -> impl Iterator<Item = Result<U>> + 'a {
+        self.execute_chunk_batches(move |chunk_res, chunk_number, arena, chunk_settings| {
+            match chunk_res {
+                Err(err) => ChunkBatch {
+                    results: vec![Err(err)],
+                    arena,
+                },
+                Ok(mut chunk) => match chunk.parse_with_arena(chunk_settings, arena) {
+                    Err(err) => ChunkBatch {
+                        results: vec![Err(EvtxError::FailedToParseChunk {
+                            chunk_id: chunk_number,
+                            source: Box::new(err),
+                        })],
+                        arena: Bump::new(),
+                    },
+                    Ok(mut chunk_records) => {
+                        let results = chunk_records.iter().map(f.clone()).collect();
+                        let arena = chunk_records.into_arena();
+                        ChunkBatch { results, arena }
+                    }
+                },
+            }
+        })
+    }
+
+    fn serialized_compiled_xml_records(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
+        self.execute_chunk_batches(move |chunk_res, chunk_number, arena, chunk_settings| {
+            match chunk_res {
+                Err(err) => ChunkBatch {
+                    results: vec![Err(err)],
+                    arena,
+                },
+                Ok(mut chunk) => match chunk.parse_with_arena(chunk_settings, arena) {
+                    Err(err) => ChunkBatch {
+                        results: vec![Err(EvtxError::FailedToParseChunk {
+                            chunk_id: chunk_number,
+                            source: Box::new(err),
+                        })],
+                        arena: Bump::new(),
+                    },
+                    Ok(mut parsed_chunk) => {
+                        use std::cell::RefCell;
+
+                        let mut xml_buf = Vec::with_capacity(4096);
+                        let results: RefCell<Vec<Result<SerializedEvtxRecord<String>>>> =
+                            RefCell::new(Vec::with_capacity(128));
+
+                        let render_result = parsed_chunk.for_each_xml_record(
+                            &mut xml_buf,
+                            |event_record_id, timestamp, xml_bytes| match String::from_utf8(
+                                xml_bytes.to_vec(),
+                            ) {
+                                Ok(data) => {
+                                    results.borrow_mut().push(Ok(SerializedEvtxRecord {
+                                        event_record_id,
+                                        timestamp,
+                                        data,
+                                    }));
                                 }
-                            }
+                                Err(err) => results.borrow_mut().push(Err(EvtxError::from(
+                                    crate::err::SerializationError::from(err),
+                                ))),
+                            },
+                            |err| {
+                                results.borrow_mut().push(Err(err));
+                                Ok(())
+                            },
+                        );
+
+                        if let Err(err) = render_result {
+                            results.borrow_mut().push(Err(err));
                         }
-                    })
-                    .collect();
 
-                let mut flattened = Vec::new();
-                for batch in iterators {
-                    arena_pool.push(batch.arena);
-                    flattened.extend(batch.results);
-                }
-
-                Some(flattened.into_iter())
+                        ChunkBatch {
+                            results: results.into_inner(),
+                            arena: parsed_chunk.into_arena(),
+                        }
+                    }
+                },
             }
-        });
-
-        records_per_chunk.flatten()
+        })
     }
 
     /// Return an iterator over all the records.
     /// Records will be XML-formatted.
     pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
-        self.serialized_records(|record| record.and_then(|record| record.into_xml()))
+        self.serialized_compiled_xml_records()
     }
 
     /// Return an iterator over all the records.
@@ -547,11 +664,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// The `on_record` callback receives `(event_record_id, timestamp, xml_bytes)`.
     /// The `on_error` callback receives parse errors and returns `Ok(())` to continue
     /// or `Err(...)` to stop iteration.
-    pub fn for_each_xml_record<F, E>(
-        &mut self,
-        mut on_record: F,
-        mut on_error: E,
-    ) -> Result<()>
+    pub fn for_each_xml_record<F, E>(&mut self, mut on_record: F, mut on_error: E) -> Result<()>
     where
         F: FnMut(u64, jiff::Timestamp, &[u8]),
         E: FnMut(EvtxError) -> Result<()>,
@@ -587,6 +700,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 }
 
+/// Iterator over chunk data borrowed from an [`EvtxParser`].
 pub struct IterChunks<'c, T: ReadSeek> {
     parser: &'c mut EvtxParser<T>,
     current_chunk_number: u64,
@@ -606,6 +720,7 @@ impl<T: ReadSeek> Iterator for IterChunks<'_, T> {
     }
 }
 
+/// Owning iterator over chunk data produced from an [`EvtxParser`].
 pub struct IntoIterChunks<T: ReadSeek> {
     parser: EvtxParser<T>,
     current_chunk_number: u64,

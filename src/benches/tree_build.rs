@@ -4,10 +4,11 @@ extern crate criterion;
 extern crate evtx;
 
 use bumpalo::Bump;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use evtx::binxml::bench::{TreeBuildCache, build_tree_from_binxml_bytes_in_bump};
 use evtx::{EvtxChunk, EvtxChunkData, ParserSettings};
 use std::cell::RefCell;
+use std::hint::black_box;
 use std::sync::Arc;
 
 const EVTX_FILE_HEADER_SIZE: usize = 4096;

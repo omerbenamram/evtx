@@ -1,3 +1,17 @@
+//! Public entry points for parsing Windows EVTX files.
+//!
+//! The main API surface is [`EvtxParser`], which can open an EVTX file or in-memory
+//! buffer, iterate chunks, and produce records as structured IR, XML, or JSON.
+//! Most consumers only need:
+//!
+//! - [`EvtxParser`] to open and stream records
+//! - [`ParserSettings`] to control formatting and parsing behavior
+//! - [`SerializedEvtxRecord`] for XML/JSON output
+//! - [`EvtxRecord`] when working with the intermediate representation directly
+//!
+//! Lower-level modules such as [`binxml`], [`err`], and [`model`] are also exposed
+//! for callers that need direct access to BinXML values or the internal record tree.
+//!
 #![deny(unused_must_use)]
 #![forbid(unsafe_code)]
 #![allow(clippy::upper_case_acronyms)]
@@ -12,8 +26,11 @@ pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
 pub use evtx_record::{EvtxRecord, EvtxRecordHeader, RecordId, SerializedEvtxRecord};
 pub use utils::utf16::{Utf16LeDecodeError, Utf16LeSlice};
 
+/// BinXML token/value types and rendering helpers.
 pub mod binxml;
+/// Error types returned while reading, parsing, and serializing EVTX data.
 pub mod err;
+/// Intermediate representation (IR) types produced by the BinXML parser.
 pub mod model;
 
 // Optional: PE resource parsing to extract WEVT_TEMPLATE blobs (see issue #103).
@@ -27,8 +44,9 @@ mod evtx_record;
 mod string_cache;
 mod utils;
 
-
+/// Byte offset relative to the start of an EVTX chunk.
 pub type ChunkOffset = u32;
+/// Byte offset relative to the start of the EVTX file.
 pub type FileOffset = u64;
 
 // For tests, we only initialize logging once.
@@ -40,6 +58,7 @@ static LOGGER_INIT: Once = Once::new();
 
 use crc32fast::Hasher;
 
+/// Compute the IEEE CRC-32 checksum used by EVTX headers and chunks.
 #[inline]
 pub fn checksum_ieee(data: &[u8]) -> u32 {
     let mut hasher = Hasher::new();

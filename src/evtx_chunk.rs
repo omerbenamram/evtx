@@ -11,6 +11,9 @@ use std::io::Cursor;
 
 use crate::binxml::compiled_xml;
 use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
+use crate::binxml::render_common::{
+    FragmentStart, classify_binxml_fragment, write_xml_declaration,
+};
 use crate::string_cache::StringCache;
 use crate::{ParserSettings, checksum_ieee};
 
@@ -240,9 +243,9 @@ impl<'chunk> EvtxChunk<'chunk> {
 
     /// Process all XML records in this chunk using a reusable buffer.
     ///
-    /// For compiled XML fast path records, renders directly into `xml_buf`
-    /// (which retains capacity across calls). For IR fallback records, renders
-    /// via the normal tree path into the same buffer.
+    /// Renders records through the compiled XML path directly into `xml_buf`
+    /// (which retains capacity across calls). Records that cannot be rendered
+    /// by the compiled path are reported as errors.
     ///
     /// The callback receives `(event_record_id, timestamp, xml_bytes)` for each
     /// successfully rendered record. Errors are passed to the error callback.
@@ -272,69 +275,22 @@ impl<'chunk> EvtxChunk<'chunk> {
         // Reusable raw value descriptor buffer — allocated once, cleared per record.
         let mut raw_values: Vec<RawSubValue> = Vec::with_capacity(32);
 
-        let effective_free_space_offset = u64::from(self.header.free_space_offset)
-            .min(self.data.len().try_into().unwrap_or(u64::MAX));
-
-        while !exhausted && offset_from_chunk_start < effective_free_space_offset {
-            let record_start = offset_from_chunk_start;
-            let record_start_usize = record_start as usize;
-
-            if record_start_usize >= self.data.len()
-                || self.data.len() - record_start_usize < 4
+        loop {
+            let record = match next_record_span(self, &mut offset_from_chunk_start, &mut exhausted)
             {
-                break;
-            }
-
-            let record_header =
-                match EvtxRecordHeader::from_bytes_at(self.data, record_start_usize) {
-                    Ok(h) => h,
-                    Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
-                        if magic == [0, 0, 0, 0] {
-                            break;
-                        }
-                        exhausted = true;
-                        on_error(EvtxError::DeserializationError(
-                            DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
-                        ))?;
-                        continue;
-                    }
-                    Err(DeserializationError::Truncated { .. }) => break,
-                    Err(err) => {
-                        exhausted = true;
-                        on_error(EvtxError::DeserializationError(err))?;
-                        continue;
-                    }
-                };
-
-            let binxml_data_size = match record_header.record_data_size() {
-                Ok(size) => size,
-                Err(err) => {
-                    exhausted = true;
+                NextRecordSpan::Record(record) => record,
+                NextRecordSpan::Error(err) => {
                     on_error(err)?;
                     continue;
                 }
+                NextRecordSpan::End => break,
             };
-
-            let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
-            let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
-            if binxml_end as usize > self.data.len() {
-                on_error(EvtxError::FailedToParseRecord {
-                    record_id: record_header.event_record_id,
-                    source: Box::new(EvtxError::FailedToCreateRecordModel(
-                        "record BinXML slice is out of bounds",
-                    )),
-                })?;
-                offset_from_chunk_start += u64::from(record_header.data_size);
-                continue;
-            }
-
-            let bytes = &self.data[binxml_start as usize..binxml_end as usize];
 
             xml_buf.clear();
 
-            let ok = binxml_data_size >= 5
+            let ok = record.binxml_size >= 5
                 && try_compiled_xml_into(
-                    bytes,
+                    record.bytes,
                     xml_buf,
                     self,
                     &mut ir_template_cache,
@@ -344,29 +300,109 @@ impl<'chunk> EvtxChunk<'chunk> {
 
             if !ok {
                 on_error(EvtxError::FailedToParseRecord {
-                    record_id: record_header.event_record_id,
+                    record_id: record.header.event_record_id,
                     source: Box::new(EvtxError::FailedToCreateRecordModel(
                         "compiled XML rendering failed",
                     )),
                 })?;
-                offset_from_chunk_start += u64::from(record_header.data_size);
                 continue;
             }
 
             on_record(
-                record_header.event_record_id,
-                record_header.timestamp,
+                record.header.event_record_id,
+                record.header.timestamp,
                 xml_buf,
             );
-
-            offset_from_chunk_start += u64::from(record_header.data_size);
-            if self.header.last_event_record_id == record_header.event_record_id {
-                exhausted = true;
-            }
         }
 
         Ok(())
     }
+}
+
+struct ChunkRecordSpan<'a> {
+    header: EvtxRecordHeader,
+    bytes: &'a [u8],
+    binxml_offset: u64,
+    binxml_size: u32,
+}
+
+enum NextRecordSpan<'a> {
+    End,
+    Error(EvtxError),
+    Record(ChunkRecordSpan<'a>),
+}
+
+fn next_record_span<'a>(
+    chunk: &'a EvtxChunk<'a>,
+    offset_from_chunk_start: &mut u64,
+    exhausted: &mut bool,
+) -> NextRecordSpan<'a> {
+    let effective_free_space_offset = u64::from(chunk.header.free_space_offset)
+        .min(chunk.data.len().try_into().unwrap_or(u64::MAX));
+
+    if *exhausted || *offset_from_chunk_start >= effective_free_space_offset {
+        return NextRecordSpan::End;
+    }
+
+    let record_start = *offset_from_chunk_start;
+    let record_start_usize = record_start as usize;
+
+    if record_start_usize >= chunk.data.len() || chunk.data.len() - record_start_usize < 4 {
+        *exhausted = true;
+        return NextRecordSpan::End;
+    }
+
+    let record_header = match EvtxRecordHeader::from_bytes_at(chunk.data, record_start_usize) {
+        Ok(record_header) => record_header,
+        Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
+            *exhausted = true;
+            if magic == [0, 0, 0, 0] {
+                return NextRecordSpan::End;
+            }
+            return NextRecordSpan::Error(EvtxError::DeserializationError(
+                DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
+            ));
+        }
+        Err(DeserializationError::Truncated { .. }) => {
+            *exhausted = true;
+            return NextRecordSpan::End;
+        }
+        Err(err) => {
+            *exhausted = true;
+            return NextRecordSpan::Error(EvtxError::DeserializationError(err));
+        }
+    };
+
+    let binxml_data_size = match record_header.record_data_size() {
+        Ok(size) => size,
+        Err(err) => {
+            *exhausted = true;
+            return NextRecordSpan::Error(err);
+        }
+    };
+
+    *offset_from_chunk_start += u64::from(record_header.data_size);
+    if chunk.header.last_event_record_id == record_header.event_record_id {
+        *exhausted = true;
+    }
+
+    let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
+    let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
+    if binxml_end as usize > chunk.data.len() {
+        return NextRecordSpan::Error(EvtxError::FailedToParseRecord {
+            record_id: record_header.event_record_id,
+            source: Box::new(EvtxError::FailedToCreateRecordModel(
+                "record BinXML slice is out of bounds",
+            )),
+        });
+    }
+
+    NextRecordSpan::Record(ChunkRecordSpan {
+        header: record_header,
+        bytes: &chunk.data[binxml_start as usize..binxml_end as usize],
+        binxml_offset: binxml_start,
+        binxml_size: binxml_data_size,
+    })
 }
 
 /// An iterator over a chunk, yielding records.
@@ -401,113 +437,40 @@ impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        // Be resilient to corrupted chunk headers: `free_space_offset` is user-controlled data
-        // coming from the EVTX stream, and may point past the end of the chunk.
-        let effective_free_space_offset = u64::from(self.chunk.header.free_space_offset)
-            .min(self.chunk.data.len().try_into().unwrap_or(u64::MAX));
-
-        if self.exhausted || self.offset_from_chunk_start >= effective_free_space_offset {
-            return None;
-        }
-
-        let record_start = self.offset_from_chunk_start;
-        let record_start_usize = record_start as usize;
-
-        if record_start_usize >= self.chunk.data.len() {
-            // Avoid panicking on an out-of-bounds slice if the header is corrupted.
-            self.exhausted = true;
-            return None;
-        }
-
-        if self.chunk.data.len() - record_start_usize < 4 {
-            // Not enough bytes for the record header magic, treat as end-of-chunk.
-            self.exhausted = true;
-            return None;
-        }
-
-        let record_header =
-            match EvtxRecordHeader::from_bytes_at(self.chunk.data, record_start_usize) {
-                Ok(record_header) => record_header,
-                Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
-                    // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
-                    // In such cases we may attempt to parse the chunk slack area, which is typically
-                    // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
-                    // emitting an error (see issue #197).
-                    if magic == [0, 0, 0, 0] {
-                        self.exhausted = true;
-                        return None;
-                    }
-
-                    self.exhausted = true;
-                    return Some(Err(EvtxError::DeserializationError(
-                        DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
-                    )));
-                }
-                Err(DeserializationError::Truncated { .. }) => {
-                    // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
-                    self.exhausted = true;
-                    return None;
-                }
-                Err(err) => {
-                    // We currently do not try to recover after an invalid record.
-                    self.exhausted = true;
-                    return Some(Err(EvtxError::DeserializationError(err)));
-                }
-            };
-
-        info!("Record id - {}", record_header.event_record_id);
-        debug!("Record header - {:?}", record_header);
-
-        let binxml_data_size = match record_header.record_data_size() {
-            Ok(size) => size,
-            Err(err) => {
-                //The evtx record is corrupted, skip the rest of the chunk
-                //It could be interesting to carve the rest of the chunk to find the next EVTX record header magic `2a2a0000`
-                self.exhausted = true;
-                return Some(Err(err));
-            }
+        let record = match next_record_span(
+            self.chunk,
+            &mut self.offset_from_chunk_start,
+            &mut self.exhausted,
+        ) {
+            NextRecordSpan::Record(record) => record,
+            NextRecordSpan::Error(err) => return Some(Err(err)),
+            NextRecordSpan::End => return None,
         };
 
-        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+        info!("Record id - {}", record.header.event_record_id);
+        debug!("Record header - {:?}", record.header);
+        trace!("Need to deserialize {} bytes of binxml", record.binxml_size);
 
-        let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
-        let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
-        if binxml_end as usize > self.chunk.data.len() {
-            return Some(Err(EvtxError::FailedToParseRecord {
-                record_id: record_header.event_record_id,
-                source: Box::new(EvtxError::FailedToCreateRecordModel(
-                    "record BinXML slice is out of bounds",
-                )),
-            }));
-        }
-
-        let bytes = &self.chunk.data[binxml_start as usize..binxml_end as usize];
-
-        let tree_result =
-            build_tree_from_binxml_bytes_direct(bytes, self.chunk, &mut self.ir_template_cache)
-                .map_err(|err| EvtxError::FailedToParseRecord {
-                    record_id: record_header.event_record_id,
-                    source: Box::new(err),
-                });
-
-        self.offset_from_chunk_start += u64::from(record_header.data_size);
-
-        if self.chunk.header.last_event_record_id == record_header.event_record_id {
-            self.exhausted = true;
-        }
-
-        let tree = match tree_result {
+        let tree = match build_tree_from_binxml_bytes_direct(
+            record.bytes,
+            self.chunk,
+            &mut self.ir_template_cache,
+        )
+        .map_err(|err| EvtxError::FailedToParseRecord {
+            record_id: record.header.event_record_id,
+            source: Box::new(err),
+        }) {
             Ok(tree) => tree,
             Err(err) => return Some(Err(err)),
         };
 
         Some(Ok(EvtxRecord {
             chunk: self.chunk,
-            event_record_id: record_header.event_record_id,
-            timestamp: record_header.timestamp,
+            event_record_id: record.header.event_record_id,
+            timestamp: record.header.timestamp,
             tree,
-            binxml_offset: record_start + EVTX_RECORD_HEADER_SIZE as u64,
-            binxml_size: binxml_data_size,
+            binxml_offset: record.binxml_offset,
+            binxml_size: record.binxml_size,
             settings: Arc::clone(&self.settings),
         }))
     }
@@ -525,69 +488,63 @@ fn try_compiled_xml_into<'a>(
     settings: &ParserSettings,
     raw_values: &mut Vec<crate::binxml::tokens::RawSubValue>,
 ) -> bool {
-    if bytes.len() < 5 || bytes[0] != 0x0f {
+    if write_xml_declaration(buf).is_err() {
         return false;
     }
 
-    // Write the XML declaration
-    buf.extend_from_slice(b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-
     let indent = settings.should_indent();
 
-    if bytes[4] == 0x0c {
-        // TemplateInstance path: read raw value descriptors + render compiled template.
-        let binxml_abs_offset = {
-            let data_start = chunk.data.as_ptr() as usize;
-            let bytes_start = bytes.as_ptr() as usize;
-            bytes_start - data_start
-        };
+    match classify_binxml_fragment(bytes) {
+        Some(FragmentStart::TemplateInstance { token_offset }) => {
+            let binxml_abs_offset = {
+                let data_start = chunk.data.as_ptr() as usize;
+                let bytes_start = bytes.as_ptr() as usize;
+                bytes_start - data_start
+            };
 
-        let mut cursor = match ByteCursor::with_pos(chunk.data, binxml_abs_offset + 4 + 1) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
+            let mut cursor =
+                match ByteCursor::with_pos(chunk.data, binxml_abs_offset + token_offset + 1) {
+                    Ok(c) => c,
+                    Err(_) => return false,
+                };
 
-        let template_def_offset = match crate::binxml::tokens::read_template_raw_values(
-            &mut cursor,
-            raw_values,
-        ) {
-            Ok(off) => off,
-            Err(_) => return false,
-        };
+            let template_def_offset =
+                match crate::binxml::tokens::read_template_raw_values(&mut cursor, raw_values) {
+                    Ok(off) => off,
+                    Err(_) => return false,
+                };
 
-        let compiled = match ir_cache.get_or_compile_xml_template(
-            chunk,
-            template_def_offset,
-            settings,
-        ) {
-            Some(c) => c,
-            None => return false,
-        };
+            let compiled =
+                match ir_cache.get_or_compile_xml_template(chunk, template_def_offset, settings) {
+                    Some(c) => c,
+                    None => return false,
+                };
 
-        let mut raw_ctx = compiled_xml::RawRenderContext {
-            chunk,
-            cache: ir_cache,
-            settings,
-        };
-        compiled_xml::render_compiled_xml_raw(
-            &compiled,
-            raw_values,
-            chunk.data,
-            buf,
-            &mut raw_ctx,
-            indent,
-            0,
-        )
-    } else {
-        // Inline BinXml path: no TemplateInstance, compile tokens directly.
-        // Skip FragmentHeader (4 bytes: token + major + minor + flags).
-        compiled_xml::render_record_inline_tokens(
-            &bytes[4..],
-            buf,
-            chunk,
-            ir_cache,
-            settings,
-        )
+            let mut raw_ctx = compiled_xml::RawRenderContext {
+                chunk,
+                cache: ir_cache,
+                settings,
+            };
+            compiled_xml::render_compiled_xml_raw(
+                &compiled,
+                raw_values,
+                chunk.data,
+                buf,
+                &mut raw_ctx,
+                indent,
+                0,
+            )
+        }
+        Some(FragmentStart::InlineTokens { token_offset }) => {
+            compiled_xml::render_record_inline_tokens(
+                &bytes[token_offset..],
+                buf,
+                chunk,
+                ir_cache,
+                settings,
+            )
+        }
+        None => false,
     }
 }
 

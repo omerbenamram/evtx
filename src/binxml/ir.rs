@@ -67,11 +67,15 @@
 //! overhead and intermediate token allocations.
 
 use crate::EvtxChunk;
+use crate::ParserSettings;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
 };
 use crate::binxml::compiled_xml::{self, CompiledXmlTemplate};
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
+use crate::binxml::render_common::{
+    TEMPLATE_DEFINITION_HEADER_SIZE, read_template_definition_ref_at,
+};
 use crate::binxml::tokens::{
     BinXMLAttribute, BinXMLOpenStartElement, BinXMLProcessingInstructionTarget,
     BinXmlEntityReference, BinXmlTemplateValues, TemplateSubstitutionDescriptor,
@@ -87,7 +91,6 @@ use crate::model::ir::{
     is_optional_empty_template_value,
 };
 use crate::utils::{ByteCursor, Utf16LeSlice};
-use crate::ParserSettings;
 use ahash::AHashMap;
 use bumpalo::Bump;
 use encoding::EncodingRef;
@@ -156,9 +159,6 @@ impl<'a> ElementBuilder<'a> {
     }
 }
 
-/// Size (in bytes) of a template definition header (next offset + guid + size).
-const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
-
 /// Cache of parsed BinXML templates keyed by template GUID.
 ///
 /// Templates are stored as IR trees containing placeholders; instantiation
@@ -194,11 +194,10 @@ impl<'a> IrTemplateCache<'a> {
         template_def_offset: u32,
         settings: &ParserSettings,
     ) -> Option<Rc<CompiledXmlTemplate>> {
-        let header = read_template_definition_header_at(chunk.data, template_def_offset).ok()?;
-        let entry = self
-            .compiled_xml
-            .entry(header.guid)
-            .or_insert_with(|| compiled_xml::compile_xml_template(chunk, template_def_offset, settings).map(Rc::new));
+        let header = read_template_definition_ref_at(chunk.data, template_def_offset).ok()?;
+        let entry = self.compiled_xml.entry(header.guid).or_insert_with(|| {
+            compiled_xml::compile_xml_template(chunk, template_def_offset, settings).map(Rc::new)
+        });
         entry.clone()
     }
 
@@ -244,7 +243,7 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
     ) -> Result<Rc<IrTree<'a>>> {
-        let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
+        let header = read_template_definition_ref_at(chunk.data, template_def_offset)?;
         if let Some(existing) = self.templates.get(&header.guid) {
             return Ok(Rc::clone(existing));
         }
@@ -910,29 +909,10 @@ fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
     Ok((slice_start - data_start) as u64)
 }
 
-/// Minimal template header used for cache lookups.
-#[derive(Debug)]
-struct TemplateHeader {
-    guid: [u8; 16],
-    data_size: u32,
-}
-
 fn estimate_node_capacity(data_size: u32) -> usize {
     let bytes = data_size as usize;
     let estimate = bytes / 12;
     estimate.max(16)
-}
-
-fn read_template_definition_header_at(data: &[u8], offset: u32) -> Result<TemplateHeader> {
-    let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
-    let _next_template_offset = cursor.u32_named("next_template_offset")?;
-    let guid_bytes = cursor.take_bytes(16, "template_guid")?;
-    let data_size = cursor.u32_named("template_data_size")?;
-
-    let guid = <[u8; 16]>::try_from(guid_bytes)
-        .map_err(|_| EvtxError::FailedToCreateRecordModel("template guid size mismatch"))?;
-
-    Ok(TemplateHeader { guid, data_size })
 }
 
 /// Convert raw template-instance substitution values into [`TemplateValue`]s.

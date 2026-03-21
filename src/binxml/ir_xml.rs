@@ -18,6 +18,7 @@
 //! - Optional indentation is controlled by `ParserSettings::should_indent()`.
 
 use crate::ParserSettings;
+use crate::binxml::render_common::write_xml_declaration;
 use crate::binxml::value_render::ValueRenderer;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{ElementId, IrArena, IrTree, Name, Node, Text, is_optional_empty};
@@ -33,7 +34,7 @@ pub(crate) fn render_xml_record<W: WriteExt>(
     writer: &mut W,
 ) -> Result<()> {
     // Keep output stable (matches snapshot tests / legacy formatting).
-    writer.write_all(b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n")?;
+    write_xml_declaration(writer)?;
     let mut emitter = XmlEmitter::new(writer, settings.should_indent(), tree.arena());
     emitter.render_element(tree.root(), 0)?;
     Ok(())

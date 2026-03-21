@@ -6,9 +6,10 @@
 //! renderers stay in sync and avoid allocating intermediate `String`s.
 
 use crate::binxml::value_variant::BinXmlValue;
+use crate::binxml::xml_value_format;
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
-use jiff::{Timestamp, tz::Offset};
+use jiff::Timestamp;
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
 use zmij::Buffer as ZmijBuffer;
@@ -104,7 +105,9 @@ impl ValueRenderer {
             BinXmlValue::BoolType(v) => {
                 self.write_bytes(writer, if *v { b"true" } else { b"false" })
             }
-            BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
+            BinXmlValue::BinaryType(bytes) => {
+                xml_value_format::write_hex_bytes_upper(writer, bytes)
+            }
             BinXmlValue::GuidType(guid) => write!(writer, "{}", guid).map_err(EvtxError::from),
             BinXmlValue::SizeTType(v) => self
                 .formatter
@@ -114,8 +117,12 @@ impl ValueRenderer {
                 self.write_datetime(writer, tm)
             }
             BinXmlValue::SidType(sid) => write!(writer, "{}", sid).map_err(EvtxError::from),
-            BinXmlValue::HexInt32Type(v) => self.write_hex_prefixed_u32_lower(writer, *v),
-            BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
+            BinXmlValue::HexInt32Type(v) => {
+                xml_value_format::write_hex_prefixed_u32_lower(writer, *v)
+            }
+            BinXmlValue::HexInt64Type(v) => {
+                xml_value_format::write_hex_prefixed_u64_lower(writer, *v)
+            }
             BinXmlValue::StringArrayType(items) => {
                 let mut first = true;
                 for item in items.iter() {
@@ -224,75 +231,6 @@ impl ValueRenderer {
         Ok(())
     }
 
-    fn write_hex_bytes_upper<W: WriteExt>(&mut self, writer: &mut W, bytes: &[u8]) -> Result<()> {
-        for &b in bytes {
-            let hi = (b >> 4) & 0x0f;
-            let lo = b & 0x0f;
-            self.write_byte(writer, to_hex_digit(hi))?;
-            self.write_byte(writer, to_hex_digit(lo))?;
-        }
-        Ok(())
-    }
-
-    fn write_hex_prefixed_u32_lower<W: WriteExt>(
-        &mut self,
-        writer: &mut W,
-        value: u32,
-    ) -> Result<()> {
-        self.write_bytes(writer, b"0x")?;
-        self.write_hex_u32_lower(writer, value)
-    }
-
-    fn write_hex_prefixed_u64_lower<W: WriteExt>(
-        &mut self,
-        writer: &mut W,
-        value: u64,
-    ) -> Result<()> {
-        self.write_bytes(writer, b"0x")?;
-        self.write_hex_u64_lower(writer, value)
-    }
-
-    fn write_hex_u32_lower<W: WriteExt>(&mut self, writer: &mut W, mut value: u32) -> Result<()> {
-        let mut buf = [0_u8; 8];
-        let mut len = 0usize;
-        if value == 0 {
-            buf[0] = b'0';
-            len = 1;
-        } else {
-            while value != 0 {
-                let nib = (value & 0x0f) as u8;
-                buf[len] = to_hex_digit_lower(nib);
-                len += 1;
-                value >>= 4;
-            }
-            // Reverse in-place.
-            for i in 0..(len / 2) {
-                buf.swap(i, len - 1 - i);
-            }
-        }
-        writer.write_all(&buf[..len]).map_err(EvtxError::from)
-    }
-
-    fn write_hex_u64_lower<W: WriteExt>(&mut self, writer: &mut W, mut value: u64) -> Result<()> {
-        let mut buf = [0_u8; 16];
-        let mut len = 0usize;
-        if value == 0 {
-            buf[0] = b'0';
-            len = 1;
-        } else {
-            while value != 0 {
-                let nib = (value & 0x0f) as u8;
-                buf[len] = to_hex_digit_lower(nib);
-                len += 1;
-                value >>= 4;
-            }
-            for i in 0..(len / 2) {
-                buf.swap(i, len - 1 - i);
-            }
-        }
-        writer.write_all(&buf[..len]).map_err(EvtxError::from)
-    }
-
     fn write_hex_list_u32<W: WriteExt>(&mut self, writer: &mut W, items: &[u32]) -> Result<()> {
         let mut first = true;
         for &item in items {
@@ -300,7 +238,7 @@ impl ValueRenderer {
                 self.write_byte(writer, b',')?;
             }
             first = false;
-            self.write_hex_prefixed_u32_lower(writer, item)?;
+            xml_value_format::write_hex_prefixed_u32_lower(writer, item)?;
         }
         Ok(())
     }
@@ -312,7 +250,7 @@ impl ValueRenderer {
                 self.write_byte(writer, b',')?;
             }
             first = false;
-            self.write_hex_prefixed_u64_lower(writer, item)?;
+            xml_value_format::write_hex_prefixed_u64_lower(writer, item)?;
         }
         Ok(())
     }
@@ -340,25 +278,7 @@ impl ValueRenderer {
     }
 
     fn write_datetime<W: WriteExt>(&mut self, writer: &mut W, tm: &Timestamp) -> Result<()> {
-        let dt = Offset::UTC.to_datetime(*tm);
-        let year = dt.year() as i32;
-
-        self.write_4_digits(writer, year as u32)?;
-        self.write_byte(writer, b'-')?;
-        self.write_2_digits(writer, u32::from(dt.month() as u8))?;
-        self.write_byte(writer, b'-')?;
-        self.write_2_digits(writer, u32::from(dt.day() as u8))?;
-        self.write_byte(writer, b'T')?;
-        self.write_2_digits(writer, u32::from(dt.hour() as u8))?;
-        self.write_byte(writer, b':')?;
-        self.write_2_digits(writer, u32::from(dt.minute() as u8))?;
-        self.write_byte(writer, b':')?;
-        self.write_2_digits(writer, u32::from(dt.second() as u8))?;
-        self.write_byte(writer, b'.')?;
-        let micros = (dt.subsec_nanosecond() / 1_000) as u32;
-        self.write_6_digits(writer, micros)?;
-        self.write_byte(writer, b'Z')?;
-        Ok(())
+        xml_value_format::write_timestamp_utc(writer, tm)
     }
 
     fn write_datetime_list<W: WriteExt>(
@@ -374,42 +294,6 @@ impl ValueRenderer {
             first = false;
             self.write_datetime(writer, item)?;
         }
-        Ok(())
-    }
-
-    fn write_2_digits<W: WriteExt>(&mut self, writer: &mut W, value: u32) -> Result<()> {
-        let tens = (value / 10) % 10;
-        let ones = value % 10;
-        self.write_byte(writer, b'0' + tens as u8)?;
-        self.write_byte(writer, b'0' + ones as u8)?;
-        Ok(())
-    }
-
-    fn write_4_digits<W: WriteExt>(&mut self, writer: &mut W, value: u32) -> Result<()> {
-        let thousands = (value / 1000) % 10;
-        let hundreds = (value / 100) % 10;
-        let tens = (value / 10) % 10;
-        let ones = value % 10;
-        self.write_byte(writer, b'0' + thousands as u8)?;
-        self.write_byte(writer, b'0' + hundreds as u8)?;
-        self.write_byte(writer, b'0' + tens as u8)?;
-        self.write_byte(writer, b'0' + ones as u8)?;
-        Ok(())
-    }
-
-    fn write_6_digits<W: WriteExt>(&mut self, writer: &mut W, value: u32) -> Result<()> {
-        let hundred_thousands = (value / 100000) % 10;
-        let ten_thousands = (value / 10000) % 10;
-        let thousands = (value / 1000) % 10;
-        let hundreds = (value / 100) % 10;
-        let tens = (value / 10) % 10;
-        let ones = value % 10;
-        self.write_byte(writer, b'0' + hundred_thousands as u8)?;
-        self.write_byte(writer, b'0' + ten_thousands as u8)?;
-        self.write_byte(writer, b'0' + thousands as u8)?;
-        self.write_byte(writer, b'0' + hundreds as u8)?;
-        self.write_byte(writer, b'0' + tens as u8)?;
-        self.write_byte(writer, b'0' + ones as u8)?;
         Ok(())
     }
 
@@ -430,16 +314,251 @@ impl ValueRenderer {
     }
 }
 
-fn to_hex_digit(value: u8) -> u8 {
-    match value {
-        0..=9 => b'0' + value,
-        _ => b'A' + (value - 10),
+/// Raw BinXML-to-XML formatter for the compiled XML fast path.
+///
+/// Unlike [`ValueRenderer`], this formatter operates directly on raw
+/// substitution bytes instead of parsed [`BinXmlValue`] enums.
+pub(crate) struct RawXmlRenderer {
+    float_buf: ZmijBuffer,
+    formatter: CompactFormatter,
+}
+
+impl Default for RawXmlRenderer {
+    fn default() -> Self {
+        RawXmlRenderer {
+            float_buf: ZmijBuffer::new(),
+            formatter: CompactFormatter,
+        }
     }
 }
 
-fn to_hex_digit_lower(value: u8) -> u8 {
-    match value {
-        0..=9 => b'0' + value,
-        _ => b'a' + (value - 10),
+impl RawXmlRenderer {
+    pub(crate) fn new() -> Self {
+        Self::default()
     }
+
+    pub(crate) fn value_has_content(raw: &[u8], value_type: u8) -> bool {
+        match value_type {
+            0x00 => false,
+            0x01 => utf16le_content_length(raw) > 0,
+            0x02 => raw.iter().any(|&b| b != 0),
+            _ => !raw.is_empty(),
+        }
+    }
+
+    pub(crate) fn split_array_items(raw: &[u8], base_type: u8) -> Vec<&[u8]> {
+        if base_type == 0x01 {
+            let mut items = Vec::new();
+            let mut start = 0usize;
+            let mut i = 0usize;
+
+            while i + 1 < raw.len() {
+                if raw[i] == 0 && raw[i + 1] == 0 {
+                    items.push(&raw[start..i]);
+                    start = i + 2;
+                    i = start;
+                } else {
+                    i += 2;
+                }
+            }
+
+            if start < raw.len() && raw[start..].iter().any(|&b| b != 0) {
+                items.push(&raw[start..]);
+            }
+
+            items
+        } else {
+            let item_size = fixed_type_item_size(base_type);
+            if item_size == 0 || raw.is_empty() {
+                Vec::new()
+            } else {
+                raw.chunks_exact(item_size).collect()
+            }
+        }
+    }
+
+    pub(crate) fn write_xml_value<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        raw: &[u8],
+        value_type: u8,
+        size: u16,
+        in_attribute: bool,
+    ) -> Result<()> {
+        macro_rules! read_le {
+            ($ty:ty, $len:expr, $label:expr) => {{
+                if raw.len() < $len {
+                    return Err(EvtxError::FailedToCreateRecordModel($label));
+                }
+                <$ty>::from_le_bytes(raw[..$len].try_into().expect("checked slice length"))
+            }};
+        }
+
+        match value_type {
+            0x00 => Ok(()),
+            0x01 => {
+                let content_len = utf16le_content_length(raw);
+                if content_len == 0 {
+                    return Ok(());
+                }
+                utf16_simd::write_xml_utf16le(
+                    writer,
+                    &raw[..content_len],
+                    content_len / 2,
+                    in_attribute,
+                )
+                .map_err(EvtxError::from)
+            }
+            0x02 => self.write_ansi_xml_bytes(writer, raw, in_attribute),
+            0x03 => self
+                .formatter
+                .write_i8(writer, read_le!(i8, 1, "Int8 value is shorter than 1 byte"))
+                .map_err(EvtxError::from),
+            0x04 => self
+                .formatter
+                .write_u8(
+                    writer,
+                    read_le!(u8, 1, "UInt8 value is shorter than 1 byte"),
+                )
+                .map_err(EvtxError::from),
+            0x05 => self
+                .formatter
+                .write_i16(
+                    writer,
+                    read_le!(i16, 2, "Int16 value is shorter than 2 bytes"),
+                )
+                .map_err(EvtxError::from),
+            0x06 => self
+                .formatter
+                .write_u16(
+                    writer,
+                    read_le!(u16, 2, "UInt16 value is shorter than 2 bytes"),
+                )
+                .map_err(EvtxError::from),
+            0x07 => self
+                .formatter
+                .write_i32(
+                    writer,
+                    read_le!(i32, 4, "Int32 value is shorter than 4 bytes"),
+                )
+                .map_err(EvtxError::from),
+            0x08 => self
+                .formatter
+                .write_u32(
+                    writer,
+                    read_le!(u32, 4, "UInt32 value is shorter than 4 bytes"),
+                )
+                .map_err(EvtxError::from),
+            0x09 => self
+                .formatter
+                .write_i64(
+                    writer,
+                    read_le!(i64, 8, "Int64 value is shorter than 8 bytes"),
+                )
+                .map_err(EvtxError::from),
+            0x0A => self
+                .formatter
+                .write_u64(
+                    writer,
+                    read_le!(u64, 8, "UInt64 value is shorter than 8 bytes"),
+                )
+                .map_err(EvtxError::from),
+            0x0B => self.write_float(
+                writer,
+                read_le!(f32, 4, "Real32 value is shorter than 4 bytes"),
+            ),
+            0x0C => self.write_float(
+                writer,
+                read_le!(f64, 8, "Real64 value is shorter than 8 bytes"),
+            ),
+            0x0D => writer
+                .write_all(
+                    if read_le!(u32, 4, "Bool value is shorter than 4 bytes") != 0 {
+                        b"true"
+                    } else {
+                        b"false"
+                    },
+                )
+                .map_err(EvtxError::from),
+            0x0E => xml_value_format::write_hex_bytes_upper(writer, raw),
+            0x0F => xml_value_format::write_guid_le_bytes_upper(writer, raw),
+            0x10 => match size {
+                4 => xml_value_format::write_hex_prefixed_u32_lower(
+                    writer,
+                    read_le!(u32, 4, "SizeT value is shorter than 4 bytes"),
+                ),
+                8 => xml_value_format::write_hex_prefixed_u64_lower(
+                    writer,
+                    read_le!(u64, 8, "SizeT value is shorter than 8 bytes"),
+                ),
+                _ => Err(EvtxError::FailedToCreateRecordModel(
+                    "unsupported SizeT width in raw XML renderer",
+                )),
+            },
+            0x11 => xml_value_format::write_filetime_utc(
+                writer,
+                read_le!(u64, 8, "FILETIME value is shorter than 8 bytes"),
+            ),
+            0x12 => xml_value_format::write_systime_utc(writer, raw),
+            0x13 => xml_value_format::write_sid(writer, raw),
+            0x14 => xml_value_format::write_hex_prefixed_u32_lower(
+                writer,
+                read_le!(u32, 4, "HexInt32 value is shorter than 4 bytes"),
+            ),
+            0x15 => xml_value_format::write_hex_prefixed_u64_lower(
+                writer,
+                read_le!(u64, 8, "HexInt64 value is shorter than 8 bytes"),
+            ),
+            _ => Err(EvtxError::FailedToCreateRecordModel(
+                "unsupported raw BinXML value in XML renderer",
+            )),
+        }
+    }
+
+    fn write_ansi_xml_bytes<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        raw: &[u8],
+        in_attribute: bool,
+    ) -> Result<()> {
+        for &byte in raw {
+            if byte == 0 {
+                continue;
+            }
+            match byte {
+                b'&' => writer.write_all(b"&amp;").map_err(EvtxError::from)?,
+                b'<' => writer.write_all(b"&lt;").map_err(EvtxError::from)?,
+                b'>' => writer.write_all(b"&gt;").map_err(EvtxError::from)?,
+                b'"' if in_attribute => writer.write_all(b"&quot;").map_err(EvtxError::from)?,
+                b'\'' if in_attribute => writer.write_all(b"&apos;").map_err(EvtxError::from)?,
+                _ => writer.write_all(&[byte]).map_err(EvtxError::from)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn write_float<W: WriteExt, F: zmij::Float>(&mut self, writer: &mut W, value: F) -> Result<()> {
+        let s = self.float_buf.format(value);
+        writer.write_all(s.as_bytes()).map_err(EvtxError::from)
+    }
+}
+
+fn fixed_type_item_size(base_type: u8) -> usize {
+    match base_type {
+        0x03 | 0x04 => 1,
+        0x05 | 0x06 => 2,
+        0x07 | 0x08 | 0x0B | 0x0D | 0x14 => 4,
+        0x09 | 0x0A | 0x0C | 0x11 | 0x15 => 8,
+        0x0F | 0x12 => 16,
+        _ => 0,
+    }
+}
+
+fn utf16le_content_length(raw: &[u8]) -> usize {
+    for (idx, chunk) in raw.chunks_exact(2).enumerate() {
+        if chunk[0] == 0 && chunk[1] == 0 {
+            return idx * 2;
+        }
+    }
+    raw.len() & !1
 }

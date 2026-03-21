@@ -142,9 +142,7 @@ fn placeholder_values<'a>(
     out
 }
 
-fn template_values_from_binxml_values<'a>(
-    values: &[BinXmlValue<'a>],
-) -> Vec<TemplateValue<'a>> {
+fn template_values_from_binxml_values<'a>(values: &[BinXmlValue<'a>]) -> Vec<TemplateValue<'a>> {
     values
         .iter()
         .map(|v| match v {

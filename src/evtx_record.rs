@@ -1,3 +1,10 @@
+//! Public record types returned by the parser.
+//!
+//! These types bridge the low-level chunk parser and the higher-level XML/JSON
+//! serializers. [`EvtxRecord`] keeps the parsed IR tree plus record metadata,
+//! while [`SerializedEvtxRecord`] carries owned output data ready for callers to
+//! write to disk or further process.
+
 use crate::binxml::ir_json::render_json_record;
 use crate::binxml::ir_xml::render_xml_record;
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
@@ -11,36 +18,54 @@ use jiff::Timestamp;
 use std::io::Cursor;
 use std::sync::Arc;
 
+/// Stable identifier for an event record inside an EVTX file.
 pub type RecordId = u64;
 
 pub(crate) const EVTX_RECORD_HEADER_SIZE: usize = 24;
 
+/// Parsed EVTX record together with its metadata and IR tree.
 #[derive(Debug, Clone)]
 pub struct EvtxRecord<'a> {
+    /// Chunk backing the record bytes, name cache, and bump arena.
     pub chunk: &'a EvtxChunk<'a>,
+    /// Event record identifier from the EVTX record header.
     pub event_record_id: RecordId,
+    /// Record timestamp converted from the Windows FILETIME header field.
     pub timestamp: Timestamp,
+    /// Fully parsed intermediate representation of the record body.
     pub tree: IrTree<'a>,
+    /// Absolute byte offset of the record's BinXML payload inside the chunk buffer.
     pub binxml_offset: u64,
+    /// Size in bytes of the record's BinXML payload.
     pub binxml_size: u32,
+    /// Parser settings used when the record was built and later rendered.
     pub settings: Arc<ParserSettings>,
 }
 
+/// Fixed-size header stored at the start of each EVTX record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvtxRecordHeader {
+    /// Total record size including header and trailing size copy.
     pub data_size: u32,
+    /// Event record identifier from the on-disk header.
     pub event_record_id: RecordId,
+    /// Header timestamp converted from FILETIME.
     pub timestamp: Timestamp,
 }
 
+/// Rendered record output paired with the original record metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerializedEvtxRecord<T> {
+    /// Event record identifier copied from the parsed record.
     pub event_record_id: RecordId,
+    /// Record timestamp copied from the parsed record.
     pub timestamp: Timestamp,
+    /// Owned rendered payload, usually XML, JSON, or a parsed JSON value.
     pub data: T,
 }
 
 impl EvtxRecordHeader {
+    /// Parse a record header from `buf` starting at `offset`.
     pub fn from_bytes_at(buf: &[u8], offset: usize) -> DeserializationResult<EvtxRecordHeader> {
         let _ = bytes::slice_r(buf, offset, EVTX_RECORD_HEADER_SIZE, "EVTX record header")?;
 
@@ -62,10 +87,12 @@ impl EvtxRecordHeader {
         })
     }
 
+    /// Parse a record header from the start of `buf`.
     pub fn from_bytes(buf: &[u8]) -> DeserializationResult<EvtxRecordHeader> {
         Self::from_bytes_at(buf, 0)
     }
 
+    /// Read a record header from a cursor over chunk bytes.
     pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxRecordHeader> {
         let start = input.position() as usize;
         let buf = input.get_ref();
@@ -74,6 +101,7 @@ impl EvtxRecordHeader {
         Ok(header)
     }
 
+    /// Return the size of the record body excluding the fixed header and trailing size copy.
     pub fn record_data_size(&self) -> Result<u32> {
         // 24 - record header size
         // 4 - copy of size record size
@@ -128,7 +156,7 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
-    /// Consumes the record and parse it, producing an XML serialized record.
+    /// Consumes the record and renders it as XML.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
         let event_record_id = self.event_record_id;
         let timestamp = self.timestamp;

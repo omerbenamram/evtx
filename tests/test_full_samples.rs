@@ -219,23 +219,25 @@ fn test_compiled_xml_matches_ir_xml_for_all_samples() {
             continue;
         }
 
-        // IR path: records() renders via IR tree
-        let mut parser_ir = EvtxParser::from_path(&path).unwrap()
+        // IR path: use the explicit IR iterator pipeline.
+        let mut parser_ir = EvtxParser::from_path(&path)
+            .unwrap()
             .with_configuration(ParserSettings::new().indent(true));
-        let ir_records: Vec<_> = parser_ir.records().collect();
+        let ir_records: Vec<_> = parser_ir
+            .serialized_records(|record| record.and_then(|record| record.into_xml()))
+            .collect();
 
         // Compiled raw XML path: for_each_xml_record uses compiled templates
-        let mut parser_compiled = EvtxParser::from_path(&path).unwrap()
+        let mut parser_compiled = EvtxParser::from_path(&path)
+            .unwrap()
             .with_configuration(ParserSettings::new().indent(true));
         let mut compiled_records: Vec<(u64, String)> = Vec::new();
         let mut compiled_errors: Vec<String> = Vec::new();
         parser_compiled
             .for_each_xml_record(
                 |record_id, _ts, xml_bytes| {
-                    compiled_records.push((
-                        record_id,
-                        String::from_utf8_lossy(xml_bytes).into_owned(),
-                    ));
+                    compiled_records
+                        .push((record_id, String::from_utf8_lossy(xml_bytes).into_owned()));
                 },
                 |err| {
                     compiled_errors.push(format!("{:?}", err));
@@ -248,7 +250,11 @@ fn test_compiled_xml_matches_ir_xml_for_all_samples() {
         let ir_ok: Vec<_> = ir_records.iter().filter(|r| r.is_ok()).collect();
 
         if ir_ok.len() != compiled_records.len() {
-            eprintln!("{}: errors: {:?}", sample, &compiled_errors[..compiled_errors.len().min(5)]);
+            eprintln!(
+                "{}: errors: {:?}",
+                sample,
+                &compiled_errors[..compiled_errors.len().min(5)]
+            );
         }
         assert_eq!(
             ir_ok.len(),
@@ -270,5 +276,55 @@ fn test_compiled_xml_matches_ir_xml_for_all_samples() {
                 sample, i, compiled_id
             );
         }
+    }
+}
+
+#[test]
+fn test_records_matches_for_each_xml_record() {
+    ensure_env_logger_initialized();
+    let path = samples_dir().join("security.evtx");
+    if !path.exists() {
+        return;
+    }
+
+    let mut parser_records = EvtxParser::from_path(&path)
+        .unwrap()
+        .with_configuration(ParserSettings::new().indent(true));
+    let records_api: Vec<_> = parser_records.records().collect();
+
+    let mut parser_stream = EvtxParser::from_path(&path)
+        .unwrap()
+        .with_configuration(ParserSettings::new().indent(true));
+    let mut stream_ok: Vec<(u64, String)> = Vec::new();
+    let mut stream_err: Vec<String> = Vec::new();
+    parser_stream
+        .for_each_xml_record(
+            |record_id, _ts, xml_bytes| {
+                stream_ok.push((record_id, String::from_utf8_lossy(xml_bytes).into_owned()));
+            },
+            |err| {
+                stream_err.push(err.to_string());
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    let records_ok: Vec<(u64, String)> = records_api
+        .iter()
+        .filter_map(|record| {
+            record
+                .as_ref()
+                .ok()
+                .map(|record| (record.event_record_id, record.data.clone()))
+        })
+        .collect();
+    let records_err_count = records_api.iter().filter(|record| record.is_err()).count();
+
+    assert_eq!(records_err_count, stream_err.len(), "error count mismatch");
+    assert_eq!(records_ok.len(), stream_ok.len(), "success count mismatch");
+
+    for (idx, (left, right)) in records_ok.iter().zip(stream_ok.iter()).enumerate() {
+        assert_eq!(left.0, right.0, "record id mismatch at {}", idx);
+        assert_eq!(left.1, right.1, "xml mismatch at {}", idx);
     }
 }
