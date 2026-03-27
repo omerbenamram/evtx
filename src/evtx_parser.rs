@@ -224,6 +224,7 @@ impl ParserSettings {
         self
     }
 
+
     pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
         self.validate_checksums = validate_checksums;
 
@@ -251,6 +252,7 @@ impl ParserSettings {
     pub(crate) fn get_wevt_cache(&self) -> Option<&Arc<crate::wevt_templates::WevtCache>> {
         self.wevt_cache.as_ref()
     }
+
 
     pub fn should_separate_json_attributes(&self) -> bool {
         self.separate_json_attributes

@@ -96,3 +96,19 @@ pub fn sample_with_no_crc32() -> PathBuf {
 pub fn sample_with_invalid_flags_in_header() -> PathBuf {
     samples_dir().join("post-Security.evtx")
 }
+
+pub fn mta_samples_dir() -> PathBuf {
+    samples_dir().join("mta")
+}
+
+pub fn mta_test_evtx() -> PathBuf {
+    mta_samples_dir().join("test.evtx")
+}
+
+pub fn mta_test_csv() -> PathBuf {
+    mta_samples_dir().join("test.csv")
+}
+
+pub fn mta_test_mta() -> PathBuf {
+    mta_samples_dir().join("test_1033.MTA")
+}
