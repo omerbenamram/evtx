@@ -10,7 +10,6 @@ use crate::EvtxChunk;
 pub use jiff::Timestamp;
 #[allow(unused)]
 pub use jiff::tz::Offset;
-use std::io::Cursor;
 
 pub type RecordId = u64;
 
@@ -75,14 +74,6 @@ impl EvtxRecordHeader {
 
     pub fn from_bytes(buf: &[u8]) -> DeserializationResult<EvtxRecordHeader> {
         Self::from_bytes_at(buf, 0)
-    }
-
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxRecordHeader> {
-        let start = input.position() as usize;
-        let buf = input.get_ref();
-        let header = Self::from_bytes_at(buf, start)?;
-        input.set_position((start + EVTX_RECORD_HEADER_SIZE) as u64);
-        Ok(header)
     }
 
     pub fn record_data_size(&self) -> Result<u32> {

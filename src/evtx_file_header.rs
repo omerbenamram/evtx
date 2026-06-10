@@ -1,4 +1,4 @@
-use crate::err::{DeserializationError, DeserializationResult, WrappedIoError};
+use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::bytes;
 
 use std::io::{Read, Seek};
@@ -68,10 +68,9 @@ impl EvtxFileHeader {
     pub fn from_stream<T: Read + Seek>(stream: &mut T) -> DeserializationResult<EvtxFileHeader> {
         let mut header_block = [0_u8; crate::evtx_parser::EVTX_FILE_HEADER_SIZE];
         stream.read_exact(&mut header_block).map_err(|e| {
-            WrappedIoError::io_error_with_message(
-                e,
-                "failed to read EVTX file header block",
-                stream,
+            std::io::Error::new(
+                e.kind(),
+                format!("failed to read EVTX file header block: {e}"),
             )
         })?;
         Self::from_bytes(&header_block)

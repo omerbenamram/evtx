@@ -4,7 +4,7 @@ use crate::err::DeserializationResult as Result;
 use crate::ChunkOffset;
 use crate::utils::ByteCursor;
 
-use std::{fmt::Formatter, io::Cursor};
+use std::fmt::Formatter;
 
 use std::fmt;
 
@@ -85,25 +85,6 @@ impl BinXmlNameRef {
         })
     }
 
-    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let start = cursor.position() as usize;
-        let buf = *cursor.get_ref();
-        let mut c = ByteCursor::with_pos(buf, start)?;
-        let v = Self::from_cursor(&mut c)?;
-        cursor.set_position(c.position());
-        Ok(v)
-    }
-
-    pub fn from_stream_with_encoding(
-        cursor: &mut Cursor<&[u8]>,
-        encoding: BinXmlNameEncoding,
-    ) -> Result<Self> {
-        match encoding {
-            BinXmlNameEncoding::Offset => Self::from_stream(cursor),
-            BinXmlNameEncoding::WevtInline => Self::from_stream_wevt_inline(cursor),
-        }
-    }
-
     pub(crate) fn from_cursor_with_encoding(
         cursor: &mut ByteCursor<'_>,
         encoding: BinXmlNameEncoding,
@@ -149,28 +130,9 @@ impl BinXmlNameRef {
             offset: name_offset,
         })
     }
-
-    fn from_stream_wevt_inline(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let start = cursor.position() as usize;
-        let buf = *cursor.get_ref();
-        let mut c = ByteCursor::with_pos(buf, start)?;
-        let v = Self::from_cursor_wevt_inline(&mut c)?;
-        cursor.set_position(c.position());
-        Ok(v)
-    }
 }
 
 impl BinXmlName {
-    /// Reads a tuple of (String, Hash, Offset) from a stream.
-    pub fn from_stream(cursor: &mut Cursor<&[u8]>) -> Result<Self> {
-        let start = cursor.position() as usize;
-        let buf = *cursor.get_ref();
-        let mut c = ByteCursor::with_pos(buf, start)?;
-        let v = Self::from_cursor(&mut c)?;
-        cursor.set_position(c.position());
-        Ok(v)
-    }
-
     pub(crate) fn from_cursor(cursor: &mut ByteCursor<'_>) -> Result<Self> {
         let name = cursor
             .len_prefixed_utf16_string_utf8(true, "name")?

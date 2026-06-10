@@ -1,9 +1,25 @@
 use crate::binxml::value_variant::SidRef;
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::bytes;
-use crate::utils::{Utf16LeSlice, decode_utf16le_bytes_to_bump_str, trim_utf16le_whitespace};
+use crate::utils::{Utf16LeSlice, decode_utf16le_bytes_to_bump_str};
 use bumpalo::Bump;
 use std::io;
+
+macro_rules! le_readers {
+    ($($plain:ident / $named:ident: $ty:ty),* $(,)?) => {$(
+        #[inline]
+        pub(crate) fn $plain(&mut self) -> DeserializationResult<$ty> {
+            self.$named(stringify!($plain))
+        }
+
+        #[inline]
+        pub(crate) fn $named(&mut self, what: &'static str) -> DeserializationResult<$ty> {
+            let v = <$ty>::from_le_bytes(bytes::read_array_r(self.buf, self.pos, what)?);
+            self.pos += size_of::<$ty>();
+            Ok(v)
+        }
+    )*};
+}
 
 /// A lightweight cursor over an immutable byte slice.
 ///
@@ -84,59 +100,12 @@ impl<'a> ByteCursor<'a> {
         Ok(v)
     }
 
-    #[inline]
-    pub(crate) fn u8(&mut self) -> DeserializationResult<u8> {
-        self.u8_named("u8")
-    }
-
-    #[inline]
-    pub(crate) fn u8_named(&mut self, what: &'static str) -> DeserializationResult<u8> {
-        let b =
-            bytes::read_u8(self.buf, self.pos).ok_or_else(|| DeserializationError::Truncated {
-                what,
-                offset: self.pos as u64,
-                need: 1,
-                have: self.buf.len().saturating_sub(self.pos),
-            })?;
-        self.pos += 1;
-        Ok(b)
-    }
-
-    #[inline]
-    pub(crate) fn u16(&mut self) -> DeserializationResult<u16> {
-        self.u16_named("u16")
-    }
-
-    #[inline]
-    pub(crate) fn u16_named(&mut self, what: &'static str) -> DeserializationResult<u16> {
-        let v = bytes::read_u16_le_r(self.buf, self.pos, what)?;
-        self.pos += 2;
-        Ok(v)
-    }
-
-    #[inline]
-    pub(crate) fn u32(&mut self) -> DeserializationResult<u32> {
-        self.u32_named("u32")
-    }
-
-    #[inline]
-    pub(crate) fn u32_named(&mut self, what: &'static str) -> DeserializationResult<u32> {
-        let v = bytes::read_u32_le_r(self.buf, self.pos, what)?;
-        self.pos += 4;
-        Ok(v)
-    }
-
-    #[inline]
-    pub(crate) fn u64(&mut self) -> DeserializationResult<u64> {
-        self.u64_named("u64")
-    }
-
-    #[inline]
-    pub(crate) fn u64_named(&mut self, what: &'static str) -> DeserializationResult<u64> {
-        let v = bytes::read_u64_le_r(self.buf, self.pos, what)?;
-        self.pos += 8;
-        Ok(v)
-    }
+    le_readers!(
+        u8 / u8_named: u8,
+        u16 / u16_named: u16,
+        u32 / u32_named: u32,
+        u64 / u64_named: u64,
+    );
 
     pub(crate) fn read_sid_ref(&mut self) -> DeserializationResult<SidRef<'a>> {
         let start = self.pos();
@@ -236,38 +205,6 @@ impl<'a> ByteCursor<'a> {
         ))
     }
 
-    /// Read `char_count` UTF-16 code units (little-endian), decode (stop at NUL if present),
-    /// and trim trailing whitespace.
-    pub(crate) fn utf16_by_char_count_trimmed(
-        &mut self,
-        char_count: usize,
-        what: &'static str,
-    ) -> DeserializationResult<Option<Utf16LeSlice<'a>>> {
-        if char_count == 0 {
-            return Ok(None);
-        }
-
-        let byte_len =
-            char_count
-                .checked_mul(2)
-                .ok_or_else(|| DeserializationError::Truncated {
-                    what,
-                    offset: self.pos as u64,
-                    need: usize::MAX,
-                    have: self.buf.len().saturating_sub(self.pos),
-                })?;
-
-        let bytes = self.take_bytes(byte_len, what)?;
-        if !bytes.len().is_multiple_of(2) {
-            return Err(Self::invalid_data(what, self.pos as u64));
-        }
-
-        let trimmed_chars = trim_utf16le_whitespace(bytes, char_count)
-            .map_err(|_| Self::invalid_data(what, (self.pos - byte_len) as u64))?;
-
-        Ok(Some(Utf16LeSlice::new(bytes, trimmed_chars)))
-    }
-
     /// Read `char_count` UTF-16 code units (little-endian), stopping at NUL if present,
     /// without trimming whitespace.
     pub(crate) fn utf16_by_char_count(
@@ -303,46 +240,6 @@ impl<'a> ByteCursor<'a> {
         }
 
         Ok(Some(Utf16LeSlice::new(bytes, actual_chars)))
-    }
-
-    /// Read `char_count` UTF-16 code units, trim trailing whitespace, and decode to UTF-8.
-    #[allow(dead_code)]
-    pub(crate) fn utf16_by_char_count_trimmed_utf8(
-        &mut self,
-        char_count: usize,
-        what: &'static str,
-    ) -> DeserializationResult<Option<String>> {
-        let start = self.pos;
-        let slice = self.utf16_by_char_count_trimmed(char_count, what)?;
-        match slice {
-            Some(value) => value
-                .to_string()
-                .map(Some)
-                .map_err(|_| Self::invalid_data(what, start as u64)),
-            None => Ok(None),
-        }
-    }
-
-    /// Read `char_count` UTF-16 code units, trim trailing whitespace, and decode into a bump string.
-    #[allow(dead_code)]
-    pub(crate) fn utf16_by_char_count_trimmed_bump(
-        &mut self,
-        char_count: usize,
-        what: &'static str,
-        arena: &'a Bump,
-    ) -> DeserializationResult<Option<&'a str>> {
-        let start = self.pos;
-        let slice = self.utf16_by_char_count_trimmed(char_count, what)?;
-        match slice {
-            Some(value) => decode_utf16le_bytes_to_bump_str(
-                value.as_bytes(),
-                value.as_bytes().len() / 2,
-                arena,
-            )
-            .map(Some)
-            .map_err(|_| Self::invalid_data(what, start as u64)),
-            None => Ok(None),
-        }
     }
 
     /// Read a `u16` length prefix (number of UTF-16 code units), then that many code units,
@@ -404,36 +301,7 @@ impl<'a> ByteCursor<'a> {
                 have: self.buf.len().saturating_sub(start),
             })?;
 
-        let num_chars = bytes.len() / 2;
-        trim_utf16le_whitespace(bytes, num_chars)
-            .map_err(|_| Self::invalid_data(what, start as u64))?;
-        Ok(Utf16LeSlice::new(bytes, num_chars))
-    }
-
-    /// Read UTF-16 code units until NUL and decode into UTF-8.
-    #[allow(dead_code)]
-    pub(crate) fn null_terminated_utf16_string_utf8(
-        &mut self,
-        what: &'static str,
-    ) -> DeserializationResult<String> {
-        let start = self.pos;
-        let slice = self.null_terminated_utf16_string(what)?;
-        slice
-            .to_string()
-            .map_err(|_| Self::invalid_data(what, start as u64))
-    }
-
-    /// Read UTF-16 code units until NUL and decode into a bump string.
-    #[allow(dead_code)]
-    pub(crate) fn null_terminated_utf16_string_bump(
-        &mut self,
-        what: &'static str,
-        arena: &'a Bump,
-    ) -> DeserializationResult<&'a str> {
-        let start = self.pos;
-        let slice = self.null_terminated_utf16_string(what)?;
-        decode_utf16le_bytes_to_bump_str(slice.as_bytes(), slice.as_bytes().len() / 2, arena)
-            .map_err(|_| Self::invalid_data(what, start as u64))
+        Ok(Utf16LeSlice::new(bytes, bytes.len() / 2))
     }
 
     /// Read a length-prefixed UTF-16LE string and decode into a bump string.

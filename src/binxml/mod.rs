@@ -49,18 +49,6 @@ pub mod bench {
         cache: &mut TreeBuildCache<'a>,
         bump: &'a Bump,
     ) -> Result<usize> {
-        // The production parser only has a direct (cursor-based) builder. Keep the benchmark API
-        // stable by routing this helper to the direct implementation.
-        super::ir::bench_build_tree_from_binxml_bytes_direct(bytes, chunk, &mut cache.cache, bump)
-    }
-
-    /// Build an IR tree directly from BinXML bytes without an iterator (bench-only).
-    pub fn build_tree_from_binxml_bytes_direct_in_bump<'a>(
-        bytes: &'a [u8],
-        chunk: &'a EvtxChunk<'a>,
-        cache: &mut TreeBuildCache<'a>,
-        bump: &'a Bump,
-    ) -> Result<usize> {
         super::ir::bench_build_tree_from_binxml_bytes_direct(bytes, chunk, &mut cache.cache, bump)
     }
 }

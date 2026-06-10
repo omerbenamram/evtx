@@ -90,6 +90,18 @@ skeptic = "0.13.7"
 name = "evtx_dump"
 required-features = ["evtx_dump"]
 
+[[bin]]
+name = "bench_tree_build"
+required-features = ["bench"]
+
+[[bin]]
+name = "bench_evtx_dump_loop"
+required-features = ["bench"]
+
+[[bin]]
+name = "bench_utf16_escape_matrix"
+required-features = ["bench"]
+
 [[bench]]
 name = "benchmark"
 path = "./src/benches/benchmark.rs"

@@ -346,29 +346,3 @@ where
 
     Ok(count)
 }
-
-/// Variant of [`for_each_crim_blob`] which allows callers to pick their own error type (e.g. `anyhow::Error`).
-pub fn for_each_crim_blob_with<F, E>(path: &Path, mut f: F) -> std::result::Result<u32, E>
-where
-    F: FnMut(Vec<u8>) -> std::result::Result<(), E>,
-    E: From<WevtCacheFileError>,
-{
-    let mut count = 0u32;
-    let mut reader = WevtCacheReader::open(path).map_err(E::from)?;
-
-    while let Some((kind, bytes)) = reader.next_entry().map_err(E::from)? {
-        match kind {
-            EntryKind::Crim => {
-                f(bytes)?;
-                count = count.checked_add(1).ok_or_else(|| {
-                    E::from(WevtCacheFileError::EntryCountOverflow {
-                        path: path.to_path_buf(),
-                    })
-                })?;
-            }
-        }
-    }
-
-    Ok(count)
-}
-

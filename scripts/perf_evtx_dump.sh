@@ -63,7 +63,7 @@ RUST_BIN="$ROOT/target/release/evtx_dump"
 RUST_LOOP_BIN="$ROOT/target/release/bench_evtx_dump_loop"
 
 # `bench_evtx_dump_loop` is gated behind the `bench` feature.
-if [[ $SKIP_SAMPLY -eq 0 && " $RUST_FEATURES " != *" bench "* ]]; then
+if [[ " $RUST_FEATURES " != *" bench "* ]]; then
   RUST_FEATURES="${RUST_FEATURES} bench"
 fi
 

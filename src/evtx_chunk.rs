@@ -6,7 +6,6 @@ use crate::evtx_record::{EVTX_RECORD_HEADER_SIZE, EvtxRecord, EvtxRecordHeader};
 use crate::utils::bytes;
 
 use log::{debug, info, trace};
-use std::io::Cursor;
 
 use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
 use crate::string_cache::StringCache;
@@ -193,8 +192,6 @@ impl<'chunk> EvtxChunk<'chunk> {
         mut arena: Bump,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
         arena.reset();
-
-        let _cursor = Cursor::new(data);
 
         info!("Initializing string cache");
         let string_cache = StringCache::populate(data, &header.strings_offsets)
@@ -432,16 +429,6 @@ impl EvtxChunkHeader {
             strings_offsets,
         })
     }
-
-    pub fn from_reader(input: &mut Cursor<&[u8]>) -> DeserializationResult<EvtxChunkHeader> {
-        let start = input.position() as usize;
-        let buf = input.get_ref();
-        let slice = bytes::slice_r(buf, start, EVTX_CHUNK_HEADER_SIZE, "EVTX chunk header")?;
-
-        let header = Self::from_bytes(slice)?;
-        input.set_position((start + EVTX_CHUNK_HEADER_SIZE) as u64);
-        Ok(header)
-    }
 }
 
 #[cfg(test)]
@@ -451,8 +438,6 @@ mod tests {
     use crate::evtx_parser::EVTX_CHUNK_SIZE;
     use crate::evtx_parser::EVTX_FILE_HEADER_SIZE;
 
-    use std::io::Cursor;
-
     #[test]
     fn test_parses_evtx_chunk_header() {
         ensure_env_logger_initialized();
@@ -460,9 +445,7 @@ mod tests {
         let chunk_header =
             &evtx_file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_HEADER_SIZE];
 
-        let mut cursor = Cursor::new(chunk_header);
-
-        let chunk_header = EvtxChunkHeader::from_reader(&mut cursor).unwrap();
+        let chunk_header = EvtxChunkHeader::from_bytes(chunk_header).unwrap();
 
         let expected = EvtxChunkHeader {
             first_event_record_number: 1,

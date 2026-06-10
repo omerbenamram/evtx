@@ -1,7 +1,6 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use bumpalo::Bump;
 use thiserror::Error;
@@ -34,23 +33,10 @@ pub enum WevtCacheError {
     },
 }
 
-#[derive(Debug, Clone)]
-struct TempBytes {
-    bytes: Arc<Vec<u8>>,
-    start: usize,
-    end: usize,
-}
-
-impl TempBytes {
-    fn as_slice(&self) -> &[u8] {
-        &self.bytes[self.start..self.end]
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum TemplateSource {
     /// A standalone TEMP blob stored in memory.
-    TempBytes(Arc<Vec<u8>>),
+    TempBytes(Vec<u8>),
     /// A TEMP slice located inside a CRIM/WEVT blob (offset/size refer to the blob bytes).
     CrimSlice {
         crim_index: usize,
@@ -65,16 +51,19 @@ enum TemplateSource {
 /// - Extract WEVT templates from provider binaries into a cache directory + JSONL index.
 /// - Use this cache to render EVTX records when their embedded template definitions are missing or
 ///   fail to deserialize.
+///
+/// The cache is populated up front (via `&mut self`) and then shared read-only (e.g. as
+/// `Arc<WevtCache>`).
 #[derive(Debug, Default)]
 pub struct WevtCache {
     /// Stored CRIM/WEVT blobs in memory.
     ///
     /// Templates discovered from these blobs can be referenced via [`TemplateSource::CrimSlice`]
     /// without copying.
-    crim_blobs: Mutex<Vec<Arc<Vec<u8>>>>,
+    crim_blobs: Vec<Vec<u8>>,
 
     /// Template GUID -> template source.
-    sources_by_guid: Mutex<HashMap<String, TemplateSource>>,
+    sources_by_guid: HashMap<String, TemplateSource>,
 }
 
 impl WevtCache {
@@ -83,41 +72,30 @@ impl WevtCache {
         WevtCache::default()
     }
 
-    /// Backwards-compatible alias for [`WevtCache::new`].
-    pub fn in_memory() -> Self {
-        WevtCache::new()
-    }
-
     /// Insert a standalone TEMP blob (full TEMP bytes) into this cache.
     ///
     /// `template_guid` is normalized (case-insensitive, braces stripped).
-    pub fn insert_temp_bytes(&self, template_guid: &str, temp_bytes: Arc<Vec<u8>>) {
+    pub fn insert_temp_bytes(&mut self, template_guid: &str, temp_bytes: Vec<u8>) {
         let guid = normalize_guid(template_guid);
         self.sources_by_guid
-            .lock()
-            .expect("lock poisoned")
             .insert(guid, TemplateSource::TempBytes(temp_bytes));
     }
 
     /// Add a CRIM/WEVT blob to this cache and index all contained `TTBL/TEMP` entries.
     ///
     /// This is **strict**: parse failures return an error and do not modify the cache.
-    pub fn add_wevt_blob(&self, bytes: Arc<Vec<u8>>) -> Result<usize, WevtCacheError> {
-        let templates = crate::wevt_templates::extract_temp_templates_from_wevt_blob(bytes.as_slice())
+    pub fn add_wevt_blob(&mut self, bytes: Vec<u8>) -> Result<usize, WevtCacheError> {
+        let templates = crate::wevt_templates::extract_temp_templates_from_wevt_blob(&bytes)
             .map_err(|source| WevtCacheError::CrimParse { source })?;
 
-        let crim_index = {
-            let mut crims = self.crim_blobs.lock().expect("lock poisoned");
-            crims.push(bytes);
-            crims.len() - 1
-        };
+        let crim_index = self.crim_blobs.len();
+        self.crim_blobs.push(bytes);
 
         let mut inserted = 0usize;
-        let mut map = self.sources_by_guid.lock().expect("lock poisoned");
         for t in templates {
             let g = normalize_guid(&t.header.guid.to_string());
             // First source wins for stability.
-            let entry = map.entry(g);
+            let entry = self.sources_by_guid.entry(g);
             if let std::collections::hash_map::Entry::Vacant(v) = entry {
                 v.insert(TemplateSource::CrimSlice {
                     crim_index,
@@ -144,8 +122,7 @@ impl WevtCache {
         const TEMP_BINXML_OFFSET: usize = 40;
 
         let guid = normalize_guid(template_guid);
-        let temp_bytes = self.get_temp_bytes_for_guid(&guid)?;
-        let temp = temp_bytes.as_slice();
+        let temp = self.get_temp_bytes_for_guid(&guid)?;
 
         if temp.len() < TEMP_BINXML_OFFSET {
             return Err(WevtCacheError::TempTooSmall {
@@ -158,34 +135,15 @@ impl WevtCache {
         Ok(arena.alloc_slice_copy(&temp[TEMP_BINXML_OFFSET..]))
     }
 
-    fn get_temp_bytes_for_guid(&self, guid: &str) -> Result<TempBytes, WevtCacheError> {
-        self.try_load_from_known_source(guid)?
-            .ok_or_else(|| WevtCacheError::TemplateNotFound {
+    fn get_temp_bytes_for_guid(&self, guid: &str) -> Result<&[u8], WevtCacheError> {
+        let Some(src) = self.sources_by_guid.get(guid) else {
+            return Err(WevtCacheError::TemplateNotFound {
                 guid: guid.to_string(),
-            })
-    }
-
-    fn try_load_from_known_source(&self, guid: &str) -> Result<Option<TempBytes>, WevtCacheError> {
-        let src = {
-            self.sources_by_guid
-                .lock()
-                .expect("lock poisoned")
-                .get(guid)
-                .cloned()
+            });
         };
 
-        let Some(src) = src else {
-            return Ok(None);
-        };
-
-        match src {
-            TemplateSource::TempBytes(bytes) => {
-                Ok(Some(TempBytes {
-                    bytes: bytes.clone(),
-                    start: 0,
-                    end: bytes.len(),
-                }))
-            }
+        match *src {
+            TemplateSource::TempBytes(ref bytes) => Ok(bytes),
             TemplateSource::CrimSlice {
                 crim_index,
                 temp_offset,
@@ -193,10 +151,7 @@ impl WevtCache {
             } => {
                 let bytes = self
                     .crim_blobs
-                    .lock()
-                    .expect("lock poisoned")
                     .get(crim_index)
-                    .cloned()
                     .expect("crim_index out of bounds");
                 let start = temp_offset as usize;
                 let end = start.saturating_add(temp_size as usize);
@@ -208,7 +163,7 @@ impl WevtCache {
                         len: bytes.len(),
                     });
                 }
-                Ok(Some(TempBytes { bytes, start, end }))
+                Ok(&bytes[start..end])
             }
         }
     }

@@ -2,12 +2,12 @@
 extern crate criterion;
 extern crate evtx;
 
-use criterion::Criterion;
+use criterion::{BatchSize, Criterion};
 use evtx::EvtxParser;
 
 // first chunk has 90 records
-fn process_90_records(buffer: &'static [u8]) {
-    let mut parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
+fn process_90_records(buffer: Vec<u8>) {
+    let mut parser = EvtxParser::from_buffer(buffer).unwrap();
 
     for (i, record) in parser.records().take(90).enumerate() {
         match record {
@@ -19,8 +19,8 @@ fn process_90_records(buffer: &'static [u8]) {
     }
 }
 
-fn process_90_records_json(buffer: &'static [u8]) {
-    let mut parser = EvtxParser::from_buffer(buffer.to_vec()).unwrap();
+fn process_90_records_json(buffer: Vec<u8>) {
+    let mut parser = EvtxParser::from_buffer(buffer).unwrap();
 
     for (i, record) in parser.records_json().take(90).enumerate() {
         match record {
@@ -38,11 +38,19 @@ fn criterion_benchmark(c: &mut Criterion) {
     // ~9ms after strings cache
     // ~8ms with cached templates as well
     c.bench_function("read 90 records", move |b| {
-        b.iter(|| process_90_records(evtx_file))
+        b.iter_batched(
+            || evtx_file.to_vec(),
+            process_90_records,
+            BatchSize::LargeInput,
+        )
     });
 
     c.bench_function("read 90 records json", move |b| {
-        b.iter(|| process_90_records_json(evtx_file))
+        b.iter_batched(
+            || evtx_file.to_vec(),
+            process_90_records_json,
+            BatchSize::LargeInput,
+        )
     });
 }
 

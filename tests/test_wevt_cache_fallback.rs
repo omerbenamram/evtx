@@ -137,8 +137,9 @@ mod wevt_cache_fallback {
         // Build a minimal in-memory WEVT cache that can serve this GUID.
         let mut temp_bytes = vec![0u8; 40];
         temp_bytes.extend_from_slice(&build_minimal_wevt_template_binxml());
-        let cache = Arc::new(WevtCache::new());
-        cache.insert_temp_bytes(&guid.to_string(), Arc::new(temp_bytes));
+        let mut cache = WevtCache::new();
+        cache.insert_temp_bytes(&guid.to_string(), temp_bytes);
+        let cache = Arc::new(cache);
 
         // Corrupt the EVTX buffer so chunk-template parsing fails.
         let mut corrupted = sample.to_vec();

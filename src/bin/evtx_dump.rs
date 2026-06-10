@@ -28,25 +28,19 @@ mod extract_wevt_templates;
 fn load_wevt_cache_from_wevtcache_file(
     path: &str,
 ) -> Result<std::sync::Arc<evtx::wevt_templates::WevtCache>> {
-    use std::sync::Arc;
+    use evtx::wevt_templates::wevtcache::{EntryKind, WevtCacheReader};
 
-    let cache = Arc::new(evtx::wevt_templates::WevtCache::new());
-    {
-        use evtx::wevt_templates::wevtcache::{EntryKind, WevtCacheReader};
-
-        let mut reader = WevtCacheReader::open(Path::new(path))?;
-        while let Some((kind, bytes)) = reader.next_entry()? {
-            match kind {
-                EntryKind::Crim => {
-                    cache
-                        .add_wevt_blob(Arc::new(bytes))
-                        .map_err(|e| format_err!("{e}"))?;
-                }
+    let mut cache = evtx::wevt_templates::WevtCache::new();
+    let mut reader = WevtCacheReader::open(Path::new(path))?;
+    while let Some((kind, bytes)) = reader.next_entry()? {
+        match kind {
+            EntryKind::Crim => {
+                cache.add_wevt_blob(bytes).map_err(|e| format_err!("{e}"))?;
             }
         }
     }
 
-    Ok(cache)
+    Ok(std::sync::Arc::new(cache))
 }
 
 #[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
@@ -342,7 +336,7 @@ impl EvtxDump {
                 eprintln!("{:?}", format_err!(e));
 
                 if self.stop_after_error {
-                    std::process::exit(1);
+                    bail!("Stopped after error");
                 }
             }
         };
@@ -380,42 +374,10 @@ impl FromStr for Ranges {
         let mut res = vec![];
 
         for range in s.split(',') {
-            if range.contains('-') {
-                let numbers = range.split('-').collect::<Vec<_>>();
-                let (rstart, rstop) = (numbers.first(), numbers.get(1));
-
-                // verify rstart, rstop are numbers
-                if let (Some(rstart), Some(rstop)) = (rstart, rstop) {
-                    if rstart.parse::<usize>().is_err() || rstop.parse::<usize>().is_err() {
-                        bail!("Expected range to be a positive number, got: {}", range);
-                    }
-                } else {
-                    bail!("Expected range to be a positive number, got: {}", range);
-                }
-
-                if numbers.len() != 2 {
-                    bail!(
-                        "Expected either a single number or range of numbers, but got: {}",
-                        range
-                    );
-                }
-
-                if rstart.is_none() || rstop.is_none() {
-                    bail!(
-                        "Expected range to be in the form of `start-stop`, got `{}`",
-                        range
-                    );
-                }
-
-                res.push(
-                    rstart.unwrap().parse::<usize>().unwrap()
-                        ..=rstop.unwrap().parse::<usize>().unwrap(),
-                );
-            } else {
-                match range.parse::<usize>() {
-                    Ok(r) => res.push(r..=r),
-                    Err(_) => bail!("Expected range to be a positive number, got: {}", range),
-                };
+            let (start, stop) = range.split_once('-').unwrap_or((range, range));
+            match (start.parse::<usize>(), stop.parse::<usize>()) {
+                (Ok(start), Ok(stop)) => res.push(start..=stop),
+                _ => bail!("Expected range to be a positive number, got: {}", range),
             }
         }
 

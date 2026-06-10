@@ -1,6 +1,5 @@
 //! Loopable binary for profiling evtx_dump JSONL output end-to-end.
 
-#[cfg(feature = "bench")]
 mod imp {
     use evtx::{EvtxParser, ParserSettings};
     use std::env;
@@ -75,12 +74,6 @@ mod imp {
     }
 }
 
-#[cfg(feature = "bench")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     imp::run()
-}
-
-#[cfg(not(feature = "bench"))]
-fn main() {
-    eprintln!("`bench_evtx_dump_loop` requires `--features bench`");
 }

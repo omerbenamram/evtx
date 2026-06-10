@@ -13,58 +13,33 @@ impl<'a> CrimManifest<'a> {
     /// against EVTX event metadata (e.g. event→template lookups for offline caches).
     pub fn parse(data: &'a [u8]) -> Result<Self> {
         let header = parse_crim_header(data)?;
-        let crim_size_usize =
-            usize::try_from(header.size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-                what: "CRIM.size",
-                offset: 0,
-                size: header.size,
-            })?;
-        if crim_size_usize > data.len() {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "CRIM.size",
-                offset: 0,
-                size: header.size,
-            });
-        }
+        let crim_size_usize = usize::try_from(header.size)
+            .ok()
+            .filter(|&s| s <= data.len())
+            .ok_or_else(|| size_err("CRIM.size", 0, header.size))?;
 
         let data = &data[..crim_size_usize];
 
-        let provider_count = usize::try_from(header.provider_count).map_err(|_| {
-            WevtManifestError::CountOutOfBounds {
-                what: "CRIM.provider_count",
-                offset: 12,
-                count: header.provider_count,
-            }
-        })?;
+        let (provider_count, providers_bytes) =
+            count_bytes(header.provider_count, 20, "CRIM.provider_count", 12)?;
 
         let providers_off = 16usize;
-        let provider_desc_size = 20usize;
         let providers_end = providers_off
-            .checked_add(provider_count.checked_mul(provider_desc_size).ok_or(
-                WevtManifestError::CountOutOfBounds {
-                    what: "CRIM.provider_count",
-                    offset: 12,
-                    count: header.provider_count,
-                },
-            )?)
-            .ok_or(WevtManifestError::CountOutOfBounds {
-                what: "CRIM.provider_count",
-                offset: 12,
-                count: header.provider_count,
-            })?;
+            .checked_add(providers_bytes)
+            .ok_or_else(|| count_err("CRIM.provider_count", 12, header.provider_count))?;
 
         if providers_end > data.len() {
-            return Err(WevtManifestError::Truncated {
-                what: "CRIM provider descriptor array",
-                offset: 16,
-                need: providers_end - providers_off,
-                have: data.len().saturating_sub(providers_off),
-            });
+            return Err(trunc_err(
+                "CRIM provider descriptor array",
+                16,
+                providers_end - providers_off,
+                data.len().saturating_sub(providers_off),
+            ));
         }
 
         let mut providers = Vec::with_capacity(provider_count);
         for i in 0..provider_count {
-            let desc_off = providers_off + i * provider_desc_size;
+            let desc_off = providers_off + i * 20;
             let guid = read_guid_named(data, desc_off, "CRIM.provider.guid")?;
             let provider_off = read_u32_named(data, desc_off + 16, "CRIM.provider.offset")?;
 
@@ -136,11 +111,7 @@ impl<'a> CrimManifest<'a> {
 fn parse_crim_header(data: &[u8]) -> Result<CrimHeader> {
     let sig = read_sig_named(data, 0, "CRIM signature")?;
     if sig != *b"CRIM" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: 0,
-            expected: *b"CRIM",
-            found: sig,
-        });
+        return Err(sig_err(0, b"CRIM", sig));
     }
 
     let size = read_u32_named(data, 4, "CRIM.size")?;
@@ -149,11 +120,7 @@ fn parse_crim_header(data: &[u8]) -> Result<CrimHeader> {
     let provider_count = read_u32_named(data, 12, "CRIM.provider_count")?;
 
     if size < 16 {
-        return Err(WevtManifestError::SizeOutOfBounds {
-            what: "CRIM.size",
-            offset: 0,
-            size,
-        });
+        return Err(size_err("CRIM.size", 0, size));
     }
 
     Ok(CrimHeader {
@@ -171,42 +138,26 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
 
     let sig = read_sig_named(crim, provider_off_usize, "WEVT signature")?;
     if sig != *b"WEVT" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: provider_off,
-            expected: *b"WEVT",
-            found: sig,
-        });
+        return Err(sig_err(provider_off, b"WEVT", sig));
     }
 
     let size = read_u32_named(crim, provider_off_usize + 4, "WEVT.size")?;
-    let message_identifier_raw =
-        read_u32_named(crim, provider_off_usize + 8, "WEVT.message_identifier")?;
+    let message_identifier = opt_message_id(read_u32_named(
+        crim,
+        provider_off_usize + 8,
+        "WEVT.message_identifier",
+    )?);
     let descriptor_count =
         read_u32_named(crim, provider_off_usize + 12, "WEVT.number_of_descriptors")?;
     let unknown2_count = read_u32_named(crim, provider_off_usize + 16, "WEVT.number_of_unknown2")?;
 
-    let message_identifier = if message_identifier_raw == 0xffffffff {
-        None
-    } else {
-        Some(message_identifier_raw)
-    };
-
-    let desc_count_usize =
-        usize::try_from(descriptor_count).map_err(|_| WevtManifestError::CountOutOfBounds {
-            what: "WEVT.number_of_descriptors",
-            offset: provider_off + 12,
-            count: descriptor_count,
-        })?;
-
+    let (desc_count_usize, desc_bytes) = count_bytes(
+        descriptor_count,
+        8,
+        "WEVT.number_of_descriptors",
+        provider_off + 12,
+    )?;
     let desc_off = provider_off_usize + 20;
-    let desc_bytes =
-        desc_count_usize
-            .checked_mul(8)
-            .ok_or(WevtManifestError::CountOutOfBounds {
-                what: "WEVT.number_of_descriptors",
-                offset: provider_off + 12,
-                count: descriptor_count,
-            })?;
     require_len(crim, desc_off, desc_bytes, "WEVT descriptor array")?;
 
     let mut element_descriptors = Vec::with_capacity(desc_count_usize);
@@ -224,22 +175,13 @@ fn parse_provider<'a>(crim: &'a [u8], guid: Guid, provider_off: u32) -> Result<P
         });
     }
 
-    let unknown2_count_usize =
-        usize::try_from(unknown2_count).map_err(|_| WevtManifestError::CountOutOfBounds {
-            what: "WEVT.number_of_unknown2",
-            offset: provider_off + 16,
-            count: unknown2_count,
-        })?;
-
+    let (unknown2_count_usize, unknown2_bytes) = count_bytes(
+        unknown2_count,
+        4,
+        "WEVT.number_of_unknown2",
+        provider_off + 16,
+    )?;
     let unknown2_off = desc_off + desc_bytes;
-    let unknown2_bytes =
-        unknown2_count_usize
-            .checked_mul(4)
-            .ok_or(WevtManifestError::CountOutOfBounds {
-                what: "WEVT.number_of_unknown2",
-                offset: provider_off + 16,
-                count: unknown2_count,
-            })?;
     require_len(crim, unknown2_off, unknown2_bytes, "WEVT unknown2 array")?;
 
     let mut unknown2 = Vec::with_capacity(unknown2_count_usize);
@@ -314,12 +256,12 @@ fn parse_provider_elements<'a>(
                         data,
                     });
                 } else {
-                    return Err(WevtManifestError::Truncated {
-                        what: "unknown element header",
-                        offset: d.element_offset,
-                        need: 8,
-                        have: crim.len().saturating_sub(off),
-                    });
+                    return Err(trunc_err(
+                        "unknown element header",
+                        d.element_offset,
+                        8,
+                        crim.len().saturating_sub(off),
+                    ));
                 }
             }
         }
@@ -328,88 +270,198 @@ fn parse_provider_elements<'a>(
     Ok(out)
 }
 
-fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
-    let off_usize = u32_to_usize(off, "CHAN offset", crim.len())?;
-    require_len(crim, off_usize, 12, "CHAN header")?;
-    let sig = read_sig_named(crim, off_usize, "CHAN signature")?;
-    if sig != *b"CHAN" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"CHAN",
-            found: sig,
-        });
+fn sig_err(offset: u32, expected: &[u8; 4], found: [u8; 4]) -> WevtManifestError {
+    WevtManifestError::InvalidSignature {
+        offset,
+        expected: *expected,
+        found,
     }
-    let size = read_u32_named(crim, off_usize + 4, "CHAN.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "CHAN.count")?;
+}
 
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "CHAN.count",
-        offset: off + 8,
+fn size_err(what: &'static str, offset: u32, size: u32) -> WevtManifestError {
+    WevtManifestError::SizeOutOfBounds { what, offset, size }
+}
+
+fn count_err(what: &'static str, offset: u32, count: u32) -> WevtManifestError {
+    WevtManifestError::CountOutOfBounds {
+        what,
+        offset,
         count,
-    })?;
-    let defs_off = off_usize + 12;
-    let defs_bytes = count_usize
-        .checked_mul(16)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "CHAN.count",
-            offset: off + 8,
-            count,
-        })?;
-    let min_end = defs_off
-        .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what: "CHAN definitions array",
-            offset: off,
-            size,
-        })?;
+    }
+}
 
-    let _end = if size == 0 {
-        // libfwevt accepts size==0 and uses `count` to parse the definitions array.
-        min_end
-    } else {
-        if size < 12 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "CHAN.size",
-                offset: off,
-                size,
-            });
+fn trunc_err(what: &'static str, offset: u32, need: usize, have: usize) -> WevtManifestError {
+    WevtManifestError::Truncated {
+        what,
+        offset,
+        need,
+        have,
+    }
+}
+
+fn off_err(what: &'static str, offset: u32, len: usize) -> WevtManifestError {
+    WevtManifestError::OffsetOutOfBounds { what, offset, len }
+}
+
+struct TableNames {
+    offset: &'static str,
+    header: &'static str,
+    signature: &'static str,
+    size: &'static str,
+    count: &'static str,
+    array: &'static str,
+}
+
+macro_rules! table_names {
+    ($p:literal) => {
+        table_names!($p, concat!($p, " definitions array"))
+    };
+    ($p:literal, $array:expr) => {
+        TableNames {
+            offset: concat!($p, " offset"),
+            header: concat!($p, " header"),
+            signature: concat!($p, " signature"),
+            size: concat!($p, ".size"),
+            count: concat!($p, ".count"),
+            array: $array,
         }
-        let end = checked_end(crim.len(), off, size, "CHAN.size")?;
-        if min_end > end {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "CHAN definitions array",
-                offset: off,
-                size,
-            });
+    };
+}
+
+fn opt_message_id(raw: u32) -> Option<u32> {
+    (raw != 0xffffffff).then_some(raw)
+}
+
+fn opt_nonzero(v: u32) -> Option<u32> {
+    (v != 0).then_some(v)
+}
+
+fn read_opt_name(crim: &[u8], offset: u32, what: &'static str) -> Result<Option<String>> {
+    if offset == 0 {
+        Ok(None)
+    } else {
+        read_sized_utf16_string(crim, offset, what).map(Some)
+    }
+}
+
+fn u32_count(count: u32, what: &'static str, offset: u32) -> Result<usize> {
+    usize::try_from(count).map_err(|_| count_err(what, offset, count))
+}
+
+fn count_bytes(count: u32, rec: usize, what: &'static str, offset: u32) -> Result<(usize, usize)> {
+    let n = u32_count(count, what, offset)?;
+    let bytes = n
+        .checked_mul(rec)
+        .ok_or_else(|| count_err(what, offset, count))?;
+    Ok((n, bytes))
+}
+
+fn read_block_header(
+    crim: &[u8],
+    off: u32,
+    sig: &'static [u8; 4],
+    header_len: usize,
+    names: &TableNames,
+) -> Result<(usize, u32, u32)> {
+    let off_usize = u32_to_usize(off, names.offset, crim.len())?;
+    require_len(crim, off_usize, header_len, names.header)?;
+    let found = read_sig_named(crim, off_usize, names.signature)?;
+    if found != *sig {
+        return Err(sig_err(off, sig, found));
+    }
+    let size = read_u32_named(crim, off_usize + 4, names.size)?;
+    let count = read_u32_named(crim, off_usize + 8, names.count)?;
+    Ok((off_usize, size, count))
+}
+
+fn region_end(len: usize, off: u32, size: u32, min_size: u32, what: &'static str) -> Result<usize> {
+    if size == 0 {
+        // libfwevt accepts size==0 and parses by `count`.
+        return Ok(len);
+    }
+    if size < min_size {
+        return Err(size_err(what, off, size));
+    }
+    checked_end(len, off, size, what)
+}
+
+struct TableBounds {
+    header_off: usize,
+    size: u32,
+    count: usize,
+    recs_off: usize,
+    recs_end: usize,
+    end: usize,
+}
+
+fn parse_table_header(
+    crim: &[u8],
+    off: u32,
+    sig: &'static [u8; 4],
+    header_len: usize,
+    rec_size: usize,
+    names: &TableNames,
+) -> Result<TableBounds> {
+    let (header_off, size, count) = read_block_header(crim, off, sig, header_len, names)?;
+    let (count, recs_bytes) = count_bytes(count, rec_size, names.count, off + 8)?;
+    let recs_off = header_off + header_len;
+    let recs_end = recs_off
+        .checked_add(recs_bytes)
+        .ok_or_else(|| size_err(names.array, off, size))?;
+
+    let end = if size == 0 {
+        // libfwevt accepts size==0 and uses `count` to parse the array.
+        recs_end
+    } else {
+        let end = region_end(crim.len(), off, size, header_len as u32, names.size)?;
+        if recs_end > end {
+            return Err(size_err(names.array, off, size));
         }
         end
     };
 
-    let mut channels = Vec::with_capacity(count_usize);
-    for i in 0..count_usize {
-        let d_off = defs_off + i * 16;
+    Ok(TableBounds {
+        header_off,
+        size,
+        count,
+        recs_off,
+        recs_end,
+        end,
+    })
+}
+
+fn parse_table<T>(
+    crim: &[u8],
+    off: u32,
+    sig: &'static [u8; 4],
+    rec_size: usize,
+    names: TableNames,
+    read_rec: impl Fn(usize) -> Result<T>,
+) -> Result<(u32, Vec<T>)> {
+    let t = parse_table_header(crim, off, sig, 12, rec_size, &names)?;
+    let mut recs = Vec::with_capacity(t.count);
+    for i in 0..t.count {
+        recs.push(read_rec(t.recs_off + i * rec_size)?);
+    }
+    Ok((t.size, recs))
+}
+
+fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
+    let (size, channels) = parse_table(crim, off, b"CHAN", 16, table_names!("CHAN"), |d_off| {
         let identifier = read_u32_named(crim, d_off, "CHAN.identifier")?;
         let name_offset = read_u32_named(crim, d_off + 4, "CHAN.name_offset")?;
         let unknown = read_u32_named(crim, d_off + 8, "CHAN.unknown")?;
-        let msg_raw = read_u32_named(crim, d_off + 12, "CHAN.message_identifier")?;
-        let message_identifier = if msg_raw == 0xffffffff {
-            None
-        } else {
-            Some(msg_raw)
-        };
-        let name = if name_offset == 0 {
-            None
-        } else {
-            Some(read_sized_utf16_string(crim, name_offset, "CHAN name")?)
-        };
-        channels.push(ChannelDefinition {
+        let message_identifier =
+            opt_message_id(read_u32_named(crim, d_off + 12, "CHAN.message_identifier")?);
+        let name = read_opt_name(crim, name_offset, "CHAN name")?;
+        Ok(ChannelDefinition {
             identifier,
             name_offset,
             unknown,
             message_identifier,
             name,
-        });
-    }
+        })
+    })?;
 
     Ok(ChannelDefinitions {
         offset: off,
@@ -419,67 +471,19 @@ fn parse_channels(crim: &[u8], off: u32) -> Result<ChannelDefinitions> {
 }
 
 fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
-    let off_usize = u32_to_usize(off, "EVNT offset", crim.len())?;
-    require_len(crim, off_usize, 16, "EVNT header")?;
-    let sig = read_sig_named(crim, off_usize, "EVNT signature")?;
-    if sig != *b"EVNT" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"EVNT",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "EVNT.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "EVNT.count")?;
-    let unknown = read_u32_named(crim, off_usize + 12, "EVNT.unknown")?;
+    let t = parse_table_header(
+        crim,
+        off,
+        b"EVNT",
+        16,
+        48,
+        &table_names!("EVNT", "EVNT event array"),
+    )?;
+    let unknown = read_u32_named(crim, t.header_off + 12, "EVNT.unknown")?;
 
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "EVNT.count",
-        offset: off + 8,
-        count,
-    })?;
-    let events_off = off_usize + 16;
-    let events_bytes = count_usize
-        .checked_mul(48)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "EVNT.count",
-            offset: off + 8,
-            count,
-        })?;
-    let min_end =
-        events_off
-            .checked_add(events_bytes)
-            .ok_or(WevtManifestError::SizeOutOfBounds {
-                what: "EVNT event array",
-                offset: off,
-                size,
-            })?;
-
-    let end = if size == 0 {
-        // libfwevt accepts size==0 and uses `count` to parse the array.
-        min_end
-    } else {
-        if size < 16 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "EVNT.size",
-                offset: off,
-                size,
-            });
-        }
-        let end = checked_end(crim.len(), off, size, "EVNT.size")?;
-        if min_end > end {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "EVNT event array",
-                offset: off,
-                size,
-            });
-        }
-        end
-    };
-
-    let mut events = Vec::with_capacity(count_usize);
-    for i in 0..count_usize {
-        let e_off = events_off + i * 48;
+    let mut events = Vec::with_capacity(t.count);
+    for i in 0..t.count {
+        let e_off = t.recs_off + i * 48;
         let identifier = read_u16_named(crim, e_off, "EVNT.event.identifier")?;
         let version = read_u8_named(crim, e_off + 2, "EVNT.event.version")?;
         let channel = read_u8_named(crim, e_off + 3, "EVNT.event.channel")?;
@@ -488,10 +492,19 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
         let task = read_u16_named(crim, e_off + 6, "EVNT.event.task")?;
         let keywords = read_u64_named(crim, e_off + 8, "EVNT.event.keywords")?;
         let message_identifier = read_u32_named(crim, e_off + 16, "EVNT.event.message_identifier")?;
-        let template_offset_raw = read_u32_named(crim, e_off + 20, "EVNT.event.template_offset")?;
-        let opcode_offset_raw = read_u32_named(crim, e_off + 24, "EVNT.event.opcode_offset")?;
-        let level_offset_raw = read_u32_named(crim, e_off + 28, "EVNT.event.level_offset")?;
-        let task_offset_raw = read_u32_named(crim, e_off + 32, "EVNT.event.task_offset")?;
+        let template_offset = opt_nonzero(read_u32_named(
+            crim,
+            e_off + 20,
+            "EVNT.event.template_offset",
+        )?);
+        let opcode_offset = opt_nonzero(read_u32_named(
+            crim,
+            e_off + 24,
+            "EVNT.event.opcode_offset",
+        )?);
+        let level_offset =
+            opt_nonzero(read_u32_named(crim, e_off + 28, "EVNT.event.level_offset")?);
+        let task_offset = opt_nonzero(read_u32_named(crim, e_off + 32, "EVNT.event.task_offset")?);
         let unknown_count = read_u32_named(crim, e_off + 36, "EVNT.event.unknown_count")?;
         let unknown_offset = read_u32_named(crim, e_off + 40, "EVNT.event.unknown_offset")?;
         let flags = read_u32_named(crim, e_off + 44, "EVNT.event.flags")?;
@@ -505,41 +518,25 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
             task,
             keywords,
             message_identifier,
-            template_offset: if template_offset_raw == 0 {
-                None
-            } else {
-                Some(template_offset_raw)
-            },
-            opcode_offset: if opcode_offset_raw == 0 {
-                None
-            } else {
-                Some(opcode_offset_raw)
-            },
-            level_offset: if level_offset_raw == 0 {
-                None
-            } else {
-                Some(level_offset_raw)
-            },
-            task_offset: if task_offset_raw == 0 {
-                None
-            } else {
-                Some(task_offset_raw)
-            },
+            template_offset,
+            opcode_offset,
+            level_offset,
+            task_offset,
             unknown_count,
             unknown_offset,
             flags,
         });
     }
 
-    let trailing = if end >= events_off + events_bytes {
-        crim[events_off + events_bytes..end].to_vec()
+    let trailing = if t.end >= t.recs_end {
+        crim[t.recs_end..t.end].to_vec()
     } else {
         vec![]
     };
 
     Ok(EventDefinitions {
         offset: off,
-        size,
+        size: t.size,
         unknown,
         events,
         trailing,
@@ -547,85 +544,19 @@ fn parse_events(crim: &[u8], off: u32) -> Result<EventDefinitions> {
 }
 
 fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
-    let off_usize = u32_to_usize(off, "KEYW offset", crim.len())?;
-    require_len(crim, off_usize, 12, "KEYW header")?;
-    let sig = read_sig_named(crim, off_usize, "KEYW signature")?;
-    if sig != *b"KEYW" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"KEYW",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "KEYW.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "KEYW.count")?;
-
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "KEYW.count",
-        offset: off + 8,
-        count,
-    })?;
-    let defs_off = off_usize + 12;
-    let defs_bytes = count_usize
-        .checked_mul(16)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "KEYW.count",
-            offset: off + 8,
-            count,
-        })?;
-    let min_end = defs_off
-        .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what: "KEYW definitions array",
-            offset: off,
-            size,
-        })?;
-
-    let _end = if size == 0 {
-        // libfwevt accepts size==0 and uses `count` to parse the definitions array.
-        min_end
-    } else {
-        if size < 12 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "KEYW.size",
-                offset: off,
-                size,
-            });
-        }
-        let end = checked_end(crim.len(), off, size, "KEYW.size")?;
-        if min_end > end {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "KEYW definitions array",
-                offset: off,
-                size,
-            });
-        }
-        end
-    };
-
-    let mut keywords = Vec::with_capacity(count_usize);
-    for i in 0..count_usize {
-        let d_off = defs_off + i * 16;
+    let (size, keywords) = parse_table(crim, off, b"KEYW", 16, table_names!("KEYW"), |d_off| {
         let identifier = read_u64_named(crim, d_off, "KEYW.identifier")?;
-        let msg_raw = read_u32_named(crim, d_off + 8, "KEYW.message_identifier")?;
+        let message_identifier =
+            opt_message_id(read_u32_named(crim, d_off + 8, "KEYW.message_identifier")?);
         let data_offset = read_u32_named(crim, d_off + 12, "KEYW.data_offset")?;
-        let message_identifier = if msg_raw == 0xffffffff {
-            None
-        } else {
-            Some(msg_raw)
-        };
-        let name = if data_offset == 0 {
-            None
-        } else {
-            Some(read_sized_utf16_string(crim, data_offset, "KEYW data")?)
-        };
-        keywords.push(KeywordDefinition {
+        let name = read_opt_name(crim, data_offset, "KEYW data")?;
+        Ok(KeywordDefinition {
             identifier,
             message_identifier,
             data_offset,
             name,
-        });
-    }
+        })
+    })?;
 
     Ok(KeywordDefinitions {
         offset: off,
@@ -635,84 +566,19 @@ fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
 }
 
 fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
-    let off_usize = u32_to_usize(off, "LEVL offset", crim.len())?;
-    require_len(crim, off_usize, 12, "LEVL header")?;
-    let sig = read_sig_named(crim, off_usize, "LEVL signature")?;
-    if sig != *b"LEVL" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"LEVL",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "LEVL.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "LEVL.count")?;
-
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "LEVL.count",
-        offset: off + 8,
-        count,
-    })?;
-    let defs_off = off_usize + 12;
-    let defs_bytes = count_usize
-        .checked_mul(12)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "LEVL.count",
-            offset: off + 8,
-            count,
-        })?;
-    let min_end = defs_off
-        .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what: "LEVL definitions array",
-            offset: off,
-            size,
-        })?;
-
-    let _end = if size == 0 {
-        min_end
-    } else {
-        if size < 12 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "LEVL.size",
-                offset: off,
-                size,
-            });
-        }
-        let end = checked_end(crim.len(), off, size, "LEVL.size")?;
-        if min_end > end {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "LEVL definitions array",
-                offset: off,
-                size,
-            });
-        }
-        end
-    };
-
-    let mut levels = Vec::with_capacity(count_usize);
-    for i in 0..count_usize {
-        let d_off = defs_off + i * 12;
+    let (size, levels) = parse_table(crim, off, b"LEVL", 12, table_names!("LEVL"), |d_off| {
         let identifier = read_u32_named(crim, d_off, "LEVL.identifier")?;
-        let msg_raw = read_u32_named(crim, d_off + 4, "LEVL.message_identifier")?;
+        let message_identifier =
+            opt_message_id(read_u32_named(crim, d_off + 4, "LEVL.message_identifier")?);
         let data_offset = read_u32_named(crim, d_off + 8, "LEVL.data_offset")?;
-        let message_identifier = if msg_raw == 0xffffffff {
-            None
-        } else {
-            Some(msg_raw)
-        };
-        let name = if data_offset == 0 {
-            None
-        } else {
-            Some(read_sized_utf16_string(crim, data_offset, "LEVL data")?)
-        };
-        levels.push(LevelDefinition {
+        let name = read_opt_name(crim, data_offset, "LEVL data")?;
+        Ok(LevelDefinition {
             identifier,
             message_identifier,
             data_offset,
             name,
-        });
-    }
+        })
+    })?;
 
     Ok(LevelDefinitions {
         offset: off,
@@ -722,84 +588,19 @@ fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
 }
 
 fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
-    let off_usize = u32_to_usize(off, "OPCO offset", crim.len())?;
-    require_len(crim, off_usize, 12, "OPCO header")?;
-    let sig = read_sig_named(crim, off_usize, "OPCO signature")?;
-    if sig != *b"OPCO" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"OPCO",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "OPCO.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "OPCO.count")?;
-
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "OPCO.count",
-        offset: off + 8,
-        count,
-    })?;
-    let defs_off = off_usize + 12;
-    let defs_bytes = count_usize
-        .checked_mul(12)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "OPCO.count",
-            offset: off + 8,
-            count,
-        })?;
-    let min_end = defs_off
-        .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what: "OPCO definitions array",
-            offset: off,
-            size,
-        })?;
-
-    let _end = if size == 0 {
-        min_end
-    } else {
-        if size < 12 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "OPCO.size",
-                offset: off,
-                size,
-            });
-        }
-        let end = checked_end(crim.len(), off, size, "OPCO.size")?;
-        if min_end > end {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "OPCO definitions array",
-                offset: off,
-                size,
-            });
-        }
-        end
-    };
-
-    let mut opcodes = Vec::with_capacity(count_usize);
-    for i in 0..count_usize {
-        let d_off = defs_off + i * 12;
+    let (size, opcodes) = parse_table(crim, off, b"OPCO", 12, table_names!("OPCO"), |d_off| {
         let identifier = read_u32_named(crim, d_off, "OPCO.identifier")?;
-        let msg_raw = read_u32_named(crim, d_off + 4, "OPCO.message_identifier")?;
+        let message_identifier =
+            opt_message_id(read_u32_named(crim, d_off + 4, "OPCO.message_identifier")?);
         let data_offset = read_u32_named(crim, d_off + 8, "OPCO.data_offset")?;
-        let message_identifier = if msg_raw == 0xffffffff {
-            None
-        } else {
-            Some(msg_raw)
-        };
-        let name = if data_offset == 0 {
-            None
-        } else {
-            Some(read_sized_utf16_string(crim, data_offset, "OPCO data")?)
-        };
-        opcodes.push(OpcodeDefinition {
+        let name = read_opt_name(crim, data_offset, "OPCO data")?;
+        Ok(OpcodeDefinition {
             identifier,
             message_identifier,
             data_offset,
             name,
-        });
-    }
+        })
+    })?;
 
     Ok(OpcodeDefinitions {
         offset: off,
@@ -809,86 +610,21 @@ fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
 }
 
 fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
-    let off_usize = u32_to_usize(off, "TASK offset", crim.len())?;
-    require_len(crim, off_usize, 12, "TASK header")?;
-    let sig = read_sig_named(crim, off_usize, "TASK signature")?;
-    if sig != *b"TASK" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"TASK",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "TASK.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "TASK.count")?;
-
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "TASK.count",
-        offset: off + 8,
-        count,
-    })?;
-    let defs_off = off_usize + 12;
-    let defs_bytes = count_usize
-        .checked_mul(28)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "TASK.count",
-            offset: off + 8,
-            count,
-        })?;
-    let min_end = defs_off
-        .checked_add(defs_bytes)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what: "TASK definitions array",
-            offset: off,
-            size,
-        })?;
-
-    let _end = if size == 0 {
-        min_end
-    } else {
-        if size < 12 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "TASK.size",
-                offset: off,
-                size,
-            });
-        }
-        let end = checked_end(crim.len(), off, size, "TASK.size")?;
-        if min_end > end {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "TASK definitions array",
-                offset: off,
-                size,
-            });
-        }
-        end
-    };
-
-    let mut tasks = Vec::with_capacity(count_usize);
-    for i in 0..count_usize {
-        let d_off = defs_off + i * 28;
+    let (size, tasks) = parse_table(crim, off, b"TASK", 28, table_names!("TASK"), |d_off| {
         let identifier = read_u32_named(crim, d_off, "TASK.identifier")?;
-        let msg_raw = read_u32_named(crim, d_off + 4, "TASK.message_identifier")?;
+        let message_identifier =
+            opt_message_id(read_u32_named(crim, d_off + 4, "TASK.message_identifier")?);
         let mui_identifier = read_guid_named(crim, d_off + 8, "TASK.mui_identifier")?;
         let data_offset = read_u32_named(crim, d_off + 24, "TASK.data_offset")?;
-        let message_identifier = if msg_raw == 0xffffffff {
-            None
-        } else {
-            Some(msg_raw)
-        };
-        let name = if data_offset == 0 {
-            None
-        } else {
-            Some(read_sized_utf16_string(crim, data_offset, "TASK data")?)
-        };
-        tasks.push(TaskDefinition {
+        let name = read_opt_name(crim, data_offset, "TASK data")?;
+        Ok(TaskDefinition {
             identifier,
             message_identifier,
             mui_identifier,
             data_offset,
             name,
-        });
-    }
+        })
+    })?;
 
     Ok(TaskDefinitions {
         offset: off,
@@ -898,65 +634,30 @@ fn parse_tasks(crim: &[u8], off: u32) -> Result<TaskDefinitions> {
 }
 
 fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
-    let off_usize = u32_to_usize(off, "TTBL offset", crim.len())?;
-    require_len(crim, off_usize, 12, "TTBL header")?;
-    let sig = read_sig_named(crim, off_usize, "TTBL signature")?;
-    if sig != *b"TTBL" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"TTBL",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "TTBL.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "TTBL.count")?;
-    let end = if size == 0 {
-        // libfwevt accepts size==0 and parses by `count` and per-template sizes.
-        crim.len()
-    } else {
-        if size < 12 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "TTBL.size",
-                offset: off,
-                size,
-            });
-        }
-        checked_end(crim.len(), off, size, "TTBL.size")?
-    };
-
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "TTBL.count",
-        offset: off + 8,
-        count,
-    })?;
+    let (off_usize, size, count) =
+        read_block_header(crim, off, b"TTBL", 12, &table_names!("TTBL"))?;
+    let end = region_end(crim.len(), off, size, 12, "TTBL.size")?;
+    let count_usize = u32_count(count, "TTBL.count", off + 8)?;
 
     let mut templates = Vec::with_capacity(count_usize);
     let mut cur = off_usize + 12;
 
     for _ in 0..count_usize {
         if cur + 40 > end {
-            return Err(WevtManifestError::Truncated {
-                what: "TEMP header",
-                offset: usize_to_u32(cur),
-                need: 40,
-                have: end.saturating_sub(cur),
-            });
+            return Err(trunc_err(
+                "TEMP header",
+                usize_to_u32(cur),
+                40,
+                end.saturating_sub(cur),
+            ));
         }
         let temp_sig = read_sig_named(crim, cur, "TEMP signature")?;
         if temp_sig != *b"TEMP" {
-            return Err(WevtManifestError::InvalidSignature {
-                offset: usize_to_u32(cur),
-                expected: *b"TEMP",
-                found: temp_sig,
-            });
+            return Err(sig_err(usize_to_u32(cur), b"TEMP", temp_sig));
         }
         let temp_size = read_u32_named(crim, cur + 4, "TEMP.size")?;
         if temp_size < 40 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "TEMP.size",
-                offset: usize_to_u32(cur),
-                size: temp_size,
-            });
+            return Err(size_err("TEMP.size", usize_to_u32(cur), temp_size));
         }
         let temp_end = checked_end(end, usize_to_u32(cur), temp_size, "TEMP.size")?;
         let temp_off_u32 = usize_to_u32(cur);
@@ -970,11 +671,11 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
         // libfwevt notes: if number_of_descriptors (and number_of_names) is 0, the template_items_offset
         // is either 0 or points to the end of the template. Treat non-zero name count in this case as invalid.
         if item_descriptor_count == 0 && item_name_count != 0 {
-            return Err(WevtManifestError::CountOutOfBounds {
-                what: "TEMP.item_name_count (expected 0 when item_descriptor_count == 0)",
-                offset: temp_off_u32 + 12,
-                count: item_name_count,
-            });
+            return Err(count_err(
+                "TEMP.item_name_count (expected 0 when item_descriptor_count == 0)",
+                temp_off_u32 + 12,
+                item_name_count,
+            ));
         }
 
         let template_slice = &crim[cur..temp_end];
@@ -991,11 +692,7 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
             // No guidance; treat items as starting at end-of-template.
             temp_size
         } else if items_abs < temp_off_u32 {
-            return Err(WevtManifestError::OffsetOutOfBounds {
-                what: "TEMP.template_items_offset",
-                offset: items_abs,
-                len: crim.len(),
-            });
+            return Err(off_err("TEMP.template_items_offset", items_abs, crim.len()));
         } else {
             items_abs - temp_off_u32
         };
@@ -1006,11 +703,11 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
             template_slice.len(),
         )?;
         if items_rel_usize > template_slice.len() {
-            return Err(WevtManifestError::OffsetOutOfBounds {
-                what: "TEMP.template_items_offset (relative)",
-                offset: temp_off_u32.saturating_add(items_rel),
-                len: crim.len(),
-            });
+            return Err(off_err(
+                "TEMP.template_items_offset (relative)",
+                temp_off_u32.saturating_add(items_rel),
+                crim.len(),
+            ));
         }
 
         let binxml_start = 40usize;
@@ -1056,60 +753,58 @@ fn parse_template_items(
     item_descriptor_count: u32,
     template_items_offset_abs: u32,
 ) -> Result<Vec<TemplateItem>> {
-    let count_usize = usize::try_from(item_descriptor_count).map_err(|_| {
-        WevtManifestError::CountOutOfBounds {
-            what: "TEMP.item_descriptor_count",
-            offset: template_off_abs + 8,
-            count: item_descriptor_count,
-        }
-    })?;
+    let count_usize = u32_count(
+        item_descriptor_count,
+        "TEMP.item_descriptor_count",
+        template_off_abs + 8,
+    )?;
 
     if count_usize == 0 {
         // Validate template_items_offset for the zero-items case.
         if template_items_offset_abs != 0
             && template_items_offset_abs != template_off_abs.saturating_add(template.len() as u32)
         {
-            return Err(WevtManifestError::OffsetOutOfBounds {
-                what: "TEMP.template_items_offset (expected 0 or end-of-template when item_descriptor_count==0)",
-                offset: template_items_offset_abs,
-                len: template_off_abs.saturating_add(template.len() as u32) as usize,
-            });
+            return Err(off_err(
+                "TEMP.template_items_offset (expected 0 or end-of-template when item_descriptor_count==0)",
+                template_items_offset_abs,
+                template_off_abs.saturating_add(template.len() as u32) as usize,
+            ));
         }
         return Ok(vec![]);
     }
 
     if template_items_offset_abs < template_off_abs {
-        return Err(WevtManifestError::OffsetOutOfBounds {
-            what: "TEMP.template_items_offset",
-            offset: template_items_offset_abs,
-            len: template_off_abs.saturating_add(template.len() as u32) as usize,
-        });
+        return Err(off_err(
+            "TEMP.template_items_offset",
+            template_items_offset_abs,
+            template_off_abs.saturating_add(template.len() as u32) as usize,
+        ));
     }
 
     let rel = template_items_offset_abs - template_off_abs;
     let rel_usize = u32_to_usize(rel, "TEMP.template_items_offset (relative)", template.len())?;
     if rel_usize < 40 || rel_usize >= template.len() {
-        return Err(WevtManifestError::OffsetOutOfBounds {
-            what: "TEMP.template_items_offset (relative)",
-            offset: template_items_offset_abs,
-            len: template_off_abs.saturating_add(template.len() as u32) as usize,
-        });
+        return Err(off_err(
+            "TEMP.template_items_offset (relative)",
+            template_items_offset_abs,
+            template_off_abs.saturating_add(template.len() as u32) as usize,
+        ));
     }
 
-    let needed = count_usize
-        .checked_mul(20)
-        .ok_or(WevtManifestError::CountOutOfBounds {
-            what: "TEMP.item_descriptor_count",
-            offset: template_off_abs + 8,
-            count: item_descriptor_count,
-        })?;
+    let needed = count_usize.checked_mul(20).ok_or_else(|| {
+        count_err(
+            "TEMP.item_descriptor_count",
+            template_off_abs + 8,
+            item_descriptor_count,
+        )
+    })?;
     if rel_usize + needed > template.len() {
-        return Err(WevtManifestError::Truncated {
-            what: "template item descriptors",
-            offset: template_items_offset_abs,
-            need: needed,
-            have: template.len().saturating_sub(rel_usize),
-        });
+        return Err(trunc_err(
+            "template item descriptors",
+            template_items_offset_abs,
+            needed,
+            template.len().saturating_sub(rel_usize),
+        ));
     }
 
     let descriptor_end = rel_usize + needed;
@@ -1131,11 +826,11 @@ fn parse_template_items(
 
         if name_offset != 0 {
             if name_offset < template_off_abs {
-                return Err(WevtManifestError::OffsetOutOfBounds {
-                    what: "template item name_offset",
-                    offset: name_offset,
-                    len: template_off_abs.saturating_add(template.len() as u32) as usize,
-                });
+                return Err(off_err(
+                    "template item name_offset",
+                    name_offset,
+                    template_off_abs.saturating_add(template.len() as u32) as usize,
+                ));
             }
             let name_rel = name_offset - template_off_abs;
             let name_rel_usize = u32_to_usize(
@@ -1164,11 +859,11 @@ fn parse_template_items(
     if let Some(min_name_rel) = min_name_rel
         && min_name_rel < descriptor_end
     {
-        return Err(WevtManifestError::OffsetOutOfBounds {
-            what: "template item name_offset overlaps descriptor table",
-            offset: template_off_abs.saturating_add(min_name_rel as u32),
-            len: template_off_abs.saturating_add(template.len() as u32) as usize,
-        });
+        return Err(off_err(
+            "template item name_offset overlaps descriptor table",
+            template_off_abs.saturating_add(min_name_rel as u32),
+            template_off_abs.saturating_add(template.len() as u32) as usize,
+        ));
     }
 
     // Second pass: resolve names.
@@ -1204,39 +899,11 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     // Each VMAP has its own `size` field, so we read that to determine extent — no sorting or
     // boundary guessing needed.
 
-    let off_usize = u32_to_usize(off, "MAPS offset", crim.len())?;
-    require_len(crim, off_usize, 16, "MAPS header")?;
-    let sig = read_sig_named(crim, off_usize, "MAPS signature")?;
-    if sig != *b"MAPS" {
-        return Err(WevtManifestError::InvalidSignature {
-            offset: off,
-            expected: *b"MAPS",
-            found: sig,
-        });
-    }
-    let size = read_u32_named(crim, off_usize + 4, "MAPS.size")?;
-    let count = read_u32_named(crim, off_usize + 8, "MAPS.count")?;
+    let (off_usize, size, count) =
+        read_block_header(crim, off, b"MAPS", 16, &table_names!("MAPS"))?;
     // Note: bytes 12-15 are `data_offset` in the struct but libfwevt ignores it; so do we.
-
-    let end = if size == 0 {
-        // libfwevt accepts size==0 and parses by offsets/count.
-        crim.len()
-    } else {
-        if size < 16 {
-            return Err(WevtManifestError::SizeOutOfBounds {
-                what: "MAPS.size",
-                offset: off,
-                size,
-            });
-        }
-        checked_end(crim.len(), off, size, "MAPS.size")?
-    };
-
-    let count_usize = usize::try_from(count).map_err(|_| WevtManifestError::CountOutOfBounds {
-        what: "MAPS.count",
-        offset: off + 8,
-        count,
-    })?;
+    let end = region_end(crim.len(), off, size, 16, "MAPS.size")?;
+    let count_usize = u32_count(count, "MAPS.count", off + 8)?;
 
     if count_usize == 0 {
         return Ok(MapsDefinitions {
@@ -1250,11 +917,7 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     let offs_array_off = off_usize + 16;
     let offs_array_bytes = count_usize.saturating_sub(1).checked_mul(4).unwrap_or(0);
     if offs_array_off + offs_array_bytes > crim.len() {
-        return Err(WevtManifestError::SizeOutOfBounds {
-            what: "MAPS offsets array",
-            offset: off,
-            size,
-        });
+        return Err(size_err("MAPS offsets array", off, size));
     }
 
     // Build map offsets deterministically:
@@ -1273,12 +936,12 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     for &map_off in &map_offsets {
         let map_off_usize = u32_to_usize(map_off, "MAPS map offset", crim.len())?;
         if map_off_usize + 4 > crim.len() {
-            return Err(WevtManifestError::Truncated {
-                what: "MAPS map signature",
-                offset: map_off,
-                need: 4,
-                have: crim.len().saturating_sub(map_off_usize),
-            });
+            return Err(trunc_err(
+                "MAPS map signature",
+                map_off,
+                4,
+                crim.len().saturating_sub(map_off_usize),
+            ));
         }
         let sig = read_sig_named(crim, map_off_usize, "MAPS map signature")?;
 
@@ -1286,20 +949,16 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
             b"VMAP" => {
                 // VMAP has its own size field at offset 4.
                 if map_off_usize + 8 > crim.len() {
-                    return Err(WevtManifestError::Truncated {
-                        what: "VMAP size field",
-                        offset: map_off,
-                        need: 8,
-                        have: crim.len().saturating_sub(map_off_usize),
-                    });
+                    return Err(trunc_err(
+                        "VMAP size field",
+                        map_off,
+                        8,
+                        crim.len().saturating_sub(map_off_usize),
+                    ));
                 }
                 let vmap_size = read_u32_named(crim, map_off_usize + 4, "VMAP.size")?;
-                let vmap_size_usize =
-                    usize::try_from(vmap_size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-                        what: "VMAP.size",
-                        offset: map_off,
-                        size: vmap_size,
-                    })?;
+                let vmap_size_usize = usize::try_from(vmap_size)
+                    .map_err(|_| size_err("VMAP.size", map_off, vmap_size))?;
                 let slice_end = map_off_usize.saturating_add(vmap_size_usize).min(end);
                 let map_slice = &crim[map_off_usize..slice_end];
                 maps.push(MapDefinition::ValueMap(parse_vmap(
@@ -1341,78 +1000,40 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
     // 12:4 entry_count
     // 16: entries (8 bytes each)
     if map_slice.len() < 16 {
-        return Err(WevtManifestError::Truncated {
-            what: "VMAP header",
-            offset: off,
-            need: 16,
-            have: map_slice.len(),
-        });
+        return Err(trunc_err("VMAP header", off, 16, map_slice.len()));
     }
     let size = read_u32_named(map_slice, 4, "VMAP.size")?;
     let map_string_offset = read_u32_named(map_slice, 8, "VMAP.map_string_offset")?;
     let entry_count = read_u32_named(map_slice, 12, "VMAP.entry_count")?;
 
-    let size_usize = usize::try_from(size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-        what: "VMAP.size",
-        offset: off,
-        size,
-    })?;
-    if size_usize < 16 || size_usize > map_slice.len() {
-        return Err(WevtManifestError::SizeOutOfBounds {
-            what: "VMAP.size",
-            offset: off,
-            size,
-        });
-    }
+    let size_usize = usize::try_from(size)
+        .ok()
+        .filter(|&s| s >= 16 && s <= map_slice.len())
+        .ok_or_else(|| size_err("VMAP.size", off, size))?;
 
-    let entry_count_usize =
-        usize::try_from(entry_count).map_err(|_| WevtManifestError::CountOutOfBounds {
-            what: "VMAP.entry_count",
-            offset: off + 12,
-            count: entry_count,
-        })?;
-    let entries_bytes =
-        entry_count_usize
-            .checked_mul(8)
-            .ok_or(WevtManifestError::CountOutOfBounds {
-                what: "VMAP.entry_count",
-                offset: off + 12,
-                count: entry_count,
-            })?;
+    let (entry_count_usize, entries_bytes) =
+        count_bytes(entry_count, 8, "VMAP.entry_count", off + 12)?;
 
     if 16 + entries_bytes > size_usize {
-        return Err(WevtManifestError::SizeOutOfBounds {
-            what: "VMAP entries array",
-            offset: off,
-            size,
-        });
+        return Err(size_err("VMAP entries array", off, size));
     }
 
     let mut entries = Vec::with_capacity(entry_count_usize);
     for i in 0..entry_count_usize {
         let e_off = 16 + i * 8;
         let identifier = read_u32_named(map_slice, e_off, "VMAP.entry.identifier")?;
-        let msg_raw = read_u32_named(map_slice, e_off + 4, "VMAP.entry.message_identifier")?;
-        let message_identifier = if msg_raw == 0xffffffff {
-            None
-        } else {
-            Some(msg_raw)
-        };
+        let message_identifier = opt_message_id(read_u32_named(
+            map_slice,
+            e_off + 4,
+            "VMAP.entry.message_identifier",
+        )?);
         entries.push(ValueMapEntry {
             identifier,
             message_identifier,
         });
     }
 
-    let map_string = if map_string_offset == 0 {
-        None
-    } else {
-        Some(read_sized_utf16_string(
-            crim,
-            map_string_offset,
-            "VMAP map string",
-        )?)
-    };
+    let map_string = read_opt_name(crim, map_string_offset, "VMAP map string")?;
 
     let trailing = &map_slice[16 + entries_bytes..size_usize];
 

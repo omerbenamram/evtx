@@ -118,47 +118,17 @@ mod imp {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    #[derive(Debug, Default)]
-    struct CacheData {
-        crim_blobs: Vec<Vec<u8>>,
-        event_to_template_guid: std::collections::HashMap<(String, u16, u8), String>,
-    }
-
     fn normalize_guid(s: &str) -> String {
         evtx::wevt_templates::normalize_guid(s)
     }
 
-    fn load_wevtcache(path: &Path) -> Result<CacheData> {
-        let mut out = CacheData::default();
-
+    fn load_crim_blobs(path: &Path) -> Result<Vec<Vec<u8>>> {
+        let mut crim_blobs = Vec::new();
         evtx::wevt_templates::wevtcache::for_each_crim_blob(path, |bytes| {
-            out.crim_blobs.push(bytes);
+            crim_blobs.push(bytes);
             Ok(())
         })?;
-
-        // Build (provider_guid,event_id,version) -> template_guid mapping by parsing manifests.
-        for bytes in &out.crim_blobs {
-            let manifest = CrimManifest::parse(bytes).context("failed to parse CRIM/WEVT blob")?;
-            for provider in &manifest.providers {
-                let provider_guid = normalize_guid(&provider.guid.to_string());
-                if let Some(evnt) = provider.wevt.elements.events.as_ref() {
-                    for ev in &evnt.events {
-                        let Some(off) = ev.template_offset else {
-                            continue;
-                        };
-                        let Some(tpl) = provider.template_by_offset(off) else {
-                            continue;
-                        };
-                        out.event_to_template_guid.insert(
-                            (provider_guid.clone(), ev.identifier, ev.version),
-                            normalize_guid(&tpl.guid.to_string()),
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(out)
+        Ok(crim_blobs)
     }
 
     fn values_from_json_array<'a>(
@@ -192,7 +162,31 @@ mod imp {
 
     pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
         let cache_path = PathBuf::from(matches.get_one::<String>("cache").expect("required"));
-        let cache = load_wevtcache(&cache_path)?;
+        let crim_blobs = load_crim_blobs(&cache_path)?;
+        let manifests = crim_blobs
+            .iter()
+            .map(|bytes| CrimManifest::parse(bytes).context("failed to parse CRIM/WEVT blob"))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Build (provider_guid,event_id,version) -> template_guid mapping.
+        let mut event_to_template_guid = std::collections::HashMap::new();
+        for provider in manifests.iter().flat_map(|m| &m.providers) {
+            let provider_guid = normalize_guid(&provider.guid.to_string());
+            if let Some(evnt) = provider.wevt.elements.events.as_ref() {
+                for ev in &evnt.events {
+                    let Some(off) = ev.template_offset else {
+                        continue;
+                    };
+                    let Some(tpl) = provider.template_by_offset(off) else {
+                        continue;
+                    };
+                    event_to_template_guid.insert(
+                        (provider_guid.clone(), ev.identifier, ev.version),
+                        normalize_guid(&tpl.guid.to_string()),
+                    );
+                }
+            }
+        }
 
         // Resolve substitutions.
         let template_instance_index: usize = *matches
@@ -243,8 +237,7 @@ mod imp {
             matches.get_one::<u8>("version").copied(),
         ) {
             let key = (normalize_guid(provider_guid), event_id, version);
-            cache
-                .event_to_template_guid
+            event_to_template_guid
                 .get(&key)
                 .cloned()
                 .ok_or_else(|| {
@@ -259,43 +252,9 @@ mod imp {
         };
 
         // Locate the template definition in one of the CRIM blobs.
-        let mut template_crim_bytes: Option<Vec<u8>> = None;
-        for bytes in &cache.crim_blobs {
-            let manifest = match CrimManifest::parse(bytes) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            let mut found = false;
-            for provider in &manifest.providers {
-                if let Some(ttbl) = provider.wevt.elements.templates.as_ref()
-                    && ttbl
-                        .templates
-                        .iter()
-                        .any(|tpl| normalize_guid(&tpl.guid.to_string()) == template_guid)
-                {
-                    found = true;
-                    break;
-                }
-            }
-            if found {
-                template_crim_bytes = Some(bytes.clone());
-                break;
-            }
-        }
-
-        let template_crim_bytes = template_crim_bytes.ok_or_else(|| {
-            format_err!(
-                "template GUID `{}` not found in cache `{}`",
-                template_guid,
-                cache_path.display()
-            )
-        })?;
-
-        let manifest = CrimManifest::parse(&template_crim_bytes)
-            .context("failed to parse selected CRIM blob")?;
-        let tpl = manifest
-            .providers
+        let tpl = manifests
             .iter()
+            .flat_map(|m| &m.providers)
             .find_map(|provider| {
                 provider.wevt.elements.templates.as_ref().and_then(|ttbl| {
                     ttbl.templates
@@ -305,8 +264,9 @@ mod imp {
             })
             .ok_or_else(|| {
                 format_err!(
-                    "template GUID `{}` not found in selected CRIM blob (unexpected)",
-                    template_guid
+                    "template GUID `{}` not found in cache `{}`",
+                    template_guid,
+                    cache_path.display()
                 )
             })?;
 

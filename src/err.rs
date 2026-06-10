@@ -1,13 +1,6 @@
 use thiserror::Error;
 
-use crate::evtx_parser::ReadSeek;
-
-use crate::FileOffset;
-use crate::utils::dump_stream;
-use log::error;
-
 use crate::evtx_record::RecordId;
-use std::error::Error as StdError;
 use std::io;
 use std::path::Path;
 use winstructs::guid::Guid;
@@ -18,90 +11,8 @@ pub type SerializationResult<T> = std::result::Result<T, crate::err::Serializati
 pub(crate) type DeserializationResult<T> = std::result::Result<T, crate::err::DeserializationError>;
 pub(crate) type EvtxChunkResult<T> = std::result::Result<T, crate::err::ChunkError>;
 
-/// How many bytes of context we capture on error by default.
-const DEFAULT_LOOKBEHIND_LEN: i32 = 100;
-
-/// An IO error which captures additional information about it's context (hexdump).
-#[derive(Error, Debug)]
-#[error(
-    "Offset `0x{offset:08x} ({offset})` - An error has occurred while trying to deserialize binary stream \n\
-    {message}
-
-    Original message:
-    `{source}`
-
-Hexdump:
-    {hexdump}"
-)]
-pub struct WrappedIoError {
-    offset: FileOffset,
-    // A hexdump containing information additional information surrounding the token.
-    hexdump: String,
-    // A message containing extra context.
-    message: String,
-    // Could be either an I/O error or some other error such as `FromUtf8Error`
-    #[source]
-    source: Box<dyn StdError + 'static + Send + Sync>,
-}
-
-impl WrappedIoError {
-    pub fn capture_hexdump<S: ReadSeek>(
-        error: Box<dyn std::error::Error + 'static + Send + Sync>,
-        stream: &mut S,
-    ) -> WrappedIoError {
-        let offset = stream.tell().unwrap_or_else(|_| {
-            error!("while trying to recover error information -> `tell` failed.");
-            0
-        });
-
-        let hexdump = dump_stream(stream, DEFAULT_LOOKBEHIND_LEN)
-            .unwrap_or_else(|_| "<Error while capturing hexdump>".to_string());
-
-        WrappedIoError {
-            offset,
-            hexdump,
-            message: "".to_string(),
-            source: error,
-        }
-    }
-
-    pub fn io_error_with_message<S: ReadSeek, T: AsRef<str>>(
-        error: io::Error,
-        context: T,
-        stream: &mut S,
-    ) -> WrappedIoError {
-        let offset = stream.tell().unwrap_or_else(|_| {
-            error!("while trying to recover error information -> `tell` failed.");
-            0
-        });
-
-        let hexdump = dump_stream(stream, DEFAULT_LOOKBEHIND_LEN)
-            .unwrap_or_else(|_| "<Error while capturing hexdump>".to_string());
-
-        WrappedIoError {
-            offset,
-            hexdump,
-            message: context.as_ref().to_string(),
-            source: Box::new(error),
-        }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum DeserializationError {
-    /// Represents a general deserialization error.
-    /// Includes information about what token was being deserialized, as well an offset and an underlying error.
-    #[error("Failed to deserialize `{token_name}` of type `{t}`")]
-    FailedToReadToken {
-        // Could be anything from a `u32` to an array of strings.
-        t: String,
-        token_name: &'static str,
-        source: WrappedIoError,
-    },
-
-    #[error(transparent)]
-    IoWithContext(#[from] WrappedIoError),
-
     #[error(transparent)]
     Io(#[from] io::Error),
 

@@ -14,7 +14,7 @@ mkdir -p "$OUT_DIR"
 
 python3 "$ROOT/scripts/gen_utf16_escape_dataset.py" --out "$DATA_PATH"
 
-(cd "$ROOT" && cargo build --release --bin bench_utf16_escape_matrix)
+(cd "$ROOT" && cargo build --release --features bench --bin bench_utf16_escape_matrix)
 (cd "$ZIG_ROOT" && zig build -Doptimize=ReleaseFast)
 
 "$ROOT/target/release/bench_utf16_escape_matrix" --data "$DATA_PATH" > "$RUST_OUT"

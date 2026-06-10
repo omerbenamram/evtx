@@ -234,7 +234,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     /// - `Name="A&amp;B"` → `"A&B":`
     fn write_json_key_from_nodes(&mut self, nodes: &[Node<'_>]) -> Result<()> {
         self.write_byte(b'\"')?;
-        self.write_json_text_content(nodes)?;
+        self.write_json_text_content(nodes, false)?;
         self.write_bytes(b"\":")
     }
 
@@ -265,14 +265,16 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     /// - `CharRef` / `EntityRef`: resolved to characters when possible
     ///
     /// Errors:
-    /// - `Element` nodes are rejected because they belong in object context.
+    /// - `Element` nodes are rejected because they belong in object context, unless
+    ///   `skip_elements` is set (used for mixed-content `#text`, where child elements are
+    ///   emitted as separate object keys and only the "loose text" is concatenated).
     /// - `Placeholder` nodes indicate a bug in IR construction (templates not resolved).
     ///
     /// Example (conceptual IR → JSON string contents):
     ///
     /// - `[Text("A"), EntityRef("amp"), Text("B")]` → `A&B`
     /// - `[Value(Int32Type(42))]` → `42` (still string contents; numeric coercion happens elsewhere)
-    fn write_json_text_content(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+    fn write_json_text_content(&mut self, nodes: &[Node<'_>], skip_elements: bool) -> Result<()> {
         for node in nodes {
             match node {
                 Node::Text(text) | Node::CData(text) => {
@@ -355,45 +357,11 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                     ));
                 }
                 Node::Element(_) => {
+                    if skip_elements {
+                        continue;
+                    }
                     return Err(EvtxError::FailedToCreateRecordModel(
                         "unexpected element node in text context",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Like [`write_json_text_content`], but ignores `Element` nodes.
-    ///
-    /// This is used for mixed-content elements where we emit child elements as separate
-    /// object keys and put the concatenated "loose text" into `#text`.
-    ///
-    /// Example:
-    ///
-    /// ```xml
-    /// <A>hello<B/>world</A>
-    /// ```
-    ///
-    /// The `#text` value should be `"helloworld"` (no markup), while `B` is emitted as
-    /// its own key.
-    fn write_json_text_content_skip_elements(&mut self, nodes: &[Node<'_>]) -> Result<()> {
-        for node in nodes {
-            match node {
-                Node::Element(_) => continue,
-                Node::PITarget(_) | Node::PIData(_) => {}
-                Node::Text(_)
-                | Node::CData(_)
-                | Node::Value(_)
-                | Node::CharRef(_)
-                | Node::EntityRef(_) => {
-                    // Reuse the existing implementation by writing one node at a time.
-                    // This keeps the escaping behavior identical.
-                    self.write_json_text_content(std::slice::from_ref(node))?;
-                }
-                Node::Placeholder(_) => {
-                    return Err(EvtxError::FailedToCreateRecordModel(
-                        "unresolved placeholder in tree",
                     ));
                 }
             }
@@ -509,35 +477,35 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     }
 
     /// Render `nodes` as a JSON string (always quoted).
-    fn render_text_to_json_string(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+    fn render_text_to_json_string(
+        &mut self,
+        nodes: &[Node<'_>],
+        skip_elements: bool,
+    ) -> Result<()> {
         self.write_byte(b'\"')?;
-        self.write_json_text_content(nodes)?;
-        self.write_byte(b'\"')
-    }
-
-    /// Render `nodes` as a JSON string (always quoted), ignoring `Element` nodes.
-    fn render_text_to_json_string_skip_elements(&mut self, nodes: &[Node<'_>]) -> Result<()> {
-        self.write_byte(b'\"')?;
-        self.write_json_text_content_skip_elements(nodes)?;
+        self.write_json_text_content(nodes, skip_elements)?;
         self.write_byte(b'\"')
     }
 
     /// Render a node slice as a JSON value, applying numeric/bool coercion where possible.
     ///
     /// This is the common "leaf" renderer for element bodies and attribute values.
-    fn render_content_as_json_value(&mut self, nodes: &[Node<'_>]) -> Result<()> {
-        if self.try_write_as_number(nodes)? {
+    /// `skip_elements` selects the mixed-content `#text` mode where `Element` nodes are
+    /// ignored (and numeric coercion uses the skip-elements rules).
+    fn render_content_as_json_value(
+        &mut self,
+        nodes: &[Node<'_>],
+        skip_elements: bool,
+    ) -> Result<()> {
+        let wrote_number = if skip_elements {
+            self.try_write_as_number_skip_elements(nodes)?
+        } else {
+            self.try_write_as_number(nodes)?
+        };
+        if wrote_number {
             return Ok(());
         }
-        self.render_text_to_json_string(nodes)
-    }
-
-    /// Variant of [`render_content_as_json_value`] used for mixed-content `#text` rendering.
-    fn render_content_as_json_value_skip_elements(&mut self, nodes: &[Node<'_>]) -> Result<()> {
-        if self.try_write_as_number_skip_elements(nodes)? {
-            return Ok(());
-        }
-        self.render_text_to_json_string_skip_elements(nodes)
+        self.render_text_to_json_string(nodes, skip_elements)
     }
 
     /// Returns true if `nodes` contains any semantically non-empty "text-like" content.
@@ -591,31 +559,13 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     ///
     /// Returns `true` if anything was written (used to drive comma placement).
     fn render_attributes_object(&mut self, attrs: &[Attr<'_>]) -> Result<bool> {
-        let mut wrote_any = false;
-        let mut first = true;
-        for attr in attrs {
-            if !self.has_non_empty_text_content(&attr.value) {
-                continue;
-            }
-            if !wrote_any {
-                self.write_bytes(b"\"#attributes\":{")?;
-                wrote_any = true;
-            }
-            if !first {
-                self.write_byte(b',')?;
-            }
-            first = false;
-            self.write_byte(b'\"')?;
-            self.write_name(attr.name.as_str())?;
-            self.write_bytes(b"\":")?;
-            if self.try_write_as_number(&attr.value)? {
-                continue;
-            }
-            self.render_text_to_json_string(&attr.value)?;
+        let (_has_any, has_text) = self.attr_flags(attrs);
+        if !has_text {
+            return Ok(false);
         }
-        if wrote_any {
-            self.write_byte(b'}')?;
-        }
+        self.write_bytes(b"\"#attributes\":{")?;
+        let wrote_any = self.render_attributes_object_body(attrs)?;
+        self.write_byte(b'}')?;
         Ok(wrote_any)
     }
 
@@ -641,7 +591,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
             if self.try_write_as_number(&attr.value)? {
                 continue;
             }
-            self.render_text_to_json_string(&attr.value)?;
+            self.render_text_to_json_string(&attr.value, false)?;
         }
         Ok(wrote_any)
     }
@@ -700,7 +650,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
         if element.has_element_child {
             self.write_element_body_json(element, false, true)
         } else {
-            self.render_content_as_json_value(&element.children)
+            self.render_content_as_json_value(&element.children, false)
         }
     }
 
@@ -721,7 +671,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
         if !has_element_child && !has_text {
             self.write_bytes(b"null")
         } else if !has_element_child {
-            self.render_content_as_json_value(&element.children)
+            self.render_content_as_json_value(&element.children, false)
         } else {
             self.write_element_body_json(element, child_is_container, true)
         }
@@ -743,7 +693,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
         if !has_element_child && !has_text && !has_attrs_text {
             self.write_bytes(b"null")
         } else if !has_element_child && !has_attrs_text {
-            self.render_content_as_json_value(&element.children)
+            self.render_content_as_json_value(&element.children, false)
         } else {
             self.write_element_body_json(element, child_is_container, false)
         }
@@ -851,7 +801,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
             }
             wrote_any = true;
             self.write_bytes(b"\"#text\":")?;
-            self.render_content_as_json_value_skip_elements(&element.children)?;
+            self.render_content_as_json_value(&element.children, true)?;
         }
 
         // Pre-count positional `Data` nodes for the non-flattened container case.
@@ -1017,7 +967,7 @@ pub(crate) fn bench_write_json_text_content<'a, W: WriteExt>(
     nodes: &[Node<'a>],
 ) -> Result<()> {
     let mut emitter = JsonEmitter::new(writer, arena, false);
-    emitter.write_json_text_content(nodes)?;
+    emitter.write_json_text_content(nodes, false)?;
     emitter.flush()
 }
 

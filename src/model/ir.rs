@@ -257,11 +257,6 @@ impl<'a> IrTree<'a> {
         &self.arena
     }
 
-    /// Returns a mutable reference to the element arena.
-    pub fn arena_mut(&mut self) -> &mut IrArena<'a> {
-        &mut self.arena
-    }
-
     /// Returns the root element.
     pub fn root_element(&self) -> &Element<'a> {
         self.element(self.root)
@@ -270,11 +265,6 @@ impl<'a> IrTree<'a> {
     /// Returns a reference to the element for the given ID.
     pub fn element(&self, id: ElementId) -> &Element<'a> {
         self.arena().get(id).expect("invalid element id")
-    }
-
-    /// Returns a mutable reference to the element for the given ID.
-    pub fn element_mut(&mut self, id: ElementId) -> &mut Element<'a> {
-        self.arena_mut().get_mut(id).expect("invalid element id")
     }
 }
 

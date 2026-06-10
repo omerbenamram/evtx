@@ -79,7 +79,6 @@ pub(crate) fn decode_utf16le_bytes(bytes: &[u8]) -> Result<String, Utf16LeDecode
 }
 
 /// Decode UTF-16LE bytes into a bump-allocated UTF-8 string slice.
-#[allow(dead_code)]
 pub(crate) fn decode_utf16le_bytes_to_bump_str<'a>(
     bytes: &[u8],
     num_chars: usize,
@@ -133,43 +132,6 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
 pub(crate) fn decode_utf16_units_z(units: &[u16]) -> Result<String, Utf16LeDecodeError> {
     let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
     String::from_utf16(&units[..end]).map_err(|_| Utf16LeDecodeError::InvalidData)
-}
-
-/// Validate UTF-16LE input and trim trailing Unicode whitespace.
-///
-/// Returns the number of UTF-16 code units to keep after trimming.
-pub(crate) fn trim_utf16le_whitespace(
-    bytes: &[u8],
-    num_chars: usize,
-) -> Result<usize, Utf16LeDecodeError> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err(Utf16LeDecodeError::OddLength);
-    }
-
-    let max_chars = bytes.len() / 2;
-    let limit = num_chars.min(max_chars);
-    if limit == 0 {
-        return Ok(0);
-    }
-
-    let mut unit_index = 0usize;
-    let mut last_non_ws = 0usize;
-    let mut saw_non_ws = false;
-
-    while unit_index < limit {
-        let (ch, consumed) = decode_utf16le_at_unit(bytes, unit_index, limit)?;
-        if ch == '\u{0}' {
-            break;
-        }
-        let next_index = unit_index + consumed;
-        if !ch.is_whitespace() {
-            last_non_ws = next_index;
-            saw_non_ws = true;
-        }
-        unit_index = next_index;
-    }
-
-    Ok(if saw_non_ws { last_non_ws } else { 0 })
 }
 
 fn decode_utf16le_at_unit(

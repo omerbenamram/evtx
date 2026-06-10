@@ -47,7 +47,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 RUST_BIN="$ROOT/target/release/bench_tree_build"
-RUST_BIN_DIRECT="$ROOT/target/release/bench_tree_build_direct"
 
 mkdir -p "$OUT_DIR"
 
@@ -59,7 +58,6 @@ fi
 if [[ $SKIP_HYPERFINE -eq 0 ]]; then
   hyperfine -w 3 -r 8 \
     "$RUST_BIN --file $FILE --loops $LOOPS" \
-    "$RUST_BIN_DIRECT --file $FILE --loops $LOOPS" \
     "$ZIG_BIN --file $FILE --loops $LOOPS" \
     --export-json "$OUT_DIR/hyperfine_tree_build.json" \
     | tee "$OUT_DIR/hyperfine_tree_build.txt"
@@ -71,10 +69,6 @@ if [[ $SKIP_SAMPLY -eq 0 ]]; then
     "$RUST_BIN" --file "$FILE" --loops "$PROFILE_LOOPS" > /dev/null
 
   samply record --save-only --unstable-presymbolicate \
-    -o "$OUT_DIR/rust_tree_build_direct_loop.json.gz" -- \
-    "$RUST_BIN_DIRECT" --file "$FILE" --loops "$PROFILE_LOOPS" > /dev/null
-
-  samply record --save-only --unstable-presymbolicate \
     -o "$OUT_DIR/zig_tree_build_loop.json.gz" -- \
     "$ZIG_BIN" --file "$FILE" --loops "$PROFILE_LOOPS" > /dev/null
 
@@ -83,13 +77,6 @@ if [[ $SKIP_SAMPLY -eq 0 ]]; then
     --syms "$OUT_DIR/rust_tree_build_loop.json.syms.json" \
     --out-dir "$OUT_DIR" \
     --label rust_tree_build_loop \
-    --weight "$WEIGHT"
-
-  python3 "$ROOT/scripts/samply_extract_tables.py" \
-    --profile "$OUT_DIR/rust_tree_build_direct_loop.json.gz" \
-    --syms "$OUT_DIR/rust_tree_build_direct_loop.json.syms.json" \
-    --out-dir "$OUT_DIR" \
-    --label rust_tree_build_direct_loop \
     --weight "$WEIGHT"
 
   python3 "$ROOT/scripts/samply_extract_tables.py" \

@@ -1,4 +1,3 @@
-#[cfg(feature = "bench")]
 mod imp {
     use bumpalo::Bump;
     use evtx::binxml::bench::{TreeBuildCache, build_tree_from_binxml_bytes_in_bump};
@@ -70,12 +69,6 @@ mod imp {
     }
 }
 
-#[cfg(feature = "bench")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     imp::run()
-}
-
-#[cfg(not(feature = "bench"))]
-fn main() {
-    eprintln!("`bench_tree_build` requires `--features bench`");
 }
