@@ -20,16 +20,16 @@ use encoding::all::WINDOWS_1252;
 use std::cmp::max;
 use std::fmt;
 use std::fmt::Debug;
-use std::iter::{IntoIterator, Iterator};
+use std::iter::Iterator;
 use std::path::Path;
 use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
-/// One parsed-and-serialized chunk's results plus its (reusable) bump arena.
-struct ChunkBatch<U> {
-    results: Vec<Result<U>>,
+/// One processed chunk's payload plus its (reusable) bump arena.
+struct ChunkBatch<P> {
+    payload: P,
     arena: Bump,
 }
 
@@ -40,24 +40,136 @@ fn process_chunk<U>(
     settings: Arc<ParserSettings>,
     arena: Bump,
     f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U>,
-) -> ChunkBatch<U> {
+) -> ChunkBatch<Vec<Result<U>>> {
     match chunk_res {
         Err(err) => ChunkBatch {
-            results: vec![Err(err)],
+            payload: vec![Err(err)],
             arena,
         },
         Ok(mut chunk) => match chunk.parse_with_arena(settings, arena) {
             Err(err) => ChunkBatch {
-                results: vec![Err(EvtxError::FailedToParseChunk {
+                payload: vec![Err(EvtxError::FailedToParseChunk {
                     chunk_id,
                     source: Box::new(err),
                 })],
                 arena: Bump::new(),
             },
             Ok(mut chunk_records) => {
-                let results = chunk_records.iter().map(f).collect();
+                let payload = chunk_records.iter().map(f).collect();
                 let arena = chunk_records.into_arena();
-                ChunkBatch { results, arena }
+                ChunkBatch { payload, arena }
+            }
+        },
+    }
+}
+
+/// One record inside a [`RenderedChunk`]: either the half-open end offset of
+/// its bytes in `RenderedChunk::data`, or the error it produced.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum RenderedChunkItem {
+    Record { event_record_id: u64, end: usize },
+    Failed(EvtxError),
+}
+
+/// CLI-internal: a whole chunk's records rendered into one output buffer
+/// (each record's bytes end with `\n`), with per-record items in record order.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct RenderedChunk {
+    pub data: Vec<u8>,
+    pub items: Vec<RenderedChunkItem>,
+}
+
+#[derive(Clone, Copy)]
+enum RenderFormat {
+    Xml,
+    Json,
+}
+
+/// Parse one chunk and render all of its records into a single buffer.
+fn render_chunk(
+    chunk_res: Result<EvtxChunkData>,
+    chunk_id: u64,
+    settings: Arc<ParserSettings>,
+    arena: Bump,
+    format: RenderFormat,
+    record_numbers: bool,
+) -> ChunkBatch<RenderedChunk> {
+    use crate::binxml::ir_json::render_json_record_content;
+    use crate::binxml::ir_xml::render_xml_record_content;
+
+    match chunk_res {
+        Err(err) => ChunkBatch {
+            payload: RenderedChunk {
+                data: Vec::new(),
+                items: vec![RenderedChunkItem::Failed(err)],
+            },
+            arena,
+        },
+        Ok(mut chunk) => match chunk.parse_with_arena(settings.clone(), arena) {
+            Err(err) => ChunkBatch {
+                payload: RenderedChunk {
+                    data: Vec::new(),
+                    items: vec![RenderedChunkItem::Failed(EvtxError::FailedToParseChunk {
+                        chunk_id,
+                        source: Box::new(err),
+                    })],
+                },
+                arena: Bump::new(),
+            },
+            Ok(mut chunk_records) => {
+                let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
+                let mut items = Vec::new();
+                for record in chunk_records.iter() {
+                    match record {
+                        Err(err) => items.push(RenderedChunkItem::Failed(err)),
+                        Ok(record) => {
+                            let start = data.len();
+                            let event_record_id = record.event_record_id;
+                            if record_numbers {
+                                use std::io::Write;
+                                // Matches the CLI's legacy `Record N` banner; baked in
+                                // here so a chunk stays a single consumer-side write.
+                                let _ = writeln!(&mut data, "Record {}", event_record_id);
+                            }
+                            let rendered = match format {
+                                RenderFormat::Xml => {
+                                    render_xml_record_content(&record.content, &settings, &mut data)
+                                }
+                                RenderFormat::Json => render_json_record_content(
+                                    &record.content,
+                                    &settings,
+                                    &mut data,
+                                ),
+                            };
+                            match rendered {
+                                Ok(()) => {
+                                    data.push(b'\n');
+                                    items.push(RenderedChunkItem::Record {
+                                        event_record_id,
+                                        end: data.len(),
+                                    });
+                                }
+                                Err(err) => {
+                                    data.truncate(start);
+                                    // Match the error shape of `into_xml_bytes`/`into_json_bytes`.
+                                    items.push(RenderedChunkItem::Failed(
+                                        EvtxError::FailedToParseRecord {
+                                            record_id: event_record_id,
+                                            source: Box::new(err),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                let arena = chunk_records.into_arena();
+                ChunkBatch {
+                    payload: RenderedChunk { data, items },
+                    arena,
+                }
             }
         },
     }
@@ -464,18 +576,21 @@ impl<T: ReadSeek> EvtxParser<T> {
             current_chunk_number: 0,
         }
     }
-    /// Return an iterator over all the records.
-    /// Records will be mapped `f`, which must produce owned data from the records.
+    /// Process chunks through `work` and yield one payload per chunk, in chunk order.
     ///
     /// With the `multithreading` feature, chunks are processed on the rayon pool as a
     /// bounded streaming pipeline: up to `2 * num_threads` chunks are in flight while
     /// already-completed chunks are drained by the caller, so workers never idle behind
-    /// the (serial) consumer. Results are always yielded in chunk order.
+    /// the (serial) consumer.
     #[cfg(feature = "multithreading")]
-    pub fn serialized_records<'a, U: Send + 'static>(
+    fn chunk_pipeline<'a, P: Send + 'static>(
         &'a mut self,
-        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
-    ) -> impl Iterator<Item = Result<U>> + 'a {
+        work: impl Fn(Result<EvtxChunkData>, u64, Arc<ParserSettings>, Bump) -> ChunkBatch<P>
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+    ) -> impl Iterator<Item = P> + 'a {
         // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = Arc::clone(&self.config);
@@ -488,33 +603,27 @@ impl<T: ReadSeek> EvtxParser<T> {
             .map(|_| Bump::with_capacity(EVTX_CHUNK_SIZE))
             .collect();
 
-        // `thread::Result` so a panicking `f` propagates to the consumer thread
+        // `thread::Result` so a panicking `work` propagates to the consumer thread
         // (matching the old `par_iter().collect()` behavior) instead of hitting
         // rayon's global handler, which aborts the process by default.
-        let (tx, rx) = std::sync::mpsc::channel::<(u64, std::thread::Result<ChunkBatch<U>>)>();
-        let mut reorder: std::collections::BTreeMap<u64, std::thread::Result<ChunkBatch<U>>> =
+        let (tx, rx) = std::sync::mpsc::channel::<(u64, std::thread::Result<ChunkBatch<P>>)>();
+        let mut reorder: std::collections::BTreeMap<u64, std::thread::Result<ChunkBatch<P>>> =
             std::collections::BTreeMap::new();
         let mut next_seq = 0u64;
         let mut next_yield = 0u64;
         let mut in_flight = 0usize;
         let mut exhausted = false;
 
-        let records_per_chunk = std::iter::from_fn(move || {
+        std::iter::from_fn(move || {
             if num_threads == 1 {
                 // Single-threaded: process inline; a cross-thread round-trip per
                 // chunk costs ~3% wall time for no benefit.
                 let chunk_res = chunks.next()?;
                 let arena = arena_pool.pop().unwrap_or_default();
-                let batch = process_chunk(
-                    chunk_res,
-                    next_seq,
-                    Arc::clone(&chunk_settings),
-                    arena,
-                    f.clone(),
-                );
+                let batch = work(chunk_res, next_seq, Arc::clone(&chunk_settings), arena);
                 next_seq += 1;
                 arena_pool.push(batch.arena);
-                return Some(batch.results.into_iter());
+                return Some(batch.payload);
             }
             loop {
                 // Keep the pipeline full. Chunk allocation (I/O) stays on the
@@ -529,11 +638,11 @@ impl<T: ReadSeek> EvtxParser<T> {
                     next_seq += 1;
                     in_flight += 1;
                     let tx = tx.clone();
-                    let f = f.clone();
+                    let work = work.clone();
                     let settings = Arc::clone(&chunk_settings);
                     rayon::spawn(move || {
                         let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            process_chunk(chunk_res, seq, settings, arena, f)
+                            work(chunk_res, seq, settings, arena)
                         }));
                         // The receiver may be gone if the iterator was dropped.
                         let _ = tx.send((seq, batch));
@@ -548,7 +657,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                         Err(panic) => std::panic::resume_unwind(panic),
                     };
                     arena_pool.push(batch.arena);
-                    return Some(batch.results.into_iter());
+                    return Some(batch.payload);
                 }
 
                 if in_flight == 0 && exhausted {
@@ -562,39 +671,81 @@ impl<T: ReadSeek> EvtxParser<T> {
                     Err(_) => return None,
                 }
             }
-        });
-
-        records_per_chunk.flatten()
+        })
     }
 
-    /// Return an iterator over all the records.
-    /// Records will be mapped `f`, which must produce owned data from the records.
+    /// Process chunks through `work` and yield one payload per chunk, in chunk order.
     #[cfg(not(feature = "multithreading"))]
-    pub fn serialized_records<'a, U: Send + 'static>(
+    fn chunk_pipeline<'a, P: Send + 'static>(
         &'a mut self,
-        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
-    ) -> impl Iterator<Item = Result<U>> + 'a {
+        work: impl Fn(Result<EvtxChunkData>, u64, Arc<ParserSettings>, Bump) -> ChunkBatch<P>
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+    ) -> impl Iterator<Item = P> + 'a {
         let chunk_settings = Arc::clone(&self.config);
         let mut chunks = self.chunks();
         let mut arena_pool: Vec<Bump> = vec![Bump::with_capacity(EVTX_CHUNK_SIZE)];
         let mut seq = 0u64;
 
-        let records_per_chunk = std::iter::from_fn(move || {
+        std::iter::from_fn(move || {
             let chunk_res = chunks.next()?;
             let arena = arena_pool.pop().unwrap_or_default();
-            let batch = process_chunk(
-                chunk_res,
-                seq,
-                Arc::clone(&chunk_settings),
-                arena,
-                f.clone(),
-            );
+            let batch = work(chunk_res, seq, Arc::clone(&chunk_settings), arena);
             seq += 1;
             arena_pool.push(batch.arena);
-            Some(batch.results.into_iter())
-        });
+            Some(batch.payload)
+        })
+    }
 
-        records_per_chunk.flatten()
+    /// Return an iterator over all the records.
+    /// Records will be mapped `f`, which must produce owned data from the records.
+    pub fn serialized_records<'a, U: Send + 'static>(
+        &'a mut self,
+        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
+    ) -> impl Iterator<Item = Result<U>> + 'a {
+        self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
+            process_chunk(chunk_res, chunk_id, settings, arena, f.clone())
+        })
+        .flatten()
+    }
+
+    /// CLI-internal: render every record into one buffer per chunk (single write
+    /// per chunk on the consumer side). Not part of the supported public API.
+    #[doc(hidden)]
+    pub fn chunks_xml_bytes(
+        &mut self,
+        record_numbers: bool,
+    ) -> impl Iterator<Item = RenderedChunk> + '_ {
+        self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
+            render_chunk(
+                chunk_res,
+                chunk_id,
+                settings,
+                arena,
+                RenderFormat::Xml,
+                record_numbers,
+            )
+        })
+    }
+
+    /// CLI-internal: see [`Self::chunks_xml_bytes`].
+    #[doc(hidden)]
+    pub fn chunks_json_bytes(
+        &mut self,
+        record_numbers: bool,
+    ) -> impl Iterator<Item = RenderedChunk> + '_ {
+        self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
+            render_chunk(
+                chunk_res,
+                chunk_id,
+                settings,
+                arena,
+                RenderFormat::Json,
+                record_numbers,
+            )
+        })
     }
 
     /// Return an iterator over all the records.

@@ -7,8 +7,7 @@ use indoc::indoc;
 
 use encoding::all::encodings;
 use encoding::types::Encoding;
-use evtx::err::Result as EvtxResult;
-use evtx::{EvtxParser, ParserSettings, SerializedEvtxRecord};
+use evtx::{EvtxParser, ParserSettings, RenderedChunk, RenderedChunkItem};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -219,13 +218,13 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
-                for record in parser.records_bytes() {
-                    self.dump_record(record)?
+                for chunk in parser.chunks_xml_bytes(self.show_record_number) {
+                    self.dump_chunk(chunk)?
                 }
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json_bytes() {
-                    self.dump_record(record)?
+                for chunk in parser.chunks_json_bytes(self.show_record_number) {
+                    self.dump_chunk(chunk)?
                 }
             }
         };
@@ -314,32 +313,51 @@ impl EvtxDump {
         }
     }
 
-    fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<Vec<u8>>>) -> Result<()> {
-        match record.with_context(|| "Failed to dump the next record.") {
-            Ok(r) => {
-                let range_filter = if let Some(ranges) = &self.ranges {
-                    ranges.contains(&(r.event_record_id as usize))
-                } else {
-                    true
-                };
+    /// Write one rendered chunk: a single `write_all` on the common path, or a
+    /// per-record walk when filtering/numbering/error handling requires it.
+    fn dump_chunk(&mut self, chunk: RenderedChunk) -> Result<()> {
+        let plain = self.ranges.is_none();
+        let has_errors = chunk
+            .items
+            .iter()
+            .any(|item| matches!(item, RenderedChunkItem::Failed(_)));
 
-                if range_filter {
-                    if self.show_record_number {
-                        writeln!(self.output, "Record {}", r.event_record_id)?;
+        if plain && !has_errors {
+            self.output.write_all(&chunk.data)?;
+            return Ok(());
+        }
+
+        let mut start = 0usize;
+        for item in chunk.items {
+            match item {
+                RenderedChunkItem::Record {
+                    event_record_id,
+                    end,
+                } => {
+                    let range_filter = if let Some(ranges) = &self.ranges {
+                        ranges.contains(&(event_record_id as usize))
+                    } else {
+                        true
+                    };
+
+                    if range_filter {
+                        self.output.write_all(&chunk.data[start..end])?;
                     }
-                    self.output.write_all(&r.data)?;
-                    self.output.write_all(b"\n")?;
+                    start = end;
                 }
-            }
-            // This error is non fatal.
-            Err(e) => {
-                eprintln!("{:?}", format_err!(e));
+                // This error is non fatal.
+                RenderedChunkItem::Failed(e) => {
+                    eprintln!(
+                        "{:?}",
+                        anyhow::Error::from(e).context("Failed to dump the next record.")
+                    );
 
-                if self.stop_after_error {
-                    bail!("Stopped after error");
+                    if self.stop_after_error {
+                        bail!("Stopped after error");
+                    }
                 }
             }
-        };
+        }
 
         Ok(())
     }

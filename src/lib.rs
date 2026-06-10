@@ -9,7 +9,11 @@ extern crate bitflags;
 pub use evtx_chunk::{EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
 pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
 pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
-pub use evtx_record::{EvtxRecord, EvtxRecordHeader, Offset, RecordId, SerializedEvtxRecord, Timestamp};
+#[doc(hidden)]
+pub use evtx_parser::{RenderedChunk, RenderedChunkItem};
+pub use evtx_record::{
+    EvtxRecord, EvtxRecordHeader, Offset, RecordId, SerializedEvtxRecord, Timestamp,
+};
 pub use utils::utf16::{Utf16LeDecodeError, Utf16LeSlice};
 
 pub mod binxml;
@@ -26,7 +30,6 @@ mod evtx_parser;
 mod evtx_record;
 mod string_cache;
 mod utils;
-
 
 pub type ChunkOffset = u32;
 pub type FileOffset = u64;
