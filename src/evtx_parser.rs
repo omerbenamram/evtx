@@ -504,7 +504,8 @@ impl<T: ReadSeek> EvtxParser<T> {
                     })
                     .collect();
 
-                let mut flattened = Vec::new();
+                let mut flattened =
+                    Vec::with_capacity(iterators.iter().map(|b| b.results.len()).sum());
                 for batch in iterators {
                     arena_pool.push(batch.arena);
                     flattened.extend(batch.results);
@@ -522,6 +523,20 @@ impl<T: ReadSeek> EvtxParser<T> {
     pub fn records(&mut self) -> impl Iterator<Item = Result<SerializedEvtxRecord<String>>> + '_ {
         // '_ is required in the signature because the iterator is bound to &self.
         self.serialized_records(|record| record.and_then(|record| record.into_xml()))
+    }
+
+    /// Return an iterator over all the records as rendered XML bytes (skips UTF-8 validation).
+    pub fn records_bytes(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<Vec<u8>>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_xml_bytes()))
+    }
+
+    /// Return an iterator over all the records as rendered JSON bytes (skips UTF-8 validation).
+    pub fn records_json_bytes(
+        &mut self,
+    ) -> impl Iterator<Item = Result<SerializedEvtxRecord<Vec<u8>>>> + '_ {
+        self.serialized_records(|record| record.and_then(|record| record.into_json_bytes()))
     }
 
     /// Return an iterator over all the records.

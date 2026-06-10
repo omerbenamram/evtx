@@ -47,7 +47,6 @@ struct XmlEmitter<'w, 'a, W: WriteExt> {
     writer: &'w mut W,
     indent: bool,
     arena: &'a IrArena<'a>,
-    scratch: utf16_simd::Scratch,
     values: ValueRenderer,
 }
 
@@ -57,7 +56,6 @@ impl<'w, 'a, W: WriteExt> XmlEmitter<'w, 'a, W> {
             writer,
             indent,
             arena,
-            scratch: utf16_simd::Scratch::new(),
             values: ValueRenderer::new(),
         }
     }
@@ -73,8 +71,7 @@ impl<'w, 'a, W: WriteExt> XmlEmitter<'w, 'a, W> {
         if units == 0 {
             return Ok(());
         }
-        let escaped = self.scratch.escape_xml_utf16le(bytes, units, in_attribute);
-        self.writer.write_all(escaped)?;
+        utf16_simd::write_xml_utf16le(self.writer, bytes, units, in_attribute)?;
         Ok(())
     }
 
@@ -84,8 +81,7 @@ impl<'w, 'a, W: WriteExt> XmlEmitter<'w, 'a, W> {
         if units == 0 {
             return Ok(());
         }
-        let raw = self.scratch.escape_utf16le_raw(bytes, units);
-        self.writer.write_all(raw)?;
+        utf16_simd::write_utf16le_raw(self.writer, bytes, units)?;
         Ok(())
     }
 

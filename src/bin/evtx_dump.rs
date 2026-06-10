@@ -225,12 +225,12 @@ impl EvtxDump {
 
         match self.output_format {
             EvtxOutputFormat::XML => {
-                for record in parser.records() {
+                for record in parser.records_bytes() {
                     self.dump_record(record)?
                 }
             }
             EvtxOutputFormat::JSON => {
-                for record in parser.records_json() {
+                for record in parser.records_json_bytes() {
                     self.dump_record(record)?
                 }
             }
@@ -320,7 +320,7 @@ impl EvtxDump {
         }
     }
 
-    fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<String>>) -> Result<()> {
+    fn dump_record(&mut self, record: EvtxResult<SerializedEvtxRecord<Vec<u8>>>) -> Result<()> {
         match record.with_context(|| "Failed to dump the next record.") {
             Ok(r) => {
                 let range_filter = if let Some(ranges) = &self.ranges {
@@ -333,7 +333,8 @@ impl EvtxDump {
                     if self.show_record_number {
                         writeln!(self.output, "Record {}", r.event_record_id)?;
                     }
-                    writeln!(self.output, "{}", r.data)?;
+                    self.output.write_all(&r.data)?;
+                    self.output.write_all(b"\n")?;
                 }
             }
             // This error is non fatal.

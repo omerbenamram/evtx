@@ -163,7 +163,7 @@ const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
 /// clones the tree and resolves all placeholders using substitution values.
 #[derive(Debug)]
 pub(crate) struct IrTemplateCache<'a> {
-    templates: AHashMap<[u8; 16], Rc<IrTree<'a>>>,
+    templates: AHashMap<u32, Rc<IrTree<'a>>>,
     arena: &'a Bump,
 }
 
@@ -222,10 +222,10 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
     ) -> Result<Rc<IrTree<'a>>> {
-        let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
-        if let Some(existing) = self.templates.get(&header.guid) {
+        if let Some(existing) = self.templates.get(&template_def_offset) {
             return Ok(Rc::clone(existing));
         }
+        let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
 
         let parse_from_chunk = (|| -> Result<Rc<IrTree<'a>>> {
             let data_start = template_def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
@@ -258,7 +258,7 @@ impl<'a> IrTemplateCache<'a> {
                 },
             )?;
             let template = Rc::new(IrTree::new(arena, root));
-            self.templates.insert(header.guid, Rc::clone(&template));
+            self.templates.insert(template_def_offset, Rc::clone(&template));
             Ok(template)
         })();
 
@@ -308,7 +308,7 @@ impl<'a> IrTemplateCache<'a> {
                         };
 
                         let template = Rc::new(IrTree::new(arena, root));
-                        self.templates.insert(header.guid, Rc::clone(&template));
+                        self.templates.insert(template_def_offset, Rc::clone(&template));
                         return Ok(template);
                     }
                 }
@@ -354,7 +354,7 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     arena: &'arena mut IrArena<'a>,
     ansi_codec: EncodingRef,
     name_encoding: BinXmlNameEncoding,
-    stack: Vec<ElementId>,
+    stack: IrVec<'a, ElementId>,
     current_element: Option<ElementBuilder<'a>>,
     root: Option<ElementId>,
 }
@@ -381,7 +381,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             arena: init.arena,
             ansi_codec: init.ansi_codec,
             name_encoding: init.name_encoding,
-            stack: Vec::new(),
+            stack: IrVec::new_in(init.bump),
             current_element: None,
             root: None,
         }

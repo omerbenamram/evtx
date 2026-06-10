@@ -47,8 +47,8 @@ pub struct EvtxChunkHeader {
     // |  offset  | --> |  BinXmlNameLink  | ---> 0
     // |          |     |                  |
     //  ----------       ------------------
-    strings_offsets: Vec<u32>,
-    template_offsets: Vec<u32>,
+    strings_offsets: [u32; 64],
+    template_offsets: [u32; 32],
 }
 
 /// A struct which owns all the data associated with a chunk.
@@ -225,7 +225,6 @@ impl<'chunk> EvtxChunk<'chunk> {
             .filter(|&&offset| offset > 0)
             .count();
         IterChunkRecords {
-            settings: Arc::clone(&self.settings),
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
@@ -260,7 +259,6 @@ pub struct IterChunkRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
-    settings: Arc<ParserSettings>,
     /// Per-iterator template cache used during streaming tree construction.
     ir_template_cache: IrTemplateCache<'a>,
 }
@@ -323,8 +321,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 }
             };
 
-        info!("Record id - {}", record_header.event_record_id);
-        debug!("Record header - {:?}", record_header);
+        trace!("Record id - {} header - {:?}", record_header.event_record_id, record_header);
 
         let binxml_data_size = match record_header.record_data_size() {
             Ok(size) => size,
@@ -376,7 +373,6 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             tree,
             binxml_offset: record_start + EVTX_RECORD_HEADER_SIZE as u64,
             binxml_size: binxml_data_size,
-            settings: Arc::clone(&self.settings),
         }))
     }
 }
@@ -412,8 +408,14 @@ impl EvtxChunkHeader {
         let header_chunk_checksum = bytes::read_u32_le_r(data, 124, "chunk.header_chunk_checksum")?;
 
         // Offsets arrays: fixed sizes (64 + 32 u32s).
-        let strings_offsets = bytes::read_u32_vec_le_r(data, 128, 64, "chunk.strings_offsets")?;
-        let template_offsets = bytes::read_u32_vec_le_r(data, 384, 32, "chunk.template_offsets")?;
+        let mut strings_offsets = [0_u32; 64];
+        for (i, offset) in strings_offsets.iter_mut().enumerate() {
+            *offset = bytes::read_u32_le_r(data, 128 + i * 4, "chunk.strings_offsets")?;
+        }
+        let mut template_offsets = [0_u32; 32];
+        for (i, offset) in template_offsets.iter_mut().enumerate() {
+            *offset = bytes::read_u32_le_r(data, 384 + i * 4, "chunk.template_offsets")?;
+        }
 
         Ok(EvtxChunkHeader {
             first_event_record_number,
@@ -473,8 +475,8 @@ mod tests {
             events_checksum: 4_252_479_141,
             header_chunk_checksum: 978_805_790,
             flags: ChunkFlags::EMPTY,
-            strings_offsets: vec![0_u32; 64],
-            template_offsets: vec![0_u32; 32],
+            strings_offsets: [0_u32; 64],
+            template_offsets: [0_u32; 32],
         };
 
         assert_eq!(
@@ -504,8 +506,8 @@ mod tests {
             chunk_header.header_chunk_checksum,
             expected.header_chunk_checksum
         );
-        assert!(!chunk_header.strings_offsets.is_empty());
-        assert!(!chunk_header.template_offsets.is_empty());
+        assert_eq!(chunk_header.strings_offsets.len(), 64);
+        assert_eq!(chunk_header.template_offsets.len(), 32);
     }
 
     #[test]

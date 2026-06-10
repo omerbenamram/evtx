@@ -5,13 +5,12 @@ use crate::model::ir::IrTree;
 use crate::utils::ByteCursor;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
-use crate::{EvtxChunk, ParserSettings};
+use crate::EvtxChunk;
 
 pub use jiff::Timestamp;
 #[allow(unused)]
 pub use jiff::tz::Offset;
 use std::io::Cursor;
-use std::sync::Arc;
 
 pub type RecordId = u64;
 
@@ -25,7 +24,6 @@ pub struct EvtxRecord<'a> {
     pub tree: IrTree<'a>,
     pub binxml_offset: u64,
     pub binxml_size: u32,
-    pub settings: Arc<ParserSettings>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +38,17 @@ pub struct SerializedEvtxRecord<T> {
     pub event_record_id: RecordId,
     pub timestamp: Timestamp,
     pub data: T,
+}
+
+impl SerializedEvtxRecord<Vec<u8>> {
+    /// Validate the rendered bytes as UTF-8 and convert into a `String` record.
+    pub fn into_string_record(self) -> Result<SerializedEvtxRecord<String>> {
+        Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data: String::from_utf8(self.data).map_err(crate::err::SerializationError::from)?,
+        })
+    }
 }
 
 impl EvtxRecordHeader {
@@ -105,54 +114,50 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
-    /// Consumes the record and renders it as compact JSON (streaming IR renderer).
-    pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
+    /// Consumes the record and renders it as compact JSON bytes (no UTF-8 validation pass).
+    ///
+    /// The renderers only emit valid UTF-8; use this in write-to-sink paths where the
+    /// `String` type is not needed.
+    pub fn into_json_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
         // Estimate buffer size based on BinXML size
-        let capacity_hint = self.binxml_size as usize * 2;
-        let buf = Vec::with_capacity(capacity_hint);
-
-        let event_record_id = self.event_record_id;
-        let timestamp = self.timestamp;
-
-        let mut writer = buf;
-        render_json_record(&self.tree, &self.settings, &mut writer).map_err(|e| {
+        let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
+        render_json_record(&self.tree, &self.chunk.settings, &mut data).map_err(|e| {
             EvtxError::FailedToParseRecord {
-                record_id: event_record_id,
+                record_id: self.event_record_id,
                 source: Box::new(e),
             }
         })?;
-        let data = String::from_utf8(writer).map_err(crate::err::SerializationError::from)?;
-
         Ok(SerializedEvtxRecord {
-            event_record_id,
-            timestamp,
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data,
+        })
+    }
+
+    /// Consumes the record and renders it as compact JSON (streaming IR renderer).
+    pub fn into_json(self) -> Result<SerializedEvtxRecord<String>> {
+        self.into_json_bytes()?.into_string_record()
+    }
+
+    /// Consumes the record and renders it as XML bytes (no UTF-8 validation pass).
+    pub fn into_xml_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
+        let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
+        render_xml_record(&self.tree, &self.chunk.settings, &mut data).map_err(|e| {
+            EvtxError::FailedToParseRecord {
+                record_id: self.event_record_id,
+                source: Box::new(e),
+            }
+        })?;
+        Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
             data,
         })
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
     pub fn into_xml(self) -> Result<SerializedEvtxRecord<String>> {
-        let capacity_hint = self.binxml_size as usize * 2;
-        let buf = Vec::with_capacity(capacity_hint);
-
-        let event_record_id = self.event_record_id;
-        let timestamp = self.timestamp;
-
-        let mut writer = buf;
-        render_xml_record(&self.tree, &self.settings, &mut writer).map_err(|e| {
-            EvtxError::FailedToParseRecord {
-                record_id: event_record_id,
-                source: Box::new(e),
-            }
-        })?;
-
-        let data = String::from_utf8(writer).map_err(crate::err::SerializationError::from)?;
-
-        Ok(SerializedEvtxRecord {
-            event_record_id,
-            timestamp,
-            data,
-        })
+        self.into_xml_bytes()?.into_string_record()
     }
 
     /// Parse all `TemplateInstance` substitution arrays from this record.
@@ -168,7 +173,7 @@ impl<'a> EvtxRecord<'a> {
             read_template_values_cursor,
         };
 
-        let ansi_codec = self.settings.get_ansi_codec();
+        let ansi_codec = self.chunk.settings.get_ansi_codec();
         let mut out: Vec<crate::binxml::BinXmlTemplateValues<'a>> = Vec::new();
 
         let mut cursor = ByteCursor::with_pos(self.chunk.data, self.binxml_offset as usize)?;

@@ -120,25 +120,3 @@ pub(crate) fn read_u64_le_r(
 ) -> Result<u64, DeserializationError> {
     read_u64_le(buf, offset).ok_or_else(|| truncated(what, offset, 8, buf.len()))
 }
-
-/// Read a `count`-element `u32` (little-endian) table at `offset`.
-///
-/// This does a single bounds check for the whole table and then reads each element.
-pub(crate) fn read_u32_vec_le_r(
-    buf: &[u8],
-    offset: usize,
-    count: usize,
-    what: &'static str,
-) -> Result<Vec<u32>, DeserializationError> {
-    // Fast fail on table bounds, then read each entry without re-checking offset math overflow.
-    let bytes = count
-        .checked_mul(4)
-        .ok_or_else(|| truncated(what, offset, usize::MAX, buf.len()))?;
-    let _ = slice_r(buf, offset, bytes, what)?;
-
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        out.push(read_u32_le_r(buf, offset + i * 4, what)?);
-    }
-    Ok(out)
-}

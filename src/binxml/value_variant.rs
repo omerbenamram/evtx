@@ -11,7 +11,6 @@ use log::{trace, warn};
 use std::fmt::{self, Display};
 use std::io::Cursor;
 use std::string::ToString;
-use winstructs::guid::Guid;
 
 /// Borrowed SID bytes (used to avoid heap allocation in the hot path).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -79,7 +78,7 @@ pub enum BinXmlValue<'a> {
     Real64Type(f64),
     BoolType(bool),
     BinaryType(&'a [u8]),
-    GuidType(Guid),
+    GuidType([u8; 16]),
     SizeTType(usize),
     FileTimeType(Timestamp),
     SysTimeType(Timestamp),
@@ -107,7 +106,7 @@ pub enum BinXmlValue<'a> {
     Real64ArrayType(&'a [f64]),
     BoolArrayType(&'a [bool]),
     BinaryArrayType,
-    GuidArrayType(&'a [Guid]),
+    GuidArrayType(&'a [[u8; 16]]),
     SizeTArrayType,
     FileTimeArrayType(&'a [Timestamp]),
     SysTimeArrayType(&'a [Timestamp]),
@@ -393,12 +392,7 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::BoolType(v)
             }
 
-            (BinXmlValueType::GuidType, _) => {
-                let bytes = cursor.take_bytes(16, "guid")?;
-                let guid = Guid::from_buffer(bytes)
-                    .map_err(|_| invalid_data("guid", cursor.position()))?;
-                BinXmlValue::GuidType(guid)
-            }
+            (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(cursor.array::<16>("guid")?),
 
             (BinXmlValueType::SizeTType, Some(4)) => {
                 let v = u32::from_le_bytes(cursor.array::<4>("sizet32")?);
@@ -582,7 +576,7 @@ impl<'a> BinXmlValue<'a> {
                     sz,
                     "guid_array",
                     arena,
-                    |off, b| Guid::from_buffer(b).map_err(|_| invalid_data("guid", off)),
+                    |_off, b| Ok(*b),
                 )?;
                 BinXmlValue::GuidArrayType(out)
             }
@@ -737,8 +731,9 @@ impl<'a> BinXmlValue<'a> {
                 items.get(idx).copied().map(BinXmlValue::Real64Type)
             }
             BinXmlValue::BoolArrayType(items) => items.get(idx).copied().map(BinXmlValue::BoolType),
-            // `Guid` is not `Copy` in this codebase.
-            BinXmlValue::GuidArrayType(items) => items.get(idx).cloned().map(BinXmlValue::GuidType),
+            BinXmlValue::GuidArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::GuidType)
+            }
             BinXmlValue::FileTimeArrayType(items) => {
                 items.get(idx).copied().map(BinXmlValue::FileTimeType)
             }
