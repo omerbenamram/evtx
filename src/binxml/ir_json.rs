@@ -93,13 +93,12 @@ use crate::utils::Utf16LeSlice;
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
 
-/// Upper bound for the "unique child-name" scan table.
+/// Size of the inline "unique child-name" scan table.
 ///
-/// We deliberately use a small fixed-size array to avoid heap allocations while still
-/// covering the vast majority of real-world event shapes. If a single element has more
-/// unique child names than this, we stop tracking and may stop emitting `_N` suffixes
-/// for duplicates beyond the tracked set.
-const MAX_UNIQUE_NAMES: usize = 64;
+/// Sized to cover typical event shapes (a `System` element has ~14 unique child
+/// names) while keeping the per-element zeroing cost small; rarer shapes spill
+/// into a heap vector, so `_N` suffixing stays correct for any name count.
+const INLINE_UNIQUE_NAMES: usize = 16;
 
 /// Render a single materialized record tree to JSON.
 pub(crate) fn render_json_record<W: WriteExt>(
@@ -199,6 +198,50 @@ impl<'a> NameKey<'a> {
 struct NameCount<'a> {
     key: NameKey<'a>,
     emitted_count: u16,
+}
+
+/// Per-element child-name table: a small inline array for the common case,
+/// spilling to the heap so `_N` suffixing stays correct for any name count.
+struct NameCounts<'a> {
+    inline: [Option<NameCount<'a>>; INLINE_UNIQUE_NAMES],
+    num_inline: usize,
+    spill: Vec<NameCount<'a>>,
+}
+
+impl<'a> NameCounts<'a> {
+    /// Return the `_N` suffix for this occurrence of `key` and bump its count.
+    fn next_suffix(&mut self, key: NameKey<'a>) -> u16 {
+        for nc_opt in self.inline.iter_mut().take(self.num_inline) {
+            let Some(nc) = nc_opt.as_mut() else {
+                continue;
+            };
+            if nc.key.eql(key) {
+                let suffix = nc.emitted_count;
+                nc.emitted_count = nc.emitted_count.saturating_add(1);
+                return suffix;
+            }
+        }
+        if !self.spill.is_empty() {
+            for nc in self.spill.iter_mut() {
+                if nc.key.eql(key) {
+                    let suffix = nc.emitted_count;
+                    nc.emitted_count = nc.emitted_count.saturating_add(1);
+                    return suffix;
+                }
+            }
+        }
+        let entry = NameCount {
+            key,
+            emitted_count: 1,
+        };
+        if self.num_inline < INLINE_UNIQUE_NAMES {
+            self.inline[self.num_inline] = Some(entry);
+            self.num_inline += 1;
+        } else {
+            self.spill.push(entry);
+        }
+        0
+    }
 }
 
 /// Quick attribute presence flags.
@@ -894,9 +937,11 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
 
         // Count child element names on the fly so we can apply legacy `_N` suffixes
         // (Header, Header_1, Header_2, ...).
-        let mut name_counts: [Option<NameCount<'_>>; MAX_UNIQUE_NAMES] =
-            std::array::from_fn(|_| None);
-        let mut num_unique = 0usize;
+        let mut name_counts = NameCounts {
+            inline: std::array::from_fn(|_| None),
+            num_inline: 0,
+            spill: Vec::new(),
+        };
 
         self.write_byte(b'{')?;
         let mut wrote_any = false;
@@ -1043,18 +1088,10 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
 
             // Normal child element: apply `_N` suffixes, once per expansion copy.
             if expansion.is_none() {
-                self.emit_normal_child(
-                    child_scope,
-                    child,
-                    direct_ovr,
-                    &mut name_counts,
-                    &mut num_unique,
-                    &mut wrote_any,
-                )?;
+                self.emit_normal_child(child_scope, child, direct_ovr, &mut name_counts, &mut wrote_any)?;
             } else {
                 let emitter = &mut *self;
                 let name_counts_ref = &mut name_counts;
-                let num_unique_ref = &mut num_unique;
                 let wrote_any_ref = &mut wrote_any;
                 for_each_expansion(&child_scope, child, ovr, &mut |copy_ovr| {
                     emitter.emit_normal_child(
@@ -1062,7 +1099,6 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
                         child,
                         copy_ovr,
                         name_counts_ref,
-                        num_unique_ref,
                         wrote_any_ref,
                     )
                 })?;
@@ -1100,34 +1136,10 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         scope: Scope<'t, 'a>,
         child: &'t Element<'a>,
         copy_ovr: Option<&Ovr<'_>>,
-        name_counts: &mut [Option<NameCount<'t>>; MAX_UNIQUE_NAMES],
-        num_unique: &mut usize,
+        name_counts: &mut NameCounts<'t>,
         wrote_any: &mut bool,
     ) -> Result<()> {
-        let key = NameKey::from_name(&child.name);
-        let mut suffix: u16 = 0;
-        let mut found = false;
-
-        for nc_opt in name_counts.iter_mut().take(*num_unique) {
-            let Some(nc) = nc_opt.as_mut() else {
-                continue;
-            };
-            if nc.key.eql(key) {
-                suffix = nc.emitted_count;
-                nc.emitted_count = nc.emitted_count.saturating_add(1);
-                found = true;
-                break;
-            }
-        }
-
-        if !found && *num_unique < MAX_UNIQUE_NAMES {
-            name_counts[*num_unique] = Some(NameCount {
-                key,
-                emitted_count: 1,
-            });
-            *num_unique += 1;
-            suffix = 0;
-        }
+        let suffix = name_counts.next_suffix(NameKey::from_name(&child.name));
 
         if *wrote_any {
             self.write_byte(b',')?;
