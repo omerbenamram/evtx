@@ -7,7 +7,7 @@ use crate::utils::bytes;
 
 use log::{debug, info, trace};
 
-use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
+use crate::binxml::ir::{IrTemplateCache, build_record_content};
 use crate::string_cache::StringCache;
 use crate::{ParserSettings, checksum_ieee};
 
@@ -318,7 +318,10 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 }
             };
 
-        trace!("Record id - {} header - {:?}", record_header.event_record_id, record_header);
+        trace!(
+            "Record id - {} header - {:?}",
+            record_header.event_record_id, record_header
+        );
 
         let binxml_data_size = match record_header.record_data_size() {
             Ok(size) => size,
@@ -345,12 +348,11 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         }
 
         let bytes = &self.chunk.data[binxml_start as usize..binxml_end as usize];
-        let tree_result =
-            build_tree_from_binxml_bytes_direct(bytes, self.chunk, &mut self.ir_template_cache)
-                .map_err(|err| EvtxError::FailedToParseRecord {
-                    record_id: record_header.event_record_id,
-                    source: Box::new(err),
-                });
+        let content_result = build_record_content(bytes, self.chunk, &mut self.ir_template_cache)
+            .map_err(|err| EvtxError::FailedToParseRecord {
+                record_id: record_header.event_record_id,
+                source: Box::new(err),
+            });
 
         self.offset_from_chunk_start += u64::from(record_header.data_size);
 
@@ -358,8 +360,8 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             self.exhausted = true;
         }
 
-        let tree = match tree_result {
-            Ok(tree) => tree,
+        let content = match content_result {
+            Ok(content) => content,
             Err(err) => return Some(Err(err)),
         };
 
@@ -367,7 +369,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
             chunk: self.chunk,
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
-            tree,
+            content,
             binxml_offset: record_start + EVTX_RECORD_HEADER_SIZE as u64,
             binxml_size: binxml_data_size,
         }))

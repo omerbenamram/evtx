@@ -1,11 +1,11 @@
-use crate::binxml::ir_json::render_json_record;
-use crate::binxml::ir_xml::render_xml_record;
+use crate::EvtxChunk;
+use crate::binxml::ir::RecordContent;
+use crate::binxml::ir_json::render_json_record_content;
+use crate::binxml::ir_xml::render_xml_record_content;
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
-use crate::model::ir::IrTree;
 use crate::utils::ByteCursor;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
-use crate::EvtxChunk;
 
 pub use jiff::Timestamp;
 #[allow(unused)]
@@ -20,7 +20,7 @@ pub struct EvtxRecord<'a> {
     pub chunk: &'a EvtxChunk<'a>,
     pub event_record_id: RecordId,
     pub timestamp: Timestamp,
-    pub tree: IrTree<'a>,
+    pub(crate) content: RecordContent<'a>,
     pub binxml_offset: u64,
     pub binxml_size: u32,
 }
@@ -112,12 +112,12 @@ impl<'a> EvtxRecord<'a> {
     pub fn into_json_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
         // Estimate buffer size based on BinXML size
         let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
-        render_json_record(&self.tree, &self.chunk.settings, &mut data).map_err(|e| {
-            EvtxError::FailedToParseRecord {
+        render_json_record_content(&self.content, &self.chunk.settings, &mut data).map_err(
+            |e| EvtxError::FailedToParseRecord {
                 record_id: self.event_record_id,
                 source: Box::new(e),
-            }
-        })?;
+            },
+        )?;
         Ok(SerializedEvtxRecord {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
@@ -133,7 +133,7 @@ impl<'a> EvtxRecord<'a> {
     /// Consumes the record and renders it as XML bytes (no UTF-8 validation pass).
     pub fn into_xml_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
         let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
-        render_xml_record(&self.tree, &self.chunk.settings, &mut data).map_err(|e| {
+        render_xml_record_content(&self.content, &self.chunk.settings, &mut data).map_err(|e| {
             EvtxError::FailedToParseRecord {
                 record_id: self.event_record_id,
                 source: Box::new(e),

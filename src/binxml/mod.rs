@@ -5,6 +5,7 @@ pub(crate) mod array_expand;
 pub(crate) mod ir;
 pub(crate) mod ir_json;
 pub(crate) mod ir_xml;
+pub(crate) mod render_ctx;
 pub(crate) mod tokens;
 pub(crate) mod value_render;
 

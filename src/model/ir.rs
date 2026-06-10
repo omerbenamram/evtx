@@ -43,7 +43,7 @@ impl<'a> Name<'a> {
 /// fast SIMD escaping when rendering JSON/XML. UTF-8 text is reserved for
 /// synthetic or already-decoded content (e.g. ANSI strings or template
 /// substitutions).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Text<'a> {
     /// UTF-16LE text slice borrowed from the chunk.
     Utf16(Utf16LeSlice<'a>),
@@ -136,6 +136,9 @@ pub enum TemplateValue<'a> {
     Value(BinXmlValue<'a>),
     /// A parsed BinXML fragment stored in the record arena.
     BinXmlElement(ElementId),
+    /// An unmaterialized nested template instance (index into the record's
+    /// nested-instance list, see `binxml::ir::TemplateContent`).
+    NestedTemplate(u16),
 }
 
 /// An element with attributes and child nodes.
@@ -301,7 +304,7 @@ pub(crate) fn is_optional_empty(value: &BinXmlValue<'_>) -> bool {
 /// Returns true if the template value should be considered "empty" for optional substitutions.
 pub(crate) fn is_optional_empty_template_value(value: &TemplateValue<'_>) -> bool {
     match value {
-        TemplateValue::BinXmlElement(_) => false,
+        TemplateValue::BinXmlElement(_) | TemplateValue::NestedTemplate(_) => false,
         TemplateValue::Value(value) => is_optional_empty(value),
     }
 }

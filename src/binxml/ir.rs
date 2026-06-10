@@ -163,7 +163,9 @@ const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
 /// clones the tree and resolves all placeholders using substitution values.
 #[derive(Debug)]
 pub(crate) struct IrTemplateCache<'a> {
-    templates: AHashMap<u32, Rc<IrTree<'a>>>,
+    /// Cached definition tree + "contains a literal expandable array" flag
+    /// (precomputed once so per-record expansion gating is a lookup).
+    templates: AHashMap<u32, (Rc<IrTree<'a>>, bool)>,
     arena: &'a Bump,
 }
 
@@ -201,7 +203,8 @@ impl<'a> IrTemplateCache<'a> {
         let template =
             self.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
         arena.reserve(template.arena().count());
-        let values = template_values_from_values(template_ref.values, chunk, self, arena, bump)?;
+        let values =
+            template_values_from_values_in(template_ref.values, chunk, self, arena, None, bump)?;
         let (root, _needs_array_expansion) = clone_and_resolve(
             template.arena(),
             template.root(),
@@ -210,6 +213,14 @@ impl<'a> IrTemplateCache<'a> {
             arena,
         )?;
         Ok(root)
+    }
+
+    /// Whether the cached template at `offset` contains a literal expandable array
+    /// (precomputed at parse time; false for uncached offsets).
+    fn template_has_literal_array(&self, template_def_offset: u32) -> bool {
+        self.templates
+            .get(&template_def_offset)
+            .is_some_and(|(_, flag)| *flag)
     }
 
     /// Load a template definition from the chunk (or return a cached copy).
@@ -222,7 +233,7 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
     ) -> Result<Rc<IrTree<'a>>> {
-        if let Some(existing) = self.templates.get(&template_def_offset) {
+        if let Some((existing, _)) = self.templates.get(&template_def_offset) {
             return Ok(Rc::clone(existing));
         }
         let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
@@ -258,7 +269,11 @@ impl<'a> IrTemplateCache<'a> {
                 },
             )?;
             let template = Rc::new(IrTree::new(arena, root));
-            self.templates.insert(template_def_offset, Rc::clone(&template));
+            let has_literal_array = tree_has_literal_array(&template);
+            self.templates.insert(
+                template_def_offset,
+                (Rc::clone(&template), has_literal_array),
+            );
             Ok(template)
         })();
 
@@ -308,7 +323,11 @@ impl<'a> IrTemplateCache<'a> {
                         };
 
                         let template = Rc::new(IrTree::new(arena, root));
-                        self.templates.insert(template_def_offset, Rc::clone(&template));
+                        let has_literal_array = tree_has_literal_array(&template);
+                        self.templates.insert(
+                            template_def_offset,
+                            (Rc::clone(&template), has_literal_array),
+                        );
                         return Ok(template);
                     }
                 }
@@ -828,6 +847,159 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
     Ok(IrTree::new(arena, root))
 }
 
+/// Parsed record content, as produced by [`build_record_content`].
+///
+/// The dominant record shape (`fragment header + single template instance`) is kept
+/// unmaterialized: the renderers walk the cached template tree directly and resolve
+/// substitutions on the fly (see `binxml::render_ctx`), skipping the per-record
+/// `clone_and_resolve` deep clone. Every other shape falls back to the materialized tree.
+#[derive(Debug, Clone)]
+pub(crate) enum RecordContent<'a> {
+    Tree(IrTree<'a>),
+    Template(TemplateContent<'a>),
+}
+
+/// One unmaterialized template instance: the cached definition tree, the
+/// decoded substitution values, and the precomputed expansion gate.
+#[derive(Debug, Clone)]
+pub(crate) struct TplInstance<'a> {
+    pub template: Rc<IrTree<'a>>,
+    pub values: IrVec<'a, TemplateValue<'a>>,
+    pub may_expand: bool,
+}
+
+/// An unmaterialized template-instance record.
+///
+/// `nested` holds template instances found inside BinXML-fragment substitutions
+/// (referenced via `TemplateValue::NestedTemplate`, deepest-first, so an
+/// instance only references earlier entries). All materialized fragment
+/// elements across nesting levels share the single `frags` arena.
+#[derive(Debug, Clone)]
+pub(crate) struct TemplateContent<'a> {
+    pub root: TplInstance<'a>,
+    pub nested: Vec<TplInstance<'a>>,
+    // ManuallyDrop: all IR types are drop-free; skipping drop glue avoids a
+    // per-record walk over the fragment elements (memory belongs to the bump).
+    pub frags: std::mem::ManuallyDrop<IrArena<'a>>,
+}
+
+impl<'a> TemplateContent<'a> {
+    pub(crate) fn scope(&self) -> crate::binxml::render_ctx::Scope<'_, 'a> {
+        crate::binxml::render_ctx::Scope {
+            arena: self.root.template.arena(),
+            ctx: Some(crate::binxml::render_ctx::TplCtx {
+                values: self.root.values.as_slice(),
+                frags: &self.frags,
+                nested: &self.nested,
+                may_expand: self.root.may_expand,
+            }),
+        }
+    }
+}
+
+/// Build record content from BinXML bytes: template-reference fast path when the
+/// record is a single template instance, materialized tree otherwise.
+pub(crate) fn build_record_content<'a>(
+    bytes: &'a [u8],
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+) -> Result<RecordContent<'a>> {
+    if let Some(content) = try_build_template_content(bytes, chunk, cache)? {
+        return Ok(content);
+    }
+    build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
+}
+
+/// Recognize the `[0x0f fragment header] 0x0c TemplateInstance (EOF | end)` record shape.
+///
+/// Returns `Ok(None)` for any other shape (caller falls back to the materialized
+/// builder, which is the behavioral source of truth for mixed/corrupt records).
+fn try_build_template_content<'a>(
+    bytes: &'a [u8],
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+) -> Result<Option<RecordContent<'a>>> {
+    let Some(template_ref) = read_single_instance_stream(bytes, chunk)? else {
+        return Ok(None);
+    };
+
+    let mut frags = IrArena::new_in(&chunk.arena);
+    let mut nested: Vec<TplInstance<'a>> = Vec::new();
+    let root = build_tpl_instance(template_ref, chunk, cache, &mut frags, &mut nested)?;
+
+    Ok(Some(RecordContent::Template(TemplateContent {
+        root,
+        nested,
+        frags: std::mem::ManuallyDrop::new(frags),
+    })))
+}
+
+/// Parse `bytes` as a `[0x0f fragment header] 0x0c TemplateInstance (EOF | end)`
+/// stream. Returns `Ok(None)` for any other shape.
+fn read_single_instance_stream<'a>(
+    bytes: &'a [u8],
+    chunk: &'a EvtxChunk<'a>,
+) -> Result<Option<BinXmlTemplateValues<'a>>> {
+    // Fragment header token is 4 bytes (token + major + minor + flags).
+    let instance_offset = match bytes.first() {
+        Some(0x0f) if bytes.len() > 5 && bytes[4] == 0x0c => 5,
+        Some(0x0c) => 1,
+        _ => return Ok(None),
+    };
+
+    let stream_offset = binxml_slice_offset_in(chunk.data, bytes)? as usize;
+    let mut cursor = ByteCursor::with_pos(chunk.data, stream_offset + instance_offset)?;
+    let template_ref = read_template_values_cursor(
+        &mut cursor,
+        Some(chunk),
+        chunk.settings.get_ansi_codec(),
+        &chunk.arena,
+    )?;
+
+    // Anything after the instance other than EOF (or end-of-stream) is a shape we
+    // don't handle here.
+    let consumed = cursor.position() as usize - stream_offset;
+    if consumed < bytes.len() && bytes[consumed] != 0x00 {
+        return Ok(None);
+    }
+    Ok(Some(template_ref))
+}
+
+/// Build an unmaterialized instance: resolve the cached template, convert the
+/// substitution values (recursing into nested single-instance fragments), and
+/// compute the expansion gate.
+fn build_tpl_instance<'a>(
+    template_ref: BinXmlTemplateValues<'a>,
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+    frags: &mut IrArena<'a>,
+    nested: &mut Vec<TplInstance<'a>>,
+) -> Result<TplInstance<'a>> {
+    let template = cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
+    let template_has_literal_array =
+        cache.template_has_literal_array(template_ref.template_def_offset);
+    let values = template_values_from_values_in(
+        template_ref.values,
+        chunk,
+        cache,
+        frags,
+        Some(nested),
+        &chunk.arena,
+    )?;
+
+    let may_expand = template_has_literal_array
+        || values.iter().any(|tv| {
+            matches!(tv, TemplateValue::Value(v)
+                if v.expandable_array_len().is_some_and(|len| len > 1))
+        });
+
+    Ok(TplInstance {
+        template,
+        values,
+        may_expand,
+    })
+}
+
 /// Build an IR tree from a WEVT_TEMPLATE BinXML fragment (inline-name encoding).
 ///
 /// The input `binxml` should start at the BinXML fragment header (token 0x0f).
@@ -868,6 +1040,26 @@ pub(crate) fn instantiate_template_definition_ir<'a>(
     let (root, _needs_array_expansion) =
         clone_and_resolve(template.arena(), template.root(), values, bump, &mut arena)?;
     Ok(IrTree::new(arena, root))
+}
+
+/// Whether the template definition tree contains a literal `Node::Value` array
+/// that would trigger element repetition at instantiation time.
+fn tree_has_literal_array(tree: &IrTree<'_>) -> bool {
+    let arena = tree.arena();
+    for id in 0..arena.count() {
+        let Some(element) = arena.get(id) else {
+            continue;
+        };
+        if element.children.iter().any(node_needs_array_expansion) {
+            return true;
+        }
+        for attr in &element.attrs {
+            if attr.value.iter().any(node_needs_array_expansion) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
@@ -929,11 +1121,12 @@ fn read_template_definition_header_at(data: &[u8], offset: u32) -> Result<Templa
 /// values_raw = [ StringType("x"), BinXmlType(<C>y</C>) ]
 /// values     = [ Value(StringType("x")), BinXmlElement(id_of_C) ]
 /// ```
-fn template_values_from_values<'a>(
+fn template_values_from_values_in<'a>(
     values_raw: Vec<BinXmlValue<'a>>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     arena: &mut IrArena<'a>,
+    mut nested: Option<&mut Vec<TplInstance<'a>>>,
     bump: &'a Bump,
 ) -> Result<IrVec<'a, TemplateValue<'a>>> {
     let mut values = IrVec::with_capacity_in(values_raw.len(), cache.arena);
@@ -942,23 +1135,37 @@ fn template_values_from_values<'a>(
             BinXmlValue::BinXmlType(bytes) => {
                 if bytes.is_empty() {
                     values.push(TemplateValue::Value(BinXmlValue::NullType));
-                } else {
-                    let element_id = build_tree_from_binxml_bytes_direct_with_mode(
-                        BuildTreeFromBinXmlBytesDirectArgs {
-                            bytes,
-                            data: chunk.data,
-                            chunk: Some(chunk),
-                            cache,
-                            ansi_codec: chunk.settings.get_ansi_codec(),
-                            bump,
-                            arena,
-                            mode: BuildMode::Record,
-                            has_dep_id: false,
-                            name_encoding: BinXmlNameEncoding::Offset,
-                        },
-                    )?;
-                    values.push(TemplateValue::BinXmlElement(element_id));
+                    continue;
                 }
+                // Single-instance fragments stay unmaterialized when the caller
+                // supports nested instances (render-direct path).
+                if let Some(nested_vec) = nested.as_deref_mut() {
+                    if nested_vec.len() < usize::from(u16::MAX) {
+                        if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
+                            let inst =
+                                build_tpl_instance(template_ref, chunk, cache, arena, nested_vec)?;
+                            nested_vec.push(inst);
+                            values
+                                .push(TemplateValue::NestedTemplate((nested_vec.len() - 1) as u16));
+                            continue;
+                        }
+                    }
+                }
+                let element_id = build_tree_from_binxml_bytes_direct_with_mode(
+                    BuildTreeFromBinXmlBytesDirectArgs {
+                        bytes,
+                        data: chunk.data,
+                        chunk: Some(chunk),
+                        cache,
+                        ansi_codec: chunk.settings.get_ansi_codec(),
+                        bump,
+                        arena,
+                        mode: BuildMode::Record,
+                        has_dep_id: false,
+                        name_encoding: BinXmlNameEncoding::Offset,
+                    },
+                )?;
+                values.push(TemplateValue::BinXmlElement(element_id));
             }
             other => values.push(TemplateValue::Value(other)),
         }
@@ -1179,6 +1386,9 @@ fn resolve_placeholder_into<'a>(
             out.push(Node::Element(*element_id));
             Ok(())
         }
+        TemplateValue::NestedTemplate(_) => Err(EvtxError::FailedToCreateRecordModel(
+            "unmaterialized nested template instance in resolve",
+        )),
         TemplateValue::Value(value) => match value {
             BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
                 "Unimplemented - EvtXml",

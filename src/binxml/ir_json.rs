@@ -5,6 +5,12 @@
 //! representation and (intentionally) matches the EVTX JSON conventions used by
 //! this project's CLI.
 //!
+//! The renderer works on either a fully materialized tree or a cached template
+//! definition tree with render-time substitution resolution (`binxml::render_ctx`),
+//! including render-time array expansion. Expanded copies behave exactly like the
+//! repeated sibling elements the materialized path would produce (they participate
+//! in positional `Data` counting and `_N` suffixing).
+//!
 //! ## Mental model: element → JSON *value*
 //!
 //! Each XML element becomes a JSON value under a key named after the element:
@@ -43,15 +49,6 @@
 //!   `<ElementName>[_N]_attributes` next to `<ElementName>[_N]` (legacy output shape).
 //!   Root attributes are emitted as `<Root>_attributes` at the top level.
 //!
-//! Example (separate mode):
-//!
-//! ```json
-//! {
-//!   "Header_attributes": { "x": "1" },
-//!   "Header": "value"
-//! }
-//! ```
-//!
 //! ## Duplicate sibling names (`_N` suffixing)
 //!
 //! JSON objects can't represent repeated keys reliably, so for duplicate sibling
@@ -81,10 +78,17 @@
 //! rendered with minimal allocations.
 
 use crate::ParserSettings;
+use crate::binxml::ir::RecordContent;
+use crate::binxml::render_ctx::{
+    Ovr, RNode, Scope, content_layout, count_expansion_copies, expansion_any, find_expansion,
+    for_each_expansion, has_non_empty_text_content, resolve_child_element,
+};
 use crate::binxml::value_render::ValueRenderer;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
-use crate::model::ir::{Attr, Element, IrArena, IrTree, Name, Node, Text, is_optional_empty};
+#[cfg(feature = "bench")]
+use crate::model::ir::IrArena;
+use crate::model::ir::{Attr, Element, IrTree, Name, Node, Text, is_optional_empty};
 use crate::utils::Utf16LeSlice;
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
@@ -97,34 +101,63 @@ use sonic_rs::writer::WriteExt;
 /// for duplicates beyond the tracked set.
 const MAX_UNIQUE_NAMES: usize = 64;
 
-/// Render a single record tree to JSON.
-///
-/// When `settings.should_separate_json_attributes()` is enabled, this renderer emits attribute
-/// objects as sibling keys named `<ElementName>_attributes`, matching the legacy CLI output.
+/// Render a single materialized record tree to JSON.
 pub(crate) fn render_json_record<W: WriteExt>(
     tree: &IrTree<'_>,
     settings: &ParserSettings,
     writer: &mut W,
 ) -> Result<()> {
-    let mut emitter = JsonEmitter::new(
+    render_json_with_scope(
+        Scope::materialized(tree.arena()),
+        tree.root_element(),
+        settings,
         writer,
-        tree.arena(),
-        settings.should_separate_json_attributes(),
-    );
-    let root = tree.root_element();
+    )
+}
+
+/// Render record content (materialized tree or unmaterialized template instance).
+pub(crate) fn render_json_record_content<W: WriteExt>(
+    content: &RecordContent<'_>,
+    settings: &ParserSettings,
+    writer: &mut W,
+) -> Result<()> {
+    match content {
+        RecordContent::Tree(tree) => render_json_record(tree, settings, writer),
+        RecordContent::Template(tc) => {
+            let scope = tc.scope();
+            let root = scope
+                .arena
+                .get(tc.root.template.root())
+                .expect("invalid element id");
+            // The instantiation root is never array-expanded (matches the
+            // materialized path, which discards the root expansion flag).
+            render_json_with_scope(scope, root, settings, writer)
+        }
+    }
+}
+
+fn render_json_with_scope<W: WriteExt>(
+    scope: Scope<'_, '_>,
+    root: &Element<'_>,
+    settings: &ParserSettings,
+    writer: &mut W,
+) -> Result<()> {
+    let mut emitter = JsonEmitter::new(writer, settings.should_separate_json_attributes());
     emitter.write_bytes(b"{")?;
     if emitter.separate_json_attributes {
         // Root attributes are emitted as a sibling key `<Root>_attributes` at the top level.
-        if !root.attrs.is_empty() && emitter.render_separate_attributes_for_element(root, 0)? {
+        if !root.attrs.is_empty()
+            && emitter.render_separate_attributes_for_element(scope, root, 0, None)?
+        {
             emitter.write_byte(b',')?;
         }
         emitter.write_json_key_from_name_with_suffix(&root.name, 0)?;
-        emitter.write_element_value_no_attrs(root, false)?;
+        emitter.write_element_value_no_attrs(scope, root, None, false)?;
     } else {
         emitter.write_byte(b'\"')?;
         emitter.write_name(root.name.as_str())?;
         emitter.write_bytes(b"\":")?;
-        emitter.write_element_value(root, false)?;
+        emitter.write_element_value(scope, root, None, false)?;
     }
     emitter.write_bytes(b"}")?;
     emitter.flush()?;
@@ -168,23 +201,53 @@ struct NameCount<'a> {
     emitted_count: u16,
 }
 
+/// Quick attribute presence flags.
+///
+/// Returns `(has_any_attrs, has_any_non_empty_attr_value)`.
+///
+/// This distinction matters because we treat "attribute exists but is empty" as
+/// ignorable for deciding between `null` vs `{ "#attributes": ... }`.
+fn attr_flags(scope: &Scope<'_, '_>, attrs: &[Attr<'_>], ovr: Option<&Ovr<'_>>) -> (bool, bool) {
+    if attrs.is_empty() {
+        return (false, false);
+    }
+    for attr in attrs {
+        if has_non_empty_text_content(scope, &attr.value, ovr) {
+            return (true, true);
+        }
+    }
+    (true, false)
+}
+
+/// Return the raw node slice for `Data[@Name]` if present.
+///
+/// We keep this as a `&[Node]` (rather than resolving to a `String`) to avoid
+/// allocations; the same JSON-escaping rules that apply to text content are used
+/// when the attribute is turned into a JSON key.
+fn get_name_attr_nodes<'b, 'a>(element: &'b Element<'a>) -> Option<&'b [Node<'a>]> {
+    for attr in &element.attrs {
+        if attr.name.as_str() == "Name" {
+            return Some(&attr.value);
+        }
+    }
+    None
+}
+
 /// Streaming JSON emitter for IR nodes.
 ///
 /// The emitter owns formatter state and scratch buffers so callers can reuse
 /// allocations while traversing a record tree.
-struct JsonEmitter<'w, 'a, W: WriteExt> {
+struct JsonEmitter<'w, W: WriteExt> {
     writer: &'w mut W,
-    arena: &'a IrArena<'a>,
     values: ValueRenderer,
     formatter: CompactFormatter,
     separate_json_attributes: bool,
 }
 
-impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
-    fn new(writer: &'w mut W, arena: &'a IrArena<'a>, separate_json_attributes: bool) -> Self {
+impl<'w, W: WriteExt> JsonEmitter<'w, W> {
+    fn new(writer: &'w mut W, separate_json_attributes: bool) -> Self {
         JsonEmitter {
             writer,
-            arena,
             values: ValueRenderer::new(),
             formatter: CompactFormatter,
             separate_json_attributes,
@@ -211,8 +274,6 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     ///
     /// - `suffix == 0` → `"Name":`
     /// - `suffix == 1` → `"Name_1":`
-    ///
-    /// This is used to disambiguate duplicate sibling element names in a JSON object.
     fn write_json_key_from_name_with_suffix(&mut self, name: &Name<'_>, suffix: u16) -> Result<()> {
         self.write_byte(b'\"')?;
         self.write_name(name.as_str())?;
@@ -229,18 +290,18 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     ///
     /// This is used for the `EventData`/`UserData` flattening case where the key comes
     /// from `Data[@Name]` and can itself contain entity/character references.
-    ///
-    /// Example:
-    /// - `Name="A&amp;B"` → `"A&B":`
-    fn write_json_key_from_nodes(&mut self, nodes: &[Node<'_>]) -> Result<()> {
+    fn write_json_key_from_nodes(
+        &mut self,
+        scope: Scope<'_, '_>,
+        nodes: &[Node<'_>],
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<()> {
         self.write_byte(b'\"')?;
-        self.write_json_text_content(nodes, false)?;
+        self.write_json_text_content(scope, nodes, false, ovr)?;
         self.write_bytes(b"\":")
     }
 
     /// Write JSON-escaped UTF-16LE contents (no surrounding quotes).
-    ///
-    /// Callers are responsible for writing `"` before/after if they want a JSON string.
     fn write_json_escaped_utf16(&mut self, value: Utf16LeSlice<'_>) -> Result<()> {
         let bytes = value.as_bytes();
         let units = bytes.len() / 2;
@@ -252,111 +313,50 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
         Ok(())
     }
 
+    fn write_json_text(&mut self, text: &Text<'_>) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        match text {
+            Text::Utf16(value) => self.write_json_escaped_utf16(*value),
+            Text::Utf8(value) => self
+                .formatter
+                .write_string_fast(self.writer, value.as_ref(), false)
+                .map_err(EvtxError::from),
+        }
+    }
+
     /// Write the *contents* of a JSON string for a node slice.
     ///
-    /// This function **does not** write surrounding quotes (`"`). Callers typically do:
-    ///
-    /// - `"` + `write_json_text_content(..)` + `"` for JSON string values
-    /// - `"` + `write_json_text_content(..)` + `":` for "dynamic" keys (e.g. `Data[@Name]`)
-    ///
-    /// The slice is interpreted as "text-like" content:
+    /// This function **does not** write surrounding quotes (`"`). The slice is
+    /// interpreted as "text-like" content:
     /// - `Text` / `CData`: appended (after JSON escaping)
     /// - `Value`: appended using the BinXML value renderer (e.g. substitutions)
     /// - `CharRef` / `EntityRef`: resolved to characters when possible
     ///
     /// Errors:
-    /// - `Element` nodes are rejected because they belong in object context, unless
+    /// - element-like nodes are rejected because they belong in object context, unless
     ///   `skip_elements` is set (used for mixed-content `#text`, where child elements are
     ///   emitted as separate object keys and only the "loose text" is concatenated).
-    /// - `Placeholder` nodes indicate a bug in IR construction (templates not resolved).
-    ///
-    /// Example (conceptual IR → JSON string contents):
-    ///
-    /// - `[Text("A"), EntityRef("amp"), Text("B")]` → `A&B`
-    /// - `[Value(Int32Type(42))]` → `42` (still string contents; numeric coercion happens elsewhere)
-    fn write_json_text_content(&mut self, nodes: &[Node<'_>], skip_elements: bool) -> Result<()> {
+    /// - `Placeholder` nodes in a materialized tree indicate a bug in IR construction.
+    fn write_json_text_content(
+        &mut self,
+        scope: Scope<'_, '_>,
+        nodes: &[Node<'_>],
+        skip_elements: bool,
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<()> {
         for node in nodes {
-            match node {
-                Node::Text(text) | Node::CData(text) => {
-                    if text.is_empty() {
-                        continue;
-                    }
-                    match text {
-                        Text::Utf16(value) => {
-                            self.write_json_escaped_utf16(*value)?;
-                        }
-                        Text::Utf8(value) => {
-                            self.formatter
-                                .write_string_fast(self.writer, value.as_ref(), false)
-                                .map_err(EvtxError::from)?;
-                        }
-                    }
-                }
-                Node::Value(value) => {
+            match scope.resolve(node, ovr)? {
+                RNode::Skip => {}
+                RNode::Text(text) => self.write_json_text(&text)?,
+                RNode::Value(value) => {
                     self.values.write_json_value_text(self.writer, value)?;
                 }
-                Node::CharRef(ch) => {
-                    // In JSON, emit the resolved character (not an XML `&#...;` sequence).
-                    // This keeps JSON values as plain text rather than XML markup.
-                    if let Some(ch) = char::from_u32(u32::from(*ch)) {
-                        let mut buf = [0_u8; 4];
-                        let s = ch.encode_utf8(&mut buf);
-                        self.formatter
-                            .write_string_fast(self.writer, s, false)
-                            .map_err(EvtxError::from)?;
-                    } else {
-                        // Preserve invalid code units as an XML-like escape sequence.
-                        self.write_bytes(b"&#")?;
-                        self.formatter
-                            .write_u64(self.writer, u64::from(*ch))
-                            .map_err(EvtxError::from)?;
-                        self.write_byte(b';')?;
-                    }
+                RNode::OwnValue(value) => {
+                    self.values.write_json_value_text(self.writer, &value)?;
                 }
-                Node::EntityRef(name) => {
-                    // In JSON, resolve standard XML entities to their character form.
-                    // (XML escaping is only relevant when serializing back to XML.)
-                    match name.as_str() {
-                        "quot" => {
-                            self.formatter
-                                .write_string_fast(self.writer, "\"", false)
-                                .map_err(EvtxError::from)?;
-                        }
-                        "apos" => {
-                            self.formatter
-                                .write_string_fast(self.writer, "'", false)
-                                .map_err(EvtxError::from)?;
-                        }
-                        "amp" => {
-                            self.formatter
-                                .write_string_fast(self.writer, "&", false)
-                                .map_err(EvtxError::from)?;
-                        }
-                        "lt" => {
-                            self.formatter
-                                .write_string_fast(self.writer, "<", false)
-                                .map_err(EvtxError::from)?;
-                        }
-                        "gt" => {
-                            self.formatter
-                                .write_string_fast(self.writer, ">", false)
-                                .map_err(EvtxError::from)?;
-                        }
-                        other => {
-                            // Unknown entity: keep as literal `&name;` so the information isn't lost.
-                            self.write_byte(b'&')?;
-                            self.write_bytes(other.as_bytes())?;
-                            self.write_byte(b';')?;
-                        }
-                    }
-                }
-                Node::PITarget(_) | Node::PIData(_) => {}
-                Node::Placeholder(_) => {
-                    return Err(EvtxError::FailedToCreateRecordModel(
-                        "unresolved placeholder in tree",
-                    ));
-                }
-                Node::Element(_) => {
+                RNode::Frag(_) | RNode::Nested(_) => {
                     if skip_elements {
                         continue;
                     }
@@ -364,6 +364,67 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                         "unexpected element node in text context",
                     ));
                 }
+                RNode::Plain(node) => match node {
+                    Node::Text(text) | Node::CData(text) => self.write_json_text(text)?,
+                    Node::Value(value) => {
+                        self.values.write_json_value_text(self.writer, value)?;
+                    }
+                    Node::CharRef(ch) => {
+                        // In JSON, emit the resolved character (not an XML `&#...;` sequence).
+                        if let Some(ch) = char::from_u32(u32::from(*ch)) {
+                            let mut buf = [0_u8; 4];
+                            let s = ch.encode_utf8(&mut buf);
+                            self.formatter
+                                .write_string_fast(self.writer, s, false)
+                                .map_err(EvtxError::from)?;
+                        } else {
+                            // Preserve invalid code units as an XML-like escape sequence.
+                            self.write_bytes(b"&#")?;
+                            self.formatter
+                                .write_u64(self.writer, u64::from(*ch))
+                                .map_err(EvtxError::from)?;
+                            self.write_byte(b';')?;
+                        }
+                    }
+                    Node::EntityRef(name) => {
+                        // In JSON, resolve standard XML entities to their character form.
+                        let resolved = match name.as_str() {
+                            "quot" => Some("\""),
+                            "apos" => Some("'"),
+                            "amp" => Some("&"),
+                            "lt" => Some("<"),
+                            "gt" => Some(">"),
+                            _ => None,
+                        };
+                        match resolved {
+                            Some(s) => {
+                                self.formatter
+                                    .write_string_fast(self.writer, s, false)
+                                    .map_err(EvtxError::from)?;
+                            }
+                            None => {
+                                // Unknown entity: keep as literal `&name;`.
+                                self.write_byte(b'&')?;
+                                self.write_bytes(name.as_str().as_bytes())?;
+                                self.write_byte(b';')?;
+                            }
+                        }
+                    }
+                    Node::PITarget(_) | Node::PIData(_) => {}
+                    Node::Placeholder(_) => {
+                        return Err(EvtxError::FailedToCreateRecordModel(
+                            "unresolved placeholder in tree",
+                        ));
+                    }
+                    Node::Element(_) => {
+                        if skip_elements {
+                            continue;
+                        }
+                        return Err(EvtxError::FailedToCreateRecordModel(
+                            "unexpected element node in text context",
+                        ));
+                    }
+                },
             }
         }
         Ok(())
@@ -373,11 +434,6 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     ///
     /// Returns `true` when the value was written as a non-string JSON token, `false`
     /// when the caller should fall back to string rendering.
-    ///
-    /// Example:
-    /// - `UInt32Type(7)` → `7`
-    /// - `BoolType(true)` → `true`
-    /// - `StringType("7")` → `false` (will be rendered as `"7"`)
     fn write_value_as_number(&mut self, value: &BinXmlValue<'_>) -> Result<bool> {
         match value {
             BinXmlValue::Int8Type(v) => self.write_signed_number(i64::from(*v)),
@@ -396,68 +452,120 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
         }
     }
 
-    /// If `nodes` is exactly one `Value(..)` node, try to emit it as a JSON primitive.
+    /// If the resolved content is exactly one `Value(..)` node, try to emit it as a
+    /// JSON primitive.
     ///
-    /// This is the fast-path used for elements/attributes whose content is purely a
-    /// single typed substitution.
-    ///
-    /// Example:
-    /// - `nodes = [Value(Int64Type(1))]` → writes `1` and returns `true`
-    /// - `nodes = [Text("1")]` → returns `false` (will be rendered as `"1"`)
-    fn try_write_as_number(&mut self, nodes: &[Node<'_>]) -> Result<bool> {
-        if nodes.len() != 1 {
-            return Ok(false);
-        }
-        let Node::Value(value) = &nodes[0] else {
-            return Ok(false);
+    /// Matches the materialized rule "the (resolved) node slice has exactly one node
+    /// and it is a typed value" — omitted substitutions don't count as nodes.
+    fn try_write_as_number(
+        &mut self,
+        scope: Scope<'_, '_>,
+        nodes: &[Node<'_>],
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<bool> {
+        // Fast path: the dominant shape is a single node (typically one substitution).
+        let single = if let [node] = nodes {
+            scope.resolve(node, ovr)?
+        } else {
+            let mut single: Option<RNode<'_, '_>> = None;
+            for node in nodes {
+                match scope.resolve(node, ovr)? {
+                    RNode::Skip => {}
+                    rnode => {
+                        if single.is_some() {
+                            return Ok(false);
+                        }
+                        single = Some(rnode);
+                    }
+                }
+            }
+            match single {
+                Some(rnode) => rnode,
+                None => return Ok(false),
+            }
         };
-        self.write_value_as_number(value)
+        match single {
+            RNode::Value(value) => self.write_value_as_number(value),
+            RNode::OwnValue(value) => self.write_value_as_number(&value),
+            RNode::Plain(Node::Value(value)) => self.write_value_as_number(value),
+            _ => Ok(false),
+        }
     }
 
-    /// Numeric coercion for mixed-content slices where `Element` nodes should be ignored.
+    /// Numeric coercion for mixed-content slices where element nodes should be ignored.
     ///
     /// We treat the slice as numeric only when:
     /// - there is exactly one non-empty `Value(..)` node, and
     /// - there is no non-empty `Text`/`CData`, and
     /// - there are no `CharRef`/`EntityRef` nodes.
-    ///
-    /// This lets `<X> <Sub/> 42 </X>` still coerce to a number for `#text` if the IR was
-    /// represented as a single `Value(..)` surrounded by optional empties.
-    fn try_write_as_number_skip_elements(&mut self, nodes: &[Node<'_>]) -> Result<bool> {
-        let mut single: Option<&BinXmlValue<'_>> = None;
+    fn try_write_as_number_skip_elements(
+        &mut self,
+        scope: Scope<'_, '_>,
+        nodes: &[Node<'_>],
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<bool> {
+        let mut single: Option<RNode<'_, '_>> = None;
 
         for node in nodes {
-            match node {
-                Node::Element(_) => continue,
-                Node::Text(text) | Node::CData(text) => {
+            let rnode = scope.resolve(node, ovr)?;
+            match &rnode {
+                RNode::Skip | RNode::Frag(_) | RNode::Nested(_) => continue,
+                RNode::Text(text) => {
                     if !text.is_empty() {
                         return Ok(false);
                     }
                 }
-                Node::Value(value) => {
+                RNode::Value(value) => {
                     if is_optional_empty(value) {
                         continue;
                     }
                     if single.is_some() {
                         return Ok(false);
                     }
-                    single = Some(value);
+                    single = Some(rnode);
                 }
-                Node::CharRef(_) | Node::EntityRef(_) => return Ok(false),
-                Node::PITarget(_) | Node::PIData(_) => {}
-                Node::Placeholder(_) => {
-                    return Err(EvtxError::FailedToCreateRecordModel(
-                        "unresolved placeholder in tree",
-                    ));
+                RNode::OwnValue(value) => {
+                    if is_optional_empty(value) {
+                        continue;
+                    }
+                    if single.is_some() {
+                        return Ok(false);
+                    }
+                    single = Some(rnode);
                 }
+                RNode::Plain(node) => match node {
+                    Node::Element(_) => continue,
+                    Node::Text(text) | Node::CData(text) => {
+                        if !text.is_empty() {
+                            return Ok(false);
+                        }
+                    }
+                    Node::Value(value) => {
+                        if is_optional_empty(value) {
+                            continue;
+                        }
+                        if single.is_some() {
+                            return Ok(false);
+                        }
+                        single = Some(rnode);
+                    }
+                    Node::CharRef(_) | Node::EntityRef(_) => return Ok(false),
+                    Node::PITarget(_) | Node::PIData(_) => {}
+                    Node::Placeholder(_) => {
+                        return Err(EvtxError::FailedToCreateRecordModel(
+                            "unresolved placeholder in tree",
+                        ));
+                    }
+                },
             }
         }
 
-        let Some(value) = single else {
-            return Ok(false);
-        };
-
-        self.write_value_as_number(value)
+        match single {
+            Some(RNode::Value(value)) => self.write_value_as_number(value),
+            Some(RNode::OwnValue(value)) => self.write_value_as_number(&value),
+            Some(RNode::Plain(Node::Value(value))) => self.write_value_as_number(value),
+            _ => Ok(false),
+        }
     }
 
     /// Emit an `i64` JSON token using the formatter.
@@ -479,105 +587,65 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     /// Render `nodes` as a JSON string (always quoted).
     fn render_text_to_json_string(
         &mut self,
+        scope: Scope<'_, '_>,
         nodes: &[Node<'_>],
         skip_elements: bool,
+        ovr: Option<&Ovr<'_>>,
     ) -> Result<()> {
         self.write_byte(b'\"')?;
-        self.write_json_text_content(nodes, skip_elements)?;
+        self.write_json_text_content(scope, nodes, skip_elements, ovr)?;
         self.write_byte(b'\"')
     }
 
     /// Render a node slice as a JSON value, applying numeric/bool coercion where possible.
-    ///
-    /// This is the common "leaf" renderer for element bodies and attribute values.
-    /// `skip_elements` selects the mixed-content `#text` mode where `Element` nodes are
-    /// ignored (and numeric coercion uses the skip-elements rules).
     fn render_content_as_json_value(
         &mut self,
+        scope: Scope<'_, '_>,
         nodes: &[Node<'_>],
         skip_elements: bool,
+        ovr: Option<&Ovr<'_>>,
     ) -> Result<()> {
         let wrote_number = if skip_elements {
-            self.try_write_as_number_skip_elements(nodes)?
+            self.try_write_as_number_skip_elements(scope, nodes, ovr)?
         } else {
-            self.try_write_as_number(nodes)?
+            self.try_write_as_number(scope, nodes, ovr)?
         };
         if wrote_number {
             return Ok(());
         }
-        self.render_text_to_json_string(nodes, skip_elements)
-    }
-
-    /// Returns true if `nodes` contains any semantically non-empty "text-like" content.
-    ///
-    /// This is *not* the same as `!nodes.is_empty()`:
-    /// - Empty `Text`/`CData` nodes are ignored.
-    /// - "Optional empty" typed substitutions are ignored (see `is_optional_empty`).
-    /// - `CharRef` / `EntityRef` always count as content, even if they might resolve to
-    ///   whitespace, because they are explicit in the source.
-    fn has_non_empty_text_content(&self, nodes: &[Node<'_>]) -> bool {
-        for node in nodes {
-            match node {
-                Node::Text(text) | Node::CData(text) => {
-                    if !text.is_empty() {
-                        return true;
-                    }
-                }
-                Node::Value(value) => {
-                    if !is_optional_empty(value) {
-                        return true;
-                    }
-                }
-                Node::CharRef(_) | Node::EntityRef(_) => return true,
-                _ => {}
-            }
-        }
-        false
-    }
-
-    /// Quick attribute presence flags.
-    ///
-    /// Returns `(has_any_attrs, has_any_non_empty_attr_value)`.
-    ///
-    /// This distinction matters because we treat "attribute exists but is empty" as
-    /// ignorable for deciding between `null` vs `{ "#attributes": ... }`.
-    fn attr_flags(&self, attrs: &[Attr<'_>]) -> (bool, bool) {
-        if attrs.is_empty() {
-            return (false, false);
-        }
-        for attr in attrs {
-            if self.has_non_empty_text_content(&attr.value) {
-                return (true, true);
-            }
-        }
-        (true, false)
+        self.render_text_to_json_string(scope, nodes, skip_elements, ovr)
     }
 
     /// Emit a `"#attributes": { ... }` object into the current element object.
     ///
     /// Only attributes with non-empty values are emitted.
-    ///
-    /// Returns `true` if anything was written (used to drive comma placement).
-    fn render_attributes_object(&mut self, attrs: &[Attr<'_>]) -> Result<bool> {
-        let (_has_any, has_text) = self.attr_flags(attrs);
+    fn render_attributes_object(
+        &mut self,
+        scope: Scope<'_, '_>,
+        attrs: &[Attr<'_>],
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<bool> {
+        let (_has_any, has_text) = attr_flags(&scope, attrs, ovr);
         if !has_text {
             return Ok(false);
         }
         self.write_bytes(b"\"#attributes\":{")?;
-        let wrote_any = self.render_attributes_object_body(attrs)?;
+        let wrote_any = self.render_attributes_object_body(scope, attrs, ovr)?;
         self.write_byte(b'}')?;
         Ok(wrote_any)
     }
 
     /// Emit `{ ... }` attribute members without the outer wrapper.
-    ///
-    /// This is used for the legacy sibling-attributes mode where the key is
-    /// `<Element>_attributes` instead of `#attributes`.
-    fn render_attributes_object_body(&mut self, attrs: &[Attr<'_>]) -> Result<bool> {
+    fn render_attributes_object_body(
+        &mut self,
+        scope: Scope<'_, '_>,
+        attrs: &[Attr<'_>],
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<bool> {
         let mut wrote_any = false;
         let mut first = true;
         for attr in attrs {
-            if !self.has_non_empty_text_content(&attr.value) {
+            if !has_non_empty_text_content(&scope, &attr.value, ovr) {
                 continue;
             }
             if !first {
@@ -588,32 +656,26 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
             self.write_byte(b'\"')?;
             self.write_name(attr.name.as_str())?;
             self.write_bytes(b"\":")?;
-            if self.try_write_as_number(&attr.value)? {
+            if self.try_write_as_number(scope, &attr.value, ovr)? {
                 continue;
             }
-            self.render_text_to_json_string(&attr.value, false)?;
+            self.render_text_to_json_string(scope, &attr.value, false, ovr)?;
         }
         Ok(wrote_any)
     }
 
-    /// Emit `<ElementName>_attributes` for the provided element into the current object.
-    ///
-    /// Returns `true` if anything was written.
-    ///
-    /// Example (element name `Header`, suffix `2`):
-    ///
-    /// ```text
-    /// "Header_2_attributes": { ... }
-    /// ```
+    /// Emit `<ElementName>[_N]_attributes` for the provided element into the current object.
     fn render_separate_attributes_for_element(
         &mut self,
+        scope: Scope<'_, '_>,
         element: &Element<'_>,
         suffix: u16,
+        ovr: Option<&Ovr<'_>>,
     ) -> Result<bool> {
         if element.attrs.is_empty() {
             return Ok(false);
         }
-        let (_has_any, has_text) = self.attr_flags(&element.attrs);
+        let (_has_any, has_text) = attr_flags(&scope, &element.attrs, ovr);
         if !has_text {
             return Ok(false);
         }
@@ -628,7 +690,7 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                 .map_err(EvtxError::from)?;
         }
         self.write_bytes(b"_attributes\":{")?;
-        let wrote_any = self.render_attributes_object_body(&element.attrs)?;
+        let wrote_any = self.render_attributes_object_body(scope, &element.attrs, ovr)?;
         self.write_byte(b'}')?;
         Ok(wrote_any)
     }
@@ -637,21 +699,94 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     ///
     /// The empty case is intentionally `""` (empty string) rather than `null` to match
     /// established EVTX JSON output expectations.
-    ///
-    /// Example:
-    /// - `<Data/>` → `""`
-    /// - `<Data>42</Data>` (typed substitution) → `42` (number)
-    /// - `<Data><X>y</X></Data>` → `{ "X": "y" }`
-    fn render_data_element_value(&mut self, element: &'a Element<'a>) -> Result<()> {
-        if !self.has_non_empty_text_content(&element.children) && !element.has_element_child {
+    fn render_data_element_value(
+        &mut self,
+        scope: Scope<'_, '_>,
+        element: &Element<'_>,
+        ovr: Option<&Ovr<'_>>,
+    ) -> Result<()> {
+        if self.try_write_leaf_value(scope, element, ovr, true)? {
+            return Ok(());
+        }
+        let (has_text, has_element_child) = content_layout(&scope, element, ovr);
+
+        if !has_text && !has_element_child {
             return self.write_bytes(b"\"\"");
         }
 
-        if element.has_element_child {
-            self.write_element_body_json(element, false, true)
+        if has_element_child {
+            self.write_element_body_json(scope, element, ovr, false, true, has_text)
         } else {
-            self.render_content_as_json_value(&element.children, false)
+            self.render_content_as_json_value(scope, &element.children, false, ovr)
         }
+    }
+
+    /// Fast path for the dominant leaf shape: one child node, no element
+    /// children. Resolves the child once and writes the JSON value directly.
+    ///
+    /// Returns `false` (nothing written) for shapes that need the general path.
+    /// `empty_as_string` selects the `Data`-element convention (`""`) over `null`.
+    fn try_write_leaf_value(
+        &mut self,
+        scope: Scope<'_, '_>,
+        element: &Element<'_>,
+        ovr: Option<&Ovr<'_>>,
+        empty_as_string: bool,
+    ) -> Result<bool> {
+        if element.has_element_child || element.children.len() != 1 {
+            return Ok(false);
+        }
+        let empty: &[u8] = if empty_as_string { b"\"\"" } else { b"null" };
+        match scope.resolve(&element.children[0], ovr)? {
+            RNode::Skip => {
+                self.write_bytes(empty)?;
+                Ok(true)
+            }
+            RNode::Text(text) => {
+                self.write_leaf_text(&text, empty)?;
+                Ok(true)
+            }
+            RNode::Value(value) => {
+                self.write_leaf_value(value, empty)?;
+                Ok(true)
+            }
+            RNode::OwnValue(value) => {
+                self.write_leaf_value(&value, empty)?;
+                Ok(true)
+            }
+            RNode::Plain(Node::Text(text)) => {
+                self.write_leaf_text(text, empty)?;
+                Ok(true)
+            }
+            RNode::Plain(Node::Value(value)) => {
+                self.write_leaf_value(value, empty)?;
+                Ok(true)
+            }
+            // Element-like, CData/CharRef/EntityRef/PI, and error shapes take
+            // the general path.
+            _ => Ok(false),
+        }
+    }
+
+    fn write_leaf_text(&mut self, text: &Text<'_>, empty: &[u8]) -> Result<()> {
+        if text.is_empty() {
+            return self.write_bytes(empty);
+        }
+        self.write_byte(b'\"')?;
+        self.write_json_text(text)?;
+        self.write_byte(b'\"')
+    }
+
+    fn write_leaf_value(&mut self, value: &BinXmlValue<'_>, empty: &[u8]) -> Result<()> {
+        if is_optional_empty(value) {
+            return self.write_bytes(empty);
+        }
+        if self.write_value_as_number(value)? {
+            return Ok(());
+        }
+        self.write_byte(b'\"')?;
+        self.values.write_json_value_text(self.writer, value)?;
+        self.write_byte(b'\"')
     }
 
     /// Render an element value when attributes are handled elsewhere (separate-attrs mode).
@@ -662,121 +797,103 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
     /// - any child elements → object
     fn write_element_value_no_attrs(
         &mut self,
-        element: &'a Element<'a>,
+        scope: Scope<'_, '_>,
+        element: &Element<'_>,
+        ovr: Option<&Ovr<'_>>,
         child_is_container: bool,
     ) -> Result<()> {
-        let has_text = self.has_non_empty_text_content(&element.children);
-        let has_element_child = element.has_element_child;
+        if self.try_write_leaf_value(scope, element, ovr, false)? {
+            return Ok(());
+        }
+        let (has_text, has_element_child) = content_layout(&scope, element, ovr);
 
         if !has_element_child && !has_text {
             self.write_bytes(b"null")
         } else if !has_element_child {
-            self.render_content_as_json_value(&element.children, false)
+            self.render_content_as_json_value(scope, &element.children, false, ovr)
         } else {
-            self.write_element_body_json(element, child_is_container, true)
+            self.write_element_body_json(scope, element, ovr, child_is_container, true, has_text)
         }
     }
 
     /// Render an element value in the default mode (attributes inline under `#attributes`).
-    ///
-    /// This decides between scalar/object/null and delegates to [`write_element_body_json`]
-    /// when object form is required.
     fn write_element_value(
         &mut self,
-        element: &'a Element<'a>,
+        scope: Scope<'_, '_>,
+        element: &Element<'_>,
+        ovr: Option<&Ovr<'_>>,
         child_is_container: bool,
     ) -> Result<()> {
-        let has_text = self.has_non_empty_text_content(&element.children);
-        let (_has_attrs_any, has_attrs_text) = self.attr_flags(&element.attrs);
-        let has_element_child = element.has_element_child;
+        if element.attrs.is_empty() && self.try_write_leaf_value(scope, element, ovr, false)? {
+            return Ok(());
+        }
+        let (has_text, has_element_child) = content_layout(&scope, element, ovr);
+        let (_has_attrs_any, has_attrs_text) = attr_flags(&scope, &element.attrs, ovr);
 
         if !has_element_child && !has_text && !has_attrs_text {
             self.write_bytes(b"null")
         } else if !has_element_child && !has_attrs_text {
-            self.render_content_as_json_value(&element.children, false)
+            self.render_content_as_json_value(scope, &element.children, false, ovr)
         } else {
-            self.write_element_body_json(element, child_is_container, false)
+            self.write_element_body_json(scope, element, ovr, child_is_container, false, has_text)
         }
     }
 
     /// Render an element in "object form".
     ///
-    /// This is the core routine that explains most of the complexity in this module.
-    /// It performs a single pass over `element.children` while maintaining a few small
-    /// pieces of scan state:
-    ///
-    /// - **Attributes**: optionally emit `#attributes` first.
-    /// - **Mixed content**: if the element has non-element text/value nodes, emit `#text`.
-    /// - **`EventData`/`UserData`**: detect "named data" vs "positional data" and render:
-    ///   - named: `"Foo": <value>` (flattened)
-    ///   - positional: `"Data": { "#text": [ ... ] }` (grouped)
-    /// - **Duplicate sibling names**: track counts in a fixed scan table to append `_N`.
-    ///
-    /// Example (`EventData` positional):
-    ///
-    /// ```xml
-    /// <EventData>
-    ///   <Data>one</Data>
-    ///   <Data>two</Data>
-    /// </EventData>
-    /// ```
-    ///
-    /// becomes:
-    ///
-    /// ```json
-    /// { "EventData": { "Data": { "#text": ["one","two"] } } }
-    /// ```
-    ///
-    /// Example (`EventData` named):
-    ///
-    /// ```xml
-    /// <EventData>
-    ///   <Data Name="Foo">bar</Data>
-    ///   <Data Name="Baz">qux</Data>
-    /// </EventData>
-    /// ```
-    ///
-    /// becomes:
-    ///
-    /// ```json
-    /// { "EventData": { "Foo": "bar", "Baz": "qux" } }
-    /// ```
-    fn write_element_body_json(
+    /// This is the core routine: it emits `#attributes`, `#text`, the
+    /// `EventData`/`UserData` special forms, and suffixed child keys. Array
+    /// expansion is applied per child element; each copy behaves exactly like a
+    /// separate sibling (suffix counting, positional `Data` items, named pairs).
+    fn write_element_body_json<'t, 'a>(
         &mut self,
-        element: &Element<'_>,
+        scope: Scope<'t, 'a>,
+        element: &'t Element<'a>,
+        ovr: Option<&Ovr<'_>>,
         in_data_container: bool,
         omit_attributes: bool,
+        has_text: bool,
     ) -> Result<()> {
-        let arena = self.arena;
-
         // Detect whether `EventData`/`UserData` should be flattened into Name-keyed pairs.
         //
-        // Important nuance: we only need to see *one* non-empty `Data[@Name]` to select
-        // the named/flattened form. Once selected, unnamed `Data` nodes are skipped.
-        let should_flatten_named_data = if in_data_container {
-            element.children.iter().any(|node| {
-                let Node::Element(child_id) = node else {
-                    return false;
+        // Important nuance: we only need to see *one* non-empty `Data[@Name]` (on any
+        // expansion copy) to select the named/flattened form. Once selected, unnamed
+        // `Data` nodes are skipped.
+        let mut should_flatten_named_data = false;
+        if in_data_container {
+            for node in &element.children {
+                let Some(ce) = resolve_child_element(scope, node, ovr)? else {
+                    continue;
                 };
-                let child = arena.get(*child_id).expect("invalid element id");
-                if !is_data_element(child.name.as_str()) {
-                    return false;
+                if !is_data_element(ce.element.name.as_str()) {
+                    continue;
                 }
-                let Some(name_nodes) = Self::get_name_attr_nodes(child) else {
-                    return false;
+                let Some(name_nodes) = get_name_attr_nodes(ce.element) else {
+                    continue;
                 };
-                self.has_non_empty_text_content(name_nodes)
-            })
-        } else {
-            false
-        };
+                let child_scope = ce.scope;
+                let has_named =
+                    if ce.expand && child_scope.ctx.as_ref().is_some_and(|ctx| ctx.may_expand) {
+                        expansion_any(&child_scope, ce.element, ovr, &mut |copy_ovr| {
+                            Ok(has_non_empty_text_content(
+                                &child_scope,
+                                name_nodes,
+                                copy_ovr,
+                            ))
+                        })?
+                    } else {
+                        let copy_ovr = if ce.expand { ovr } else { None };
+                        has_non_empty_text_content(&child_scope, name_nodes, copy_ovr)
+                    };
+                if has_named {
+                    should_flatten_named_data = true;
+                    break;
+                }
+            }
+        }
 
         // Count child element names on the fly so we can apply legacy `_N` suffixes
         // (Header, Header_1, Header_2, ...).
-        //
-        // Why a fixed array?
-        // - Avoids per-record heap allocations (common hot path).
-        // - We expect a small number of unique sibling names for typical Event XML.
         let mut name_counts: [Option<NameCount<'_>>; MAX_UNIQUE_NAMES] =
             std::array::from_fn(|_| None);
         let mut num_unique = 0usize;
@@ -786,67 +903,89 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
 
         if !omit_attributes
             && !element.attrs.is_empty()
-            && self.render_attributes_object(&element.attrs)?
+            && self.render_attributes_object(scope, &element.attrs, ovr)?
         {
             wrote_any = true;
         }
 
         // If we're emitting an object, any non-element content becomes `#text`.
-        //
-        // This follows the common "mixed content" convention used by XML→JSON mappings:
-        // element children become keys, and free text is captured under a reserved key.
-        if self.has_non_empty_text_content(&element.children) {
+        if has_text {
             if wrote_any {
                 self.write_byte(b',')?;
             }
             wrote_any = true;
             self.write_bytes(b"\"#text\":")?;
-            self.render_content_as_json_value(&element.children, true)?;
+            self.render_content_as_json_value(scope, &element.children, true, ovr)?;
         }
 
-        // Pre-count positional `Data` nodes for the non-flattened container case.
-        //
-        // We only emit `"Data": { "#text": ... }` once, so we need to know whether it
-        // should be an array and (if so) how many items it will contain.
+        // Pre-count positional `Data` nodes (including expansion copies) for the
+        // non-flattened container case: we only emit `"Data": { "#text": ... }` once,
+        // and its scalar-vs-array shape depends on the total count.
         let positional_data_count = if in_data_container && !should_flatten_named_data {
-            element
-                .children
-                .iter()
-                .filter(|node| {
-                    let Node::Element(child_id) = node else {
-                        return false;
-                    };
-                    let child = arena.get(*child_id).expect("invalid element id");
-                    is_data_element(child.name.as_str())
-                })
-                .count()
+            let mut count = 0usize;
+            for node in &element.children {
+                let Some(ce) = resolve_child_element(scope, node, ovr)? else {
+                    continue;
+                };
+                if !is_data_element(ce.element.name.as_str()) {
+                    continue;
+                }
+                count += if ce.expand {
+                    count_expansion_copies(&ce.scope, ce.element, ovr)
+                } else {
+                    1
+                };
+            }
+            count
         } else {
             0
         };
         let mut positional_data_emitted = false;
 
         for node in &element.children {
-            let Node::Element(child_id) = node else {
+            let Some(ce) = resolve_child_element(scope, node, ovr)? else {
                 continue;
             };
-
-            let child = arena.get(*child_id).expect("invalid element id");
+            let child = ce.element;
+            let child_scope = ce.scope;
+            // Expansion only applies under a template ctx with arrays present.
+            let expansion = if ce.expand {
+                child_scope
+                    .ctx
+                    .as_ref()
+                    .and_then(|ctx| find_expansion(child, ctx, ovr))
+            } else {
+                None
+            };
+            let direct_ovr = if ce.expand { ovr } else { None };
 
             // EventData/UserData special-case.
             if in_data_container && is_data_element(child.name.as_str()) {
                 if should_flatten_named_data {
-                    let Some(name_nodes) = Self::get_name_attr_nodes(child) else {
+                    let Some(name_nodes) = get_name_attr_nodes(child) else {
                         continue;
                     };
-                    if !self.has_non_empty_text_content(name_nodes) {
-                        continue;
+                    if expansion.is_none() {
+                        self.emit_named_data_copy(
+                            child_scope,
+                            child,
+                            name_nodes,
+                            direct_ovr,
+                            &mut wrote_any,
+                        )?;
+                    } else {
+                        let emitter = &mut *self;
+                        let wrote_any_ref = &mut wrote_any;
+                        for_each_expansion(&child_scope, child, ovr, &mut |copy_ovr| {
+                            emitter.emit_named_data_copy(
+                                child_scope,
+                                child,
+                                name_nodes,
+                                copy_ovr,
+                                wrote_any_ref,
+                            )
+                        })?;
                     }
-                    if wrote_any {
-                        self.write_byte(b',')?;
-                    }
-                    wrote_any = true;
-                    self.write_json_key_from_nodes(name_nodes)?;
-                    self.render_data_element_value(child)?;
                 } else if !positional_data_emitted && positional_data_count > 0 {
                     if wrote_any {
                         self.write_byte(b',')?;
@@ -857,23 +996,43 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                     self.write_bytes(b"\"Data\":{")?;
                     self.write_bytes(b"\"#text\":")?;
                     if positional_data_count == 1 {
-                        self.render_data_element_value(child)?;
+                        // A single copy: expansion cannot apply (it implies >1 copies).
+                        self.render_data_element_value(child_scope, child, direct_ovr)?;
                     } else {
                         self.write_byte(b'[')?;
                         let mut first = true;
                         for node2 in &element.children {
-                            let Node::Element(candidate_id) = node2 else {
+                            let Some(ce2) = resolve_child_element(scope, node2, ovr)? else {
                                 continue;
                             };
-                            let candidate = arena.get(*candidate_id).expect("invalid element id");
-                            if !is_data_element(candidate.name.as_str()) {
+                            if !is_data_element(ce2.element.name.as_str()) {
                                 continue;
                             }
-                            if !first {
-                                self.write_byte(b',')?;
+                            let candidate = ce2.element;
+                            let candidate_scope = ce2.scope;
+                            let item_ovr = if ce2.expand { ovr } else { None };
+                            let emitter = &mut *self;
+                            let mut emit_item = |copy_ovr: Option<&Ovr<'_>>| -> Result<()> {
+                                if !first {
+                                    emitter.write_byte(b',')?;
+                                }
+                                first = false;
+                                emitter.render_data_element_value(
+                                    candidate_scope,
+                                    candidate,
+                                    copy_ovr,
+                                )
+                            };
+                            if ce2.expand {
+                                for_each_expansion(
+                                    &candidate_scope,
+                                    candidate,
+                                    ovr,
+                                    &mut emit_item,
+                                )?;
+                            } else {
+                                emit_item(item_ovr)?;
                             }
-                            first = false;
-                            self.render_data_element_value(candidate)?;
                         }
                         self.write_byte(b']')?;
                     }
@@ -882,58 +1041,31 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
                 continue;
             }
 
-            // Normal child element: apply `_N` suffixes.
-            let key = NameKey::from_name(&child.name);
-            let mut suffix: u16 = 0;
-            let mut found = false;
-
-            for nc_opt in name_counts.iter_mut().take(num_unique) {
-                let Some(nc) = nc_opt.as_mut() else {
-                    continue;
-                };
-                if nc.key.eql(key) {
-                    suffix = nc.emitted_count;
-                    nc.emitted_count = nc.emitted_count.saturating_add(1);
-                    found = true;
-                    break;
-                }
-            }
-
-            if !found && num_unique < MAX_UNIQUE_NAMES {
-                name_counts[num_unique] = Some(NameCount {
-                    key,
-                    emitted_count: 1,
-                });
-                num_unique += 1;
-                suffix = 0;
-            }
-
-            if wrote_any {
-                self.write_byte(b',')?;
-            }
-            wrote_any = true;
-
-            if self.separate_json_attributes {
-                // Emit `<name>_attributes` sibling before the value, matching legacy output.
-                let wrote_attrs = self.render_separate_attributes_for_element(child, suffix)?;
-
-                // Omit `<name>: null` when the element only contains attributes.
-                let child_has_value =
-                    child.has_element_child || self.has_non_empty_text_content(&child.children);
-                let write_value = child_has_value || !wrote_attrs;
-
-                if wrote_attrs && write_value {
-                    self.write_byte(b',')?;
-                }
-                if write_value {
-                    self.write_json_key_from_name_with_suffix(&child.name, suffix)?;
-                    let child_is_container = is_data_container(child.name.as_str());
-                    self.write_element_value_no_attrs(child, child_is_container)?;
-                }
+            // Normal child element: apply `_N` suffixes, once per expansion copy.
+            if expansion.is_none() {
+                self.emit_normal_child(
+                    child_scope,
+                    child,
+                    direct_ovr,
+                    &mut name_counts,
+                    &mut num_unique,
+                    &mut wrote_any,
+                )?;
             } else {
-                self.write_json_key_from_name_with_suffix(&child.name, suffix)?;
-                let child_is_container = is_data_container(child.name.as_str());
-                self.write_element_value(child, child_is_container)?;
+                let emitter = &mut *self;
+                let name_counts_ref = &mut name_counts;
+                let num_unique_ref = &mut num_unique;
+                let wrote_any_ref = &mut wrote_any;
+                for_each_expansion(&child_scope, child, ovr, &mut |copy_ovr| {
+                    emitter.emit_normal_child(
+                        child_scope,
+                        child,
+                        copy_ovr,
+                        name_counts_ref,
+                        num_unique_ref,
+                        wrote_any_ref,
+                    )
+                })?;
             }
         }
 
@@ -941,21 +1073,90 @@ impl<'w, 'a, W: WriteExt> JsonEmitter<'w, 'a, W> {
         Ok(())
     }
 
-    /// Return the raw node slice for `Data[@Name]` if present.
-    ///
-    /// We keep this as a `&[Node]` (rather than resolving to a `String`) to avoid
-    /// allocations; the same JSON-escaping rules that apply to text content are used
-    /// when the attribute is turned into a JSON key.
-    ///
-    /// Example:
-    /// - `<Data Name="Foo">bar</Data>` → returns nodes representing `"Foo"`
-    fn get_name_attr_nodes<'b>(element: &'b Element<'a>) -> Option<&'b [Node<'a>]> {
-        for attr in &element.attrs {
-            if attr.name.as_str() == "Name" {
-                return Some(&attr.value);
+    /// Emit one `"<Name>": <value>` pair for a named `Data` element copy
+    /// (skipped when this copy's `Name` is empty).
+    fn emit_named_data_copy(
+        &mut self,
+        scope: Scope<'_, '_>,
+        child: &Element<'_>,
+        name_nodes: &[Node<'_>],
+        copy_ovr: Option<&Ovr<'_>>,
+        wrote_any: &mut bool,
+    ) -> Result<()> {
+        if !has_non_empty_text_content(&scope, name_nodes, copy_ovr) {
+            return Ok(());
+        }
+        if *wrote_any {
+            self.write_byte(b',')?;
+        }
+        *wrote_any = true;
+        self.write_json_key_from_nodes(scope, name_nodes, copy_ovr)?;
+        self.render_data_element_value(scope, child, copy_ovr)
+    }
+
+    /// Emit one suffixed `"<name>[_N]": <value>` member for a child element copy.
+    fn emit_normal_child<'t, 'a>(
+        &mut self,
+        scope: Scope<'t, 'a>,
+        child: &'t Element<'a>,
+        copy_ovr: Option<&Ovr<'_>>,
+        name_counts: &mut [Option<NameCount<'t>>; MAX_UNIQUE_NAMES],
+        num_unique: &mut usize,
+        wrote_any: &mut bool,
+    ) -> Result<()> {
+        let key = NameKey::from_name(&child.name);
+        let mut suffix: u16 = 0;
+        let mut found = false;
+
+        for nc_opt in name_counts.iter_mut().take(*num_unique) {
+            let Some(nc) = nc_opt.as_mut() else {
+                continue;
+            };
+            if nc.key.eql(key) {
+                suffix = nc.emitted_count;
+                nc.emitted_count = nc.emitted_count.saturating_add(1);
+                found = true;
+                break;
             }
         }
-        None
+
+        if !found && *num_unique < MAX_UNIQUE_NAMES {
+            name_counts[*num_unique] = Some(NameCount {
+                key,
+                emitted_count: 1,
+            });
+            *num_unique += 1;
+            suffix = 0;
+        }
+
+        if *wrote_any {
+            self.write_byte(b',')?;
+        }
+        *wrote_any = true;
+
+        let child_is_container = is_data_container(child.name.as_str());
+        if self.separate_json_attributes {
+            // Emit `<name>_attributes` sibling before the value, matching legacy output.
+            let wrote_attrs =
+                self.render_separate_attributes_for_element(scope, child, suffix, copy_ovr)?;
+
+            // Omit `<name>: null` when the element only contains attributes.
+            let (has_text, has_element_child) = content_layout(&scope, child, copy_ovr);
+            let child_has_value = has_element_child || has_text;
+            let write_value = child_has_value || !wrote_attrs;
+
+            if wrote_attrs && write_value {
+                self.write_byte(b',')?;
+            }
+            if write_value {
+                self.write_json_key_from_name_with_suffix(&child.name, suffix)?;
+                self.write_element_value_no_attrs(scope, child, copy_ovr, child_is_container)?;
+            }
+        } else {
+            self.write_json_key_from_name_with_suffix(&child.name, suffix)?;
+            self.write_element_value(scope, child, copy_ovr, child_is_container)?;
+        }
+        Ok(())
     }
 }
 
@@ -966,8 +1167,8 @@ pub(crate) fn bench_write_json_text_content<'a, W: WriteExt>(
     arena: &'a IrArena<'a>,
     nodes: &[Node<'a>],
 ) -> Result<()> {
-    let mut emitter = JsonEmitter::new(writer, arena, false);
-    emitter.write_json_text_content(nodes, false)?;
+    let mut emitter = JsonEmitter::new(writer, false);
+    emitter.write_json_text_content(Scope::materialized(arena), nodes, false, None)?;
     emitter.flush()
 }
 
@@ -978,6 +1179,3 @@ fn is_data_container(name: &str) -> bool {
 fn is_data_element(name: &str) -> bool {
     name == "Data"
 }
-
-// NOTE: Array substitution expansion is handled during template instantiation
-// (`binxml::ir::clone_and_resolve`), not in the JSON renderer.
