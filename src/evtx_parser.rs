@@ -4,8 +4,6 @@ use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
 use bumpalo::Bump;
-#[cfg(feature = "multithreading")]
-use rayon::prelude::*;
 
 use log::trace;
 #[cfg(not(feature = "multithreading"))]
@@ -18,6 +16,7 @@ use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use crate::EvtxRecord;
 use encoding::EncodingRef;
 use encoding::all::WINDOWS_1252;
+#[cfg(feature = "multithreading")]
 use std::cmp::max;
 use std::fmt;
 use std::fmt::Debug;
@@ -27,6 +26,42 @@ use std::sync::Arc;
 
 pub const EVTX_CHUNK_SIZE: usize = 65536;
 pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
+
+/// One parsed-and-serialized chunk's results plus its (reusable) bump arena.
+struct ChunkBatch<U> {
+    results: Vec<Result<U>>,
+    arena: Bump,
+}
+
+/// Parse one chunk and serialize all of its records with `f`.
+fn process_chunk<U>(
+    chunk_res: Result<EvtxChunkData>,
+    chunk_id: u64,
+    settings: Arc<ParserSettings>,
+    arena: Bump,
+    f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U>,
+) -> ChunkBatch<U> {
+    match chunk_res {
+        Err(err) => ChunkBatch {
+            results: vec![Err(err)],
+            arena,
+        },
+        Ok(mut chunk) => match chunk.parse_with_arena(settings, arena) {
+            Err(err) => ChunkBatch {
+                results: vec![Err(EvtxError::FailedToParseChunk {
+                    chunk_id,
+                    source: Box::new(err),
+                })],
+                arena: Bump::new(),
+            },
+            Ok(mut chunk_records) => {
+                let results = chunk_records.iter().map(f).collect();
+                let arena = chunk_records.into_arena();
+                ChunkBatch { results, arena }
+            }
+        },
+    }
+}
 
 // Stable shim until https://github.com/rust-lang/rust/issues/59359 is merged.
 // Taken from proposed std code.
@@ -431,88 +466,132 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
     /// Return an iterator over all the records.
     /// Records will be mapped `f`, which must produce owned data from the records.
-    pub fn serialized_records<'a, U: Send>(
+    ///
+    /// With the `multithreading` feature, chunks are processed on the rayon pool as a
+    /// bounded streaming pipeline: up to `2 * num_threads` chunks are in flight while
+    /// already-completed chunks are drained by the caller, so workers never idle behind
+    /// the (serial) consumer. Results are always yielded in chunk order.
+    #[cfg(feature = "multithreading")]
+    pub fn serialized_records<'a, U: Send + 'static>(
         &'a mut self,
-        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'a,
+        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
     ) -> impl Iterator<Item = Result<U>> + 'a {
-        struct ChunkBatch<U> {
-            results: Vec<Result<U>>,
-            arena: Bump,
-        }
-
         // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
         let chunk_settings = Arc::clone(&self.config);
 
+        let max_in_flight = num_threads * 2;
+
         // `self` is mutably borrowed from here on.
         let mut chunks = self.chunks();
-        let mut arena_pool: Vec<Bump> = (0..num_threads)
+        let mut arena_pool: Vec<Bump> = (0..max_in_flight)
             .map(|_| Bump::with_capacity(EVTX_CHUNK_SIZE))
             .collect();
 
+        // `thread::Result` so a panicking `f` propagates to the consumer thread
+        // (matching the old `par_iter().collect()` behavior) instead of hitting
+        // rayon's global handler, which aborts the process by default.
+        let (tx, rx) = std::sync::mpsc::channel::<(u64, std::thread::Result<ChunkBatch<U>>)>();
+        let mut reorder: std::collections::BTreeMap<u64, std::thread::Result<ChunkBatch<U>>> =
+            std::collections::BTreeMap::new();
+        let mut next_seq = 0u64;
+        let mut next_yield = 0u64;
+        let mut in_flight = 0usize;
+        let mut exhausted = false;
+
         let records_per_chunk = std::iter::from_fn(move || {
-            // Allocate some chunks in advance, so they can be parsed in parallel.
-            let mut chunk_of_chunks = Vec::with_capacity(num_threads);
-
-            for _ in 0..num_threads {
-                if let Some(chunk) = chunks.next() {
-                    let arena = arena_pool.pop().unwrap_or_default();
-                    chunk_of_chunks.push((chunk, arena));
-                };
+            if num_threads == 1 {
+                // Single-threaded: process inline; a cross-thread round-trip per
+                // chunk costs ~3% wall time for no benefit.
+                let chunk_res = chunks.next()?;
+                let arena = arena_pool.pop().unwrap_or_default();
+                let batch = process_chunk(
+                    chunk_res,
+                    next_seq,
+                    Arc::clone(&chunk_settings),
+                    arena,
+                    f.clone(),
+                );
+                next_seq += 1;
+                arena_pool.push(batch.arena);
+                return Some(batch.results.into_iter());
             }
-
-            // We only stop once no chunks can be allocated.
-            if chunk_of_chunks.is_empty() {
-                None
-            } else {
-                #[cfg(feature = "multithreading")]
-                let chunk_iter = chunk_of_chunks.into_par_iter();
-
-                #[cfg(not(feature = "multithreading"))]
-                let chunk_iter = chunk_of_chunks.into_iter();
-
-                // Serialize the records in each chunk.
-                let iterators: Vec<ChunkBatch<U>> = chunk_iter
-                    .enumerate()
-                    .map(|(i, (chunk_res, arena))| match chunk_res {
-                        Err(err) => ChunkBatch {
-                            results: vec![Err(err)],
-                            arena,
-                        },
-                        Ok(mut chunk) => {
-                            let chunk_records_res =
-                                chunk.parse_with_arena(chunk_settings.clone(), arena);
-
-                            match chunk_records_res {
-                                Err(err) => ChunkBatch {
-                                    results: vec![Err(EvtxError::FailedToParseChunk {
-                                        chunk_id: i as u64,
-                                        source: Box::new(err),
-                                    })],
-                                    arena: Bump::new(),
-                                },
-                                Ok(mut chunk_records) => {
-                                    let results = {
-                                        let records = chunk_records.iter();
-                                        records.map(f.clone()).collect()
-                                    };
-                                    let arena = chunk_records.into_arena();
-                                    ChunkBatch { results, arena }
-                                }
-                            }
-                        }
-                    })
-                    .collect();
-
-                let mut flattened =
-                    Vec::with_capacity(iterators.iter().map(|b| b.results.len()).sum());
-                for batch in iterators {
-                    arena_pool.push(batch.arena);
-                    flattened.extend(batch.results);
+            loop {
+                // Keep the pipeline full. Chunk allocation (I/O) stays on the
+                // consumer thread; parsing + serialization go to the rayon pool.
+                while !exhausted && in_flight < max_in_flight {
+                    let Some(chunk_res) = chunks.next() else {
+                        exhausted = true;
+                        break;
+                    };
+                    let arena = arena_pool.pop().unwrap_or_default();
+                    let seq = next_seq;
+                    next_seq += 1;
+                    in_flight += 1;
+                    let tx = tx.clone();
+                    let f = f.clone();
+                    let settings = Arc::clone(&chunk_settings);
+                    rayon::spawn(move || {
+                        let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            process_chunk(chunk_res, seq, settings, arena, f)
+                        }));
+                        // The receiver may be gone if the iterator was dropped.
+                        let _ = tx.send((seq, batch));
+                    });
                 }
 
-                Some(flattened.into_iter())
+                if let Some(batch) = reorder.remove(&next_yield) {
+                    next_yield += 1;
+                    in_flight -= 1;
+                    let batch = match batch {
+                        Ok(batch) => batch,
+                        Err(panic) => std::panic::resume_unwind(panic),
+                    };
+                    arena_pool.push(batch.arena);
+                    return Some(batch.results.into_iter());
+                }
+
+                if in_flight == 0 && exhausted {
+                    return None;
+                }
+
+                match rx.recv() {
+                    Ok((seq, batch)) => {
+                        reorder.insert(seq, batch);
+                    }
+                    Err(_) => return None,
+                }
             }
+        });
+
+        records_per_chunk.flatten()
+    }
+
+    /// Return an iterator over all the records.
+    /// Records will be mapped `f`, which must produce owned data from the records.
+    #[cfg(not(feature = "multithreading"))]
+    pub fn serialized_records<'a, U: Send + 'static>(
+        &'a mut self,
+        f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
+    ) -> impl Iterator<Item = Result<U>> + 'a {
+        let chunk_settings = Arc::clone(&self.config);
+        let mut chunks = self.chunks();
+        let mut arena_pool: Vec<Bump> = vec![Bump::with_capacity(EVTX_CHUNK_SIZE)];
+        let mut seq = 0u64;
+
+        let records_per_chunk = std::iter::from_fn(move || {
+            let chunk_res = chunks.next()?;
+            let arena = arena_pool.pop().unwrap_or_default();
+            let batch = process_chunk(
+                chunk_res,
+                seq,
+                Arc::clone(&chunk_settings),
+                arena,
+                f.clone(),
+            );
+            seq += 1;
+            arena_pool.push(batch.arena);
+            Some(batch.results.into_iter())
         });
 
         records_per_chunk.flatten()
