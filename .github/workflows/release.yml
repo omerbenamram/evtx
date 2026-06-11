@@ -10,75 +10,51 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Override version - useful to test workflows"
-        required: true
+        description: "Release tag (e.g. v0.12.0). Leave empty to use v<version> from Cargo.toml"
+        required: false
+        default: ""
+      dry_run:
+        description: "Build all matrix legs but skip release creation and asset upload"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
 
 jobs:
   create-release:
     name: create-release
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Create artifacts directory
-        run: mkdir artifacts
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Resolve release version
+        id: version
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="$GITHUB_REF_NAME"
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
           else
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+            VERSION="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
           fi
-          echo "version is: ${{ env.VERSION }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version is: $VERSION"
 
-      - name: Check for existing release
-        id: check_release
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            try {
-              const tag = process.env.VERSION || context.ref.replace('refs/tags/', '');
-              const release = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag: tag
-              });
-
-              core.setOutput('exists', 'true');
-              core.setOutput('upload_url', release.data.upload_url);
-              core.setOutput('id', release.data.id);
-              console.log(`Release for tag ${tag} already exists, using existing release.`);
-            } catch (error) {
-              core.setOutput('exists', 'false');
-              console.log(`Release for tag does not exist. Creating new release.`);
-            }
-
-      - name: Create GitHub release
-        id: release
-        if: steps.check_release.outputs.exists != 'true'
-        uses: actions/create-release@v1
+      - name: Create GitHub release (idempotent)
+        if: ${{ inputs.dry_run != true }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.VERSION }}
-          release_name: ${{ env.VERSION }}
-
-      - name: Save release upload URL to artifact
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if [ "${{ steps.check_release.outputs.exists }}" == "true" ]; then
-            echo "${{ steps.check_release.outputs.upload_url }}" > artifacts/release-upload-url
-          else
-            echo "${{ steps.release.outputs.upload_url }}" > artifacts/release-upload-url
-          fi
-
-      - name: Save version number to artifact
-        run: echo "${{ env.VERSION }}" > artifacts/release-version
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifacts
-          path: artifacts
+          gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "$VERSION" --notes ""
 
   build-release:
     name: build-release
@@ -88,6 +64,7 @@ jobs:
       TARGET_DIR: ./target
       RUST_BACKTRACE: 1
       MACOSX_DEPLOYMENT_TARGET: 10.12
+      RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
 
     strategy:
       matrix:
@@ -122,7 +99,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
@@ -155,25 +132,10 @@ jobs:
 
       - name: Install Cross toolchain (zig)
         if: matrix.build == 'macos-aarch64' || matrix.build == 'linux-aarch64'
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.11.0
-
-      - name: Get release download URL
-        uses: actions/download-artifact@v4
-        with:
-          name: artifacts
-          path: artifacts
-
-      - name: Set release upload URL and release version
-        shell: bash
-        run: |
-          release_upload_url="$(cat artifacts/release-upload-url)"
-          echo "RELEASE_UPLOAD_URL=$release_upload_url" >> $GITHUB_ENV
-          echo "release upload url: $RELEASE_UPLOAD_URL"
-          release_version="$(cat artifacts/release-version)"
-          echo "RELEASE_VERSION=$release_version" >> $GITHUB_ENV
-          echo "release version: $RELEASE_VERSION"
+          use-cache: false
 
       - name: Build PGO Binary (Linux)
         if: matrix.build == 'linux'
@@ -217,6 +179,7 @@ jobs:
             echo "ASSET_NAME=evtx_dump-${{ env.RELEASE_VERSION }}-${{ matrix.target }}" >> $GITHUB_ENV
           fi
       - name: Upload release archive
+        if: ${{ inputs.dry_run != true }}
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

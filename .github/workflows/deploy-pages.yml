@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ----------------------
       # Install build tooling
@@ -31,10 +31,10 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Install & cache wasm-pack
-        uses: jetli/wasm-pack-action@v0.4.0
-        with:
-          version: v0.13.1
+      - name: Install wasm-pack
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | sudo tar xz --strip-components=1 -C /usr/local/bin --wildcards '*/wasm-pack'
 
       # ----------------------
       # Build the WASM crate
@@ -68,7 +68,7 @@ jobs:
       # Upload artifact for Pages
       # ----------------------
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: evtx-wasm/evtx-viewer/dist
 
@@ -78,4 +78,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
