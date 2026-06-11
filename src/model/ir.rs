@@ -89,6 +89,14 @@ pub enum Node<'a> {
     Placeholder(Placeholder),
 }
 
+// Tripwire for the `ManuallyDrop` element arenas (`IrTree::arena`,
+// `binxml::ir::TemplateContent::frags`): skipping their drop glue is only
+// leak-free while node payloads own no heap memory. Adding an owning variant
+// (e.g. `String`) to `Node`/`Name` or their payloads must fail compilation
+// here rather than silently leak per record.
+const _: () =
+    assert!(!std::mem::needs_drop::<Node<'static>>() && !std::mem::needs_drop::<Name<'static>>());
+
 /// Template substitution placeholder captured during template parsing.
 ///
 /// `id` indexes into the template substitution array. `value_type` is the
