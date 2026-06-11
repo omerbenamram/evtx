@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "evtx"
-version = "0.11.2"
+version = "0.12.0"
 dependencies = [
  "ahash",
  "anyhow",

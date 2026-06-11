@@ -8,11 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.12.0 - 2026-06-11]
+
 ### Changed
-- Internal modules are no longer part of the public API: the BinXML IR builder, `model::ir` internals (tree/arena types are now `pub(crate)` or `#[doc(hidden)]`), the chunk string cache, and the `.wevtcache` wire-format types (`WevtCacheHeader`, `WevtCacheEntryHeader`, `MAGIC`, `VERSION`). Various internal constructors, accessors, and token-struct fields were demoted to `pub(crate)`.
+- Rendering/pipeline overhaul: records render directly from cached templates, chunks stream through a bounded multi-threaded pipeline, and output is written one buffer per chunk. On a 31 MB Security log this makes single-threaded JSON dumps ~18% faster, XML ~16% faster, and multi-threaded dumps more than 2× faster than 0.11.2.
+- **Breaking:** internal plumbing is no longer part of the public API: the BinXML IR builder, `model::ir` internals (tree/arena types are now `pub(crate)` or `#[doc(hidden)]`), the chunk string cache, and the `.wevtcache` wire-format types (`WevtCacheHeader`, `WevtCacheEntryHeader`, `MAGIC`, `VERSION`). Various internal constructors, accessors, and token-struct fields were demoted to `pub(crate)`. The supported surface — `EvtxParser`, `ParserSettings`, `SerializedEvtxRecord`, the chunk/record carving APIs, header types, `err`, and the `Timestamp`/`Offset`/`RecordId` re-exports — is unchanged.
+
+### Fixed
+- JSON rendering of `EventData` with many uniquely-named elements no longer risks duplicate `_N`-suffixed keys (the unique-name table now spills to the heap instead of degrading).
 
 ### Removed
-- Deleted unused public items: `FileOffset`, `err::SerializationResult`, the `unimplemented_fn!` macro, `ParserSettings::should_validate_checksums`/`get_num_threads`, `BinXmlValue::from_binxml_stream_in`/`deserialize_value_type_in`, `model::ir::Text::as_utf8`/`as_utf16`, `StringCache::len`, and `WevtCacheHeader::SIZE`/`WevtCacheEntryHeader::SIZE`.
+- **Breaking:** removed the `model::ir_visit` visitor module and deleted unused public items: `FileOffset`, `err::SerializationResult`, the `unimplemented_fn!` macro, `ParserSettings::should_validate_checksums`/`get_num_threads`, `BinXmlValue::from_binxml_stream_in`/`deserialize_value_type_in`, `model::ir::Text::as_utf8`/`as_utf16`, `StringCache::len`, and `WevtCacheHeader::SIZE`/`WevtCacheEntryHeader::SIZE`.
+
+**Full Changelog**: [`v0.11.2...v0.12.0`](https://github.com/omerbenamram/evtx/compare/v0.11.2...v0.12.0)
 
 ## [0.11.2 - 2026-03-22]
 
