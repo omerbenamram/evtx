@@ -30,7 +30,8 @@ pub use cache::{WevtCache, WevtCacheError, normalize_guid};
 pub use error::WevtTemplateExtractError;
 pub use extract::extract_wevt_template_resources;
 pub use render::{
-    render_template_definition_to_xml, render_template_definition_to_xml_with_values,
+    render_temp_to_xml, render_temp_to_xml_with_values, render_template_definition_to_xml,
+    render_template_definition_to_xml_with_values,
 };
 pub use temp::extract_temp_templates_from_wevt_blob;
 pub use types::{

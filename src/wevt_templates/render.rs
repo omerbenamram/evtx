@@ -14,6 +14,52 @@ use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{IrTree, TemplateValue};
 
+// TEMP layout: BinXML fragment starts at offset 40.
+const TEMP_BINXML_OFFSET: usize = 40;
+
+/// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
+///
+/// This is the byte-oriented counterpart of [`render_template_definition_to_xml`] for callers
+/// that hold raw `TEMP` blobs (e.g. from [`extract_temp_templates_from_wevt_blob`]).
+///
+/// [`extract_temp_templates_from_wevt_blob`]: crate::wevt_templates::extract_temp_templates_from_wevt_blob
+pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> Result<String> {
+    let binxml = temp_binxml_fragment(temp_bytes)?;
+    let bump = Bump::new();
+    let template = build_wevt_template_definition_ir(binxml, ansi_codec, &bump)?;
+    let values = placeholder_values(&template, None, &bump);
+    let instantiated = instantiate_template_definition_ir(&template, &values, &bump)?;
+    render_ir_xml(&instantiated, ansi_codec)
+}
+
+/// Render a `TEMP` entry to an XML string, applying typed substitution values.
+///
+/// The `bump` arena is used for any allocations needed while building and instantiating the
+/// template IR. Callers that already have an EVTX record/chunk context can pass
+/// `&record.chunk.arena` to avoid copying substitution values.
+pub fn render_temp_to_xml_with_values<'a>(
+    temp_bytes: &[u8],
+    substitution_values: &[BinXmlValue<'a>],
+    ansi_codec: EncodingRef,
+    bump: &'a Bump,
+) -> Result<String> {
+    let binxml = temp_binxml_fragment(temp_bytes)?;
+    let template = build_wevt_template_definition_ir(binxml, ansi_codec, bump)?;
+    let values = template_values_from_binxml_values(substitution_values);
+    let instantiated = instantiate_template_definition_ir(&template, &values, bump)?;
+    render_ir_xml(&instantiated, ansi_codec)
+}
+
+fn temp_binxml_fragment(temp_bytes: &[u8]) -> Result<&[u8]> {
+    temp_bytes.get(TEMP_BINXML_OFFSET..).ok_or_else(|| {
+        EvtxError::calculation_error(format!(
+            "TEMP too small to contain BinXML fragment header (len={}, need >= {})",
+            temp_bytes.len(),
+            TEMP_BINXML_OFFSET
+        ))
+    })
+}
+
 /// Render a parsed template definition to XML (with `{sub:idx[:name]}` placeholders).
 pub fn render_template_definition_to_xml(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
@@ -97,9 +143,7 @@ fn placeholder_values<'a>(
     out
 }
 
-fn template_values_from_binxml_values<'a>(
-    values: &[BinXmlValue<'a>],
-) -> Vec<TemplateValue<'a>> {
+fn template_values_from_binxml_values<'a>(values: &[BinXmlValue<'a>]) -> Vec<TemplateValue<'a>> {
     values
         .iter()
         .map(|v| match v {
