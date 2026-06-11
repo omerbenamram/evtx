@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.12.1 - 2026-06-11]
+
+### Added
+- Restored the byte-oriented WEVT template render helpers `wevt_templates::render_temp_to_xml` and `wevt_templates::render_temp_to_xml_with_values`, removed in 0.12.0. They are the public counterpart of `extract_temp_templates_from_wevt_blob` (which hands out raw `TEMP` bytes) and are used by [pyevtx-rs](https://github.com/omerbenamram/pyevtx-rs).
+
+**Full Changelog**: [`v0.12.0...v0.12.1`](https://github.com/omerbenamram/evtx/compare/v0.12.0...v0.12.1)
+
 ## [0.12.0 - 2026-06-11]
 
 ### Changed
