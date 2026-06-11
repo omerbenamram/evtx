@@ -12,6 +12,7 @@ pub(crate) mod value_render;
 pub use tokens::BinXmlTemplateValues;
 
 /// Benchmark-only helpers for IR rendering.
+#[doc(hidden)]
 #[cfg(feature = "bench")]
 pub mod bench {
     use crate::EvtxChunk;

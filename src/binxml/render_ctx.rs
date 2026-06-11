@@ -25,12 +25,12 @@ use crate::model::ir::{
 /// (unmaterialized) template instances.
 #[derive(Clone, Copy)]
 pub(crate) struct TplCtx<'t, 'a> {
-    pub values: &'t [TemplateValue<'a>],
-    pub frags: &'t IrArena<'a>,
-    pub nested: &'t [crate::binxml::ir::TplInstance<'a>],
+    pub(crate) values: &'t [TemplateValue<'a>],
+    pub(crate) frags: &'t IrArena<'a>,
+    pub(crate) nested: &'t [crate::binxml::ir::TplInstance<'a>],
     /// False when neither the template nor this record's values contain any
     /// expandable array — lets expansion scans collapse to one branch.
-    pub may_expand: bool,
+    pub(crate) may_expand: bool,
 }
 
 /// The arena an element lives in, plus the optional template-resolution context.
@@ -39,8 +39,8 @@ pub(crate) struct TplCtx<'t, 'a> {
 /// arena) and every node resolves to itself.
 #[derive(Clone, Copy)]
 pub(crate) struct Scope<'t, 'a> {
-    pub arena: &'t IrArena<'a>,
-    pub ctx: Option<TplCtx<'t, 'a>>,
+    pub(crate) arena: &'t IrArena<'a>,
+    pub(crate) ctx: Option<TplCtx<'t, 'a>>,
 }
 
 /// One array-expansion override frame: while rendering copy `idx` of an
@@ -323,11 +323,11 @@ pub(crate) fn count_expansion_copies(
 
 /// A child node resolved to an element, with the scope it renders under.
 pub(crate) struct ChildElement<'t, 'a> {
-    pub scope: Scope<'t, 'a>,
-    pub element: &'t Element<'a>,
+    pub(crate) scope: Scope<'t, 'a>,
+    pub(crate) element: &'t Element<'a>,
     /// Whether render-time array expansion applies. False for nested template
     /// instance roots (instantiation roots are never repeated).
-    pub expand: bool,
+    pub(crate) expand: bool,
 }
 
 /// Resolve a child node to an element (plain child, spliced fragment, or

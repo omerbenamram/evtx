@@ -83,7 +83,7 @@ impl EvtxChunkData {
     /// Parse a chunk while reusing an existing bump arena.
     ///
     /// The arena is reset before use, retaining its capacity for reuse across chunks.
-    pub fn parse_with_arena(
+    pub(crate) fn parse_with_arena(
         &mut self,
         settings: Arc<ParserSettings>,
         arena: Bump,
@@ -165,10 +165,11 @@ impl EvtxChunkData {
 pub struct EvtxChunk<'chunk> {
     pub data: &'chunk [u8],
     pub header: &'chunk EvtxChunkHeader,
-    pub string_cache: StringCache,
+    pub(crate) string_cache: StringCache,
+    #[doc(hidden)]
     pub arena: Bump,
 
-    pub settings: Arc<ParserSettings>,
+    pub(crate) settings: Arc<ParserSettings>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -185,7 +186,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     ///
     /// The provided arena is reset before use, so any previously allocated chunk-scoped
     /// data is cleared while retaining the bump capacity.
-    pub fn new_with_arena(
+    pub(crate) fn new_with_arena(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
@@ -207,7 +208,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     }
 
     /// Consume the chunk and return its bump arena for reuse.
-    pub fn into_arena(self) -> Bump {
+    pub(crate) fn into_arena(self) -> Bump {
         self.arena
     }
 

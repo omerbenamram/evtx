@@ -24,8 +24,8 @@ use std::iter::Iterator;
 use std::path::Path;
 use std::sync::Arc;
 
-pub const EVTX_CHUNK_SIZE: usize = 65536;
-pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
+pub(crate) const EVTX_CHUNK_SIZE: usize = 65536;
+pub(crate) const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
 /// One processed chunk's payload plus its (reusable) bump arena.
 struct ChunkBatch<P> {
@@ -390,7 +390,7 @@ impl ParserSettings {
     }
 
     /// Gets the current ansi codec
-    pub fn get_ansi_codec(&self) -> EncodingRef {
+    pub(crate) fn get_ansi_codec(&self) -> EncodingRef {
         self.ansi_codec
     }
 
@@ -399,20 +399,12 @@ impl ParserSettings {
         self.wevt_cache.as_ref()
     }
 
-    pub fn should_separate_json_attributes(&self) -> bool {
+    pub(crate) fn should_separate_json_attributes(&self) -> bool {
         self.separate_json_attributes
     }
 
-    pub fn should_indent(&self) -> bool {
+    pub(crate) fn should_indent(&self) -> bool {
         self.indent
-    }
-
-    pub fn should_validate_checksums(&self) -> bool {
-        self.validate_checksums
-    }
-
-    pub fn get_num_threads(&self) -> &usize {
-        &self.num_threads
     }
 }
 
@@ -525,7 +517,7 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// Find the next chunk, staring at `chunk_number` (inclusive).
     /// If a chunk is found, returns the data of the chunk or the relevant error,
     /// and the number of that chunk.
-    pub fn find_next_chunk(
+    pub(crate) fn find_next_chunk(
         &mut self,
         mut chunk_number: u64,
     ) -> Option<(Result<EvtxChunkData>, u64)> {

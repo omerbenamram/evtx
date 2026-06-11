@@ -16,7 +16,7 @@ pub struct BinXmlName {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum BinXmlNameEncoding {
+pub(crate) enum BinXmlNameEncoding {
     /// Standard EVTX encoding where names are referenced by offsets into the chunk string table.
     Offset,
     /// WEVT_TEMPLATE / CRIM 5.x encoding where names are stored inline as:
@@ -27,8 +27,8 @@ pub enum BinXmlNameEncoding {
 }
 
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Hash)]
-pub struct BinXmlNameRef {
-    pub offset: ChunkOffset,
+pub(crate) struct BinXmlNameRef {
+    pub(crate) offset: ChunkOffset,
 }
 
 impl fmt::Display for BinXmlName {
@@ -39,8 +39,8 @@ impl fmt::Display for BinXmlName {
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub(crate) struct BinXmlNameLink {
-    pub next_string: Option<ChunkOffset>,
-    pub hash: u16,
+    pub(crate) next_string: Option<ChunkOffset>,
+    pub(crate) hash: u16,
 }
 
 impl BinXmlNameLink {
@@ -58,7 +58,7 @@ impl BinXmlNameLink {
         })
     }
 
-    pub fn data_size() -> u32 {
+    pub(crate) fn data_size() -> u32 {
         6
     }
 }

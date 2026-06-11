@@ -32,7 +32,6 @@ mod string_cache;
 mod utils;
 
 pub type ChunkOffset = u32;
-pub type FileOffset = u64;
 
 // For tests, we only initialize logging once.
 #[cfg(test)]
@@ -53,7 +52,7 @@ pub fn checksum_ieee(data: &[u8]) -> u32 {
 // Rust runs the tests concurrently, so unless we synchronize logging access
 // it will crash when attempting to run `cargo test` with some logging facilities.
 #[cfg(test)]
-pub fn ensure_env_logger_initialized() {
+pub(crate) fn ensure_env_logger_initialized() {
     use std::io::Write;
 
     LOGGER_INIT.call_once(|| {

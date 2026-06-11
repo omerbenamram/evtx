@@ -27,12 +27,12 @@ pub struct Name<'a> {
 
 impl<'a> Name<'a> {
     /// Wrap a string slice as an IR name.
-    pub fn new(value: &'a str) -> Self {
+    pub(crate) fn new(value: &'a str) -> Self {
         Name { value }
     }
 
     /// Returns the name as a UTF-8 string slice.
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         self.value
     }
 }
@@ -53,36 +53,20 @@ pub enum Text<'a> {
 
 impl<'a> Text<'a> {
     /// Wrap UTF-16LE text as an IR text node.
-    pub fn utf16(value: Utf16LeSlice<'a>) -> Self {
+    pub(crate) fn utf16(value: Utf16LeSlice<'a>) -> Self {
         Text::Utf16(value)
     }
 
     /// Wrap UTF-8 text as an IR text node.
-    pub fn utf8(value: &'a str) -> Self {
+    pub(crate) fn utf8(value: &'a str) -> Self {
         Text::Utf8(value)
     }
 
     /// Returns true if the text is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         match self {
             Text::Utf16(value) => value.is_empty(),
             Text::Utf8(value) => value.is_empty(),
-        }
-    }
-
-    /// Returns a UTF-8 view when this text is already UTF-8.
-    pub fn as_utf8(&self) -> Option<&str> {
-        match self {
-            Text::Utf16(_) => None,
-            Text::Utf8(value) => Some(value),
-        }
-    }
-
-    /// Returns the UTF-16LE slice when this text is stored as UTF-16LE.
-    pub fn as_utf16(&self) -> Option<Utf16LeSlice<'_>> {
-        match self {
-            Text::Utf16(value) => Some(*value),
-            Text::Utf8(_) => None,
         }
     }
 }
@@ -112,18 +96,18 @@ pub enum Node<'a> {
 /// be omitted if empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placeholder {
-    pub id: u16,
-    pub value_type: BinXmlValueType,
-    pub optional: bool,
+    pub(crate) id: u16,
+    pub(crate) value_type: BinXmlValueType,
+    pub(crate) optional: bool,
 }
 
 /// An attribute name plus its value nodes.
 ///
 /// Attribute values are stored as a sequence of non-element nodes.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Attr<'a> {
-    pub name: Name<'a>,
-    pub value: IrVec<'a, Node<'a>>,
+pub(crate) struct Attr<'a> {
+    pub(crate) name: Name<'a>,
+    pub(crate) value: IrVec<'a, Node<'a>>,
 }
 
 /// Substitution values captured for a template instance.
@@ -131,7 +115,7 @@ pub struct Attr<'a> {
 /// `Value` stores the raw BinXML value, while `BinXmlElement` references a
 /// pre-parsed BinXML fragment that was expanded into the record arena.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TemplateValue<'a> {
+pub(crate) enum TemplateValue<'a> {
     /// A raw substitution value.
     Value(BinXmlValue<'a>),
     /// A parsed BinXML fragment stored in the record arena.
@@ -145,16 +129,16 @@ pub enum TemplateValue<'a> {
 ///
 /// `has_element_child` is tracked to speed up JSON rendering decisions.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Element<'a> {
-    pub name: Name<'a>,
-    pub attrs: IrVec<'a, Attr<'a>>,
-    pub children: IrVec<'a, Node<'a>>,
-    pub has_element_child: bool,
+pub(crate) struct Element<'a> {
+    pub(crate) name: Name<'a>,
+    pub(crate) attrs: IrVec<'a, Attr<'a>>,
+    pub(crate) children: IrVec<'a, Node<'a>>,
+    pub(crate) has_element_child: bool,
 }
 
 impl<'a> Element<'a> {
     /// Create a new element with the provided name, allocating vectors in the bump arena.
-    pub fn new_in(name: Name<'a>, arena: &'a Bump) -> Self {
+    pub(crate) fn new_in(name: Name<'a>, arena: &'a Bump) -> Self {
         Element {
             name,
             attrs: IrVec::new_in(arena),
@@ -164,7 +148,7 @@ impl<'a> Element<'a> {
     }
 
     /// Append a child node and update `has_element_child` if needed.
-    pub fn push_child(&mut self, node: Node<'a>) {
+    pub(crate) fn push_child(&mut self, node: Node<'a>) {
         if matches!(node, Node::Element(_)) {
             self.has_element_child = true;
         }
@@ -173,7 +157,7 @@ impl<'a> Element<'a> {
 }
 
 /// Bump-allocated vector type used inside IR nodes.
-pub type IrVec<'a, T> = BumpVec<'a, T>;
+pub(crate) type IrVec<'a, T> = BumpVec<'a, T>;
 
 /// Identifier for an element stored in an IR arena.
 pub type ElementId = usize;
@@ -196,36 +180,36 @@ impl<'a> IrArena<'a> {
     }
 
     /// Create a new arena with the given capacity.
-    pub fn with_capacity_in(capacity: usize, arena: &'a Bump) -> Self {
+    pub(crate) fn with_capacity_in(capacity: usize, arena: &'a Bump) -> Self {
         IrArena {
             elements: IrVec::with_capacity_in(capacity, arena),
         }
     }
 
     /// Allocate a new element and return its ID.
-    pub fn new_node(&mut self, element: Element<'a>) -> ElementId {
+    pub(crate) fn new_node(&mut self, element: Element<'a>) -> ElementId {
         let id = self.elements.len();
         self.elements.push(element);
         id
     }
 
     /// Reserve space for at least `additional` elements.
-    pub fn reserve(&mut self, additional: usize) {
+    pub(crate) fn reserve(&mut self, additional: usize) {
         self.elements.reserve(additional);
     }
 
     /// Returns the number of elements stored in the arena.
-    pub fn count(&self) -> usize {
+    pub(crate) fn count(&self) -> usize {
         self.elements.len()
     }
 
     /// Returns a reference to the element with the given ID.
-    pub fn get(&self, id: ElementId) -> Option<&Element<'a>> {
+    pub(crate) fn get(&self, id: ElementId) -> Option<&Element<'a>> {
         self.elements.get(id)
     }
 
     /// Returns a mutable reference to the element with the given ID.
-    pub fn get_mut(&mut self, id: ElementId) -> Option<&mut Element<'a>> {
+    pub(crate) fn get_mut(&mut self, id: ElementId) -> Option<&mut Element<'a>> {
         self.elements.get_mut(id)
     }
 }
@@ -236,14 +220,14 @@ impl<'a> IrArena<'a> {
 /// element references inside `Node::Element` variants point back into this
 /// arena.
 #[derive(Debug, Clone)]
-pub struct IrTree<'a> {
+pub(crate) struct IrTree<'a> {
     arena: ManuallyDrop<IrArena<'a>>,
     root: ElementId,
 }
 
 impl<'a> IrTree<'a> {
     /// Create a new IR tree from the provided arena and root ID.
-    pub fn new(arena: IrArena<'a>, root: ElementId) -> Self {
+    pub(crate) fn new(arena: IrArena<'a>, root: ElementId) -> Self {
         IrTree {
             arena: ManuallyDrop::new(arena),
             root,
@@ -251,22 +235,22 @@ impl<'a> IrTree<'a> {
     }
 
     /// Returns the root element ID.
-    pub fn root(&self) -> ElementId {
+    pub(crate) fn root(&self) -> ElementId {
         self.root
     }
 
     /// Returns a shared reference to the element arena.
-    pub fn arena(&self) -> &IrArena<'a> {
+    pub(crate) fn arena(&self) -> &IrArena<'a> {
         &self.arena
     }
 
     /// Returns the root element.
-    pub fn root_element(&self) -> &Element<'a> {
+    pub(crate) fn root_element(&self) -> &Element<'a> {
         self.element(self.root)
     }
 
     /// Returns a reference to the element for the given ID.
-    pub fn element(&self, id: ElementId) -> &Element<'a> {
+    pub(crate) fn element(&self, id: ElementId) -> &Element<'a> {
         self.arena().get(id).expect("invalid element id")
     }
 }

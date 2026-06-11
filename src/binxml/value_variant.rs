@@ -9,7 +9,6 @@ use encoding::EncodingRef;
 use jiff::Timestamp;
 use log::{trace, warn};
 use std::fmt::{self, Display};
-use std::io::Cursor;
 use std::string::ToString;
 
 /// Borrowed SID bytes (used to avoid heap allocation in the hot path).
@@ -19,7 +18,7 @@ pub struct SidRef<'a> {
 }
 
 impl<'a> SidRef<'a> {
-    pub fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes }
     }
 
@@ -226,7 +225,7 @@ impl BinXmlValueType {
     };
 
     #[inline]
-    pub fn from_u8(byte: u8) -> Option<BinXmlValueType> {
+    pub(crate) fn from_u8(byte: u8) -> Option<BinXmlValueType> {
         Self::LOOKUP[byte as usize]
     }
 }
@@ -258,32 +257,6 @@ impl<'a> BinXmlValue<'a> {
         )?;
 
         Ok(data)
-    }
-
-    pub fn from_binxml_stream_in(
-        cursor: &mut Cursor<&'a [u8]>,
-        chunk: Option<&'a EvtxChunk<'a>>,
-        size: Option<u16>,
-        ansi_codec: EncodingRef,
-        arena: &'a Bump,
-    ) -> Result<BinXmlValue<'a>> {
-        let start = cursor.position() as usize;
-        let buf = *cursor.get_ref();
-        let mut c = ByteCursor::with_pos(buf, start)?;
-        let v = Self::from_binxml_cursor_in(&mut c, chunk, size, ansi_codec, arena)?;
-        cursor.set_position(c.position());
-        Ok(v)
-    }
-
-    pub(crate) fn deserialize_value_type_cursor(
-        value_type: &BinXmlValueType,
-        cursor: &mut ByteCursor<'a>,
-        chunk: Option<&'a EvtxChunk<'a>>,
-        size: Option<u16>,
-        ansi_codec: EncodingRef,
-        arena: &'a Bump,
-    ) -> Result<BinXmlValue<'a>> {
-        Self::deserialize_value_type_cursor_in(value_type, cursor, chunk, size, ansi_codec, arena)
     }
 
     pub(crate) fn deserialize_value_type_cursor_in(
@@ -639,24 +612,6 @@ impl<'a> BinXmlValue<'a> {
         };
 
         Ok(value)
-    }
-
-    pub fn deserialize_value_type_in(
-        value_type: &BinXmlValueType,
-        cursor: &mut Cursor<&'a [u8]>,
-        chunk: Option<&'a EvtxChunk<'a>>,
-        size: Option<u16>,
-        ansi_codec: EncodingRef,
-        arena: &'a Bump,
-    ) -> Result<BinXmlValue<'a>> {
-        let start = cursor.position() as usize;
-        let buf = *cursor.get_ref();
-        let mut c = ByteCursor::with_pos(buf, start)?;
-        let v = Self::deserialize_value_type_cursor(
-            value_type, &mut c, chunk, size, ansi_codec, arena,
-        )?;
-        cursor.set_position(c.position());
-        Ok(v)
     }
 }
 

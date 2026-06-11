@@ -171,11 +171,11 @@ pub(crate) struct IrTemplateCache<'a> {
 
 impl<'a> IrTemplateCache<'a> {
     #[cfg(feature = "bench")]
-    pub fn new(arena: &'a Bump) -> Self {
+    pub(crate) fn new(arena: &'a Bump) -> Self {
         IrTemplateCache::with_capacity(0, arena)
     }
 
-    pub fn with_capacity(capacity: usize, arena: &'a Bump) -> Self {
+    pub(crate) fn with_capacity(capacity: usize, arena: &'a Bump) -> Self {
         IrTemplateCache {
             templates: AHashMap::with_capacity(capacity),
             arena,
@@ -863,9 +863,9 @@ pub(crate) enum RecordContent<'a> {
 /// decoded substitution values, and the precomputed expansion gate.
 #[derive(Debug, Clone)]
 pub(crate) struct TplInstance<'a> {
-    pub template: Rc<IrTree<'a>>,
-    pub values: IrVec<'a, TemplateValue<'a>>,
-    pub may_expand: bool,
+    pub(crate) template: Rc<IrTree<'a>>,
+    pub(crate) values: IrVec<'a, TemplateValue<'a>>,
+    pub(crate) may_expand: bool,
 }
 
 /// An unmaterialized template-instance record.
@@ -876,11 +876,11 @@ pub(crate) struct TplInstance<'a> {
 /// elements across nesting levels share the single `frags` arena.
 #[derive(Debug, Clone)]
 pub(crate) struct TemplateContent<'a> {
-    pub root: TplInstance<'a>,
-    pub nested: Vec<TplInstance<'a>>,
+    pub(crate) root: TplInstance<'a>,
+    pub(crate) nested: Vec<TplInstance<'a>>,
     // ManuallyDrop: all IR types are drop-free; skipping drop glue avoids a
     // per-record walk over the fragment elements (memory belongs to the bump).
-    pub frags: std::mem::ManuallyDrop<IrArena<'a>>,
+    pub(crate) frags: std::mem::ManuallyDrop<IrArena<'a>>,
 }
 
 impl<'a> TemplateContent<'a> {

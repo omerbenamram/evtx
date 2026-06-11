@@ -7,10 +7,10 @@ use ahash::AHashMap;
 use log::trace;
 
 #[derive(Debug)]
-pub struct StringCache(AHashMap<ChunkOffset, BinXmlName>);
+pub(crate) struct StringCache(AHashMap<ChunkOffset, BinXmlName>);
 
 impl StringCache {
-    pub fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
+    pub(crate) fn populate(data: &[u8], offsets: &[ChunkOffset]) -> DeserializationResult<Self> {
         let mut cache = AHashMap::new();
 
         for &offset in offsets.iter().filter(|&&offset| offset > 0) {
@@ -40,11 +40,7 @@ impl StringCache {
         Ok(StringCache(cache))
     }
 
-    pub fn get_cached_string(&self, offset: ChunkOffset) -> Option<&BinXmlName> {
+    pub(crate) fn get_cached_string(&self, offset: ChunkOffset) -> Option<&BinXmlName> {
         self.0.get(&offset)
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
     }
 }

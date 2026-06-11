@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-pub const MAGIC: [u8; 8] = *b"WEVTCACH";
-pub const VERSION: u32 = 1;
+pub(crate) const MAGIC: [u8; 8] = *b"WEVTCACH";
+pub(crate) const VERSION: u32 = 1;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,16 +38,14 @@ pub enum EntryKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WevtCacheHeader {
-    pub magic: [u8; 8],
-    pub version: u32,
-    pub entry_count: u32,
+pub(crate) struct WevtCacheHeader {
+    pub(crate) magic: [u8; 8],
+    pub(crate) version: u32,
+    pub(crate) entry_count: u32,
 }
 
 impl WevtCacheHeader {
-    pub const SIZE: usize = 8 + 4 + 4;
-
-    pub fn new(entry_count: u32) -> Self {
+    pub(crate) fn new(entry_count: u32) -> Self {
         Self {
             magic: MAGIC,
             version: VERSION,
@@ -83,14 +81,12 @@ impl WevtCacheHeader {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WevtCacheEntryHeader {
-    pub kind: EntryKind,
-    pub len: u64,
+pub(crate) struct WevtCacheEntryHeader {
+    pub(crate) kind: EntryKind,
+    pub(crate) len: u64,
 }
 
 impl WevtCacheEntryHeader {
-    pub const SIZE: usize = 1 + 8;
-
     fn read_from(mut r: impl Read) -> std::io::Result<(u8, u64)> {
         let mut kind = [0u8; 1];
         r.read_exact(&mut kind)?;

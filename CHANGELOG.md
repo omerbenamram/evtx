@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+- Internal modules are no longer part of the public API: the BinXML IR builder, `model::ir` internals (tree/arena types are now `pub(crate)` or `#[doc(hidden)]`), the chunk string cache, and the `.wevtcache` wire-format types (`WevtCacheHeader`, `WevtCacheEntryHeader`, `MAGIC`, `VERSION`). Various internal constructors, accessors, and token-struct fields were demoted to `pub(crate)`.
+
+### Removed
+- Deleted unused public items: `FileOffset`, `err::SerializationResult`, the `unimplemented_fn!` macro, `ParserSettings::should_validate_checksums`/`get_num_threads`, `BinXmlValue::from_binxml_stream_in`/`deserialize_value_type_in`, `model::ir::Text::as_utf8`/`as_utf16`, `StringCache::len`, and `WevtCacheHeader::SIZE`/`WevtCacheEntryHeader::SIZE`.
+
 ## [0.11.2 - 2026-03-22]
 
 ### Added

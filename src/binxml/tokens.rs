@@ -17,23 +17,23 @@ use std::fmt::{self, Formatter};
 /// Processing instruction target name.
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub(crate) struct BinXMLProcessingInstructionTarget {
-    pub name: BinXmlNameRef,
+    pub(crate) name: BinXmlNameRef,
 }
 
 /// Open-start element token payload (name and data size).
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub(crate) struct BinXMLOpenStartElement {
-    pub data_size: u32,
-    pub name: BinXmlNameRef,
+    pub(crate) data_size: u32,
+    pub(crate) name: BinXmlNameRef,
 }
 
 /// Template definition header stored in the chunk template table.
 #[derive(Debug, PartialOrd, PartialEq, Clone)]
 pub(crate) struct BinXmlTemplateDefinitionHeader {
     /// A pointer to the next template in the bucket.
-    pub next_template_offset: ChunkOffset,
-    pub guid: Guid,
-    pub data_size: u32,
+    pub(crate) next_template_offset: ChunkOffset,
+    pub(crate) guid: Guid,
+    pub(crate) data_size: u32,
 }
 
 impl fmt::Display for BinXmlTemplateDefinitionHeader {
@@ -50,7 +50,7 @@ impl fmt::Display for BinXmlTemplateDefinitionHeader {
 /// Entity reference token payload.
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub(crate) struct BinXmlEntityReference {
-    pub name: BinXmlNameRef,
+    pub(crate) name: BinXmlNameRef,
 }
 
 /// Template instance payload parsed into substitution values.
@@ -76,26 +76,26 @@ struct TemplateValueDescriptor {
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub(crate) struct TemplateSubstitutionDescriptor {
     /// Zero-based index of the substitution value.
-    pub substitution_index: u16,
-    pub value_type: BinXmlValueType,
-    pub ignore: bool,
+    pub(crate) substitution_index: u16,
+    pub(crate) value_type: BinXmlValueType,
+    pub(crate) ignore: bool,
     /// True for conditional substitutions; optional values may be omitted when empty.
-    pub optional: bool,
+    pub(crate) optional: bool,
 }
 
 /// Fragment header at the start of a BinXML stream.
 #[repr(C)]
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub(crate) struct BinXMLFragmentHeader {
-    pub major_version: u8,
-    pub minor_version: u8,
-    pub flags: u8,
+    pub(crate) major_version: u8,
+    pub(crate) minor_version: u8,
+    pub(crate) flags: u8,
 }
 
 /// Attribute token payload.
 #[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
 pub(crate) struct BinXMLAttribute {
-    pub name: BinXmlNameRef,
+    pub(crate) name: BinXmlNameRef,
 }
 
 /// Read a `TemplateInstance` and parse its substitution values directly.

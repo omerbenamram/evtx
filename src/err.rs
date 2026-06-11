@@ -7,7 +7,6 @@ use winstructs::guid::Guid;
 
 /// This is the only `Result` type that should be exposed on public interfaces.
 pub type Result<T> = std::result::Result<T, EvtxError>;
-pub type SerializationResult<T> = std::result::Result<T, crate::err::SerializationError>;
 pub(crate) type DeserializationResult<T> = std::result::Result<T, crate::err::DeserializationError>;
 pub(crate) type EvtxChunkResult<T> = std::result::Result<T, crate::err::ChunkError>;
 
@@ -127,7 +126,7 @@ pub enum InputError {
 
 impl InputError {
     /// Context Convenience for `InputError`
-    pub fn failed_to_open_file<P: AsRef<Path>>(source: io::Error, path: P) -> Self {
+    pub(crate) fn failed_to_open_file<P: AsRef<Path>>(source: io::Error, path: P) -> Self {
         InputError::FailedToOpenFile {
             source,
             path: path.as_ref().to_path_buf(),
@@ -202,20 +201,14 @@ pub enum EvtxError {
 }
 
 impl EvtxError {
-    pub fn calculation_error(msg: String) -> EvtxError {
+    pub(crate) fn calculation_error(msg: String) -> EvtxError {
         EvtxError::CalculationError(msg)
     }
 
-    pub fn incomplete_chunk(chunk_id: u64) -> EvtxError {
+    pub(crate) fn incomplete_chunk(chunk_id: u64) -> EvtxError {
         EvtxError::FailedToParseChunk {
             chunk_id,
             source: Box::new(ChunkError::IncompleteChunk),
         }
     }
-}
-
-/// Errors on unimplemented functions instead on panicking.
-#[macro_export]
-macro_rules! unimplemented_fn {
-   ($($arg:tt)*) => { Err($crate::err::EvtxError::Unimplemented { name: format!($($arg)*) }) }
 }

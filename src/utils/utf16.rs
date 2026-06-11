@@ -35,7 +35,7 @@ impl<'a> Utf16LeSlice<'a> {
     }
 
     /// Create an empty UTF-16LE slice.
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Utf16LeSlice {
             bytes: &[],
             num_chars: 0,
