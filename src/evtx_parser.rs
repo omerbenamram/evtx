@@ -96,8 +96,7 @@ fn render_chunk(
     format: RenderFormat,
     record_numbers: bool,
 ) -> ChunkBatch<RenderedChunk> {
-    use crate::binxml::ir_json::render_json_record_content;
-    use crate::binxml::ir_xml::render_xml_record_content;
+    use crate::binxml::ir_json::render_json_record;
 
     match chunk_res {
         Err(err) => ChunkBatch {
@@ -126,7 +125,7 @@ fn render_chunk(
                         JsonProgramCache, Preflight, XmlProgramCache, try_render_json_compiled,
                         try_render_xml_compiled,
                     };
-                    use crate::binxml::ir::{IrTemplateCache, build_record_content};
+                    use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
                     use crate::binxml::value_render::ValueRenderer;
 
                     let chunk_ref: &crate::EvtxChunk = &chunk_records;
@@ -177,30 +176,37 @@ fn render_chunk(
                                 let rendered = if compiled_done {
                                     Ok(())
                                 } else {
-                                    build_record_content(raw.bytes, chunk_ref, &mut ir_cache)
-                                        .map_err(|err| EvtxError::FailedToParseRecord {
-                                            record_id: event_record_id,
-                                            source: Box::new(err),
-                                        })
-                                        .and_then(|content| {
-                                            match format {
-                                                RenderFormat::Xml => render_xml_record_content(
-                                                    &content, &settings, &mut data,
-                                                ),
-                                                RenderFormat::Json => render_json_record_content(
-                                                    &content, &settings, &mut data,
-                                                ),
+                                    // Slow lane: fully materialize, then run the
+                                    // same walker the compiler uses — one output
+                                    // semantics for every record shape.
+                                    build_tree_from_binxml_bytes_direct(
+                                        raw.bytes,
+                                        chunk_ref,
+                                        &mut ir_cache,
+                                    )
+                                    .map_err(|err| EvtxError::FailedToParseRecord {
+                                        record_id: event_record_id,
+                                        source: Box::new(err),
+                                    })
+                                    .and_then(|tree| {
+                                        match format {
+                                            RenderFormat::Xml => {
+                                                crate::binxml::compiled::render_tree_xml(
+                                                    &tree, &settings, &mut data,
+                                                )
                                             }
-                                            .map_err(
-                                                |err| {
-                                                    // Match the error shape of `into_xml_bytes`/`into_json_bytes`.
-                                                    EvtxError::FailedToParseRecord {
-                                                        record_id: event_record_id,
-                                                        source: Box::new(err),
-                                                    }
-                                                },
-                                            )
+                                            RenderFormat::Json => {
+                                                render_json_record(&tree, &settings, &mut data)
+                                            }
+                                        }
+                                        .map_err(|err| {
+                                            // Match the error shape of `into_xml_bytes`/`into_json_bytes`.
+                                            EvtxError::FailedToParseRecord {
+                                                record_id: event_record_id,
+                                                source: Box::new(err),
+                                            }
                                         })
+                                    })
                                 };
                                 match rendered {
                                     Ok(()) => {

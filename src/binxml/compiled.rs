@@ -18,7 +18,6 @@
 
 use crate::ParserSettings;
 use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
-use crate::binxml::ir_xml::render_xml_element_materialized;
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::err::Result;
 use crate::evtx_chunk::EvtxChunk;
@@ -144,6 +143,19 @@ struct XmlCompiler<'t, 'a> {
     elem_slots: Vec<(u16, u16)>,
     indent_on: bool,
     vr: ValueRenderer,
+    /// Walking a fully materialized tree (slow lane / fragments): placeholder
+    /// sites are errors instead of ops, and any error is a real record error.
+    /// When false (template compilation), any error just means "not cacheable".
+    materialized: bool,
+}
+
+/// Compile-lane bail sentinel (mapped to `None` by `compile_xml_template`).
+fn bail_err() -> crate::err::EvtxError {
+    crate::err::EvtxError::FailedToCreateRecordModel("compiled-template bail")
+}
+
+fn unresolved_placeholder() -> crate::err::EvtxError {
+    crate::err::EvtxError::FailedToCreateRecordModel("unresolved placeholder in tree")
 }
 
 /// Compile a cached template definition into an XML program. Returns `None`
@@ -166,6 +178,7 @@ pub(crate) fn compile_xml_template(
         elem_slots: Vec::new(),
         indent_on: settings.should_indent(),
         vr: ValueRenderer::new(),
+        materialized: false,
     };
     if is_root {
         c.lits.extend_from_slice(XML_DECL);
@@ -180,8 +193,57 @@ pub(crate) fn compile_xml_template(
                 elem_slots: c.elem_slots,
             })
         }
-        Err(Bail) => None,
+        Err(_) => None,
     }
+}
+
+/// Render a fully materialized record tree to XML: the single-walker slow
+/// lane (irregular records, after materialization) writing straight into
+/// `out`. Byte-compatible with the cached-program lane by construction —
+/// it IS the same walk, with zero placeholder sites.
+pub(crate) fn render_tree_xml(
+    tree: &IrTree<'_>,
+    settings: &ParserSettings,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let mut c = XmlCompiler {
+        tree,
+        lits: std::mem::take(out),
+        ops: Vec::new(),
+        run_start: 0,
+        elem_slots: Vec::new(),
+        indent_on: settings.should_indent(),
+        vr: ValueRenderer::new(),
+        materialized: true,
+    };
+    c.lits.extend_from_slice(XML_DECL);
+    let res = c.compile_element(tree.root(), 0);
+    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+    *out = c.lits;
+    res
+}
+
+/// Render a materialized fragment subtree at `indent` (executor cold path).
+fn render_subtree_xml(
+    tree: &IrTree<'_>,
+    indent: u16,
+    indent_on: bool,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let mut c = XmlCompiler {
+        tree,
+        lits: std::mem::take(out),
+        ops: Vec::new(),
+        run_start: 0,
+        elem_slots: Vec::new(),
+        indent_on,
+        vr: ValueRenderer::new(),
+        materialized: true,
+    };
+    let res = c.compile_element(tree.root(), indent);
+    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+    *out = c.lits;
+    res
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
@@ -219,7 +281,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.tree.arena().get(id).expect("invalid element id")
     }
 
-    fn compile_element(&mut self, id: ElementId, indent: u16) -> std::result::Result<(), Bail> {
+    fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
         let element = self.element(id);
 
         // Note: even placeholder-free subtrees are walked here (not delegated
@@ -237,6 +299,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
         match classify_children(element) {
             ChildrenKind::SinglePlaceholder(ph) => {
+                if self.materialized {
+                    return Err(unresolved_placeholder());
+                }
                 let name: Vec<u8> = element.name.as_str().as_bytes().to_vec();
                 let is_binary = element.name.as_str() == "Binary";
                 self.lits.push(b'>');
@@ -284,8 +349,32 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             }
             ChildrenKind::StaticInline => {
                 self.lits.push(b'>');
-                for node in &element.children {
-                    self.compile_literal_content_node(node, false)?;
+                let nodes = &element.children;
+                let mut idx = 0;
+                while idx < nodes.len() {
+                    match &nodes[idx] {
+                        // Mirror `render_nodes`' processing-instruction
+                        // pairing: `<?target data?>` / `<?target?>`.
+                        Node::PITarget(name) => {
+                            self.lits.extend_from_slice(b"<?");
+                            self.lits.extend_from_slice(name.as_str().as_bytes());
+                            if let Some(Node::PIData(data)) = nodes.get(idx + 1) {
+                                self.lits.push(b' ');
+                                self.compile_raw_text(data);
+                                self.lits.extend_from_slice(b"?>");
+                                idx += 2;
+                                continue;
+                            }
+                            self.lits.extend_from_slice(b"?>");
+                        }
+                        Node::PIData(_) => {
+                            return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                                "PIData without PITarget",
+                            ));
+                        }
+                        node => self.compile_literal_content_node(node, false)?,
+                    }
+                    idx += 1;
                 }
                 self.close_tag_inline(element);
             }
@@ -298,6 +387,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                             self.compile_element(*child, indent + INDENT_WIDTH)?;
                         }
                         Node::Placeholder(ph) => {
+                            if self.materialized {
+                                return Err(unresolved_placeholder());
+                            }
                             self.flush_lit_run();
                             let ind = self.side_range(|c| c.indent_str(indent + INDENT_WIDTH));
                             self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
@@ -318,7 +410,15 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 self.indent_str(indent);
                 self.close_tag_inline(element);
             }
-            ChildrenKind::Bail => return Err(Bail),
+            ChildrenKind::Bail => {
+                // Only placeholder-bearing shapes classify as Bail; on a
+                // materialized tree that means an unresolved placeholder.
+                return Err(if self.materialized {
+                    unresolved_placeholder()
+                } else {
+                    bail_err()
+                });
+            }
         }
         Ok(())
     }
@@ -331,21 +431,39 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.newline();
     }
 
-    fn compile_attr(&mut self, attr: &Attr<'a>) -> std::result::Result<(), Bail> {
+    fn compile_attr(&mut self, attr: &Attr<'a>) -> Result<()> {
         // Placeholders are dynamic; everything else is compile-time constant.
         // Mirrors `attribute_value_is_empty` + `render_nodes`.
         let mut has_nonempty_const = false;
         let mut n_placeholders = 0usize;
         for node in attr.value.iter() {
             match node {
-                Node::Placeholder(_) => n_placeholders += 1,
-                Node::Element(_) | Node::PITarget(_) | Node::PIData(_) => return Err(Bail),
-                Node::Text(t) | Node::CData(t) => {
+                Node::Placeholder(_) => {
+                    if self.materialized {
+                        return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                            "unresolved placeholder in attribute value",
+                        ));
+                    }
+                    n_placeholders += 1;
+                }
+                Node::Element(_) => {
+                    return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                        "element node inside attribute value",
+                    ));
+                }
+                Node::PITarget(_) | Node::PIData(_) => {
+                    return Err(crate::err::EvtxError::Unimplemented {
+                        name: "processing instruction in attribute value".to_string(),
+                    });
+                }
+                Node::Text(t) => {
                     if !t.is_empty() {
                         has_nonempty_const = true;
                     }
                 }
-                Node::EntityRef(_) | Node::CharRef(_) => has_nonempty_const = true,
+                // `attribute_value_is_empty` treats CData (even zero-length)
+                // as non-empty.
+                Node::CData(_) | Node::EntityRef(_) | Node::CharRef(_) => has_nonempty_const = true,
                 Node::Value(v) => {
                     if !crate::model::ir::is_optional_empty(v) {
                         has_nonempty_const = true;
@@ -391,7 +509,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
         if n_placeholders > 1 {
             // Joint emptiness across several placeholders: not modeled.
-            return Err(Bail);
+            return Err(bail_err());
         }
 
         // Exactly one placeholder, no non-empty constants: conditional attr.
@@ -417,18 +535,14 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
     /// Render one literal (placeholder-free) node into `lits`, mirroring
     /// `XmlEmitter::render_single_node`.
-    fn compile_literal_content_node(
-        &mut self,
-        node: &Node<'a>,
-        in_attribute: bool,
-    ) -> std::result::Result<(), Bail> {
+    fn compile_literal_content_node(&mut self, node: &Node<'a>, in_attribute: bool) -> Result<()> {
         match node {
             Node::Text(text) => self.compile_literal_text(text, in_attribute),
             Node::Value(value) => {
                 let mut sink = std::mem::take(&mut self.lits);
                 let res = self.vr.write_xml_value_text(&mut sink, value, in_attribute);
                 self.lits = sink;
-                res.map_err(|_| Bail)
+                res
             }
             Node::EntityRef(name) => {
                 self.lits.push(b'&');
@@ -452,15 +566,14 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             }
             // PIs contribute nothing in content position (`render_single_node`).
             Node::PITarget(_) | Node::PIData(_) => Ok(()),
-            Node::Element(_) | Node::Placeholder(_) => Err(Bail),
+            Node::Element(_) => Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                "unexpected element node in text context",
+            )),
+            Node::Placeholder(_) => Err(unresolved_placeholder()),
         }
     }
 
-    fn compile_literal_text(
-        &mut self,
-        text: &Text<'a>,
-        in_attribute: bool,
-    ) -> std::result::Result<(), Bail> {
+    fn compile_literal_text(&mut self, text: &Text<'a>, in_attribute: bool) -> Result<()> {
         match text {
             Text::Utf16(value) => {
                 let bytes = value.as_bytes();
@@ -471,7 +584,8 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 let mut sink = std::mem::take(&mut self.lits);
                 let res = utf16_simd::write_xml_utf16le(&mut sink, bytes, units, in_attribute);
                 self.lits = sink;
-                res.map_err(|_| Bail)
+                res.map_err(crate::err::EvtxError::from)?;
+                Ok(())
             }
             Text::Utf8(value) => {
                 xml_escape_str_into(&mut self.lits, value, in_attribute);
@@ -542,7 +656,9 @@ fn classify_children<'n>(element: &'n Element<'_>) -> ChildrenKind<'n> {
         match node {
             Node::Placeholder(_) => has_placeholder = true,
             Node::Element(_) => has_literal_element = true,
-            Node::PITarget(_) | Node::PIData(_) => return ChildrenKind::Bail,
+            // PIs are neither content nor element (scan_class: Empty); they
+            // render inline (paired) or as bare lines depending on layout.
+            Node::PITarget(_) | Node::PIData(_) => {}
             Node::Text(t) | Node::CData(t) => {
                 if !t.is_empty() {
                     has_literal_content = true;
@@ -560,10 +676,9 @@ fn classify_children<'n>(element: &'n Element<'_>) -> ChildrenKind<'n> {
         if has_literal_element {
             return ChildrenKind::StaticLines;
         }
-        if has_literal_content {
-            return ChildrenKind::StaticInline;
-        }
-        return ChildrenKind::Empty;
+        // Present-but-empty literal children are NOT logically empty
+        // (`child_layout` counts Empty-class nodes as `any`): inline form.
+        return ChildrenKind::StaticInline;
     }
     // Placeholders mixed with other children: the layout must be statically
     // line-formed, which requires a literal element child. Literal content
@@ -1144,7 +1259,7 @@ fn render_element_slot<'a>(
     let fo = s.off as usize;
     let frag = &chunk.data[fo..fo + usize::from(s.len)];
     let tree = build_tree_from_binxml_bytes_direct(frag, chunk, cache)?;
-    render_xml_element_materialized(tree.arena(), tree.root(), indent as usize, indent_on, out)
+    render_subtree_xml(&tree, indent, indent_on, out)
 }
 
 // ---------------------------------------------------------------------------
