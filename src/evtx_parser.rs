@@ -39,6 +39,7 @@ fn process_chunk<U>(
     chunk_id: u64,
     settings: Arc<ParserSettings>,
     arena: Bump,
+    program_store: Arc<crate::binxml::compiled::ProgramStore>,
     f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U>,
 ) -> ChunkBatch<Vec<Result<U>>> {
     match chunk_res {
@@ -46,7 +47,7 @@ fn process_chunk<U>(
             payload: vec![Err(err)],
             arena,
         },
-        Ok(mut chunk) => match chunk.parse_with_arena(settings, arena) {
+        Ok(mut chunk) => match chunk.parse_with_arena(settings, arena, program_store) {
             Err(err) => ChunkBatch {
                 payload: vec![Err(EvtxError::FailedToParseChunk {
                     chunk_id,
@@ -93,6 +94,7 @@ fn render_chunk(
     chunk_id: u64,
     settings: Arc<ParserSettings>,
     arena: Bump,
+    program_store: Arc<crate::binxml::compiled::ProgramStore>,
     format: RenderFormat,
     record_numbers: bool,
 ) -> ChunkBatch<RenderedChunk> {
@@ -104,7 +106,7 @@ fn render_chunk(
             },
             arena,
         },
-        Ok(mut chunk) => match chunk.parse_with_arena(settings.clone(), arena) {
+        Ok(mut chunk) => match chunk.parse_with_arena(settings.clone(), arena, program_store) {
             Err(err) => ChunkBatch {
                 payload: RenderedChunk {
                     data: Vec::new(),
@@ -757,8 +759,16 @@ impl<T: ReadSeek> EvtxParser<T> {
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
     ) -> impl Iterator<Item = Result<U>> + 'a {
+        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
         self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
-            process_chunk(chunk_res, chunk_id, settings, arena, f.clone())
+            process_chunk(
+                chunk_res,
+                chunk_id,
+                settings,
+                arena,
+                Arc::clone(&program_store),
+                f.clone(),
+            )
         })
         .flatten()
     }
@@ -770,12 +780,14 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
         record_numbers: bool,
     ) -> impl Iterator<Item = RenderedChunk> + '_ {
+        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
         self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
             render_chunk(
                 chunk_res,
                 chunk_id,
                 settings,
                 arena,
+                Arc::clone(&program_store),
                 RenderFormat::Xml,
                 record_numbers,
             )
@@ -788,12 +800,14 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
         record_numbers: bool,
     ) -> impl Iterator<Item = RenderedChunk> + '_ {
+        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
         self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
             render_chunk(
                 chunk_res,
                 chunk_id,
                 settings,
                 arena,
+                Arc::clone(&program_store),
                 RenderFormat::Json,
                 record_numbers,
             )

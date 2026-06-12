@@ -87,8 +87,15 @@ impl EvtxChunkData {
         &mut self,
         settings: Arc<ParserSettings>,
         arena: Bump,
+        program_store: Arc<crate::binxml::compiled::ProgramStore>,
     ) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new_with_arena(&self.data, &self.header, Arc::clone(&settings), arena)
+        EvtxChunk::new_with_arena(
+            &self.data,
+            &self.header,
+            Arc::clone(&settings),
+            arena,
+            program_store,
+        )
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -172,6 +179,9 @@ pub struct EvtxChunk<'chunk> {
     pub(crate) settings: Arc<ParserSettings>,
     /// Lazily-populated per-chunk program caches for `EvtxRecord::into_*`.
     pub(crate) render_caches: std::cell::RefCell<crate::binxml::compiled::RenderCaches>,
+    /// Cross-chunk compiled-program store (per parser run; fresh per chunk
+    /// when constructed through the public standalone-chunk API).
+    pub(crate) program_store: std::sync::Arc<crate::binxml::compiled::ProgramStore>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -181,7 +191,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
-        EvtxChunk::new_with_arena(data, header, settings, Bump::new())
+        EvtxChunk::new_with_arena(data, header, settings, Bump::new(), Default::default())
     }
 
     /// Will fail if the data starts with an invalid evtx chunk header.
@@ -193,6 +203,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
         mut arena: Bump,
+        program_store: Arc<crate::binxml::compiled::ProgramStore>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
         arena.reset();
 
@@ -207,6 +218,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             arena,
             settings,
             render_caches: Default::default(),
+            program_store,
         })
     }
 

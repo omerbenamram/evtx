@@ -23,7 +23,7 @@ use crate::err::Result;
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrTree, Node, Placeholder, Text};
 use ahash::AHashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 const INDENT_WIDTH: u16 = 2;
 const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
@@ -79,7 +79,44 @@ pub(crate) struct XmlProgram {
 
 /// Per-chunk program cache. `None` marks templates that failed to compile so
 /// they are not retried for every record.
-pub(crate) type ProgramCache<P> = AHashMap<(u32, u16, bool), Option<Rc<P>>>;
+pub(crate) type ProgramCache<P> = AHashMap<(u32, u16, bool), Option<Arc<P>>>;
+
+/// Cross-chunk program store: templates are identical across chunks (same
+/// GUID + size + definition bytes), so programs compile once per file/parser
+/// instead of once per chunk. Shared across worker threads.
+#[derive(Default)]
+pub(crate) struct ProgramStore {
+    xml: std::sync::RwLock<AHashMap<StoreKey, Option<Arc<XmlProgram>>>>,
+    json: std::sync::RwLock<AHashMap<StoreKey, Option<Arc<JsonProgram>>>>,
+    hasher: ahash::RandomState,
+}
+
+/// Content identity of a compiled program: template identity (GUID, size,
+/// definition-bytes hash) plus the compile parameters.
+type StoreKey = ([u8; 16], u32, u64, u16, bool);
+
+impl std::fmt::Debug for ProgramStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProgramStore").finish_non_exhaustive()
+    }
+}
+
+/// Per-format shard access used by `get_or_compile`.
+pub(crate) trait StoredProgram: TemplateProgram {
+    fn shard(store: &ProgramStore) -> &std::sync::RwLock<AHashMap<StoreKey, Option<Arc<Self>>>>;
+}
+
+impl StoredProgram for XmlProgram {
+    fn shard(store: &ProgramStore) -> &std::sync::RwLock<AHashMap<StoreKey, Option<Arc<Self>>>> {
+        &store.xml
+    }
+}
+
+impl StoredProgram for JsonProgram {
+    fn shard(store: &ProgramStore) -> &std::sync::RwLock<AHashMap<StoreKey, Option<Arc<Self>>>> {
+        &store.json
+    }
+}
 
 /// Per-chunk render state for the per-record APIs (`EvtxRecord::into_*`).
 /// Fully owned (programs carry their own bytes), so `EvtxChunk` can hold it
@@ -750,7 +787,7 @@ const NO_NESTED: u16 = u16::MAX;
 const NO_ANSI: u32 = u32::MAX;
 
 struct NestedInst<P> {
-    prog: Rc<P>,
+    prog: Arc<P>,
     slots: SlotRange,
 }
 
@@ -788,7 +825,7 @@ fn fixed_width(ty: u8) -> Option<u16> {
 
 struct PreflightBail;
 
-impl<P: TemplateProgram> Preflight<P> {
+impl<P: StoredProgram> Preflight<P> {
     fn clear(&mut self) {
         self.slots.clear();
         self.nested.clear();
@@ -826,7 +863,7 @@ impl<P: TemplateProgram> Preflight<P> {
         settings: &ParserSettings,
         base_indent: u16,
         is_root: bool,
-    ) -> std::result::Result<(Rc<P>, SlotRange, usize), PreflightBail> {
+    ) -> std::result::Result<(Arc<P>, SlotRange, usize), PreflightBail> {
         if depth > 8 {
             return Err(PreflightBail);
         }
@@ -1012,7 +1049,7 @@ fn read_u32(data: &[u8], pos: usize) -> std::result::Result<u32, PreflightBail> 
         .ok_or(PreflightBail)
 }
 
-fn get_or_compile<'a, P: TemplateProgram>(
+fn get_or_compile<'a, P: StoredProgram>(
     chunk: &'a EvtxChunk<'a>,
     def_offset: u32,
     base_indent: u16,
@@ -1020,20 +1057,56 @@ fn get_or_compile<'a, P: TemplateProgram>(
     cache: &mut IrTemplateCache<'a>,
     progs: &mut ProgramCache<P>,
     settings: &ParserSettings,
-) -> Option<Rc<P>> {
+) -> Option<Arc<P>> {
     let key = (def_offset, base_indent, is_root);
     if let Some(entry) = progs.get(&key) {
         return entry.clone();
     }
+
+    // Cross-chunk store, keyed by template content identity.
+    let store = &*chunk.program_store;
+    let store_key = template_content_key(chunk, def_offset, &store.hasher)
+        .map(|(guid, size, hash)| (guid, size, hash, base_indent, is_root));
+    if let Some(sk) = store_key.as_ref()
+        && let Some(entry) = P::shard(store)
+            .read()
+            .expect("program store poisoned")
+            .get(sk)
+    {
+        progs.insert(key, entry.clone());
+        return entry.clone();
+    }
+
     let compiled =
         cache
             .template_for_compile(chunk, def_offset)
             .ok()
             .and_then(|(tree, has_literal_array)| {
-                P::compile(&tree, has_literal_array, base_indent, is_root, settings).map(Rc::new)
+                P::compile(&tree, has_literal_array, base_indent, is_root, settings).map(Arc::new)
             });
+    if let Some(sk) = store_key {
+        P::shard(store)
+            .write()
+            .expect("program store poisoned")
+            .insert(sk, compiled.clone());
+    }
     progs.insert(key, compiled.clone());
     compiled
+}
+
+/// Template content identity at `def_offset`: (GUID, data size, bytes hash).
+fn template_content_key(
+    chunk: &EvtxChunk<'_>,
+    def_offset: u32,
+    hasher: &ahash::RandomState,
+) -> Option<([u8; 16], u32, u64)> {
+    let data = chunk.data;
+    let off = def_offset as usize;
+    // Header: u32 next_offset, [u8;16] guid, u32 data_size (24 bytes).
+    let guid: [u8; 16] = data.get(off + 4..off + 20)?.try_into().ok()?;
+    let size = u32::from_le_bytes(data.get(off + 20..off + 24)?.try_into().ok()?);
+    let body = data.get(off + 24..(off + 24).checked_add(size as usize)?)?;
+    Some((guid, size, hasher.hash_one(body)))
 }
 
 // ---------------------------------------------------------------------------
