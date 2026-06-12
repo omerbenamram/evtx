@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Records whose templates compile into splice programs (the common case) now
+  render via a per-template compiled fast path that formats substitution
+  values directly from chunk bytes: ~2.2-2.9x faster single-threaded XML/JSON
+  dumps and ~1.8-2.3x faster multi-threaded, with byte-identical output.
+  Irregular shapes transparently use the previous path.
+
 ## [0.12.1 - 2026-06-11]
 
 ### Added
