@@ -22,7 +22,7 @@ use crate::binxml::ir::RecordContent;
 use crate::binxml::render_ctx::{Ovr, RNode, Scope, child_layout, find_expansion};
 use crate::binxml::value_render::ValueRenderer;
 use crate::err::{EvtxError, Result};
-use crate::model::ir::{ElementId, IrTree, Name, Node, Text, is_optional_empty};
+use crate::model::ir::{ElementId, IrArena, IrTree, Name, Node, Text, is_optional_empty};
 use crate::utils::Utf16LeSlice;
 use sonic_rs::writer::WriteExt;
 
@@ -59,6 +59,19 @@ pub(crate) fn render_xml_record_content<W: WriteExt>(
             Ok(())
         }
     }
+}
+
+/// Render a single materialized element subtree at `indent` (compiled-template
+/// helper: literal subtrees at compile time, generic fragments at exec time).
+pub(crate) fn render_xml_element_materialized(
+    arena: &IrArena<'_>,
+    id: ElementId,
+    indent: usize,
+    indent_on: bool,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let mut emitter = XmlEmitter::new(out, indent_on);
+    emitter.render_element(Scope::materialized(arena), id, indent, None)
 }
 
 /// Streaming XML emitter for IR nodes.

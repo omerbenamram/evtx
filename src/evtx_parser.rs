@@ -118,48 +118,88 @@ fn render_chunk(
                 },
                 arena: Bump::new(),
             },
-            Ok(mut chunk_records) => {
+            Ok(chunk_records) => {
                 let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
                 let mut items = Vec::new();
-                for record in chunk_records.iter() {
-                    match record {
-                        Err(err) => items.push(RenderedChunkItem::Failed(err)),
-                        Ok(record) => {
-                            let start = data.len();
-                            let event_record_id = record.event_record_id;
-                            if record_numbers {
-                                use std::io::Write;
-                                // Matches the CLI's legacy `Record N` banner; baked in
-                                // here so a chunk stays a single consumer-side write.
-                                let _ = writeln!(&mut data, "Record {}", event_record_id);
-                            }
-                            let rendered = match format {
-                                RenderFormat::Xml => {
-                                    render_xml_record_content(&record.content, &settings, &mut data)
+                {
+                    use crate::binxml::compiled::{
+                        Preflight, XmlProgramCache, try_render_xml_compiled,
+                    };
+                    use crate::binxml::ir::{IrTemplateCache, build_record_content};
+                    use crate::binxml::value_render::ValueRenderer;
+
+                    let chunk_ref: &crate::EvtxChunk = &chunk_records;
+                    let mut ir_cache = IrTemplateCache::with_capacity(
+                        chunk_ref.estimated_template_buckets(),
+                        &chunk_ref.arena,
+                    );
+                    let mut progs = XmlProgramCache::default();
+                    let mut preflight = Preflight::default();
+                    let mut value_renderer = ValueRenderer::new();
+
+                    for raw in chunk_ref.iter_raw() {
+                        match raw {
+                            Err(err) => items.push(RenderedChunkItem::Failed(err)),
+                            Ok(raw) => {
+                                let start = data.len();
+                                let event_record_id = raw.event_record_id;
+                                if record_numbers {
+                                    use std::io::Write;
+                                    // Matches the CLI's legacy `Record N` banner; baked in
+                                    // here so a chunk stays a single consumer-side write.
+                                    let _ = writeln!(&mut data, "Record {}", event_record_id);
                                 }
-                                RenderFormat::Json => render_json_record_content(
-                                    &record.content,
-                                    &settings,
-                                    &mut data,
-                                ),
-                            };
-                            match rendered {
-                                Ok(()) => {
-                                    data.push(b'\n');
-                                    items.push(RenderedChunkItem::Record {
-                                        event_record_id,
-                                        end: data.len(),
-                                    });
-                                }
-                                Err(err) => {
-                                    data.truncate(start);
-                                    // Match the error shape of `into_xml_bytes`/`into_json_bytes`.
-                                    items.push(RenderedChunkItem::Failed(
-                                        EvtxError::FailedToParseRecord {
+                                let compiled_done = matches!(format, RenderFormat::Xml)
+                                    && try_render_xml_compiled(
+                                        raw.bytes,
+                                        chunk_ref,
+                                        &mut ir_cache,
+                                        &mut progs,
+                                        &mut preflight,
+                                        &settings,
+                                        &mut value_renderer,
+                                        &mut data,
+                                    );
+                                let rendered = if compiled_done {
+                                    Ok(())
+                                } else {
+                                    build_record_content(raw.bytes, chunk_ref, &mut ir_cache)
+                                        .map_err(|err| EvtxError::FailedToParseRecord {
                                             record_id: event_record_id,
                                             source: Box::new(err),
-                                        },
-                                    ));
+                                        })
+                                        .and_then(|content| {
+                                            match format {
+                                                RenderFormat::Xml => render_xml_record_content(
+                                                    &content, &settings, &mut data,
+                                                ),
+                                                RenderFormat::Json => render_json_record_content(
+                                                    &content, &settings, &mut data,
+                                                ),
+                                            }
+                                            .map_err(
+                                                |err| {
+                                                    // Match the error shape of `into_xml_bytes`/`into_json_bytes`.
+                                                    EvtxError::FailedToParseRecord {
+                                                        record_id: event_record_id,
+                                                        source: Box::new(err),
+                                                    }
+                                                },
+                                            )
+                                        })
+                                };
+                                match rendered {
+                                    Ok(()) => {
+                                        data.push(b'\n');
+                                        items.push(RenderedChunkItem::Record {
+                                            event_record_id,
+                                            end: data.len(),
+                                        });
+                                    }
+                                    Err(err) => {
+                                        data.truncate(start);
+                                        items.push(RenderedChunkItem::Failed(err));
+                                    }
                                 }
                             }
                         }

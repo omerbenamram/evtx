@@ -142,18 +142,87 @@ impl ValueRenderer {
             BinXmlValue::SidArrayType(items) => {
                 self.write_list(writer, items, |s, w, v| s.write_sid(w, v))
             }
-            BinXmlValue::HexInt32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_hex_prefixed_u32_lower(w, *v))
-            }
-            BinXmlValue::HexInt64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_hex_prefixed_u64_lower(w, *v))
-            }
+            BinXmlValue::HexInt32ArrayType(items) => self.write_list(writer, items, |s, w, v| {
+                s.write_hex_prefixed_u32_lower(w, *v)
+            }),
+            BinXmlValue::HexInt64ArrayType(items) => self.write_list(writer, items, |s, w, v| {
+                s.write_hex_prefixed_u64_lower(w, *v)
+            }),
             BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
                 EvtxError::FailedToCreateRecordModel("unsupported BinXML value in renderer"),
             ),
             other => Err(EvtxError::Unimplemented {
                 name: format!("value formatting for {:?}", other),
             }),
+        }
+    }
+
+    /// Write a substitution value's text directly from its raw chunk bytes
+    /// (compiled-template path). Mirrors `deserialize_value_type_cursor_in` +
+    /// `write_value_text` for the scalar types the compiled pre-flight admits;
+    /// the pre-flight guarantees sizes match (so the `expect`s are unreachable).
+    ///
+    /// `bytes` is exactly the descriptor-sized value window. `decoded_ansi` is
+    /// the pre-decoded ANSI payload when `ty == 0x02` (decoded at pre-flight).
+    pub(crate) fn write_raw_value_text<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        ty: u8,
+        bytes: &[u8],
+        decoded_ansi: Option<&str>,
+        mode: StringEscapeMode,
+    ) -> Result<()> {
+        match ty {
+            0x00 => Ok(()),
+            // StringType: truncate at the first NUL unit (mirrors `utf16_by_char_count`).
+            0x01 => {
+                let mut units = bytes.len() / 2;
+                for (idx, chunk) in bytes.chunks_exact(2).enumerate() {
+                    if chunk[0] == 0 && chunk[1] == 0 {
+                        units = idx;
+                        break;
+                    }
+                }
+                self.write_utf16_escaped(writer, Utf16LeSlice::new(bytes, units), mode)
+            }
+            0x02 => self.write_str_escaped(writer, decoded_ansi.unwrap_or(""), mode),
+            0x03 => write_int!(self, writer, write_i8, bytes[0] as i8),
+            0x04 => write_int!(self, writer, write_u8, bytes[0]),
+            0x05 => write_int!(self, writer, write_i16, i16::from_le_bytes(le2(bytes))),
+            0x06 => write_int!(self, writer, write_u16, u16::from_le_bytes(le2(bytes))),
+            0x07 => write_int!(self, writer, write_i32, i32::from_le_bytes(le4(bytes))),
+            0x08 => write_int!(self, writer, write_u32, u32::from_le_bytes(le4(bytes))),
+            0x09 => write_int!(self, writer, write_i64, i64::from_le_bytes(le8(bytes))),
+            0x0a => write_int!(self, writer, write_u64, u64::from_le_bytes(le8(bytes))),
+            0x0b => self.write_float(writer, f32::from_le_bytes(le4(bytes))),
+            0x0c => self.write_float(writer, f64::from_le_bytes(le8(bytes))),
+            0x0d => {
+                let raw = i32::from_le_bytes(le4(bytes));
+                self.write_bytes(writer, if raw != 0 { b"true" } else { b"false" })
+            }
+            0x0e => self.write_hex_bytes_upper(writer, bytes),
+            0x0f => self.write_guid(writer, bytes.try_into().expect("guid size")),
+            // SizeT renders as HexInt of its width.
+            0x10 if bytes.len() == 4 => {
+                self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes)))
+            }
+            0x10 => self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes))),
+            0x11 => {
+                let tm =
+                    crate::utils::windows::filetime_to_timestamp(u64::from_le_bytes(le8(bytes)))?;
+                self.write_datetime(writer, &tm)
+            }
+            0x12 => {
+                let mut cursor = crate::utils::ByteCursor::with_pos(bytes, 0)?;
+                let tm = crate::utils::windows::read_systime(&mut cursor)?;
+                self.write_datetime(writer, &tm)
+            }
+            0x13 => self.write_sid(writer, &SidRef::new(bytes)),
+            0x14 => self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes))),
+            0x15 => self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes))),
+            _ => Err(EvtxError::FailedToCreateRecordModel(
+                "unsupported raw value type in compiled renderer",
+            )),
         }
     }
 
@@ -374,4 +443,14 @@ fn to_hex_digit_lower(value: u8) -> u8 {
         0..=9 => b'0' + value,
         _ => b'a' + (value - 10),
     }
+}
+
+fn le2(b: &[u8]) -> [u8; 2] {
+    b[..2].try_into().expect("preflight-validated size")
+}
+fn le4(b: &[u8]) -> [u8; 4] {
+    b[..4].try_into().expect("preflight-validated size")
+}
+fn le8(b: &[u8]) -> [u8; 8] {
+    b[..8].try_into().expect("preflight-validated size")
 }

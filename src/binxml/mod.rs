@@ -2,6 +2,7 @@ pub mod name;
 pub mod value_variant;
 
 pub(crate) mod array_expand;
+pub(crate) mod compiled;
 pub(crate) mod ir;
 pub(crate) mod ir_json;
 pub(crate) mod ir_xml;

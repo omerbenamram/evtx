@@ -223,6 +223,17 @@ impl<'a> IrTemplateCache<'a> {
             .is_some_and(|(_, flag)| *flag)
     }
 
+    /// Cached template tree + literal-array flag, for the compiled-template
+    /// path (`binxml::compiled`).
+    pub(crate) fn template_for_compile(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        template_def_offset: u32,
+    ) -> Result<(Rc<IrTree<'a>>, bool)> {
+        let tree = self.get_or_parse_template_direct(chunk, template_def_offset)?;
+        Ok((tree, self.template_has_literal_array(template_def_offset)))
+    }
+
     /// Load a template definition from the chunk (or return a cached copy).
     ///
     /// The returned [`IrTree`] is stored in the cache and contains `Node::Placeholder` nodes.
