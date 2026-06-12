@@ -1344,6 +1344,10 @@ struct JsonCompiler<'t, 'a> {
     run_start: usize,
     elem_slots: Vec<(u16, u16)>,
     constraints: Vec<SlotConstraint>,
+    vr: ValueRenderer,
+    formatter: sonic_rs::format::CompactFormatter,
+    /// `--separate-json-attributes` (slow lane only; such templates bail).
+    separate: bool,
 }
 
 fn compile_json_template(
@@ -1364,6 +1368,9 @@ fn compile_json_template(
         run_start: 0,
         elem_slots: Vec::new(),
         constraints: Vec::new(),
+        vr: ValueRenderer::new(),
+        formatter: sonic_rs::format::CompactFormatter,
+        separate: false,
     };
     if is_root {
         c.lits.push(b'{');
@@ -1438,17 +1445,12 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     ) -> std::result::Result<(), Bail> {
         let element = self.element(id);
 
-        // Placeholder-free subtree: render via the real emitter.
+        // Placeholder-free subtree: render via the materialized layer (the
+        // same implementation the slow lane uses).
         if !subtree_has_placeholder(self.tree, element) {
-            let mut sink = std::mem::take(&mut self.lits);
-            let res = crate::binxml::ir_json::render_json_element_value_materialized(
-                self.tree.arena(),
-                element,
-                container,
-                &mut sink,
-            );
-            self.lits = sink;
-            return res.map_err(|_| Bail);
+            return self
+                .write_element_value_plain(element, container)
+                .map_err(|_| Bail);
         }
 
         let ph_attrs = element
@@ -1527,17 +1529,22 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     if !attr.value.iter().any(literal_nonempty) {
                         continue; // statically empty: never a member
                     }
-                    // Pre-render `"name":value` exactly as the emitter would.
-                    let arena = self.tree.arena();
-                    let mut sink = std::mem::take(&mut self.lits);
-                    let start = sink.len() as u32;
-                    let res = crate::binxml::ir_json::render_json_attr_member_materialized(
-                        arena, attr, &mut sink,
-                    );
-                    let lit_member = (start, sink.len() as u32);
-                    self.lits = sink;
+                    // Pre-render `"name":value` via the materialized layer.
+                    let start = self.lits.len() as u32;
+                    self.lits.push(b'"');
+                    self.lits.extend_from_slice(attr.name.as_str().as_bytes());
+                    self.lits.extend_from_slice(b"\":");
+                    let number = self
+                        .try_as_number_plain(&attr.value, false)
+                        .map_err(|_| Bail)?;
+                    if !number {
+                        self.lits.push(b'"');
+                        self.text_content_plain(&attr.value, false)
+                            .map_err(|_| Bail)?;
+                        self.lits.push(b'"');
+                    }
+                    let lit_member = (start, self.lits.len() as u32);
                     self.run_start = self.lits.len();
-                    res.map_err(|_| Bail)?;
                     parts.push(JAttrPart {
                         key: (0, 0),
                         lit_member,
@@ -1591,21 +1598,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut wrote_any = false;
 
         // `#attributes` for literal attrs (static decision + static bytes).
-        if !element.attrs.is_empty()
-            && element
-                .attrs
-                .iter()
-                .any(|a| a.value.iter().any(literal_nonempty))
-        {
-            let arena = self.tree.arena();
-            let mut sink = std::mem::take(&mut self.lits);
-            let res = crate::binxml::ir_json::render_json_attributes_object_materialized(
-                arena,
-                &element.attrs,
-                &mut sink,
-            );
-            self.lits = sink;
-            res.map_err(|_| Bail)?;
+        if !element.attrs.is_empty() && self.attrs_object_plain(&element.attrs).map_err(|_| Bail)? {
             wrote_any = true;
         }
 
@@ -1683,16 +1676,10 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             }
                             wrote_any = true;
                             // Key: JSON-escaped literal name text.
-                            let arena = self.tree.arena();
-                            let mut sink = std::mem::take(&mut self.lits);
-                            let res =
-                                crate::binxml::ir_json::render_json_key_from_nodes_materialized(
-                                    arena,
-                                    &attr.value,
-                                    &mut sink,
-                                );
-                            self.lits = sink;
-                            res.map_err(|_| Bail)?;
+                            self.lits.push(b'"');
+                            self.text_content_plain(&attr.value, false)
+                                .map_err(|_| Bail)?;
+                            self.lits.extend_from_slice(b"\":");
                             self.compile_data_value(*id)?;
                         } else if !positional_emitted && !positional_data.is_empty() {
                             positional_emitted = true;
@@ -1768,14 +1755,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     fn compile_data_value(&mut self, id: ElementId) -> std::result::Result<(), Bail> {
         let element = self.element(id);
         if !subtree_has_placeholder(self.tree, element) {
-            let mut sink = std::mem::take(&mut self.lits);
-            let res = crate::binxml::ir_json::render_json_data_value_materialized(
-                self.tree.arena(),
-                element,
-                &mut sink,
-            );
-            self.lits = sink;
-            return res.map_err(|_| Bail);
+            return self.data_element_value_plain(element).map_err(|_| Bail);
         }
         if element.children.len() == 1
             && let Node::Placeholder(ph) = &element.children[0]
@@ -2013,4 +1993,657 @@ fn exec_json(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// JSON materialized layer (the old JsonEmitter semantics over plain nodes)
+// ---------------------------------------------------------------------------
+//
+// These methods are the single implementation of JSON record rendering: the
+// slow lane walks fully materialized trees through them, and the compiler
+// calls them for placeholder-free pieces (subtrees, literal attributes,
+// literal `Data` elements). Placeholder nodes are real errors here, mirroring
+// the legacy emitter's behavior on materialized trees.
+
+/// Render a fully materialized record tree to JSON (the single-walker slow
+/// lane), honoring `--separate-json-attributes`.
+pub(crate) fn render_tree_json(
+    tree: &IrTree<'_>,
+    settings: &ParserSettings,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let mut c = JsonCompiler {
+        tree,
+        lits: std::mem::take(out),
+        ops: Vec::new(),
+        run_start: 0,
+        elem_slots: Vec::new(),
+        constraints: Vec::new(),
+        vr: ValueRenderer::new(),
+        formatter: sonic_rs::format::CompactFormatter,
+        separate: settings.should_separate_json_attributes(),
+    };
+    let res = c.render_root_plain();
+    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+    *out = c.lits;
+    res
+}
+
+impl<'t, 'a> JsonCompiler<'t, 'a> {
+    /// Mirrors `render_json_with_scope` for a materialized tree.
+    fn render_root_plain(&mut self) -> Result<()> {
+        let root = self.tree.root_element();
+        self.lits.push(b'{');
+        if self.separate {
+            if !root.attrs.is_empty() && self.render_separate_attrs_plain(root, 0)? {
+                self.lits.push(b',');
+            }
+            self.key_with_suffix_plain(root.name.as_str(), 0);
+            self.write_element_value_no_attrs_plain(root, false)?;
+        } else {
+            self.lits.push(b'"');
+            self.lits.extend_from_slice(root.name.as_str().as_bytes());
+            self.lits.extend_from_slice(b"\":");
+            self.write_element_value_plain(root, false)?;
+        }
+        self.lits.push(b'}');
+        Ok(())
+    }
+
+    fn element_ref(&self, id: ElementId) -> &'t Element<'a> {
+        self.tree.arena().get(id).expect("invalid element id")
+    }
+
+    // --- small writers ---
+
+    fn key_with_suffix_plain(&mut self, name: &str, suffix: u16) {
+        self.lits.push(b'"');
+        self.lits.extend_from_slice(name.as_bytes());
+        if suffix > 0 {
+            self.lits.push(b'_');
+            self.lits.extend_from_slice(suffix.to_string().as_bytes());
+        }
+        self.lits.extend_from_slice(b"\":");
+    }
+
+    fn json_escaped_str_plain(&mut self, s: &str) -> Result<()> {
+        use sonic_rs::format::Formatter;
+        self.formatter
+            .write_string_fast(&mut self.lits, s, false)
+            .map_err(crate::err::EvtxError::from)?;
+        Ok(())
+    }
+
+    fn json_text_plain(&mut self, text: &Text<'_>) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        match text {
+            Text::Utf16(value) => {
+                let bytes = value.as_bytes();
+                let units = bytes.len() / 2;
+                if units > 0 {
+                    utf16_simd::write_json_utf16le(&mut self.lits, bytes, units, false)
+                        .map_err(crate::err::EvtxError::from)?;
+                }
+                Ok(())
+            }
+            Text::Utf8(value) => self.json_escaped_str_plain(value),
+        }
+    }
+
+    fn write_u64_plain(&mut self, v: u64) -> Result<()> {
+        use sonic_rs::format::Formatter;
+        self.formatter
+            .write_u64(&mut self.lits, v)
+            .map_err(crate::err::EvtxError::from)?;
+        Ok(())
+    }
+
+    fn write_i64_plain(&mut self, v: i64) -> Result<()> {
+        use sonic_rs::format::Formatter;
+        self.formatter
+            .write_i64(&mut self.lits, v)
+            .map_err(crate::err::EvtxError::from)?;
+        Ok(())
+    }
+
+    /// Mirrors `write_value_as_number`.
+    fn value_as_number_plain(
+        &mut self,
+        value: &crate::binxml::value_variant::BinXmlValue<'_>,
+    ) -> Result<bool> {
+        use crate::binxml::value_variant::BinXmlValue;
+        match value {
+            BinXmlValue::Int8Type(v) => self.write_i64_plain(i64::from(*v)).map(|_| true),
+            BinXmlValue::Int16Type(v) => self.write_i64_plain(i64::from(*v)).map(|_| true),
+            BinXmlValue::Int32Type(v) => self.write_i64_plain(i64::from(*v)).map(|_| true),
+            BinXmlValue::Int64Type(v) => self.write_i64_plain(*v).map(|_| true),
+            BinXmlValue::UInt8Type(v) => self.write_u64_plain(u64::from(*v)).map(|_| true),
+            BinXmlValue::UInt16Type(v) => self.write_u64_plain(u64::from(*v)).map(|_| true),
+            BinXmlValue::UInt32Type(v) => self.write_u64_plain(u64::from(*v)).map(|_| true),
+            BinXmlValue::UInt64Type(v) => self.write_u64_plain(*v).map(|_| true),
+            BinXmlValue::BoolType(v) => {
+                self.lits
+                    .extend_from_slice(if *v { b"true" } else { b"false" });
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    // --- content scans (scan_class over plain nodes, ctx-None semantics) ---
+
+    /// Mirrors `scan_class` with a materialized scope: is this node non-empty
+    /// "text-like" content?
+    fn node_is_content_plain(node: &Node<'_>) -> bool {
+        match node {
+            Node::Text(t) | Node::CData(t) => !t.is_empty(),
+            Node::EntityRef(_) | Node::CharRef(_) => true,
+            Node::Value(v) => !crate::model::ir::is_optional_empty(v),
+            // Materialized trees should not contain placeholders; classify as
+            // content so the emitting pass reports the error.
+            Node::Placeholder(_) => true,
+            Node::Element(_) | Node::PITarget(_) | Node::PIData(_) => false,
+        }
+    }
+
+    fn has_text_content_plain(nodes: &[Node<'_>]) -> bool {
+        nodes.iter().any(Self::node_is_content_plain)
+    }
+
+    /// Mirrors `content_layout`: `(has_text, has_element_child)`.
+    fn content_layout_plain(element: &Element<'_>) -> (bool, bool) {
+        let mut has_text = false;
+        let mut has_element_child = element.has_element_child;
+        for node in &element.children {
+            if matches!(node, Node::Element(_)) {
+                has_element_child = true;
+            } else if Self::node_is_content_plain(node) {
+                has_text = true;
+            }
+            if has_text && has_element_child {
+                break;
+            }
+        }
+        (has_text, has_element_child)
+    }
+
+    /// Mirrors `attr_flags`: `(has_any, has_any_non_empty_value)`.
+    fn attr_flags_plain(attrs: &[Attr<'_>]) -> (bool, bool) {
+        if attrs.is_empty() {
+            return (false, false);
+        }
+        for attr in attrs {
+            if Self::has_text_content_plain(&attr.value) {
+                return (true, true);
+            }
+        }
+        (true, false)
+    }
+
+    // --- text/value content rendering (mirrors write_json_text_content etc.) ---
+
+    /// Mirrors `write_json_text_content` (no surrounding quotes).
+    fn text_content_plain(&mut self, nodes: &[Node<'a>], skip_elements: bool) -> Result<()> {
+        for node in nodes {
+            match node {
+                Node::Text(text) | Node::CData(text) => self.json_text_plain(text)?,
+                Node::Value(value) => {
+                    let mut sink = std::mem::take(&mut self.lits);
+                    let res = self.vr.write_json_value_text(&mut sink, value);
+                    self.lits = sink;
+                    res?;
+                }
+                Node::CharRef(ch) => {
+                    // In JSON, emit the resolved character (not `&#...;`).
+                    if let Some(ch) = char::from_u32(u32::from(*ch)) {
+                        let mut buf = [0_u8; 4];
+                        let s = ch.encode_utf8(&mut buf);
+                        self.json_escaped_str_plain(s)?;
+                    } else {
+                        self.lits.extend_from_slice(b"&#");
+                        self.write_u64_plain(u64::from(*ch))?;
+                        self.lits.push(b';');
+                    }
+                }
+                Node::EntityRef(name) => {
+                    let resolved = match name.as_str() {
+                        "quot" => Some("\""),
+                        "apos" => Some("'"),
+                        "amp" => Some("&"),
+                        "lt" => Some("<"),
+                        "gt" => Some(">"),
+                        _ => None,
+                    };
+                    match resolved {
+                        Some(s) => self.json_escaped_str_plain(s)?,
+                        None => {
+                            self.lits.push(b'&');
+                            self.lits.extend_from_slice(name.as_str().as_bytes());
+                            self.lits.push(b';');
+                        }
+                    }
+                }
+                Node::PITarget(_) | Node::PIData(_) => {}
+                Node::Placeholder(_) => return Err(unresolved_placeholder()),
+                Node::Element(_) => {
+                    if skip_elements {
+                        continue;
+                    }
+                    return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                        "unexpected element node in text context",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Mirrors `try_write_as_number` / `try_write_as_number_skip_elements`.
+    fn try_as_number_plain(&mut self, nodes: &[Node<'a>], skip_elements: bool) -> Result<bool> {
+        let mut single: Option<&Node<'a>> = None;
+        for node in nodes {
+            match node {
+                Node::Element(_) => {
+                    if skip_elements {
+                        continue;
+                    }
+                    return Ok(false);
+                }
+                Node::Text(t) | Node::CData(t) => {
+                    if skip_elements {
+                        if !t.is_empty() {
+                            return Ok(false);
+                        }
+                    } else if single.is_some() || !t.is_empty() {
+                        return Ok(false);
+                    } else {
+                        // Non-skip mode counts every node; an empty text node
+                        // still occupies the single slot.
+                        single = Some(node);
+                    }
+                }
+                Node::Value(v) => {
+                    if skip_elements && crate::model::ir::is_optional_empty(v) {
+                        continue;
+                    }
+                    if single.is_some() {
+                        return Ok(false);
+                    }
+                    single = Some(node);
+                }
+                Node::CharRef(_) | Node::EntityRef(_) => return Ok(false),
+                Node::PITarget(_) | Node::PIData(_) => {
+                    if !skip_elements && single.is_some() {
+                        return Ok(false);
+                    }
+                    if !skip_elements {
+                        single = Some(node);
+                    }
+                }
+                Node::Placeholder(_) => {
+                    if skip_elements {
+                        return Err(unresolved_placeholder());
+                    }
+                    return Ok(false);
+                }
+            }
+        }
+        match single {
+            Some(Node::Value(value)) => self.value_as_number_plain(value),
+            _ => Ok(false),
+        }
+    }
+
+    /// Mirrors `render_content_as_json_value`.
+    fn content_as_json_value_plain(
+        &mut self,
+        nodes: &[Node<'a>],
+        skip_elements: bool,
+    ) -> Result<()> {
+        if self.try_as_number_plain(nodes, skip_elements)? {
+            return Ok(());
+        }
+        self.lits.push(b'"');
+        self.text_content_plain(nodes, skip_elements)?;
+        self.lits.push(b'"');
+        Ok(())
+    }
+
+    // --- attributes ---
+
+    /// Mirrors `render_attributes_object_body`.
+    fn attrs_object_body_plain(&mut self, attrs: &[Attr<'a>]) -> Result<bool> {
+        let mut wrote_any = false;
+        let mut first = true;
+        for attr in attrs {
+            if !Self::has_text_content_plain(&attr.value) {
+                continue;
+            }
+            if !first {
+                self.lits.push(b',');
+            }
+            first = false;
+            wrote_any = true;
+            self.lits.push(b'"');
+            self.lits.extend_from_slice(attr.name.as_str().as_bytes());
+            self.lits.extend_from_slice(b"\":");
+            if self.try_as_number_plain(&attr.value, false)? {
+                continue;
+            }
+            self.lits.push(b'"');
+            self.text_content_plain(&attr.value, false)?;
+            self.lits.push(b'"');
+        }
+        Ok(wrote_any)
+    }
+
+    /// Mirrors `render_attributes_object`.
+    fn attrs_object_plain(&mut self, attrs: &[Attr<'a>]) -> Result<bool> {
+        let (_has_any, has_text) = Self::attr_flags_plain(attrs);
+        if !has_text {
+            return Ok(false);
+        }
+        self.lits.extend_from_slice(b"\"#attributes\":{");
+        let wrote_any = self.attrs_object_body_plain(attrs)?;
+        self.lits.push(b'}');
+        Ok(wrote_any)
+    }
+
+    /// Mirrors `render_separate_attributes_for_element`.
+    fn render_separate_attrs_plain(&mut self, element: &Element<'a>, suffix: u16) -> Result<bool> {
+        if element.attrs.is_empty() {
+            return Ok(false);
+        }
+        let (_has_any, has_text) = Self::attr_flags_plain(&element.attrs);
+        if !has_text {
+            return Ok(false);
+        }
+        self.lits.push(b'"');
+        self.lits
+            .extend_from_slice(element.name.as_str().as_bytes());
+        if suffix > 0 {
+            self.lits.push(b'_');
+            self.write_u64_plain(u64::from(suffix))?;
+        }
+        self.lits.extend_from_slice(b"_attributes\":{");
+        let wrote_any = self.attrs_object_body_plain(&element.attrs)?;
+        self.lits.push(b'}');
+        Ok(wrote_any)
+    }
+
+    // --- element values ---
+
+    /// Mirrors `try_write_leaf_value`.
+    fn try_leaf_value_plain(
+        &mut self,
+        element: &Element<'a>,
+        empty_as_string: bool,
+    ) -> Result<bool> {
+        if element.has_element_child || element.children.len() != 1 {
+            return Ok(false);
+        }
+        let empty: &[u8] = if empty_as_string { b"\"\"" } else { b"null" };
+        match &element.children[0] {
+            Node::Text(text) => {
+                if text.is_empty() {
+                    self.lits.extend_from_slice(empty);
+                } else {
+                    self.lits.push(b'"');
+                    self.json_text_plain(text)?;
+                    self.lits.push(b'"');
+                }
+                Ok(true)
+            }
+            Node::Value(value) => {
+                if crate::model::ir::is_optional_empty(value) {
+                    self.lits.extend_from_slice(empty);
+                    return Ok(true);
+                }
+                if self.value_as_number_plain(value)? {
+                    return Ok(true);
+                }
+                self.lits.push(b'"');
+                let mut sink = std::mem::take(&mut self.lits);
+                let res = self.vr.write_json_value_text(&mut sink, value);
+                self.lits = sink;
+                res?;
+                self.lits.push(b'"');
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Mirrors `render_data_element_value` (`""` for the empty case).
+    fn data_element_value_plain(&mut self, element: &Element<'a>) -> Result<()> {
+        if self.try_leaf_value_plain(element, true)? {
+            return Ok(());
+        }
+        let (has_text, has_element_child) = Self::content_layout_plain(element);
+        if !has_text && !has_element_child {
+            self.lits.extend_from_slice(b"\"\"");
+            return Ok(());
+        }
+        if has_element_child {
+            self.element_body_plain(element, false, true, has_text)
+        } else {
+            self.content_as_json_value_plain(&element.children, false)
+        }
+    }
+
+    /// Mirrors `write_element_value_no_attrs` (separate-attrs mode).
+    fn write_element_value_no_attrs_plain(
+        &mut self,
+        element: &Element<'a>,
+        child_is_container: bool,
+    ) -> Result<()> {
+        if self.try_leaf_value_plain(element, false)? {
+            return Ok(());
+        }
+        let (has_text, has_element_child) = Self::content_layout_plain(element);
+        if !has_element_child && !has_text {
+            self.lits.extend_from_slice(b"null");
+            Ok(())
+        } else if !has_element_child {
+            self.content_as_json_value_plain(&element.children, false)
+        } else {
+            self.element_body_plain(element, child_is_container, true, has_text)
+        }
+    }
+
+    /// Mirrors `write_element_value` (default mode).
+    fn write_element_value_plain(
+        &mut self,
+        element: &Element<'a>,
+        child_is_container: bool,
+    ) -> Result<()> {
+        if element.attrs.is_empty() && self.try_leaf_value_plain(element, false)? {
+            return Ok(());
+        }
+        let (has_text, has_element_child) = Self::content_layout_plain(element);
+        let (_has_attrs_any, has_attrs_text) = Self::attr_flags_plain(&element.attrs);
+
+        if !has_element_child && !has_text && !has_attrs_text {
+            self.lits.extend_from_slice(b"null");
+            Ok(())
+        } else if !has_element_child && !has_attrs_text {
+            self.content_as_json_value_plain(&element.children, false)
+        } else {
+            self.element_body_plain(element, child_is_container, false, has_text)
+        }
+    }
+
+    /// Mirrors `write_element_body_json` (materialized: no array expansion).
+    fn element_body_plain(
+        &mut self,
+        element: &Element<'a>,
+        in_data_container: bool,
+        omit_attributes: bool,
+        has_text: bool,
+    ) -> Result<()> {
+        // Flatten detection: one non-empty `Data[@Name]` selects named form.
+        let mut should_flatten_named_data = false;
+        if in_data_container {
+            for node in &element.children {
+                let Node::Element(id) = node else { continue };
+                let child = self.element_ref(*id);
+                if !is_data_element_name(child.name.as_str()) {
+                    continue;
+                }
+                let Some(name_nodes) = child
+                    .attrs
+                    .iter()
+                    .find(|a| a.name.as_str() == "Name")
+                    .map(|a| &a.value)
+                else {
+                    continue;
+                };
+                if Self::has_text_content_plain(name_nodes) {
+                    should_flatten_named_data = true;
+                    break;
+                }
+            }
+        }
+
+        let mut name_counts: Vec<(&'t str, u16)> = Vec::new();
+
+        self.lits.push(b'{');
+        let mut wrote_any = false;
+
+        if !omit_attributes
+            && !element.attrs.is_empty()
+            && self.attrs_object_plain(&element.attrs)?
+        {
+            wrote_any = true;
+        }
+
+        if has_text {
+            if wrote_any {
+                self.lits.push(b',');
+            }
+            wrote_any = true;
+            self.lits.extend_from_slice(b"\"#text\":");
+            self.content_as_json_value_plain(&element.children, true)?;
+        }
+
+        let positional_data_count = if in_data_container && !should_flatten_named_data {
+            element
+                .children
+                .iter()
+                .filter(|n| {
+                    matches!(n, Node::Element(id)
+                        if is_data_element_name(self.element_ref(*id).name.as_str()))
+                })
+                .count()
+        } else {
+            0
+        };
+        let mut positional_data_emitted = false;
+
+        for node in &element.children {
+            let Node::Element(id) = node else { continue };
+            let child = self.element_ref(*id);
+
+            if in_data_container && is_data_element_name(child.name.as_str()) {
+                if should_flatten_named_data {
+                    let Some(name_nodes) = child
+                        .attrs
+                        .iter()
+                        .find(|a| a.name.as_str() == "Name")
+                        .map(|a| &a.value)
+                    else {
+                        continue;
+                    };
+                    if !Self::has_text_content_plain(name_nodes) {
+                        continue;
+                    }
+                    if wrote_any {
+                        self.lits.push(b',');
+                    }
+                    wrote_any = true;
+                    self.lits.push(b'"');
+                    self.text_content_plain(name_nodes, false)?;
+                    self.lits.extend_from_slice(b"\":");
+                    self.data_element_value_plain(child)?;
+                } else if !positional_data_emitted && positional_data_count > 0 {
+                    if wrote_any {
+                        self.lits.push(b',');
+                    }
+                    wrote_any = true;
+                    positional_data_emitted = true;
+                    self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                    if positional_data_count == 1 {
+                        self.data_element_value_plain(child)?;
+                    } else {
+                        self.lits.push(b'[');
+                        let mut first = true;
+                        for node2 in &element.children {
+                            let Node::Element(id2) = node2 else { continue };
+                            let candidate = self.element_ref(*id2);
+                            if !is_data_element_name(candidate.name.as_str()) {
+                                continue;
+                            }
+                            if !first {
+                                self.lits.push(b',');
+                            }
+                            first = false;
+                            self.data_element_value_plain(candidate)?;
+                        }
+                        self.lits.push(b']');
+                    }
+                    self.lits.push(b'}');
+                }
+                continue;
+            }
+
+            // Normal child member with `_N` suffixing.
+            let cname = child.name.as_str();
+            let suffix = {
+                let mut found = None;
+                for (n, c) in name_counts.iter_mut() {
+                    if *n == cname {
+                        let s = *c;
+                        *c += 1;
+                        found = Some(s);
+                        break;
+                    }
+                }
+                match found {
+                    Some(s) => s,
+                    None => {
+                        name_counts.push((cname, 1));
+                        0
+                    }
+                }
+            };
+
+            if wrote_any {
+                self.lits.push(b',');
+            }
+            wrote_any = true;
+
+            let child_is_container = is_data_container_name(cname);
+            if self.separate {
+                let wrote_attrs = self.render_separate_attrs_plain(child, suffix)?;
+                let (child_text, child_elem) = Self::content_layout_plain(child);
+                let child_has_value = child_elem || child_text;
+                let write_value = child_has_value || !wrote_attrs;
+                if wrote_attrs && write_value {
+                    self.lits.push(b',');
+                }
+                if write_value {
+                    self.key_with_suffix_plain(cname, suffix);
+                    self.write_element_value_no_attrs_plain(child, child_is_container)?;
+                }
+            } else {
+                self.key_with_suffix_plain(cname, suffix);
+                self.write_element_value_plain(child, child_is_container)?;
+            }
+        }
+
+        self.lits.push(b'}');
+        Ok(())
+    }
 }

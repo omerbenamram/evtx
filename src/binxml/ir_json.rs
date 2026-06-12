@@ -86,7 +86,9 @@ use crate::binxml::render_ctx::{
 use crate::binxml::value_render::ValueRenderer;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
-use crate::model::ir::{Attr, Element, IrArena, IrTree, Name, Node, Text, is_optional_empty};
+#[cfg(feature = "bench")]
+use crate::model::ir::IrArena;
+use crate::model::ir::{Attr, Element, IrTree, Name, Node, Text, is_optional_empty};
 use crate::utils::Utf16LeSlice;
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
@@ -1174,75 +1176,6 @@ impl<'w, W: WriteExt> JsonEmitter<'w, W> {
         }
         Ok(())
     }
-}
-
-/// Compiled-template helpers: render materialized (placeholder-free) pieces
-/// with the real emitter so compile-time literal output is parity by
-/// construction.
-pub(crate) fn render_json_element_value_materialized(
-    arena: &IrArena<'_>,
-    element: &Element<'_>,
-    child_is_container: bool,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut emitter = JsonEmitter::new(out, false);
-    emitter.write_element_value(
-        Scope::materialized(arena),
-        element,
-        None,
-        child_is_container,
-    )?;
-    emitter.flush()
-}
-
-/// Render one literal attribute as a `"name":value` member (no commas).
-pub(crate) fn render_json_attr_member_materialized(
-    arena: &IrArena<'_>,
-    attr: &Attr<'_>,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut emitter = JsonEmitter::new(out, false);
-    let scope = Scope::materialized(arena);
-    emitter.write_byte(b'\"')?;
-    emitter.write_name(attr.name.as_str())?;
-    emitter.write_bytes(b"\":")?;
-    if !emitter.try_write_as_number(scope, &attr.value, None)? {
-        emitter.render_text_to_json_string(scope, &attr.value, false, None)?;
-    }
-    emitter.flush()
-}
-
-/// Render a full `"#attributes":{...}` member for literal attributes.
-pub(crate) fn render_json_attributes_object_materialized(
-    arena: &IrArena<'_>,
-    attrs: &[Attr<'_>],
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut emitter = JsonEmitter::new(out, false);
-    emitter.render_attributes_object(Scope::materialized(arena), attrs, None)?;
-    emitter.flush()
-}
-
-/// Render a JSON object key (escaped) from literal nodes, with trailing `:`.
-pub(crate) fn render_json_key_from_nodes_materialized(
-    arena: &IrArena<'_>,
-    nodes: &[Node<'_>],
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut emitter = JsonEmitter::new(out, false);
-    emitter.write_json_key_from_nodes(Scope::materialized(arena), nodes, None)?;
-    emitter.flush()
-}
-
-/// Render a literal `<Data>` element's JSON value (`""` when empty).
-pub(crate) fn render_json_data_value_materialized(
-    arena: &IrArena<'_>,
-    element: &Element<'_>,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut emitter = JsonEmitter::new(out, false);
-    emitter.render_data_element_value(Scope::materialized(arena), element, None)?;
-    emitter.flush()
 }
 
 /// Benchmark-only helper to measure JSON text rendering.

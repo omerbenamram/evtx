@@ -96,8 +96,6 @@ fn render_chunk(
     format: RenderFormat,
     record_numbers: bool,
 ) -> ChunkBatch<RenderedChunk> {
-    use crate::binxml::ir_json::render_json_record;
-
     match chunk_res {
         Err(err) => ChunkBatch {
             payload: RenderedChunk {
@@ -196,7 +194,9 @@ fn render_chunk(
                                                 )
                                             }
                                             RenderFormat::Json => {
-                                                render_json_record(&tree, &settings, &mut data)
+                                                crate::binxml::compiled::render_tree_json(
+                                                    &tree, &settings, &mut data,
+                                                )
                                             }
                                         }
                                         .map_err(|err| {
