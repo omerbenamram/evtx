@@ -37,8 +37,6 @@ const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 struct LitRange(u32, u32);
 
 impl LitRange {
-    const EMPTY: LitRange = LitRange(0, 0);
-
     /// The literal bytes this range denotes.
     fn of(self, lits: &[u8]) -> &[u8] {
         &lits[self.0 as usize..self.1 as usize]
@@ -46,6 +44,20 @@ impl LitRange {
 }
 /// A `Preflight::slots` index range (one instance's slots).
 type SlotRange = (u32, u32);
+
+/// Duplicate-key `_N` suffix counter: 0 the first time `name` is seen (no
+/// suffix), then 1, 2, … for repeats. Shared by the JSON compiler (compile
+/// time) and the materialized layer (per record) so the rule cannot drift.
+fn next_name_suffix<K: PartialEq>(name: K, counts: &mut Vec<(K, u16)>) -> u16 {
+    if let Some((_, c)) = counts.iter_mut().find(|(n, _)| *n == name) {
+        let suffix = *c;
+        *c += 1;
+        suffix
+    } else {
+        counts.push((name, 1));
+        0
+    }
+}
 
 /// One compiled op. `slot` indexes the instance's substitution array.
 #[derive(Debug, Clone)]
@@ -231,7 +243,7 @@ fn unresolved_placeholder() -> crate::err::EvtxError {
 
 /// Compile a cached template definition into an XML program. Returns `None`
 /// for shapes the op set doesn't model.
-pub(crate) fn compile_xml_template(
+fn compile_xml_template(
     tree: &IrTree<'_>,
     has_literal_array: bool,
     base_indent: u16,
@@ -374,13 +386,13 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 if self.materialized {
                     return Err(unresolved_placeholder());
                 }
-                let name: Vec<u8> = element.name.as_str().as_bytes().to_vec();
+                let name = element.name.as_str().as_bytes();
                 let is_binary = element.name.as_str() == "Binary";
                 self.lits.push(b'>');
                 self.flush_lit_run();
                 let tail_text = self.side_range(|c| {
                     c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(&name);
+                    c.lits.extend_from_slice(name);
                     c.lits.push(b'>');
                     c.newline();
                 });
@@ -390,14 +402,14 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                         c.indent_str(indent);
                     }
                     c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(&name);
+                    c.lits.extend_from_slice(name);
                     c.lits.push(b'>');
                     c.newline();
                 });
                 let tail_elem = self.side_range(|c| {
                     c.indent_str(indent);
                     c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(&name);
+                    c.lits.extend_from_slice(name);
                     c.lits.push(b'>');
                     c.newline();
                 });
@@ -594,11 +606,11 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 _ => None,
             })
             .expect("counted placeholder");
-        let name: Vec<u8> = attr.name.as_str().as_bytes().to_vec();
+        let name = attr.name.as_str().as_bytes();
         self.flush_lit_run();
         let pre = self.side_range(|c| {
             c.lits.push(b' ');
-            c.lits.extend_from_slice(&name);
+            c.lits.extend_from_slice(name);
             c.lits.extend_from_slice(b"=\"");
         });
         self.ops.push(XOp::AttrVal { slot: ph.id, pre });
@@ -809,12 +821,12 @@ impl RawSlot {
 
     /// Index into `Preflight::nested` for resolved nested instances.
     fn nested_idx(&self) -> Option<usize> {
-        (self.nested != NO_NESTED).then(|| usize::from(self.nested))
+        (self.nested != NO_NESTED).then_some(usize::from(self.nested))
     }
 
     /// Index into `Preflight::ansi` for pre-decoded ANSI payloads.
     fn ansi_idx(&self) -> Option<usize> {
-        (self.ansi != NO_ANSI).then(|| self.ansi as usize)
+        (self.ansi != NO_ANSI).then_some(self.ansi as usize)
     }
 
     /// A non-empty embedded BinXML value (renders as an element).
@@ -886,7 +898,7 @@ enum TyClass {
     Sized,
     /// ANSI string: any length, pre-decoded at pre-flight.
     Ansi,
-    /// Hex integer of 4 or 8 bytes.
+    /// Pointer-width integer: 4 (32-bit) or 8 (64-bit) bytes.
     SizeT,
     /// `8 + 4 * sub_authority_count` bytes.
     Sid,
@@ -1156,10 +1168,12 @@ fn get_or_compile<'a, P: StoredProgram>(
     let store = &*chunk.program_store;
     let store_key = template_content_key(chunk, def_offset, &store.hasher)
         .map(|(guid, size, hash)| (guid, size, hash, base_indent, is_root));
+    // Lock sections are bare map reads/inserts (compilation happens outside),
+    // so a poisoned lock cannot hold inconsistent data: recover and continue.
     if let Some(sk) = store_key.as_ref()
         && let Some(entry) = P::shard(store)
             .read()
-            .expect("program store poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(sk)
     {
         progs.insert(key, entry.clone());
@@ -1176,7 +1190,7 @@ fn get_or_compile<'a, P: StoredProgram>(
     if let Some(sk) = store_key {
         P::shard(store)
             .write()
-            .expect("program store poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(sk, compiled.clone());
     }
     progs.insert(key, compiled.clone());
@@ -1445,17 +1459,14 @@ fn render_element_slot<'a>(
 // JSON programs
 // ---------------------------------------------------------------------------
 
-/// One attribute part inside a `JOp::Elem` `#attributes` object: either a
-/// pre-rendered literal member (`lit_member`) or a conditional placeholder
-/// member (`key` + value from `slot`).
+/// One attribute member inside a `JOp::Elem` `#attributes` object.
 #[derive(Debug, Clone)]
-struct JAttrPart {
-    /// `"name":` key bytes for placeholder attrs; empty for literal members.
-    key: LitRange,
-    /// Pre-rendered `"name":value` member for literal attrs.
-    lit_member: LitRange,
-    /// Placeholder slot (`u16::MAX` for literal members).
-    slot: u16,
+enum JAttrPart {
+    /// Pre-rendered `"name":value` member; always emitted.
+    Literal(LitRange),
+    /// Conditional member: `"name":` key bytes plus the value from `slot`,
+    /// omitted when the slot is empty.
+    Placeholder { key: LitRange, slot: u16 },
 }
 
 #[derive(Debug, Clone)]
@@ -1648,7 +1659,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     // Leaf shape: `null` when empty, primitive otherwise.
                     self.compile_leaf_val(ph.id, b"null", container)
                 } else {
-                    self.compile_elem_op(element, Some(ph.id), static_attr_text)
+                    self.compile_elem_op(element, Some(ph.id))
                 }
             }
             ChildrenKind::Empty => {
@@ -1657,7 +1668,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     // (subtree_has_placeholder was true, so this can't happen.)
                     Err(Bail)
                 } else {
-                    self.compile_elem_op(element, None, static_attr_text)
+                    self.compile_elem_op(element, None)
                 }
             }
             ChildrenKind::StaticInline => Err(Bail), // literal text + ph attrs: rare
@@ -1686,16 +1697,15 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     /// `JOp::Elem` for `<Tag attr=%a ...>%c?</Tag>` shapes.
+    ///
+    /// The caller decides leaf-vs-object form; literal attribute members are
+    /// emitted unconditionally here, which is what makes static attribute
+    /// text force the object form at run time.
     fn compile_elem_op(
         &mut self,
         element: &'t Element<'a>,
         content: Option<u16>,
-        static_attr_text: bool,
     ) -> std::result::Result<(), Bail> {
-        // `static_attr_text` forces the object form unconditionally, which is
-        // a shape the op models as "attrs always present"; handled below by
-        // emitting literal members. Build attr parts in order.
-        let _ = static_attr_text;
         let mut parts: Vec<JAttrPart> = Vec::with_capacity(element.attrs.len());
         self.flush_lit_run();
         for attr in &element.attrs {
@@ -1725,28 +1735,20 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     }
                     let lit_member = LitRange(start, self.lits.len() as u32);
                     self.run_start = self.lits.len();
-                    parts.push(JAttrPart {
-                        key: LitRange::EMPTY,
-                        lit_member,
-                        slot: u16::MAX,
-                    });
+                    parts.push(JAttrPart::Literal(lit_member));
                 }
                 1 if attr.value.len() == 1 => {
                     let Node::Placeholder(ph) = &attr.value[0] else {
                         return Err(Bail);
                     };
-                    let name = attr.name.as_str().as_bytes().to_vec();
+                    let name = attr.name.as_str().as_bytes();
                     let key = self.side_range(|c| {
                         c.lits.push(b'"');
-                        c.lits.extend_from_slice(&name);
+                        c.lits.extend_from_slice(name);
                         c.lits.extend_from_slice(b"\":");
                     });
                     self.constraints.push(SlotConstraint::ForbidElem(ph.id));
-                    parts.push(JAttrPart {
-                        key,
-                        lit_member: LitRange::EMPTY,
-                        slot: ph.id,
-                    });
+                    parts.push(JAttrPart::Placeholder { key, slot: ph.id });
                 }
                 _ => return Err(Bail),
             }
@@ -1822,18 +1824,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut positional_emitted = false;
 
         // Compile-time `_N` suffix counting for static members.
-        let mut static_names: Vec<(Vec<u8>, u16)> = Vec::new();
-        let next_suffix = |name: &[u8], names: &mut Vec<(Vec<u8>, u16)>| -> u16 {
-            for (n, c) in names.iter_mut() {
-                if n.as_slice() == name {
-                    let s = *c;
-                    *c += 1;
-                    return s;
-                }
-            }
-            names.push((name.to_vec(), 1));
-            0
-        };
+        let mut static_names: Vec<(&[u8], u16)> = Vec::new();
 
         let mut seen_slot_child = false;
         for node in &element.children {
@@ -1891,7 +1882,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         self.lits.push(b',');
                     }
                     wrote_any = true;
-                    let suffix = next_suffix(cname.as_bytes(), &mut static_names);
+                    let suffix = next_name_suffix(cname.as_bytes(), &mut static_names);
                     self.lits.push(b'"');
                     self.lits.extend_from_slice(cname.as_bytes());
                     if suffix > 0 {
@@ -2084,19 +2075,12 @@ fn exec_json(
                 empty,
             } => {
                 // Evaluate attribute member presence.
-                let mut attr_present = false;
-                for part in attrs.iter() {
-                    if part.slot == u16::MAX {
-                        attr_present = true;
-                        break;
+                let attr_present = attrs.iter().any(|part| match *part {
+                    JAttrPart::Literal(_) => true,
+                    JAttrPart::Placeholder { slot, .. } => {
+                        slot_at(slot).is_some_and(|s| !pf.slot_empty(&s, chunk.data))
                     }
-                    if let Some(s) = slot_at(part.slot)
-                        && !pf.slot_empty(&s, chunk.data)
-                    {
-                        attr_present = true;
-                        break;
-                    }
-                }
+                });
                 let content_slot =
                     content.and_then(|c| slot_at(c).filter(|s| !pf.slot_empty(s, chunk.data)));
                 match (attr_present, content_slot) {
@@ -2106,21 +2090,26 @@ fn exec_json(
                         out.extend_from_slice(b"{\"#attributes\":{");
                         let mut first = true;
                         for part in attrs.iter() {
-                            if part.slot == u16::MAX {
-                                if !first {
-                                    out.push(b',');
+                            match *part {
+                                JAttrPart::Literal(member) => {
+                                    if !first {
+                                        out.push(b',');
+                                    }
+                                    first = false;
+                                    write_lit!(member);
                                 }
-                                first = false;
-                                write_lit!(part.lit_member);
-                            } else if let Some(s) = slot_at(part.slot)
-                                && !pf.slot_empty(&s, chunk.data)
-                            {
-                                if !first {
-                                    out.push(b',');
+                                JAttrPart::Placeholder { key, slot } => {
+                                    if let Some(s) = slot_at(slot)
+                                        && !pf.slot_empty(&s, chunk.data)
+                                    {
+                                        if !first {
+                                            out.push(b',');
+                                        }
+                                        first = false;
+                                        write_lit!(key);
+                                        write_scalar!(s);
+                                    }
                                 }
-                                first = false;
-                                write_lit!(part.key);
-                                write_scalar!(s);
                             }
                         }
                         out.push(b'}');
@@ -2197,7 +2186,11 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
 }
 
 // ---------------------------------------------------------------------------
-// JSON materialized layer (the old JsonEmitter semantics over plain nodes)
+// JSON materialized layer (the old JsonEmitter semantics over plain nodes).
+//
+// This layer is the sole behavioral source of truth for JSON text: both the
+// slow lane (render_tree_json) and the compiler's pre-rendering of literal
+// content go through these `*_plain` methods, so the two lanes cannot drift.
 // ---------------------------------------------------------------------------
 //
 // These methods are the single implementation of JSON record rendering: the
@@ -2801,24 +2794,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
             // Normal child member with `_N` suffixing.
             let cname = child.name.as_str();
-            let suffix = {
-                let mut found = None;
-                for (n, c) in name_counts.iter_mut() {
-                    if *n == cname {
-                        let s = *c;
-                        *c += 1;
-                        found = Some(s);
-                        break;
-                    }
-                }
-                match found {
-                    Some(s) => s,
-                    None => {
-                        name_counts.push((cname, 1));
-                        0
-                    }
-                }
-            };
+            let suffix = next_name_suffix(cname, &mut name_counts);
 
             if wrote_any {
                 self.lits.push(b',');
