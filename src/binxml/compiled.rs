@@ -222,20 +222,10 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     fn compile_element(&mut self, id: ElementId, indent: u16) -> std::result::Result<(), Bail> {
         let element = self.element(id);
 
-        // Placeholder-free subtree: render with the real emitter for exact
-        // byte parity (covers names, attrs, layout, Binary special-casing).
-        if !subtree_has_placeholder(self.tree, element) {
-            render_xml_element_materialized(
-                self.tree.arena(),
-                id,
-                indent as usize,
-                self.indent_on,
-                &mut self.lits,
-            )
-            .map_err(|_| Bail)?;
-            return Ok(());
-        }
-
+        // Note: even placeholder-free subtrees are walked here (not delegated
+        // to the materialized emitter): template-scope layout classification
+        // (scan rule) differs from the materialized rule for present-but-empty
+        // literal children, and this walk is the template-lane source of truth.
         self.indent_str(indent);
         self.lits.push(b'<');
         self.lits
