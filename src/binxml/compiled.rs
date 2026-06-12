@@ -80,6 +80,26 @@ pub(crate) struct XmlProgram {
 /// Per-chunk program cache. `None` marks templates that failed to compile so
 /// they are not retried for every record.
 pub(crate) type ProgramCache<P> = AHashMap<(u32, u16, bool), Option<Rc<P>>>;
+
+/// Per-chunk render state for the per-record APIs (`EvtxRecord::into_*`).
+/// Fully owned (programs carry their own bytes), so `EvtxChunk` can hold it
+/// behind a `RefCell` without self-referential lifetimes.
+#[derive(Default)]
+pub(crate) struct RenderCaches {
+    pub(crate) xml: XmlProgramCache,
+    pub(crate) json: JsonProgramCache,
+    pub(crate) pf_xml: Preflight<XmlProgram>,
+    pub(crate) pf_json: Preflight<JsonProgram>,
+}
+
+impl std::fmt::Debug for RenderCaches {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderCaches")
+            .field("xml_programs", &self.xml.len())
+            .field("json_programs", &self.json.len())
+            .finish()
+    }
+}
 pub(crate) type XmlProgramCache = ProgramCache<XmlProgram>;
 pub(crate) type JsonProgramCache = ProgramCache<JsonProgram>;
 
@@ -247,6 +267,10 @@ fn render_subtree_xml(
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
+    fn element_ref(&self, id: ElementId) -> &'t Element<'a> {
+        self.tree.arena().get(id).expect("invalid element id")
+    }
+
     fn flush_lit_run(&mut self) {
         let end = self.lits.len();
         if end > self.run_start {
@@ -277,12 +301,8 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         }
     }
 
-    fn element(&self, id: ElementId) -> &'t Element<'a> {
-        self.tree.arena().get(id).expect("invalid element id")
-    }
-
     fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
-        let element = self.element(id);
+        let element = self.element_ref(id);
 
         // Note: even placeholder-free subtrees are walked here (not delegated
         // to the materialized emitter): template-scope layout classification
@@ -1338,7 +1358,7 @@ impl TemplateProgram for JsonProgram {
 }
 
 struct JsonCompiler<'t, 'a> {
-    tree: &'t IrTree<'a>,
+    tree: Option<&'t IrTree<'a>>,
     lits: Vec<u8>,
     ops: Vec<JOp>,
     run_start: usize,
@@ -1362,7 +1382,7 @@ fn compile_json_template(
     let root = tree.root_element();
     let root_container = is_data_container_name(root.name.as_str());
     let mut c = JsonCompiler {
-        tree,
+        tree: Some(tree),
         lits: Vec::with_capacity(512),
         ops: Vec::with_capacity(32),
         run_start: 0,
@@ -1416,6 +1436,10 @@ fn literal_nonempty(node: &Node<'_>) -> bool {
 }
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
+    fn tree(&self) -> &'t IrTree<'a> {
+        self.tree.expect("tree-bound walk")
+    }
+
     fn flush_lit_run(&mut self) {
         let end = self.lits.len();
         if end > self.run_start {
@@ -1432,10 +1456,6 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         (start, self.lits.len() as u32)
     }
 
-    fn element(&self, id: ElementId) -> &'t Element<'a> {
-        self.tree.arena().get(id).expect("invalid element id")
-    }
-
     /// `write_element_value` equivalent: emits the VALUE of `element` (the
     /// member key is the caller's responsibility).
     fn compile_element_value(
@@ -1443,11 +1463,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         id: ElementId,
         container: bool,
     ) -> std::result::Result<(), Bail> {
-        let element = self.element(id);
+        let element = self.element_ref(id);
 
         // Placeholder-free subtree: render via the materialized layer (the
         // same implementation the slow lane uses).
-        if !subtree_has_placeholder(self.tree, element) {
+        if !subtree_has_placeholder(self.tree(), element) {
             return self
                 .write_element_value_plain(element, container)
                 .map_err(|_| Bail);
@@ -1608,7 +1628,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if container {
             for node in &element.children {
                 if let Node::Element(id) = node {
-                    let child = self.element(*id);
+                    let child = self.element_ref(*id);
                     if is_data_element_name(child.name.as_str())
                         && let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name")
                     {
@@ -1628,7 +1648,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 .children
                 .iter()
                 .filter_map(|n| match n {
-                    Node::Element(id) if is_data_element_name(self.element(*id).name.as_str()) => {
+                    Node::Element(id)
+                        if is_data_element_name(self.element_ref(*id).name.as_str()) =>
+                    {
                         Some(*id)
                     }
                     _ => None,
@@ -1660,7 +1682,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     if seen_slot_child {
                         return Err(Bail); // static member after dynamic: comma hazard
                     }
-                    let child = self.element(*id);
+                    let child = self.element_ref(*id);
                     let cname = child.name.as_str();
                     if container && is_data_element_name(cname) {
                         if flatten_named {
@@ -1753,8 +1775,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// placeholder -> LeafVal with `""` empty form; literal-only -> rendered
     /// at compile time; anything else bails.
     fn compile_data_value(&mut self, id: ElementId) -> std::result::Result<(), Bail> {
-        let element = self.element(id);
-        if !subtree_has_placeholder(self.tree, element) {
+        let element = self.element_ref(id);
+        if !subtree_has_placeholder(self.tree(), element) {
             return self.data_element_value_plain(element).map_err(|_| Bail);
         }
         if element.children.len() == 1
@@ -1995,6 +2017,25 @@ fn exec_json(
     Ok(())
 }
 
+/// Benchmark-only entry to the JSON text-content path.
+#[cfg(feature = "bench")]
+pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> Result<()> {
+    let mut c = JsonCompiler {
+        tree: None,
+        lits: std::mem::take(out),
+        ops: Vec::new(),
+        run_start: 0,
+        elem_slots: Vec::new(),
+        constraints: Vec::new(),
+        vr: ValueRenderer::new(),
+        formatter: sonic_rs::format::CompactFormatter,
+        separate: false,
+    };
+    let res = c.text_content_plain(nodes, false);
+    *out = c.lits;
+    res
+}
+
 // ---------------------------------------------------------------------------
 // JSON materialized layer (the old JsonEmitter semantics over plain nodes)
 // ---------------------------------------------------------------------------
@@ -2013,7 +2054,7 @@ pub(crate) fn render_tree_json(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let mut c = JsonCompiler {
-        tree,
+        tree: Some(tree),
         lits: std::mem::take(out),
         ops: Vec::new(),
         run_start: 0,
@@ -2032,7 +2073,7 @@ pub(crate) fn render_tree_json(
 impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Mirrors `render_json_with_scope` for a materialized tree.
     fn render_root_plain(&mut self) -> Result<()> {
-        let root = self.tree.root_element();
+        let root = self.tree().root_element();
         self.lits.push(b'{');
         if self.separate {
             if !root.attrs.is_empty() && self.render_separate_attrs_plain(root, 0)? {
@@ -2051,7 +2092,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     fn element_ref(&self, id: ElementId) -> &'t Element<'a> {
-        self.tree.arena().get(id).expect("invalid element id")
+        self.tree().arena().get(id).expect("invalid element id")
     }
 
     // --- small writers ---

@@ -9,7 +9,6 @@ use encoding::EncodingRef;
 
 use crate::ParserSettings;
 use crate::binxml::ir::{build_wevt_template_definition_ir, instantiate_template_definition_ir};
-use crate::binxml::ir_xml::render_xml_record;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{IrTree, TemplateValue};
@@ -97,7 +96,7 @@ pub fn render_template_definition_to_xml_with_values<'a>(
 fn render_ir_xml(tree: &IrTree<'_>, ansi_codec: EncodingRef) -> Result<String> {
     let settings = ParserSettings::default().ansi_codec(ansi_codec);
     let mut out = Vec::new();
-    render_xml_record(tree, &settings, &mut out)?;
+    crate::binxml::compiled::render_tree_xml(tree, &settings, &mut out)?;
     String::from_utf8(out).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 

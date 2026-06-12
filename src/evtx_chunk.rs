@@ -170,6 +170,8 @@ pub struct EvtxChunk<'chunk> {
     pub arena: Bump,
 
     pub(crate) settings: Arc<ParserSettings>,
+    /// Lazily-populated per-chunk program caches for `EvtxRecord::into_*`.
+    pub(crate) render_caches: std::cell::RefCell<crate::binxml::compiled::RenderCaches>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -204,6 +206,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             string_cache,
             arena,
             settings,
+            render_caches: Default::default(),
         })
     }
 

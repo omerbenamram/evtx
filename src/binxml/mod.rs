@@ -4,9 +4,6 @@ pub mod value_variant;
 pub(crate) mod array_expand;
 pub(crate) mod compiled;
 pub(crate) mod ir;
-pub(crate) mod ir_json;
-pub(crate) mod ir_xml;
-pub(crate) mod render_ctx;
 pub(crate) mod tokens;
 pub(crate) mod value_render;
 
@@ -20,15 +17,15 @@ pub mod bench {
     use crate::err::Result;
     use crate::model::ir::{IrArena, Node};
     use bumpalo::Bump;
-    use sonic_rs::writer::WriteExt;
 
     /// Invoke the internal JSON text rendering path on a pre-built node slice.
-    pub fn write_json_text_content<'a, W: WriteExt>(
-        writer: &mut W,
+    pub fn write_json_text_content<'a>(
+        writer: &mut Vec<u8>,
         arena: &'a IrArena<'a>,
         nodes: &[Node<'a>],
     ) -> Result<()> {
-        super::ir_json::bench_write_json_text_content(writer, arena, nodes)
+        let _ = arena;
+        super::compiled::bench_json_text_content(writer, nodes)
     }
 
     /// Benchmark-only wrapper around the template cache used in IR building.

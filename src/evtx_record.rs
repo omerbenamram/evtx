@@ -1,7 +1,5 @@
 use crate::EvtxChunk;
 use crate::binxml::ir::RecordContent;
-use crate::binxml::ir_json::render_json_record_content;
-use crate::binxml::ir_xml::render_xml_record_content;
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
 use crate::utils::ByteCursor;
 use crate::utils::bytes;
@@ -105,6 +103,68 @@ impl<'a> EvtxRecord<'a> {
         })
     }
 
+    /// Render the record through the compiled-template machinery: cached
+    /// program when the record's templates compile (the common case), the
+    /// same materialized walker otherwise.
+    fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
+        use crate::binxml::compiled::{
+            render_tree_json, render_tree_xml, try_render_json_compiled, try_render_xml_compiled,
+        };
+        use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
+        use crate::binxml::value_render::ValueRenderer;
+
+        let chunk = self.chunk;
+        let start = self.binxml_offset as usize;
+        let bytes = &chunk.data[start..start + self.binxml_size as usize];
+        let caches = &mut *chunk.render_caches.borrow_mut();
+        // Program-cache misses re-parse the template through this transient
+        // cache (once per template per chunk); hits skip it entirely.
+        let mut ir_cache = IrTemplateCache::with_capacity(0, &chunk.arena);
+        let mut vr = ValueRenderer::new();
+        let done = if json {
+            try_render_json_compiled(
+                bytes,
+                chunk,
+                &mut ir_cache,
+                &mut caches.json,
+                &mut caches.pf_json,
+                &chunk.settings,
+                &mut vr,
+                data,
+            )
+        } else {
+            try_render_xml_compiled(
+                bytes,
+                chunk,
+                &mut ir_cache,
+                &mut caches.xml,
+                &mut caches.pf_xml,
+                &chunk.settings,
+                &mut vr,
+                data,
+            )
+        };
+        if done {
+            return Ok(());
+        }
+        // Slow lane: walk a fully materialized tree (reusing the one built at
+        // iteration time when available).
+        let render = |tree: &crate::model::ir::IrTree<'_>, data: &mut Vec<u8>| {
+            if json {
+                render_tree_json(tree, &chunk.settings, data)
+            } else {
+                render_tree_xml(tree, &chunk.settings, data)
+            }
+        };
+        match &self.content {
+            RecordContent::Tree(tree) => render(tree, data),
+            RecordContent::Template => {
+                let tree = build_tree_from_binxml_bytes_direct(bytes, chunk, &mut ir_cache)?;
+                render(&tree, data)
+            }
+        }
+    }
+
     /// Consumes the record and renders it as compact JSON bytes (no UTF-8 validation pass).
     ///
     /// The renderers only emit valid UTF-8; use this in write-to-sink paths where the
@@ -112,12 +172,11 @@ impl<'a> EvtxRecord<'a> {
     pub fn into_json_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
         // Estimate buffer size based on BinXML size
         let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
-        render_json_record_content(&self.content, &self.chunk.settings, &mut data).map_err(
-            |e| EvtxError::FailedToParseRecord {
+        self.render_into(true, &mut data)
+            .map_err(|e| EvtxError::FailedToParseRecord {
                 record_id: self.event_record_id,
                 source: Box::new(e),
-            },
-        )?;
+            })?;
         Ok(SerializedEvtxRecord {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
@@ -133,12 +192,11 @@ impl<'a> EvtxRecord<'a> {
     /// Consumes the record and renders it as XML bytes (no UTF-8 validation pass).
     pub fn into_xml_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
         let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
-        render_xml_record_content(&self.content, &self.chunk.settings, &mut data).map_err(|e| {
-            EvtxError::FailedToParseRecord {
+        self.render_into(false, &mut data)
+            .map_err(|e| EvtxError::FailedToParseRecord {
                 record_id: self.event_record_id,
                 source: Box::new(e),
-            }
-        })?;
+            })?;
         Ok(SerializedEvtxRecord {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,

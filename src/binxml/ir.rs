@@ -58,8 +58,9 @@
 //!   children += [ Element(Data{ "a" }), Element(Data{ "b" }) ]
 //! ```
 //!
-//! The JSON/XML renderers (`binxml::ir_json`, `binxml::ir_xml`) assume templates have already
-//! been instantiated and all placeholders have been resolved/expanded.
+//! The renderers (`binxml::compiled`) assume materialized trees have all
+//! placeholders resolved/expanded; cached-template programs resolve them at
+//! execution time.
 //!
 //! ## Parser implementation notes
 //!
@@ -203,8 +204,7 @@ impl<'a> IrTemplateCache<'a> {
         let template =
             self.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
         arena.reserve(template.arena().count());
-        let values =
-            template_values_from_values_in(template_ref.values, chunk, self, arena, None, bump)?;
+        let values = template_values_from_values_in(template_ref.values, chunk, self, arena, bump)?;
         let (root, _needs_array_expansion) = clone_and_resolve(
             template.arena(),
             template.root(),
@@ -860,89 +860,72 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
 
 /// Parsed record content, as produced by [`build_record_content`].
 ///
-/// The dominant record shape (`fragment header + single template instance`) is kept
-/// unmaterialized: the renderers walk the cached template tree directly and resolve
-/// substitutions on the fly (see `binxml::render_ctx`), skipping the per-record
-/// `clone_and_resolve` deep clone. Every other shape falls back to the materialized tree.
+/// The dominant record shape (`fragment header + single template instance`)
+/// is validated (templates parsed/cached, every substitution decoded — same
+/// error surface as full materialization) but not materialized: rendering
+/// happens straight from the record bytes via `binxml::compiled`. Every other
+/// shape gets a materialized tree, which the same walker renders.
 #[derive(Debug, Clone)]
 pub(crate) enum RecordContent<'a> {
     Tree(IrTree<'a>),
-    Template(TemplateContent<'a>),
+    Template,
 }
 
-/// One unmaterialized template instance: the cached definition tree, the
-/// decoded substitution values, and the precomputed expansion gate.
-#[derive(Debug, Clone)]
-pub(crate) struct TplInstance<'a> {
-    pub(crate) template: Rc<IrTree<'a>>,
-    pub(crate) values: IrVec<'a, TemplateValue<'a>>,
-    pub(crate) may_expand: bool,
-}
-
-/// An unmaterialized template-instance record.
-///
-/// `nested` holds template instances found inside BinXML-fragment substitutions
-/// (referenced via `TemplateValue::NestedTemplate`, deepest-first, so an
-/// instance only references earlier entries). All materialized fragment
-/// elements across nesting levels share the single `frags` arena.
-#[derive(Debug, Clone)]
-pub(crate) struct TemplateContent<'a> {
-    pub(crate) root: TplInstance<'a>,
-    pub(crate) nested: Vec<TplInstance<'a>>,
-    // ManuallyDrop: all IR types are drop-free; skipping drop glue avoids a
-    // per-record walk over the fragment elements (memory belongs to the bump).
-    pub(crate) frags: std::mem::ManuallyDrop<IrArena<'a>>,
-}
-
-impl<'a> TemplateContent<'a> {
-    pub(crate) fn scope(&self) -> crate::binxml::render_ctx::Scope<'_, 'a> {
-        crate::binxml::render_ctx::Scope {
-            arena: self.root.template.arena(),
-            ctx: Some(crate::binxml::render_ctx::TplCtx {
-                values: self.root.values.as_slice(),
-                frags: &self.frags,
-                nested: &self.nested,
-                may_expand: self.root.may_expand,
-            }),
-        }
-    }
-}
-
-/// Build record content from BinXML bytes: template-reference fast path when the
-/// record is a single template instance, materialized tree otherwise.
+/// Build record content from BinXML bytes: template-validation fast path when
+/// the record is a single template instance, materialized tree otherwise.
 pub(crate) fn build_record_content<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
 ) -> Result<RecordContent<'a>> {
-    if let Some(content) = try_build_template_content(bytes, chunk, cache)? {
-        return Ok(content);
+    if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
+        let mut nested_count = 0usize;
+        validate_tpl_instance(template_ref, chunk, cache, &mut nested_count)?;
+        return Ok(RecordContent::Template);
     }
     build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
 }
 
-/// Recognize the `[0x0f fragment header] 0x0c TemplateInstance (EOF | end)` record shape.
-///
-/// Returns `Ok(None)` for any other shape (caller falls back to the materialized
-/// builder, which is the behavioral source of truth for mixed/corrupt records).
-fn try_build_template_content<'a>(
-    bytes: &'a [u8],
+/// Validate one template instance: parse/cache its definition and decode all
+/// substitution values, recursing into nested single-instance fragments and
+/// parsing generic fragments — exactly the error surface materialization had,
+/// without building the per-record structures.
+fn validate_tpl_instance<'a>(
+    template_ref: BinXmlTemplateValues<'a>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
-) -> Result<Option<RecordContent<'a>>> {
-    let Some(template_ref) = read_single_instance_stream(bytes, chunk)? else {
-        return Ok(None);
-    };
-
-    let mut frags = IrArena::new_in(&chunk.arena);
-    let mut nested: Vec<TplInstance<'a>> = Vec::new();
-    let root = build_tpl_instance(template_ref, chunk, cache, &mut frags, &mut nested)?;
-
-    Ok(Some(RecordContent::Template(TemplateContent {
-        root,
-        nested,
-        frags: std::mem::ManuallyDrop::new(frags),
-    })))
+    nested_count: &mut usize,
+) -> Result<()> {
+    cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
+    for value in template_ref.values {
+        if let BinXmlValue::BinXmlType(bytes) = value {
+            if bytes.is_empty() {
+                continue;
+            }
+            if *nested_count < usize::from(u16::MAX)
+                && let Some(inner) = read_single_instance_stream(bytes, chunk)?
+            {
+                *nested_count += 1;
+                validate_tpl_instance(inner, chunk, cache, nested_count)?;
+                continue;
+            }
+            // Generic fragment: parse (and discard) to surface the same errors.
+            let mut arena = IrArena::new_in(&chunk.arena);
+            build_tree_from_binxml_bytes_direct_with_mode(BuildTreeFromBinXmlBytesDirectArgs {
+                bytes,
+                data: chunk.data,
+                chunk: Some(chunk),
+                cache,
+                ansi_codec: chunk.settings.get_ansi_codec(),
+                bump: &chunk.arena,
+                arena: &mut arena,
+                mode: BuildMode::Record,
+                has_dep_id: false,
+                name_encoding: BinXmlNameEncoding::Offset,
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Parse `bytes` as a `[0x0f fragment header] 0x0c TemplateInstance (EOF | end)`
@@ -974,41 +957,6 @@ fn read_single_instance_stream<'a>(
         return Ok(None);
     }
     Ok(Some(template_ref))
-}
-
-/// Build an unmaterialized instance: resolve the cached template, convert the
-/// substitution values (recursing into nested single-instance fragments), and
-/// compute the expansion gate.
-fn build_tpl_instance<'a>(
-    template_ref: BinXmlTemplateValues<'a>,
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
-    frags: &mut IrArena<'a>,
-    nested: &mut Vec<TplInstance<'a>>,
-) -> Result<TplInstance<'a>> {
-    let template = cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
-    let template_has_literal_array =
-        cache.template_has_literal_array(template_ref.template_def_offset);
-    let values = template_values_from_values_in(
-        template_ref.values,
-        chunk,
-        cache,
-        frags,
-        Some(nested),
-        &chunk.arena,
-    )?;
-
-    let may_expand = template_has_literal_array
-        || values.iter().any(|tv| {
-            matches!(tv, TemplateValue::Value(v)
-                if v.expandable_array_len().is_some_and(|len| len > 1))
-        });
-
-    Ok(TplInstance {
-        template,
-        values,
-        may_expand,
-    })
 }
 
 /// Build an IR tree from a WEVT_TEMPLATE BinXML fragment (inline-name encoding).
@@ -1137,7 +1085,6 @@ fn template_values_from_values_in<'a>(
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     arena: &mut IrArena<'a>,
-    mut nested: Option<&mut Vec<TplInstance<'a>>>,
     bump: &'a Bump,
 ) -> Result<IrVec<'a, TemplateValue<'a>>> {
     let mut values = IrVec::with_capacity_in(values_raw.len(), cache.arena);
@@ -1147,20 +1094,6 @@ fn template_values_from_values_in<'a>(
                 if bytes.is_empty() {
                     values.push(TemplateValue::Value(BinXmlValue::NullType));
                     continue;
-                }
-                // Single-instance fragments stay unmaterialized when the caller
-                // supports nested instances (render-direct path).
-                if let Some(nested_vec) = nested.as_deref_mut() {
-                    if nested_vec.len() < usize::from(u16::MAX) {
-                        if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
-                            let inst =
-                                build_tpl_instance(template_ref, chunk, cache, arena, nested_vec)?;
-                            nested_vec.push(inst);
-                            values
-                                .push(TemplateValue::NestedTemplate((nested_vec.len() - 1) as u16));
-                            continue;
-                        }
-                    }
                 }
                 let element_id = build_tree_from_binxml_bytes_direct_with_mode(
                     BuildTreeFromBinXmlBytesDirectArgs {
@@ -1397,9 +1330,6 @@ fn resolve_placeholder_into<'a>(
             out.push(Node::Element(*element_id));
             Ok(())
         }
-        TemplateValue::NestedTemplate(_) => Err(EvtxError::FailedToCreateRecordModel(
-            "unmaterialized nested template instance in resolve",
-        )),
         TemplateValue::Value(value) => match value {
             BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
                 "Unimplemented - EvtXml",
