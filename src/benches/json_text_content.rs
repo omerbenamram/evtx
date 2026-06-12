@@ -5,9 +5,9 @@ extern crate evtx;
 
 use bumpalo::Bump;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box};
+use evtx::Utf16LeSlice;
 use evtx::binxml::bench::write_json_text_content;
 use evtx::model::ir::{IrArena, Node, Text};
-use evtx::Utf16LeSlice;
 use utf16_simd::max_escaped_len;
 
 struct Case {
@@ -31,9 +31,7 @@ fn build_cases() -> Vec<Case> {
         },
         Case {
             name: "long_ascii",
-            utf16le: utf16le_from_str(
-                "aaaaaaa&bbbbbbb&ccccccc<dddddd>eeeeee\"fffffff'gggggg",
-            ),
+            utf16le: utf16le_from_str("aaaaaaa&bbbbbbb&ccccccc<dddddd>eeeeee\"fffffff'gggggg"),
         },
         Case {
             name: "mixed",

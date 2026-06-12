@@ -686,9 +686,7 @@ impl<'a> BinXmlValue<'a> {
                 items.get(idx).copied().map(BinXmlValue::Real64Type)
             }
             BinXmlValue::BoolArrayType(items) => items.get(idx).copied().map(BinXmlValue::BoolType),
-            BinXmlValue::GuidArrayType(items) => {
-                items.get(idx).copied().map(BinXmlValue::GuidType)
-            }
+            BinXmlValue::GuidArrayType(items) => items.get(idx).copied().map(BinXmlValue::GuidType),
             BinXmlValue::FileTimeArrayType(items) => {
                 items.get(idx).copied().map(BinXmlValue::FileTimeType)
             }

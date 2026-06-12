@@ -130,9 +130,8 @@ mod imp {
         }
         files.sort();
 
-        let mut writer = evtx::wevt_templates::wevtcache::WevtCacheWriter::create(
-            &output, overwrite,
-        )?;
+        let mut writer =
+            evtx::wevt_templates::wevtcache::WevtCacheWriter::create(&output, overwrite)?;
 
         let mut error_count = 0usize;
         let mut written = 0u32;
@@ -219,7 +218,10 @@ mod imp {
                     let p = entry.path();
                     if p.is_dir() {
                         queue.push_back(p);
-                    } else if p.is_file() && should_keep_file(&p, allowed_exts) && seen.insert(p.clone()) {
+                    } else if p.is_file()
+                        && should_keep_file(&p, allowed_exts)
+                        && seen.insert(p.clone())
+                    {
                         out_files.push(p);
                     }
                 }
@@ -236,4 +238,3 @@ mod imp {
         allowed_exts.contains(&ext.to_ascii_lowercase())
     }
 }
-

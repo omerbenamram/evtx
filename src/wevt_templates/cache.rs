@@ -9,7 +9,9 @@ use super::manifest::WevtManifestError;
 
 #[derive(Debug, Error)]
 pub enum WevtCacheError {
-    #[error("TEMP slice out of bounds (crim_index={crim_index}, offset={temp_offset}, size={temp_size}, len={len})")]
+    #[error(
+        "TEMP slice out of bounds (crim_index={crim_index}, offset={temp_offset}, size={temp_size}, len={len})"
+    )]
     TempSliceOutOfBounds {
         crim_index: usize,
         temp_offset: u32,

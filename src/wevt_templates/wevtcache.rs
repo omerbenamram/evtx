@@ -192,18 +192,20 @@ impl WevtCacheWriter {
             source: e,
         })?;
 
-        self.file.write_all(bytes).map_err(|e| WevtCacheFileError::Io {
-            action: "write entry payload",
-            path: self.path.clone(),
-            source: e,
-        })?;
-
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| WevtCacheFileError::EntryCountOverflow {
+        self.file
+            .write_all(bytes)
+            .map_err(|e| WevtCacheFileError::Io {
+                action: "write entry payload",
                 path: self.path.clone(),
+                source: e,
             })?;
+
+        self.count =
+            self.count
+                .checked_add(1)
+                .ok_or_else(|| WevtCacheFileError::EntryCountOverflow {
+                    path: self.path.clone(),
+                })?;
 
         Ok(())
     }
@@ -299,14 +301,15 @@ impl WevtCacheReader {
                 return Err(WevtCacheFileError::UnknownEntryKind {
                     path: self.path.clone(),
                     kind: other,
-                })
+                });
             }
         };
 
-        let len: usize = usize::try_from(len_u64).map_err(|_| WevtCacheFileError::EntryLengthTooLarge {
-            path: self.path.clone(),
-            len: len_u64,
-        })?;
+        let len: usize =
+            usize::try_from(len_u64).map_err(|_| WevtCacheFileError::EntryLengthTooLarge {
+                path: self.path.clone(),
+                len: len_u64,
+            })?;
 
         let mut buf = vec![0u8; len];
         self.file
@@ -333,9 +336,12 @@ where
         match kind {
             EntryKind::Crim => {
                 f(bytes)?;
-                count = count.checked_add(1).ok_or_else(|| WevtCacheFileError::EntryCountOverflow {
-                    path: path.to_path_buf(),
-                })?;
+                count =
+                    count
+                        .checked_add(1)
+                        .ok_or_else(|| WevtCacheFileError::EntryCountOverflow {
+                            path: path.to_path_buf(),
+                        })?;
             }
         }
     }
