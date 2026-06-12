@@ -200,11 +200,13 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         arena: &mut IrArena<'a>,
         bump: &'a Bump,
+        depth: usize,
     ) -> Result<ElementId> {
         let template =
-            self.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
+            self.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
         arena.reserve(template.arena().count());
-        let values = template_values_from_values_in(template_ref.values, chunk, self, arena, bump)?;
+        let values =
+            template_values_from_values_in(template_ref.values, chunk, self, arena, bump, depth)?;
         let (root, _needs_array_expansion) = clone_and_resolve(
             template.arena(),
             template.root(),
@@ -230,7 +232,7 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
     ) -> Result<(Rc<IrTree<'a>>, bool)> {
-        let tree = self.get_or_parse_template_direct(chunk, template_def_offset)?;
+        let tree = self.get_or_parse_template_direct(chunk, template_def_offset, 0)?;
         Ok((tree, self.template_has_literal_array(template_def_offset)))
     }
 
@@ -243,6 +245,7 @@ impl<'a> IrTemplateCache<'a> {
         &mut self,
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
+        depth: usize,
     ) -> Result<Rc<IrTree<'a>>> {
         if let Some((existing, _)) = self.templates.get(&template_def_offset) {
             return Ok(Rc::clone(existing));
@@ -277,6 +280,7 @@ impl<'a> IrTemplateCache<'a> {
                     mode: BuildMode::TemplateDefinition,
                     has_dep_id: true,
                     name_encoding: BinXmlNameEncoding::Offset,
+                    depth,
                 },
             )?;
             let template = Rc::new(IrTree::new(arena, root));
@@ -327,6 +331,7 @@ impl<'a> IrTemplateCache<'a> {
                                 mode: BuildMode::TemplateDefinition,
                                 has_dep_id: true,
                                 name_encoding: BinXmlNameEncoding::WevtInline,
+                                depth,
                             },
                         ) {
                             Ok(r) => r,
@@ -358,6 +363,15 @@ enum BuildMode {
     TemplateDefinition,
 }
 
+/// Hard cap on BinXML fragment / template-instance nesting per record. Real
+/// records nest one or two levels; the cap exists to bound recursion depth on
+/// crafted input (a 64 KiB chunk could otherwise chain thousands of levels).
+const MAX_BINXML_NESTING: usize = 64;
+
+/// Hard cap on open-element depth within one BinXML stream, bounding tree
+/// depth (and the walkers' recursion over it) on crafted input.
+const MAX_ELEMENT_DEPTH: usize = 512;
+
 /// Streaming token consumer that builds the IR tree.
 ///
 /// This builder maintains a typical XML stack of "open elements" (`stack`) and emits
@@ -384,6 +398,8 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     arena: &'arena mut IrArena<'a>,
     ansi_codec: EncodingRef,
     name_encoding: BinXmlNameEncoding,
+    /// Fragment/instance nesting depth of this stream (see [`MAX_BINXML_NESTING`]).
+    depth: usize,
     stack: IrVec<'a, ElementId>,
     current_element: Option<ElementBuilder<'a>>,
     root: Option<ElementId>,
@@ -398,6 +414,7 @@ struct TreeBuilderInit<'a, 'cache, 'arena> {
     name_encoding: BinXmlNameEncoding,
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
+    depth: usize,
 }
 
 impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
@@ -411,6 +428,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             arena: init.arena,
             ansi_codec: init.ansi_codec,
             name_encoding: init.name_encoding,
+            depth: init.depth,
             stack: IrVec::new_in(init.bump),
             current_element: None,
             root: None,
@@ -455,6 +473,11 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     }
 
     fn process_close_start_element(&mut self) -> Result<()> {
+        if self.stack.len() >= MAX_ELEMENT_DEPTH {
+            return Err(EvtxError::FailedToCreateRecordModel(
+                "BinXML elements nested too deeply",
+            ));
+        }
         let element = self
             .current_element
             .take()
@@ -542,6 +565,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                         mode: BuildMode::Record,
                         has_dep_id: false,
                         name_encoding: self.name_encoding,
+                        depth: self.depth + 1,
                     },
                 )?;
                 attach_element(
@@ -584,7 +608,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         })?;
         let element_id = self
             .cache
-            .instantiate_template_direct_values(template, chunk, self.arena, bump)?;
+            .instantiate_template_direct_values(template, chunk, self.arena, bump, self.depth)?;
         attach_element(
             self.arena,
             &self.stack,
@@ -686,6 +710,8 @@ struct BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena> {
     mode: BuildMode,
     has_dep_id: bool,
     name_encoding: BinXmlNameEncoding,
+    /// Fragment/instance nesting depth of this stream; recursion guard.
+    depth: usize,
 }
 
 fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
@@ -702,7 +728,13 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
         mode,
         has_dep_id,
         name_encoding,
+        depth,
     } = args;
+    if depth > MAX_BINXML_NESTING {
+        return Err(EvtxError::FailedToCreateRecordModel(
+            "BinXML fragments nested too deeply",
+        ));
+    }
     let offset = binxml_slice_offset_in(data, bytes)?;
     let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
     let mut data_read: u32 = 0;
@@ -718,6 +750,7 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
         name_encoding,
         bump,
         arena,
+        depth,
     });
 
     while !eof && data_read < data_size {
@@ -832,6 +865,7 @@ fn build_tree_from_binxml_bytes_direct_root<'a>(
         mode: BuildMode::Record,
         has_dep_id: false,
         name_encoding: BinXmlNameEncoding::Offset,
+        depth: 0,
     })
 }
 
@@ -854,6 +888,7 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
         mode: BuildMode::Record,
         has_dep_id: false,
         name_encoding: BinXmlNameEncoding::Offset,
+        depth: 0,
     })?;
     Ok(IrTree::new(arena, root))
 }
@@ -879,8 +914,7 @@ pub(crate) fn build_record_content<'a>(
     cache: &mut IrTemplateCache<'a>,
 ) -> Result<RecordContent<'a>> {
     if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
-        let mut nested_count = 0usize;
-        validate_tpl_instance(template_ref, chunk, cache, &mut nested_count)?;
+        validate_tpl_instance(template_ref, chunk, cache, 0)?;
         return Ok(RecordContent::Template);
     }
     build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
@@ -889,24 +923,25 @@ pub(crate) fn build_record_content<'a>(
 /// Validate one template instance: parse/cache its definition and decode all
 /// substitution values, recursing into nested single-instance fragments and
 /// parsing generic fragments — exactly the error surface materialization had,
-/// without building the per-record structures.
+/// without building the per-record structures. `depth` caps the recursion at
+/// [`MAX_BINXML_NESTING`] (chains beyond it route through the tree builder,
+/// whose entry guard rejects them).
 fn validate_tpl_instance<'a>(
     template_ref: BinXmlTemplateValues<'a>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
-    nested_count: &mut usize,
+    depth: usize,
 ) -> Result<()> {
-    cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset)?;
+    cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
     for value in template_ref.values {
         if let BinXmlValue::BinXmlType(bytes) = value {
             if bytes.is_empty() {
                 continue;
             }
-            if *nested_count < usize::from(u16::MAX)
+            if depth < MAX_BINXML_NESTING
                 && let Some(inner) = read_single_instance_stream(bytes, chunk)?
             {
-                *nested_count += 1;
-                validate_tpl_instance(inner, chunk, cache, nested_count)?;
+                validate_tpl_instance(inner, chunk, cache, depth + 1)?;
                 continue;
             }
             // Generic fragment: parse (and discard) to surface the same errors.
@@ -922,6 +957,7 @@ fn validate_tpl_instance<'a>(
                 mode: BuildMode::Record,
                 has_dep_id: false,
                 name_encoding: BinXmlNameEncoding::Offset,
+                depth: depth + 1,
             })?;
         }
     }
@@ -979,6 +1015,7 @@ pub(crate) fn build_wevt_template_definition_ir<'a>(
         mode: BuildMode::TemplateDefinition,
         has_dep_id: true,
         name_encoding: BinXmlNameEncoding::WevtInline,
+        depth: 0,
     })?;
     Ok(IrTree::new(arena, root))
 }
@@ -1086,6 +1123,7 @@ fn template_values_from_values_in<'a>(
     cache: &mut IrTemplateCache<'a>,
     arena: &mut IrArena<'a>,
     bump: &'a Bump,
+    depth: usize,
 ) -> Result<IrVec<'a, TemplateValue<'a>>> {
     let mut values = IrVec::with_capacity_in(values_raw.len(), cache.arena);
     for value in values_raw {
@@ -1107,6 +1145,7 @@ fn template_values_from_values_in<'a>(
                         mode: BuildMode::Record,
                         has_dep_id: false,
                         name_encoding: BinXmlNameEncoding::Offset,
+                        depth: depth + 1,
                     },
                 )?;
                 values.push(TemplateValue::BinXmlElement(element_id));
