@@ -93,6 +93,21 @@ enum XOp {
         indent: u16,
         ind: LitRange,
     },
+    /// An attribute-less `<Data>` element whose entire content is one hole
+    /// (MS-EVEN6 array expansion site). Scalar values follow `Body`
+    /// semantics with `open` spliced first; a string array repeats the
+    /// element per item — single-item arrays render inline like a scalar,
+    /// empty items in larger arrays take the two-line empty form. Mirrors
+    /// `array_expand` over the materialized tree.
+    Expand {
+        slot: u16,
+        optional: bool,
+        indent: u16,
+        open: LitRange,
+        tail_text: LitRange,
+        tail_empty: LitRange,
+        tail_elem: LitRange,
+    },
 }
 
 /// A compiled template program for one (def offset, base indent, root?) key.
@@ -103,6 +118,8 @@ pub(crate) struct XmlProgram {
     /// `(slot, child_indent)` for every slot rendered in element position;
     /// the pre-flight uses this to resolve nested-instance programs up front.
     elem_slots: Vec<(u16, u16)>,
+    /// Slots compiled as `XOp::Expand` (string arrays allowed).
+    expand_slots: Vec<u16>,
 }
 
 /// Per-chunk program cache. `None` marks templates that failed to compile so
@@ -188,6 +205,11 @@ pub(crate) trait TemplateProgram: Sized {
     fn constraints(&self) -> &[SlotConstraint] {
         &[]
     }
+    /// Slots whose ops handle string-array values (element repetition /
+    /// positional-Data aggregation). Arrays anywhere else bail.
+    fn expand_slots(&self) -> &[u16] {
+        &[]
+    }
     fn compile(
         tree: &IrTree<'_>,
         has_literal_array: bool,
@@ -201,6 +223,9 @@ impl TemplateProgram for XmlProgram {
     const ALLOW_GENERIC_FRAGS: bool = true;
     fn elem_slots(&self) -> &[(u16, u16)] {
         &self.elem_slots
+    }
+    fn expand_slots(&self) -> &[u16] {
+        &self.expand_slots
     }
     fn compile(
         tree: &IrTree<'_>,
@@ -226,6 +251,7 @@ struct XmlCompiler<'t, 'a> {
     /// Start of the not-yet-flushed literal run (`lits[run_start..]`).
     run_start: usize,
     elem_slots: Vec<(u16, u16)>,
+    expand_slots: Vec<u16>,
     indent_on: bool,
     vr: ValueRenderer,
     /// Walking a fully materialized tree (slow lane / fragments): placeholder
@@ -261,6 +287,7 @@ fn compile_xml_template(
         ops: Vec::with_capacity(32),
         run_start: 0,
         elem_slots: Vec::new(),
+        expand_slots: Vec::new(),
         indent_on: settings.should_indent(),
         vr: ValueRenderer::new(),
         materialized: false,
@@ -276,6 +303,7 @@ fn compile_xml_template(
                 ops: c.ops,
                 indent_on: c.indent_on,
                 elem_slots: c.elem_slots,
+                expand_slots: c.expand_slots,
             })
         }
         Err(_) => None,
@@ -297,6 +325,7 @@ pub(crate) fn render_tree_xml(
         ops: Vec::new(),
         run_start: 0,
         elem_slots: Vec::new(),
+        expand_slots: Vec::new(),
         indent_on: settings.should_indent(),
         vr: ValueRenderer::new(),
         materialized: true,
@@ -321,6 +350,7 @@ fn render_subtree_xml(
         ops: Vec::new(),
         run_start: 0,
         elem_slots: Vec::new(),
+        expand_slots: Vec::new(),
         indent_on,
         vr: ValueRenderer::new(),
         materialized: true,
@@ -369,6 +399,17 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
     fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
         let element = self.element_ref(id);
+
+        // Attribute-less single-hole `<Data>` elements are the array
+        // expansion sites: compile them as self-contained `Expand` ops (the
+        // open tag must be able to repeat per array item).
+        if !self.materialized
+            && element.attrs.is_empty()
+            && is_data_element_name(element.name.as_str())
+            && let ChildrenKind::SinglePlaceholder(ph) = classify_children(element)
+        {
+            return self.compile_expand(element, ph, indent);
+        }
 
         // Note: even placeholder-free subtrees are walked here (not delegated
         // to the materialized emitter): template-scope layout classification
@@ -619,6 +660,58 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         Ok(())
     }
 
+    /// Compile an array-expansion site (`<Data>%n</Data>`, no attributes)
+    /// into a self-contained `XOp::Expand`: the open tag lives in the op so
+    /// the executor can repeat the whole element per array item.
+    fn compile_expand(
+        &mut self,
+        element: &'t Element<'a>,
+        ph: &Placeholder,
+        indent: u16,
+    ) -> Result<()> {
+        let name = element.name.as_str().as_bytes();
+        self.flush_lit_run();
+        let open = self.side_range(|c| {
+            c.indent_str(indent);
+            c.lits.push(b'<');
+            c.lits.extend_from_slice(name);
+            c.lits.push(b'>');
+        });
+        let tail_text = self.side_range(|c| {
+            c.lits.extend_from_slice(b"</");
+            c.lits.extend_from_slice(name);
+            c.lits.push(b'>');
+            c.newline();
+        });
+        let tail_empty = self.side_range(|c| {
+            c.newline();
+            c.indent_str(indent);
+            c.lits.extend_from_slice(b"</");
+            c.lits.extend_from_slice(name);
+            c.lits.push(b'>');
+            c.newline();
+        });
+        let tail_elem = self.side_range(|c| {
+            c.indent_str(indent);
+            c.lits.extend_from_slice(b"</");
+            c.lits.extend_from_slice(name);
+            c.lits.push(b'>');
+            c.newline();
+        });
+        self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
+        self.expand_slots.push(ph.id);
+        self.ops.push(XOp::Expand {
+            slot: ph.id,
+            optional: ph.optional,
+            indent,
+            open,
+            tail_text,
+            tail_empty,
+            tail_elem,
+        });
+        Ok(())
+    }
+
     /// Render one literal (placeholder-free) node into `lits`, mirroring
     /// `XmlEmitter::render_single_node`.
     fn compile_literal_content_node(&mut self, node: &Node<'a>, in_attribute: bool) -> Result<()> {
@@ -808,12 +901,13 @@ struct RawSlot {
     /// Index into `Preflight::nested` for single-instance BinXml slots;
     /// `u16::MAX` otherwise.
     nested: u16,
-    /// Index into `Preflight::ansi` (`ty == 0x02` with payload only).
-    ansi: u32,
+    /// Type-discriminated side-table index: `Preflight::ansi` for ANSI
+    /// strings, `Preflight::arrays` for string arrays.
+    aux: u32,
 }
 
 const NO_NESTED: u16 = u16::MAX;
-const NO_ANSI: u32 = u32::MAX;
+const NO_AUX: u32 = u32::MAX;
 
 impl RawSlot {
     /// The value's byte window in the chunk data.
@@ -828,7 +922,7 @@ impl RawSlot {
 
     /// Index into `Preflight::ansi` for pre-decoded ANSI payloads.
     fn ansi_idx(&self) -> Option<usize> {
-        (self.ansi != NO_ANSI).then_some(self.ansi as usize)
+        (self.ty == value_ty::ANSI_STRING && self.aux != NO_AUX).then_some(self.aux as usize)
     }
 
     /// A non-empty embedded BinXML value (renders as an element).
@@ -847,6 +941,10 @@ pub(crate) struct Preflight<P> {
     slots: Vec<RawSlot>,
     nested: Vec<NestedInst<P>>,
     ansi: Vec<String>,
+    /// Per string-array slot: `(start, count)` into `array_items`.
+    arrays: Vec<(u32, u32)>,
+    /// Flat `(offset, byte len)` spans of string-array items (NUL-free).
+    array_items: Vec<(u32, u16)>,
 }
 
 impl<P> Default for Preflight<P> {
@@ -855,6 +953,8 @@ impl<P> Default for Preflight<P> {
             slots: Vec::new(),
             nested: Vec::new(),
             ansi: Vec::new(),
+            arrays: Vec::new(),
+            array_items: Vec::new(),
         }
     }
 }
@@ -885,6 +985,9 @@ pub(crate) mod value_ty {
     pub(crate) const HEX_INT32: u8 = 0x14;
     pub(crate) const HEX_INT64: u8 = 0x15;
     pub(crate) const BIN_XML: u8 = 0x21;
+    /// UTF-16 string array (`0x01 | 0x80`): NUL-terminated strings packed
+    /// back to back. The only array type observed in real logs.
+    pub(crate) const STR_ARRAY: u8 = 0x81;
 }
 
 /// How the pre-flight validates a descriptor of a given type.
@@ -904,6 +1007,9 @@ enum TyClass {
     SizeT,
     /// `8 + 4 * sub_authority_count` bytes.
     Sid,
+    /// UTF-16 string array: even-length payload of NUL-terminated strings;
+    /// admitted only on slots the program compiled as expandable.
+    StrArray,
 }
 
 /// The declarative wire-facts table the descriptor scan runs on.
@@ -934,6 +1040,7 @@ const TY_CLASS: [TyClass; 256] = {
     t[HEX_INT32 as usize] = Fixed(4);
     t[HEX_INT64 as usize] = Fixed(8);
     t[BIN_XML as usize] = Sized;
+    t[STR_ARRAY as usize] = StrArray;
     t
 };
 
@@ -970,6 +1077,15 @@ impl<P: StoredProgram> Preflight<P> {
         self.slots.clear();
         self.nested.clear();
         self.ansi.clear();
+        self.arrays.clear();
+        self.array_items.clear();
+    }
+
+    /// Item spans of a string-array slot (validated by the pre-flight).
+    fn str_array_items(&self, s: &RawSlot) -> &[(u32, u16)] {
+        debug_assert_eq!(s.ty, value_ty::STR_ARRAY);
+        let (start, count) = self.arrays[s.aux as usize];
+        &self.array_items[start as usize..(start + count) as usize]
     }
 
     /// Emptiness of a slot, mirroring `is_optional_empty` over the value the
@@ -1041,7 +1157,7 @@ impl<P: StoredProgram> Preflight<P> {
         let descriptors = cur.take_bytes(n * 4, "descriptor table")?;
         let mut off = cur.pos();
         let slot_start = self.slots.len() as u32;
-        for desc in descriptors.chunks_exact(4) {
+        for (i, desc) in descriptors.chunks_exact(4).enumerate() {
             let &[len_lo, len_hi, ty, _pad] = desc else {
                 unreachable!("chunks_exact(4)");
             };
@@ -1077,6 +1193,13 @@ impl<P: StoredProgram> Preflight<P> {
                         return Err(PreflightBail);
                     }
                 }
+                TyClass::StrArray => {
+                    // Admitted only on slots the program compiled as
+                    // expandable; everything else keeps the slow lane.
+                    if len % 2 != 0 || !prog.expand_slots().contains(&(i as u16)) {
+                        return Err(PreflightBail);
+                    }
+                }
                 TyClass::Sized | TyClass::Ansi => {}
             }
             let mut slot = RawSlot {
@@ -1084,7 +1207,7 @@ impl<P: StoredProgram> Preflight<P> {
                 len,
                 ty,
                 nested: NO_NESTED,
-                ansi: NO_ANSI,
+                aux: NO_AUX,
             };
             if ty == value_ty::ANSI_STRING && len > 0 {
                 // Decode ANSI now so the executor stays infallible. Mirrors
@@ -1095,8 +1218,29 @@ impl<P: StoredProgram> Preflight<P> {
                     .get_ansi_codec()
                     .decode(&filtered, encoding::DecoderTrap::Strict)
                     .map_err(|_| PreflightBail)?;
-                slot.ansi = self.ansi.len() as u32;
+                slot.aux = self.ansi.len() as u32;
                 self.ansi.push(decoded);
+            } else if ty == value_ty::STR_ARRAY {
+                // Split the payload into NUL-terminated item spans now so the
+                // executor stays infallible. Mirrors the deserializer: every
+                // NUL ends an item; the payload must end exactly on one (an
+                // unterminated tail keeps the legacy lane's read-past quirk).
+                let items_start = self.array_items.len() as u32;
+                let mut item_off = off;
+                for (pi, pair) in data[off..end].chunks_exact(2).enumerate() {
+                    if let &[0, 0] = pair {
+                        let nul_at = off + pi * 2;
+                        self.array_items
+                            .push((item_off as u32, (nul_at - item_off) as u16));
+                        item_off = nul_at + 2;
+                    }
+                }
+                let count = self.array_items.len() as u32 - items_start;
+                if item_off != end || count == 0 {
+                    return Err(PreflightBail);
+                }
+                slot.aux = self.arrays.len() as u32;
+                self.arrays.push((items_start, count));
             }
             self.slots.push(slot);
             off = end;
@@ -1441,6 +1585,70 @@ fn exec<'a>(
                     render_element_slot(&s, pf, chunk, cache, vr, *indent, prog.indent_on, out)?;
                 }
             },
+            XOp::Expand {
+                slot,
+                optional,
+                indent,
+                open,
+                tail_text,
+                tail_empty,
+                tail_elem,
+            } => {
+                if let Some(s) = slot_at(*slot).filter(|s| s.ty == value_ty::STR_ARRAY) {
+                    // Array: the element repeats per item. Single-item arrays
+                    // are not expanded by the materialize lane (the value node
+                    // stays inline, empty or not); empty items in larger
+                    // arrays drop their text node (two-line empty form).
+                    let items = pf.str_array_items(&s);
+                    let multi = items.len() > 1;
+                    for &(ioff, ilen) in items {
+                        write_lit!(*open);
+                        if multi && ilen == 0 {
+                            write_lit!(*tail_empty);
+                        } else {
+                            vr.write_raw_value_text(
+                                out,
+                                value_ty::UTF16_STRING,
+                                &chunk.data[ioff as usize..ioff as usize + usize::from(ilen)],
+                                None,
+                                StringEscapeMode::Xml {
+                                    in_attribute: false,
+                                },
+                            )?;
+                            write_lit!(*tail_text);
+                        }
+                    }
+                } else {
+                    // Scalar: `Body` semantics with the open tag spliced in.
+                    write_lit!(*open);
+                    match classify(*slot, *optional) {
+                        SlotClass::Skip => write_lit!(*tail_empty),
+                        SlotClass::TextLike => {
+                            if let Some(s) = slot_at(*slot) {
+                                write_val!(s, false);
+                            }
+                            write_lit!(*tail_text);
+                        }
+                        SlotClass::Element => {
+                            let s = slot_at(*slot).expect("element class implies present");
+                            if prog.indent_on {
+                                out.push(b'\n');
+                            }
+                            render_element_slot(
+                                &s,
+                                pf,
+                                chunk,
+                                cache,
+                                vr,
+                                *indent + INDENT_WIDTH,
+                                prog.indent_on,
+                                out,
+                            )?;
+                            write_lit!(*tail_elem);
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -1518,6 +1726,9 @@ pub(crate) struct JsonProgram {
     ops: Vec<JOp>,
     elem_slots: Vec<(u16, u16)>,
     constraints: Vec<SlotConstraint>,
+    /// Slots whose `LeafVal` sits at a positional-`Data` aggregation site
+    /// (string arrays allowed: they render as a JSON array `#text`).
+    expand_slots: Vec<u16>,
     /// Raw root element name bytes (member key for nested-instance values).
     root_name: Vec<u8>,
 }
@@ -1529,6 +1740,9 @@ impl TemplateProgram for JsonProgram {
     }
     fn constraints(&self) -> &[SlotConstraint] {
         &self.constraints
+    }
+    fn expand_slots(&self) -> &[u16] {
+        &self.expand_slots
     }
     fn compile(
         tree: &IrTree<'_>,
@@ -1548,6 +1762,7 @@ struct JsonCompiler<'t, 'a> {
     run_start: usize,
     elem_slots: Vec<(u16, u16)>,
     constraints: Vec<SlotConstraint>,
+    expand_slots: Vec<u16>,
     vr: ValueRenderer,
     formatter: sonic_rs::format::CompactFormatter,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
@@ -1572,6 +1787,7 @@ fn compile_json_template(
         run_start: 0,
         elem_slots: Vec::new(),
         constraints: Vec::new(),
+        expand_slots: Vec::new(),
         vr: ValueRenderer::new(),
         formatter: sonic_rs::format::CompactFormatter,
         separate: false,
@@ -1593,6 +1809,7 @@ fn compile_json_template(
                 ops: c.ops,
                 elem_slots: c.elem_slots,
                 constraints: c.constraints,
+                expand_slots: c.expand_slots,
                 root_name: root.name.as_str().as_bytes().to_vec(),
             })
         }
@@ -1867,7 +2084,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             self.text_content_plain(&attr.value, false)
                                 .map_err(|_| Bail)?;
                             self.lits.extend_from_slice(b"\":");
-                            self.compile_data_value(*id)?;
+                            self.compile_data_value(*id, false)?;
                         } else if !positional_emitted && !positional_data.is_empty() {
                             positional_emitted = true;
                             if wrote_any {
@@ -1876,14 +2093,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             wrote_any = true;
                             self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
                             if positional_data.len() == 1 {
-                                self.compile_data_value(positional_data[0])?;
+                                // Sole positional Data: a string array here
+                                // aggregates into a JSON array value, so the
+                                // slot is expandable.
+                                self.compile_data_value(positional_data[0], true)?;
                             } else {
                                 self.lits.push(b'[');
                                 for (i, did) in positional_data.iter().enumerate() {
                                     if i > 0 {
                                         self.lits.push(b',');
                                     }
-                                    self.compile_data_value(*did)?;
+                                    self.compile_data_value(*did, false)?;
                                 }
                                 self.lits.push(b']');
                             }
@@ -1939,7 +2159,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// `render_data_element_value` for a literal `<Data ...>` child: leaf
     /// placeholder -> LeafVal with `""` empty form; literal-only -> rendered
     /// at compile time; anything else bails.
-    fn compile_data_value(&mut self, id: ElementId) -> std::result::Result<(), Bail> {
+    fn compile_data_value(
+        &mut self,
+        id: ElementId,
+        expandable: bool,
+    ) -> std::result::Result<(), Bail> {
         let element = self.element_ref(id);
         if !subtree_has_placeholder(self.tree(), element) {
             return self.data_element_value_plain(element).map_err(|_| Bail);
@@ -1950,6 +2174,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             self.flush_lit_run();
             let empty = self.side_range(|c| c.lits.extend_from_slice(b"\"\""));
             self.elem_slots.push((ph.id, 0));
+            if expandable {
+                self.expand_slots.push(ph.id);
+            }
             self.ops.push(JOp::LeafVal { slot: ph.id, empty });
             return Ok(());
         }
@@ -2059,6 +2286,33 @@ fn exec_json(
             JOp::Lit(r) => write_lit!(*r),
             JOp::LeafVal { slot, empty } => match slot_at(*slot) {
                 None => write_lit!(*empty),
+                Some(s) if s.ty == value_ty::STR_ARRAY => {
+                    // Positional-Data aggregation: one item renders bare
+                    // (like an unexpanded scalar), more become a JSON array.
+                    // Items are strings, so they are always quoted.
+                    let items = pf.str_array_items(&s);
+                    let multi = items.len() > 1;
+                    if multi {
+                        out.push(b'[');
+                    }
+                    for (i, &(ioff, ilen)) in items.iter().enumerate() {
+                        if i > 0 {
+                            out.push(b',');
+                        }
+                        out.push(b'"');
+                        vr.write_raw_value_text(
+                            out,
+                            value_ty::UTF16_STRING,
+                            &chunk.data[ioff as usize..ioff as usize + usize::from(ilen)],
+                            None,
+                            StringEscapeMode::Json,
+                        )?;
+                        out.push(b'"');
+                    }
+                    if multi {
+                        out.push(b']');
+                    }
+                }
                 Some(s) => {
                     if pf.slot_empty(&s, chunk.data) {
                         write_lit!(*empty);
@@ -2187,6 +2441,7 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
         run_start: 0,
         elem_slots: Vec::new(),
         constraints: Vec::new(),
+        expand_slots: Vec::new(),
         vr: ValueRenderer::new(),
         formatter: sonic_rs::format::CompactFormatter,
         separate: false,
@@ -2224,6 +2479,7 @@ pub(crate) fn render_tree_json(
         run_start: 0,
         elem_slots: Vec::new(),
         constraints: Vec::new(),
+        expand_slots: Vec::new(),
         vr: ValueRenderer::new(),
         formatter: sonic_rs::format::CompactFormatter,
         separate: settings.should_separate_json_attributes(),
