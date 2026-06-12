@@ -5,6 +5,7 @@
 //! comma-delimited arrays, etc.). This module centralizes that logic so both
 //! renderers stay in sync and avoid allocating intermediate `String`s.
 
+use crate::binxml::compiled::value_ty;
 use crate::binxml::value_variant::{BinXmlValue, SidRef};
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
@@ -163,7 +164,7 @@ impl ValueRenderer {
     /// the pre-flight guarantees sizes match (so the `expect`s are unreachable).
     ///
     /// `bytes` is exactly the descriptor-sized value window. `decoded_ansi` is
-    /// the pre-decoded ANSI payload when `ty == 0x02` (decoded at pre-flight).
+    /// the pre-decoded ANSI payload for `value_ty::ANSI_STRING` (pre-flight).
     pub(crate) fn write_raw_value_text<W: WriteExt>(
         &mut self,
         writer: &mut W,
@@ -173,9 +174,9 @@ impl ValueRenderer {
         mode: StringEscapeMode,
     ) -> Result<()> {
         match ty {
-            0x00 => Ok(()),
+            value_ty::NULL => Ok(()),
             // StringType: truncate at the first NUL unit (mirrors `utf16_by_char_count`).
-            0x01 => {
+            value_ty::UTF16_STRING => {
                 let mut units = bytes.len() / 2;
                 for (idx, chunk) in bytes.chunks_exact(2).enumerate() {
                     if chunk[0] == 0 && chunk[1] == 0 {
@@ -185,41 +186,52 @@ impl ValueRenderer {
                 }
                 self.write_utf16_escaped(writer, Utf16LeSlice::new(bytes, units), mode)
             }
-            0x02 => self.write_str_escaped(writer, decoded_ansi.unwrap_or(""), mode),
-            0x03 => write_int!(self, writer, write_i8, bytes[0] as i8),
-            0x04 => write_int!(self, writer, write_u8, bytes[0]),
-            0x05 => write_int!(self, writer, write_i16, i16::from_le_bytes(le2(bytes))),
-            0x06 => write_int!(self, writer, write_u16, u16::from_le_bytes(le2(bytes))),
-            0x07 => write_int!(self, writer, write_i32, i32::from_le_bytes(le4(bytes))),
-            0x08 => write_int!(self, writer, write_u32, u32::from_le_bytes(le4(bytes))),
-            0x09 => write_int!(self, writer, write_i64, i64::from_le_bytes(le8(bytes))),
-            0x0a => write_int!(self, writer, write_u64, u64::from_le_bytes(le8(bytes))),
-            0x0b => self.write_float(writer, f32::from_le_bytes(le4(bytes))),
-            0x0c => self.write_float(writer, f64::from_le_bytes(le8(bytes))),
-            0x0d => {
+            value_ty::ANSI_STRING => {
+                self.write_str_escaped(writer, decoded_ansi.unwrap_or(""), mode)
+            }
+            value_ty::INT8 => write_int!(self, writer, write_i8, bytes[0] as i8),
+            value_ty::UINT8 => write_int!(self, writer, write_u8, bytes[0]),
+            value_ty::INT16 => write_int!(self, writer, write_i16, i16::from_le_bytes(le2(bytes))),
+            value_ty::UINT16 => write_int!(self, writer, write_u16, u16::from_le_bytes(le2(bytes))),
+            value_ty::INT32 => write_int!(self, writer, write_i32, i32::from_le_bytes(le4(bytes))),
+            value_ty::UINT32 => write_int!(self, writer, write_u32, u32::from_le_bytes(le4(bytes))),
+            value_ty::INT64 => write_int!(self, writer, write_i64, i64::from_le_bytes(le8(bytes))),
+            value_ty::UINT64 => write_int!(self, writer, write_u64, u64::from_le_bytes(le8(bytes))),
+            value_ty::REAL32 => self.write_float(writer, f32::from_le_bytes(le4(bytes))),
+            value_ty::REAL64 => self.write_float(writer, f64::from_le_bytes(le8(bytes))),
+            value_ty::BOOL => {
                 let raw = i32::from_le_bytes(le4(bytes));
                 self.write_bytes(writer, if raw != 0 { b"true" } else { b"false" })
             }
-            0x0e => self.write_hex_bytes_upper(writer, bytes),
-            0x0f => self.write_guid(writer, bytes.try_into().expect("guid size")),
+            value_ty::BINARY => self.write_hex_bytes_upper(writer, bytes),
+            value_ty::GUID => self.write_guid(writer, bytes.try_into().expect("guid size")),
             // SizeT renders as HexInt of its width.
-            0x10 if bytes.len() == 4 => {
+            value_ty::SIZE_T if bytes.len() == 4 => {
                 self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes)))
             }
-            0x10 => self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes))),
-            0x11 => {
+            value_ty::SIZE_T => {
+                self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes)))
+            }
+            value_ty::FILETIME => {
                 let tm =
                     crate::utils::windows::filetime_to_timestamp(u64::from_le_bytes(le8(bytes)))?;
                 self.write_datetime(writer, &tm)
             }
-            0x12 => {
+            value_ty::SYSTIME => {
                 let mut cursor = crate::utils::ByteCursor::with_pos(bytes, 0)?;
                 let tm = crate::utils::windows::read_systime(&mut cursor)?;
                 self.write_datetime(writer, &tm)
             }
-            0x13 => self.write_sid(writer, &SidRef::new(bytes)),
-            0x14 => self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes))),
-            0x15 => self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes))),
+            value_ty::SID => self.write_sid(writer, &SidRef::new(bytes)),
+            value_ty::HEX_INT32 => {
+                self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes)))
+            }
+            value_ty::HEX_INT64 => {
+                self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes)))
+            }
+            // Only reachable for empty payloads (non-empty BinXml classifies
+            // as an element); mirrors the NullType conversion.
+            value_ty::BIN_XML => Ok(()),
             _ => Err(EvtxError::FailedToCreateRecordModel(
                 "unsupported raw value type in compiled renderer",
             )),

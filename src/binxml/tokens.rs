@@ -98,6 +98,34 @@ pub(crate) struct BinXMLAttribute {
     pub(crate) name: BinXmlNameRef,
 }
 
+/// BinXML stream token bytes (MS-EVEN6 §2.2.3.1).
+pub(crate) mod token {
+    pub(crate) const EOF: u8 = 0x00;
+    pub(crate) const TEMPLATE_INSTANCE: u8 = 0x0c;
+    pub(crate) const FRAGMENT_HEADER: u8 = 0x0f;
+}
+
+/// Offset of the `TemplateInstance` token's body when `bytes` is a (possibly
+/// fragment-wrapped) single-instance stream; `None` for any other shape.
+///
+/// The fragment-header form requires at least one byte after the instance
+/// token, matching the legacy shape check.
+pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
+    match bytes {
+        [
+            token::FRAGMENT_HEADER,
+            _,
+            _,
+            _,
+            token::TEMPLATE_INSTANCE,
+            _,
+            ..,
+        ] => Some(5),
+        [token::TEMPLATE_INSTANCE, ..] => Some(1),
+        _ => None,
+    }
+}
+
 /// Read a `TemplateInstance` and parse its substitution values directly.
 ///
 /// This is used by the direct IR builder path.

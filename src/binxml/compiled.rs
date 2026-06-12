@@ -17,11 +17,15 @@
 //! any output is written, so the executor never unwinds a partial record.
 
 use crate::ParserSettings;
-use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
+use crate::binxml::ir::{
+    IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, build_tree_from_binxml_bytes_direct,
+    read_template_definition_header_at,
+};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::err::Result;
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrTree, Node, Placeholder, Text};
+use crate::utils::ByteCursor;
 use ahash::AHashMap;
 use std::sync::Arc;
 
@@ -29,7 +33,17 @@ const INDENT_WIDTH: u16 = 2;
 const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 
 /// A `lits` byte range.
-type LitRange = (u32, u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LitRange(u32, u32);
+
+impl LitRange {
+    const EMPTY: LitRange = LitRange(0, 0);
+
+    /// The literal bytes this range denotes.
+    fn of(self, lits: &[u8]) -> &[u8] {
+        &lits[self.0 as usize..self.1 as usize]
+    }
+}
 /// A `Preflight::slots` index range (one instance's slots).
 type SlotRange = (u32, u32);
 
@@ -311,7 +325,8 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     fn flush_lit_run(&mut self) {
         let end = self.lits.len();
         if end > self.run_start {
-            self.ops.push(XOp::Lit((self.run_start as u32, end as u32)));
+            self.ops
+                .push(XOp::Lit(LitRange(self.run_start as u32, end as u32)));
         }
         self.run_start = end;
     }
@@ -323,7 +338,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         let start = self.lits.len() as u32;
         f(self);
         self.run_start = self.lits.len();
-        (start, self.lits.len() as u32)
+        LitRange(start, self.lits.len() as u32)
     }
 
     fn indent_str(&mut self, level: u16) {
@@ -786,6 +801,28 @@ struct RawSlot {
 const NO_NESTED: u16 = u16::MAX;
 const NO_ANSI: u32 = u32::MAX;
 
+impl RawSlot {
+    /// The value's byte window in the chunk data.
+    fn bytes<'d>(&self, data: &'d [u8]) -> &'d [u8] {
+        &data[self.off as usize..self.off as usize + usize::from(self.len)]
+    }
+
+    /// Index into `Preflight::nested` for resolved nested instances.
+    fn nested_idx(&self) -> Option<usize> {
+        (self.nested != NO_NESTED).then(|| usize::from(self.nested))
+    }
+
+    /// Index into `Preflight::ansi` for pre-decoded ANSI payloads.
+    fn ansi_idx(&self) -> Option<usize> {
+        (self.ansi != NO_ANSI).then(|| self.ansi as usize)
+    }
+
+    /// A non-empty embedded BinXML value (renders as an element).
+    fn is_binxml_payload(&self) -> bool {
+        self.ty == value_ty::BIN_XML && self.len > 0
+    }
+}
+
 struct NestedInst<P> {
     prog: Arc<P>,
     slots: SlotRange,
@@ -808,22 +845,97 @@ impl<P> Default for Preflight<P> {
     }
 }
 
-/// Fixed wire width for fixed-size scalar types.
-fn fixed_width(ty: u8) -> Option<u16> {
-    Some(match ty {
-        0x03 | 0x04 => 1,
-        0x05 | 0x06 => 2,
-        0x07 | 0x08 | 0x0b | 0x14 => 4,
-        0x09 | 0x0a | 0x0c | 0x15 => 8,
-        0x0d => 4,  // BoolType is a 4-byte i32 on the wire
-        0x0f => 16, // GUID
-        0x11 => 8,  // FILETIME
-        0x12 => 16, // SYSTEMTIME
-        _ => return None,
-    })
+/// Substitution value-type wire bytes (MS-EVEN6 §2.2.4.1) interpreted by the
+/// fast path. Anything outside this vocabulary routes to the materialize lane.
+pub(crate) mod value_ty {
+    pub(crate) const NULL: u8 = 0x00;
+    pub(crate) const UTF16_STRING: u8 = 0x01;
+    pub(crate) const ANSI_STRING: u8 = 0x02;
+    pub(crate) const INT8: u8 = 0x03;
+    pub(crate) const UINT8: u8 = 0x04;
+    pub(crate) const INT16: u8 = 0x05;
+    pub(crate) const UINT16: u8 = 0x06;
+    pub(crate) const INT32: u8 = 0x07;
+    pub(crate) const UINT32: u8 = 0x08;
+    pub(crate) const INT64: u8 = 0x09;
+    pub(crate) const UINT64: u8 = 0x0a;
+    pub(crate) const REAL32: u8 = 0x0b;
+    pub(crate) const REAL64: u8 = 0x0c;
+    pub(crate) const BOOL: u8 = 0x0d;
+    pub(crate) const BINARY: u8 = 0x0e;
+    pub(crate) const GUID: u8 = 0x0f;
+    pub(crate) const SIZE_T: u8 = 0x10;
+    pub(crate) const FILETIME: u8 = 0x11;
+    pub(crate) const SYSTIME: u8 = 0x12;
+    pub(crate) const SID: u8 = 0x13;
+    pub(crate) const HEX_INT32: u8 = 0x14;
+    pub(crate) const HEX_INT64: u8 = 0x15;
+    pub(crate) const BIN_XML: u8 = 0x21;
 }
 
+/// How the pre-flight validates a descriptor of a given type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TyClass {
+    /// Arrays, exotics, unknowns: materialize lane.
+    Reject,
+    /// Exact wire width.
+    Fixed(u8),
+    /// Even-length UTF-16LE payload.
+    Utf16,
+    /// Any-length payload (NULL skips it, BINARY/BIN_XML slice it).
+    Sized,
+    /// ANSI string: any length, pre-decoded at pre-flight.
+    Ansi,
+    /// Hex integer of 4 or 8 bytes.
+    SizeT,
+    /// `8 + 4 * sub_authority_count` bytes.
+    Sid,
+}
+
+/// The declarative wire-facts table the descriptor scan runs on.
+const TY_CLASS: [TyClass; 256] = {
+    use TyClass::*;
+    use value_ty::*;
+    let mut t = [Reject; 256];
+    t[NULL as usize] = Sized;
+    t[UTF16_STRING as usize] = Utf16;
+    t[ANSI_STRING as usize] = Ansi;
+    t[INT8 as usize] = Fixed(1);
+    t[UINT8 as usize] = Fixed(1);
+    t[INT16 as usize] = Fixed(2);
+    t[UINT16 as usize] = Fixed(2);
+    t[INT32 as usize] = Fixed(4);
+    t[UINT32 as usize] = Fixed(4);
+    t[INT64 as usize] = Fixed(8);
+    t[UINT64 as usize] = Fixed(8);
+    t[REAL32 as usize] = Fixed(4);
+    t[REAL64 as usize] = Fixed(8);
+    t[BOOL as usize] = Fixed(4); // a 4-byte i32 on the wire
+    t[BINARY as usize] = Sized;
+    t[GUID as usize] = Fixed(16);
+    t[SIZE_T as usize] = SizeT;
+    t[FILETIME as usize] = Fixed(8);
+    t[SYSTIME as usize] = Fixed(16);
+    t[SID as usize] = Sid;
+    t[HEX_INT32 as usize] = Fixed(4);
+    t[HEX_INT64 as usize] = Fixed(8);
+    t[BIN_XML as usize] = Sized;
+    t
+};
+
 struct PreflightBail;
+
+impl From<crate::err::DeserializationError> for PreflightBail {
+    fn from(_: crate::err::DeserializationError) -> Self {
+        PreflightBail
+    }
+}
+
+impl From<crate::err::EvtxError> for PreflightBail {
+    fn from(_: crate::err::EvtxError) -> Self {
+        PreflightBail
+    }
+}
 
 impl<P: StoredProgram> Preflight<P> {
     fn clear(&mut self) {
@@ -836,15 +948,12 @@ impl<P: StoredProgram> Preflight<P> {
     /// regular path would have decoded (string NUL-truncation included).
     fn slot_empty(&self, s: &RawSlot, data: &[u8]) -> bool {
         match s.ty {
-            0x00 => true,
-            0x01 => {
-                s.len == 0 || {
-                    let o = s.off as usize;
-                    data[o] == 0 && data[o + 1] == 0
-                }
-            }
-            0x02 => s.ansi == NO_ANSI || self.ansi[s.ansi as usize].is_empty(),
-            0x0e | 0x21 => s.len == 0,
+            value_ty::NULL => true,
+            // The decoded string is empty when sized 0 or NUL-led (mirrors
+            // `utf16_by_char_count` truncation).
+            value_ty::UTF16_STRING => s.len == 0 || s.bytes(data).starts_with(&[0, 0]),
+            value_ty::ANSI_STRING => s.ansi_idx().is_none_or(|i| self.ansi[i].is_empty()),
+            value_ty::BINARY | value_ty::BIN_XML => s.len == 0,
             _ => false,
         }
     }
@@ -868,25 +977,23 @@ impl<P: StoredProgram> Preflight<P> {
             return Err(PreflightBail);
         }
         let data = chunk.data;
-        let mut p = pos;
 
-        // Mirrors `read_template_values_cursor` header handling.
-        if p >= data.len() {
-            return Err(PreflightBail);
+        // Instance header (mirrors `read_template_values_cursor`).
+        let mut cur = ByteCursor::with_pos(data, pos)?;
+        cur.u8()?; // unknown byte
+        let _template_id = cur.u32()?;
+        let def_offset = cur.u32()?;
+        if cur.position() as u32 == def_offset {
+            // Inline definition: skip its header + payload.
+            let header = read_template_definition_header_at(data, def_offset)?;
+            cur.set_pos_u64(
+                cur.position()
+                    + (TEMPLATE_DEFINITION_HEADER_SIZE as u64)
+                    + u64::from(header.data_size),
+                "skip inline template definition",
+            )?;
         }
-        p += 1; // unknown byte
-        let _template_id = read_u32(data, p)?;
-        let def_offset = read_u32(data, p + 4)?;
-        p += 8;
-        if p as u32 == def_offset {
-            // Inline definition: skip the 24-byte header + payload.
-            let data_size = read_u32(data, p + 20)?;
-            p = p
-                .checked_add(24 + data_size as usize)
-                .ok_or(PreflightBail)?;
-        }
-        let n = read_u32(data, p)? as usize;
-        p += 4;
+        let n = cur.u32()? as usize;
         if n > 4096 {
             return Err(PreflightBail);
         }
@@ -902,48 +1009,43 @@ impl<P: StoredProgram> Preflight<P> {
         )
         .ok_or(PreflightBail)?;
 
-        // Descriptor table: n x (u16 size, u8 type, u8 pad).
-        let desc_base = p;
-        let values_base = p + n * 4;
-        if values_base > data.len() {
-            return Err(PreflightBail);
-        }
-        let mut off = values_base;
+        // Descriptor table: n x (u16 size, u8 type, u8 pad), then the values.
+        let descriptors = cur.take_bytes(n * 4, "descriptor table")?;
+        let mut off = cur.pos();
         let slot_start = self.slots.len() as u32;
-        for i in 0..n {
-            let d = desc_base + i * 4;
-            let len = read_u16(data, d)?;
-            let ty = data[d + 2];
-            if off + usize::from(len) > data.len() {
+        for desc in descriptors.chunks_exact(4) {
+            let &[len_lo, len_hi, ty, _pad] = desc else {
+                unreachable!("chunks_exact(4)");
+            };
+            let len = u16::from_le_bytes([len_lo, len_hi]);
+            let end = off + usize::from(len);
+            if end > data.len() {
                 return Err(PreflightBail);
             }
-            match ty {
-                0x00 | 0x02 | 0x0e | 0x21 => {}
-                0x01 => {
+            match TY_CLASS[usize::from(ty)] {
+                TyClass::Reject => return Err(PreflightBail),
+                TyClass::Fixed(width) => {
+                    if len != u16::from(width) {
+                        return Err(PreflightBail);
+                    }
+                }
+                TyClass::Utf16 => {
                     if len % 2 != 0 {
                         return Err(PreflightBail);
                     }
                 }
-                0x10 => {
+                TyClass::SizeT => {
                     if !(len == 4 || len == 8) {
                         return Err(PreflightBail);
                     }
                 }
-                0x13 => {
+                TyClass::Sid => {
                     // SID: 8 + 4 * sub_authority_count bytes.
-                    if len < 8 {
-                        return Err(PreflightBail);
-                    }
-                    let count = data[off + 1];
-                    if usize::from(len) != 8 + 4 * usize::from(count) {
+                    if len < 8 || usize::from(len) != 8 + 4 * usize::from(data[off + 1]) {
                         return Err(PreflightBail);
                     }
                 }
-                t => match fixed_width(t) {
-                    Some(w) if w == len => {}
-                    // Arrays (0x80 bit) and exotic/mis-sized types: fallback.
-                    _ => return Err(PreflightBail),
-                },
+                TyClass::Sized | TyClass::Ansi => {}
             }
             let mut slot = RawSlot {
                 off: off as u32,
@@ -952,10 +1054,10 @@ impl<P: StoredProgram> Preflight<P> {
                 nested: NO_NESTED,
                 ansi: NO_ANSI,
             };
-            if ty == 0x02 && len > 0 {
+            if ty == value_ty::ANSI_STRING && len > 0 {
                 // Decode ANSI now so the executor stays infallible. Mirrors
                 // `deserialize_value_type_cursor_in` (NUL filter + strict).
-                let raw = &data[off..off + usize::from(len)];
+                let raw = &data[off..end];
                 let filtered: Vec<u8> = raw.iter().copied().filter(|&b| b != 0).collect();
                 let decoded = settings
                     .get_ansi_codec()
@@ -965,7 +1067,7 @@ impl<P: StoredProgram> Preflight<P> {
                 self.ansi.push(decoded);
             }
             self.slots.push(slot);
-            off += usize::from(len);
+            off = end;
         }
         let slot_range = (slot_start, self.slots.len() as u32);
 
@@ -976,22 +1078,21 @@ impl<P: StoredProgram> Preflight<P> {
             }
             let idx = slot_start as usize + slot_id as usize;
             let s = self.slots[idx];
-            if s.ty != 0x21 || s.len == 0 {
+            if !s.is_binxml_payload() {
                 continue;
             }
-            let fo = s.off as usize;
-            let frag = &data[fo..fo + usize::from(s.len)];
-            let inst_off = match frag.first() {
-                Some(0x0f) if frag.len() > 5 && frag[4] == 0x0c => 5,
-                Some(0x0c) => 1,
+            let frag = s.bytes(data);
+            let Some(inst_off) = crate::binxml::tokens::single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
                 // where the executor supports it; otherwise fall back.
-                _ if P::ALLOW_GENERIC_FRAGS => continue,
-                _ => return Err(PreflightBail),
+                if P::ALLOW_GENERIC_FRAGS {
+                    continue;
+                }
+                return Err(PreflightBail);
             };
             let (nprog, nslots, nend) = self.scan_instance(
                 chunk,
-                fo + inst_off,
+                s.off as usize + inst_off,
                 depth + 1,
                 cache,
                 progs,
@@ -1000,9 +1101,9 @@ impl<P: StoredProgram> Preflight<P> {
                 false,
             )?;
             // The nested instance must span its whole payload (allow EOF pad).
-            let nconsumed = nend - fo;
-            if nconsumed > usize::from(s.len)
-                || (nconsumed < usize::from(s.len) && frag[nconsumed] != 0x00)
+            let nconsumed = nend - s.off as usize;
+            if nconsumed > frag.len()
+                || (nconsumed < frag.len() && frag[nconsumed] != crate::binxml::tokens::token::EOF)
             {
                 return Err(PreflightBail);
             }
@@ -1026,7 +1127,7 @@ impl<P: StoredProgram> Preflight<P> {
                 continue; // out-of-range resolves to Skip everywhere
             }
             let s = self.slots[slot_start as usize + slot_id as usize];
-            let is_elem = s.ty == 0x21 && s.len > 0;
+            let is_elem = s.is_binxml_payload();
             let empty = self.slot_empty(&s, data);
             if (forbid_elem && is_elem) || (!forbid_elem && !is_elem && !empty) {
                 return Err(PreflightBail);
@@ -1035,18 +1136,6 @@ impl<P: StoredProgram> Preflight<P> {
 
         Ok((prog, slot_range, off))
     }
-}
-
-fn read_u16(data: &[u8], pos: usize) -> std::result::Result<u16, PreflightBail> {
-    data.get(pos..pos + 2)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
-        .ok_or(PreflightBail)
-}
-
-fn read_u32(data: &[u8], pos: usize) -> std::result::Result<u32, PreflightBail> {
-    data.get(pos..pos + 4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .ok_or(PreflightBail)
 }
 
 fn get_or_compile<'a, P: StoredProgram>(
@@ -1100,13 +1189,12 @@ fn template_content_key(
     def_offset: u32,
     hasher: &ahash::RandomState,
 ) -> Option<([u8; 16], u32, u64)> {
-    let data = chunk.data;
-    let off = def_offset as usize;
-    // Header: u32 next_offset, [u8;16] guid, u32 data_size (24 bytes).
-    let guid: [u8; 16] = data.get(off + 4..off + 20)?.try_into().ok()?;
-    let size = u32::from_le_bytes(data.get(off + 20..off + 24)?.try_into().ok()?);
-    let body = data.get(off + 24..(off + 24).checked_add(size as usize)?)?;
-    Some((guid, size, hasher.hash_one(body)))
+    let header = read_template_definition_header_at(chunk.data, def_offset).ok()?;
+    let body_start = (def_offset as usize).checked_add(TEMPLATE_DEFINITION_HEADER_SIZE)?;
+    let body = chunk
+        .data
+        .get(body_start..body_start.checked_add(header.data_size as usize)?)?;
+    Some((header.guid, header.data_size, hasher.hash_one(body)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,10 +1218,8 @@ pub(crate) fn try_render_xml_compiled<'a>(
     out: &mut Vec<u8>,
 ) -> bool {
     // Single-instance stream shape (mirrors `read_single_instance_stream`).
-    let inst_off = match bytes.first() {
-        Some(0x0f) if bytes.len() > 5 && bytes[4] == 0x0c => 5,
-        Some(0x0c) => 1,
-        _ => return false,
+    let Some(inst_off) = crate::binxml::tokens::single_instance_offset(bytes) else {
+        return false;
     };
     let data_start = chunk.data.as_ptr() as usize;
     let slice_start = bytes.as_ptr() as usize;
@@ -1159,7 +1245,9 @@ pub(crate) fn try_render_xml_compiled<'a>(
 
     // Anything after the instance other than EOF (0x00) is unhandled here.
     let consumed = end - stream_offset;
-    if consumed > bytes.len() || (consumed < bytes.len() && bytes[consumed] != 0x00) {
+    if consumed > bytes.len()
+        || (consumed < bytes.len() && bytes[consumed] != crate::binxml::tokens::token::EOF)
+    {
         return false;
     }
 
@@ -1209,7 +1297,7 @@ fn exec<'a>(
                     } else {
                         SlotClass::TextLike
                     }
-                } else if s.ty == 0x21 {
+                } else if s.is_binxml_payload() {
                     SlotClass::Element
                 } else {
                     SlotClass::TextLike
@@ -1219,16 +1307,15 @@ fn exec<'a>(
     };
 
     macro_rules! write_lit {
-        ($r:expr) => {{
-            let (a, b) = $r;
-            out.extend_from_slice(&lits[a as usize..b as usize]);
-        }};
+        ($r:expr) => {
+            out.extend_from_slice($r.of(lits))
+        };
     }
     macro_rules! write_val {
         ($s:expr, $in_attr:expr) => {{
             let s = $s;
-            let vb = &chunk.data[s.off as usize..s.off as usize + usize::from(s.len)];
-            let ansi = (s.ansi != NO_ANSI).then(|| pf.ansi[s.ansi as usize].as_str());
+            let vb = s.bytes(chunk.data);
+            let ansi = s.ansi_idx().map(|i| pf.ansi[i].as_str());
             vr.write_raw_value_text(
                 out,
                 s.ty,
@@ -1246,7 +1333,7 @@ fn exec<'a>(
             XOp::Lit(r) => write_lit!(*r),
             XOp::Val { slot, in_attr } => {
                 if let Some(s) = slot_at(*slot) {
-                    if s.ty == 0x21 && s.len > 0 {
+                    if s.is_binxml_payload() {
                         return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                             "element node inside attribute value",
                         ));
@@ -1258,7 +1345,7 @@ fn exec<'a>(
                 if let Some(s) = slot_at(*slot)
                     && !pf.slot_empty(&s, chunk.data)
                 {
-                    if s.ty == 0x21 {
+                    if s.is_binxml_payload() {
                         return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                             "element node inside attribute value",
                         ));
@@ -1344,13 +1431,12 @@ fn render_element_slot<'a>(
     indent_on: bool,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    if s.nested != NO_NESTED {
-        let inst = &pf.nested[s.nested as usize];
+    if let Some(idx) = s.nested_idx() {
+        let inst = &pf.nested[idx];
         return exec(&inst.prog, inst.slots, pf, chunk, cache, vr, out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
-    let fo = s.off as usize;
-    let frag = &chunk.data[fo..fo + usize::from(s.len)];
+    let frag = s.bytes(chunk.data);
     let tree = build_tree_from_binxml_bytes_direct(frag, chunk, cache)?;
     render_subtree_xml(&tree, indent, indent_on, out)
 }
@@ -1516,7 +1602,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     fn flush_lit_run(&mut self) {
         let end = self.lits.len();
         if end > self.run_start {
-            self.ops.push(JOp::Lit((self.run_start as u32, end as u32)));
+            self.ops
+                .push(JOp::Lit(LitRange(self.run_start as u32, end as u32)));
         }
         self.run_start = end;
     }
@@ -1526,7 +1613,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let start = self.lits.len() as u32;
         f(self);
         self.run_start = self.lits.len();
-        (start, self.lits.len() as u32)
+        LitRange(start, self.lits.len() as u32)
     }
 
     /// `write_element_value` equivalent: emits the VALUE of `element` (the
@@ -1636,10 +1723,10 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             .map_err(|_| Bail)?;
                         self.lits.push(b'"');
                     }
-                    let lit_member = (start, self.lits.len() as u32);
+                    let lit_member = LitRange(start, self.lits.len() as u32);
                     self.run_start = self.lits.len();
                     parts.push(JAttrPart {
-                        key: (0, 0),
+                        key: LitRange::EMPTY,
                         lit_member,
                         slot: u16::MAX,
                     });
@@ -1657,7 +1744,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     self.constraints.push(SlotConstraint::ForbidElem(ph.id));
                     parts.push(JAttrPart {
                         key,
-                        lit_member: (0, 0),
+                        lit_member: LitRange::EMPTY,
                         slot: ph.id,
                     });
                 }
@@ -1881,10 +1968,9 @@ pub(crate) fn try_render_json_compiled<'a>(
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> bool {
-    let inst_off = match bytes.first() {
-        Some(0x0f) if bytes.len() > 5 && bytes[4] == 0x0c => 5,
-        Some(0x0c) => 1,
-        _ => return false,
+    // Single-instance stream shape (mirrors `read_single_instance_stream`).
+    let Some(inst_off) = crate::binxml::tokens::single_instance_offset(bytes) else {
+        return false;
     };
     let data_start = chunk.data.as_ptr() as usize;
     let slice_start = bytes.as_ptr() as usize;
@@ -1908,7 +1994,9 @@ pub(crate) fn try_render_json_compiled<'a>(
         Err(PreflightBail) => return false,
     };
     let consumed = end - stream_offset;
-    if consumed > bytes.len() || (consumed < bytes.len() && bytes[consumed] != 0x00) {
+    if consumed > bytes.len()
+        || (consumed < bytes.len() && bytes[consumed] != crate::binxml::tokens::token::EOF)
+    {
         return false;
     }
 
@@ -1924,7 +2012,7 @@ pub(crate) fn try_render_json_compiled<'a>(
 
 /// Whether `ty` renders as a bare JSON number/bool (`write_value_as_number`).
 fn json_bare_type(ty: u8) -> bool {
-    matches!(ty, 0x03..=0x0a | 0x0d)
+    matches!(ty, value_ty::INT8..=value_ty::UINT64 | value_ty::BOOL)
 }
 
 fn exec_json(
@@ -1945,16 +2033,15 @@ fn exec_json(
     };
 
     macro_rules! write_lit {
-        ($r:expr) => {{
-            let (a, b) = $r;
-            out.extend_from_slice(&lits[a as usize..b as usize]);
-        }};
+        ($r:expr) => {
+            out.extend_from_slice($r.of(lits))
+        };
     }
     macro_rules! write_scalar {
         ($s:expr) => {{
             let s = $s;
-            let vb = &chunk.data[s.off as usize..s.off as usize + usize::from(s.len)];
-            let ansi = (s.ansi != NO_ANSI).then(|| pf.ansi[s.ansi as usize].as_str());
+            let vb = s.bytes(chunk.data);
+            let ansi = s.ansi_idx().map(|i| pf.ansi[i].as_str());
             if json_bare_type(s.ty) {
                 vr.write_raw_value_text(out, s.ty, vb, ansi, StringEscapeMode::Json)?;
             } else {
@@ -1973,13 +2060,13 @@ fn exec_json(
                 Some(s) => {
                     if pf.slot_empty(&s, chunk.data) {
                         write_lit!(*empty);
-                    } else if s.ty == 0x21 {
-                        if s.nested == NO_NESTED {
+                    } else if s.is_binxml_payload() {
+                        let Some(idx) = s.nested_idx() else {
                             return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                                 "unresolved nested instance in compiled JSON",
                             ));
-                        }
-                        let inst = &pf.nested[s.nested as usize];
+                        };
+                        let inst = &pf.nested[idx];
                         out.push(b'{');
                         out.push(b'"');
                         out.extend_from_slice(&inst.prog.root_name);
@@ -2051,15 +2138,15 @@ fn exec_json(
                 lead_comma,
             } => {
                 let Some(s) = slot_at(*slot) else { continue };
-                if pf.slot_empty(&s, chunk.data) || s.ty != 0x21 {
+                if pf.slot_empty(&s, chunk.data) || !s.is_binxml_payload() {
                     continue; // constraint guarantees elem-or-empty
                 }
-                if s.nested == NO_NESTED {
+                let Some(idx) = s.nested_idx() else {
                     return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                         "unresolved nested instance in compiled JSON",
                     ));
-                }
-                let inst = &pf.nested[s.nested as usize];
+                };
+                let inst = &pf.nested[idx];
                 let name = inst.prog.root_name.as_slice();
                 // `_N` suffix: static members first, then prior dynamics.
                 let mut count: u16 = 0;

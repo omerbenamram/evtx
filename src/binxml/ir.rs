@@ -156,7 +156,7 @@ impl<'a> ElementBuilder<'a> {
 }
 
 /// Size (in bytes) of a template definition header (next offset + guid + size).
-const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
+pub(crate) const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
 
 /// Cache of parsed BinXML templates keyed by template GUID.
 ///
@@ -934,11 +934,8 @@ fn read_single_instance_stream<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
 ) -> Result<Option<BinXmlTemplateValues<'a>>> {
-    // Fragment header token is 4 bytes (token + major + minor + flags).
-    let instance_offset = match bytes.first() {
-        Some(0x0f) if bytes.len() > 5 && bytes[4] == 0x0c => 5,
-        Some(0x0c) => 1,
-        _ => return Ok(None),
+    let Some(instance_offset) = crate::binxml::tokens::single_instance_offset(bytes) else {
+        return Ok(None);
     };
 
     let stream_offset = binxml_slice_offset_in(chunk.data, bytes)? as usize;
@@ -1041,9 +1038,9 @@ fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
 
 /// Minimal template header used for cache lookups.
 #[derive(Debug)]
-struct TemplateHeader {
-    guid: [u8; 16],
-    data_size: u32,
+pub(crate) struct TemplateHeader {
+    pub(crate) guid: [u8; 16],
+    pub(crate) data_size: u32,
 }
 
 fn estimate_node_capacity(data_size: u32) -> usize {
@@ -1052,7 +1049,10 @@ fn estimate_node_capacity(data_size: u32) -> usize {
     estimate.max(16)
 }
 
-fn read_template_definition_header_at(data: &[u8], offset: u32) -> Result<TemplateHeader> {
+pub(crate) fn read_template_definition_header_at(
+    data: &[u8],
+    offset: u32,
+) -> Result<TemplateHeader> {
     let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
     let _next_template_offset = cursor.u32_named("next_template_offset")?;
     let guid_bytes = cursor.take_bytes(16, "template_guid")?;
