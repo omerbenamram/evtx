@@ -80,7 +80,54 @@ pub(crate) struct XmlProgram {
 
 /// Per-chunk program cache. `None` marks templates that failed to compile so
 /// they are not retried for every record.
-pub(crate) type XmlProgramCache = AHashMap<(u32, u16, bool), Option<Rc<XmlProgram>>>;
+pub(crate) type ProgramCache<P> = AHashMap<(u32, u16, bool), Option<Rc<P>>>;
+pub(crate) type XmlProgramCache = ProgramCache<XmlProgram>;
+pub(crate) type JsonProgramCache = ProgramCache<JsonProgram>;
+
+/// Per-slot validity constraint checked by the pre-flight (record falls back
+/// when violated), so executors stay infallible.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SlotConstraint {
+    /// Slot must not be a non-empty embedded BinXml value (0x21).
+    ForbidElem(u16),
+    /// Slot must be a (single-instance) embedded BinXml value or empty.
+    ElemOrEmpty(u16),
+}
+
+/// What the generic pre-flight needs from a compiled program.
+pub(crate) trait TemplateProgram: Sized {
+    /// Whether the executor can render non-instance BinXml fragments in
+    /// element position (via a materialized fallback).
+    const ALLOW_GENERIC_FRAGS: bool;
+    /// `(slot, child_indent)` pairs rendered in element position.
+    fn elem_slots(&self) -> &[(u16, u16)];
+    fn constraints(&self) -> &[SlotConstraint] {
+        &[]
+    }
+    fn compile(
+        tree: &IrTree<'_>,
+        has_literal_array: bool,
+        base_indent: u16,
+        is_root: bool,
+        settings: &ParserSettings,
+    ) -> Option<Self>;
+}
+
+impl TemplateProgram for XmlProgram {
+    const ALLOW_GENERIC_FRAGS: bool = true;
+    fn elem_slots(&self) -> &[(u16, u16)] {
+        &self.elem_slots
+    }
+    fn compile(
+        tree: &IrTree<'_>,
+        has_literal_array: bool,
+        base_indent: u16,
+        is_root: bool,
+        settings: &ParserSettings,
+    ) -> Option<Self> {
+        compile_xml_template(tree, has_literal_array, base_indent, is_root, settings)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Compilation (template definition IR -> program)
@@ -577,17 +624,26 @@ struct RawSlot {
 const NO_NESTED: u16 = u16::MAX;
 const NO_ANSI: u32 = u32::MAX;
 
-struct NestedInst {
-    prog: Rc<XmlProgram>,
+struct NestedInst<P> {
+    prog: Rc<P>,
     slots: SlotRange,
 }
 
 /// Reusable per-chunk pre-flight scratch.
-#[derive(Default)]
-pub(crate) struct Preflight {
+pub(crate) struct Preflight<P> {
     slots: Vec<RawSlot>,
-    nested: Vec<NestedInst>,
+    nested: Vec<NestedInst<P>>,
     ansi: Vec<String>,
+}
+
+impl<P> Default for Preflight<P> {
+    fn default() -> Self {
+        Preflight {
+            slots: Vec::new(),
+            nested: Vec::new(),
+            ansi: Vec::new(),
+        }
+    }
 }
 
 /// Fixed wire width for fixed-size scalar types.
@@ -607,7 +663,7 @@ fn fixed_width(ty: u8) -> Option<u16> {
 
 struct PreflightBail;
 
-impl Preflight {
+impl<P: TemplateProgram> Preflight<P> {
     fn clear(&mut self) {
         self.slots.clear();
         self.nested.clear();
@@ -641,11 +697,11 @@ impl Preflight {
         pos: usize,
         depth: usize,
         cache: &mut IrTemplateCache<'a>,
-        progs: &mut XmlProgramCache,
+        progs: &mut ProgramCache<P>,
         settings: &ParserSettings,
         base_indent: u16,
         is_root: bool,
-    ) -> std::result::Result<(Rc<XmlProgram>, SlotRange, usize), PreflightBail> {
+    ) -> std::result::Result<(Rc<P>, SlotRange, usize), PreflightBail> {
         if depth > 8 {
             return Err(PreflightBail);
         }
@@ -752,7 +808,7 @@ impl Preflight {
         let slot_range = (slot_start, self.slots.len() as u32);
 
         // Resolve nested instances for slots this program renders as elements.
-        for &(slot_id, child_indent) in &prog.elem_slots {
+        for &(slot_id, child_indent) in prog.elem_slots() {
             if u32::from(slot_id) >= slot_range.1 - slot_range.0 {
                 continue; // out-of-range -> Skip at exec
             }
@@ -766,8 +822,10 @@ impl Preflight {
             let inst_off = match frag.first() {
                 Some(0x0f) if frag.len() > 5 && frag[4] == 0x0c => 5,
                 Some(0x0c) => 1,
-                // Generic fragment: rendered via the materialized fallback.
-                _ => continue,
+                // Generic fragment: rendered via the materialized fallback
+                // where the executor supports it; otherwise fall back.
+                _ if P::ALLOW_GENERIC_FRAGS => continue,
+                _ => return Err(PreflightBail),
             };
             let (nprog, nslots, nend) = self.scan_instance(
                 chunk,
@@ -796,6 +854,23 @@ impl Preflight {
             });
         }
 
+        // Per-slot constraints (kept rare; violations route to the fallback).
+        for &c in prog.constraints() {
+            let (slot_id, forbid_elem) = match c {
+                SlotConstraint::ForbidElem(s) => (s, true),
+                SlotConstraint::ElemOrEmpty(s) => (s, false),
+            };
+            if u32::from(slot_id) >= slot_range.1 - slot_range.0 {
+                continue; // out-of-range resolves to Skip everywhere
+            }
+            let s = self.slots[slot_start as usize + slot_id as usize];
+            let is_elem = s.ty == 0x21 && s.len > 0;
+            let empty = self.slot_empty(&s, data);
+            if (forbid_elem && is_elem) || (!forbid_elem && !is_elem && !empty) {
+                return Err(PreflightBail);
+            }
+        }
+
         Ok((prog, slot_range, off))
     }
 }
@@ -812,15 +887,15 @@ fn read_u32(data: &[u8], pos: usize) -> std::result::Result<u32, PreflightBail> 
         .ok_or(PreflightBail)
 }
 
-fn get_or_compile<'a>(
+fn get_or_compile<'a, P: TemplateProgram>(
     chunk: &'a EvtxChunk<'a>,
     def_offset: u32,
     base_indent: u16,
     is_root: bool,
     cache: &mut IrTemplateCache<'a>,
-    progs: &mut XmlProgramCache,
+    progs: &mut ProgramCache<P>,
     settings: &ParserSettings,
-) -> Option<Rc<XmlProgram>> {
+) -> Option<Rc<P>> {
     let key = (def_offset, base_indent, is_root);
     if let Some(entry) = progs.get(&key) {
         return entry.clone();
@@ -830,8 +905,7 @@ fn get_or_compile<'a>(
             .template_for_compile(chunk, def_offset)
             .ok()
             .and_then(|(tree, has_literal_array)| {
-                compile_xml_template(&tree, has_literal_array, base_indent, is_root, settings)
-                    .map(Rc::new)
+                P::compile(&tree, has_literal_array, base_indent, is_root, settings).map(Rc::new)
             });
     progs.insert(key, compiled.clone());
     compiled
@@ -852,7 +926,7 @@ pub(crate) fn try_render_xml_compiled<'a>(
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     progs: &mut XmlProgramCache,
-    pf: &mut Preflight,
+    pf: &mut Preflight<XmlProgram>,
     settings: &ParserSettings,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
@@ -913,7 +987,7 @@ enum SlotClass {
 fn exec<'a>(
     prog: &XmlProgram,
     slot_range: SlotRange,
-    pf: &Preflight,
+    pf: &Preflight<XmlProgram>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     vr: &mut ValueRenderer,
@@ -1064,7 +1138,7 @@ fn exec<'a>(
 #[allow(clippy::too_many_arguments)]
 fn render_element_slot<'a>(
     s: &RawSlot,
-    pf: &Preflight,
+    pf: &Preflight<XmlProgram>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     vr: &mut ValueRenderer,
@@ -1081,4 +1155,757 @@ fn render_element_slot<'a>(
     let frag = &chunk.data[fo..fo + usize::from(s.len)];
     let tree = build_tree_from_binxml_bytes_direct(frag, chunk, cache)?;
     render_xml_element_materialized(tree.arena(), tree.root(), indent as usize, indent_on, out)
+}
+
+// ---------------------------------------------------------------------------
+// JSON programs
+// ---------------------------------------------------------------------------
+
+/// One attribute part inside a `JOp::Elem` `#attributes` object: either a
+/// pre-rendered literal member (`lit_member`) or a conditional placeholder
+/// member (`key` + value from `slot`).
+#[derive(Debug, Clone)]
+struct JAttrPart {
+    /// `"name":` key bytes for placeholder attrs; empty for literal members.
+    key: LitRange,
+    /// Pre-rendered `"name":value` member for literal attrs.
+    lit_member: LitRange,
+    /// Placeholder slot (`u16::MAX` for literal members).
+    slot: u16,
+}
+
+#[derive(Debug, Clone)]
+enum JOp {
+    /// Emit `lits[range]`.
+    Lit(LitRange),
+    /// A leaf element value: `null`/`""` when empty, bare number for
+    /// int/bool-typed slots, nested-instance object for BinXml slots,
+    /// quoted escaped string otherwise.
+    LeafVal { slot: u16, empty: LitRange },
+    /// `write_element_value` for an element with placeholder attributes and
+    /// at most one placeholder content child (no element children possible).
+    Elem {
+        attrs: Box<[JAttrPart]>,
+        content: Option<u16>,
+        /// `null` / `""` for the all-empty case.
+        empty: LitRange,
+    },
+    /// A placeholder in element-child position inside an object: emits
+    /// `,"<NestedRootName>[_N]": { ... }` when the slot is a nested instance,
+    /// nothing when empty. Pre-flight guarantees elem-or-empty.
+    SlotChild {
+        slot: u16,
+        /// `(name bytes in lits, static emission count)` of preceding static
+        /// members, for `_N` suffix seeding.
+        static_names: Box<[(LitRange, u16)]>,
+        /// Whether any object member unconditionally precedes this op.
+        lead_comma: bool,
+    },
+}
+
+/// A compiled JSON template program.
+pub(crate) struct JsonProgram {
+    lits: Vec<u8>,
+    ops: Vec<JOp>,
+    elem_slots: Vec<(u16, u16)>,
+    constraints: Vec<SlotConstraint>,
+    /// Raw root element name bytes (member key for nested-instance values).
+    root_name: Vec<u8>,
+}
+
+impl TemplateProgram for JsonProgram {
+    const ALLOW_GENERIC_FRAGS: bool = false;
+    fn elem_slots(&self) -> &[(u16, u16)] {
+        &self.elem_slots
+    }
+    fn constraints(&self) -> &[SlotConstraint] {
+        &self.constraints
+    }
+    fn compile(
+        tree: &IrTree<'_>,
+        has_literal_array: bool,
+        _base_indent: u16,
+        is_root: bool,
+        settings: &ParserSettings,
+    ) -> Option<Self> {
+        compile_json_template(tree, has_literal_array, is_root, settings)
+    }
+}
+
+struct JsonCompiler<'t, 'a> {
+    tree: &'t IrTree<'a>,
+    lits: Vec<u8>,
+    ops: Vec<JOp>,
+    run_start: usize,
+    elem_slots: Vec<(u16, u16)>,
+    constraints: Vec<SlotConstraint>,
+}
+
+fn compile_json_template(
+    tree: &IrTree<'_>,
+    has_literal_array: bool,
+    is_root: bool,
+    settings: &ParserSettings,
+) -> Option<JsonProgram> {
+    if has_literal_array || settings.should_separate_json_attributes() {
+        return None;
+    }
+    let root = tree.root_element();
+    let root_container = is_data_container_name(root.name.as_str());
+    let mut c = JsonCompiler {
+        tree,
+        lits: Vec::with_capacity(512),
+        ops: Vec::with_capacity(32),
+        run_start: 0,
+        elem_slots: Vec::new(),
+        constraints: Vec::new(),
+    };
+    if is_root {
+        c.lits.push(b'{');
+        c.lits.push(b'"');
+        c.lits.extend_from_slice(root.name.as_str().as_bytes());
+        c.lits.extend_from_slice(b"\":");
+    }
+    match c.compile_element_value(tree.root(), root_container) {
+        Ok(()) => {
+            if is_root {
+                c.lits.push(b'}');
+            }
+            c.flush_lit_run();
+            Some(JsonProgram {
+                lits: c.lits,
+                ops: c.ops,
+                elem_slots: c.elem_slots,
+                constraints: c.constraints,
+                root_name: root.name.as_str().as_bytes().to_vec(),
+            })
+        }
+        Err(Bail) => None,
+    }
+}
+
+fn is_data_container_name(name: &str) -> bool {
+    name == "EventData" || name == "UserData"
+}
+
+fn is_data_element_name(name: &str) -> bool {
+    name == "Data"
+}
+
+/// Compile-time emptiness of a literal (placeholder-free) node, mirroring
+/// `scan_class` Content-detection for literals.
+fn literal_nonempty(node: &Node<'_>) -> bool {
+    match node {
+        Node::Text(t) | Node::CData(t) => !t.is_empty(),
+        Node::EntityRef(_) | Node::CharRef(_) => true,
+        Node::Value(v) => !crate::model::ir::is_optional_empty(v),
+        Node::Element(_) | Node::Placeholder(_) | Node::PITarget(_) | Node::PIData(_) => false,
+    }
+}
+
+impl<'t, 'a> JsonCompiler<'t, 'a> {
+    fn flush_lit_run(&mut self) {
+        let end = self.lits.len();
+        if end > self.run_start {
+            self.ops.push(JOp::Lit((self.run_start as u32, end as u32)));
+        }
+        self.run_start = end;
+    }
+
+    fn side_range(&mut self, f: impl FnOnce(&mut Self)) -> LitRange {
+        debug_assert_eq!(self.run_start, self.lits.len(), "unflushed lit run");
+        let start = self.lits.len() as u32;
+        f(self);
+        self.run_start = self.lits.len();
+        (start, self.lits.len() as u32)
+    }
+
+    fn element(&self, id: ElementId) -> &'t Element<'a> {
+        self.tree.arena().get(id).expect("invalid element id")
+    }
+
+    /// `write_element_value` equivalent: emits the VALUE of `element` (the
+    /// member key is the caller's responsibility).
+    fn compile_element_value(
+        &mut self,
+        id: ElementId,
+        container: bool,
+    ) -> std::result::Result<(), Bail> {
+        let element = self.element(id);
+
+        // Placeholder-free subtree: render via the real emitter.
+        if !subtree_has_placeholder(self.tree, element) {
+            let mut sink = std::mem::take(&mut self.lits);
+            let res = crate::binxml::ir_json::render_json_element_value_materialized(
+                self.tree.arena(),
+                element,
+                container,
+                &mut sink,
+            );
+            self.lits = sink;
+            return res.map_err(|_| Bail);
+        }
+
+        let ph_attrs = element
+            .attrs
+            .iter()
+            .any(|a| a.value.iter().any(|n| matches!(n, Node::Placeholder(_))));
+        let static_attr_text = element.attrs.iter().any(|a| {
+            !a.value.iter().any(|n| matches!(n, Node::Placeholder(_)))
+                && a.value.iter().any(literal_nonempty)
+        });
+
+        match classify_children(element) {
+            ChildrenKind::SinglePlaceholder(ph) => {
+                if !ph_attrs && !static_attr_text {
+                    // Leaf shape: `null` when empty, primitive otherwise.
+                    self.compile_leaf_val(ph.id, b"null", container)
+                } else {
+                    self.compile_elem_op(element, Some(ph.id), static_attr_text)
+                }
+            }
+            ChildrenKind::Empty => {
+                if !ph_attrs {
+                    // Statically resolvable: `null` or attrs-only object.
+                    // (subtree_has_placeholder was true, so this can't happen.)
+                    Err(Bail)
+                } else {
+                    self.compile_elem_op(element, None, static_attr_text)
+                }
+            }
+            ChildrenKind::StaticInline => Err(Bail), // literal text + ph attrs: rare
+            ChildrenKind::StaticLines => self.compile_object_body(element, container, ph_attrs),
+            ChildrenKind::Bail => Err(Bail),
+        }
+    }
+
+    /// Leaf value op (single placeholder content, no attribute text).
+    fn compile_leaf_val(
+        &mut self,
+        slot: u16,
+        empty_form: &[u8],
+        container: bool,
+    ) -> std::result::Result<(), Bail> {
+        // A Data-container leaf (`<UserData>%n</UserData>`) re-enters the
+        // flattening rules through its nested root; keep it on the fallback.
+        if container {
+            return Err(Bail);
+        }
+        self.flush_lit_run();
+        let empty = self.side_range(|c| c.lits.extend_from_slice(empty_form));
+        self.elem_slots.push((slot, 0));
+        self.ops.push(JOp::LeafVal { slot, empty });
+        Ok(())
+    }
+
+    /// `JOp::Elem` for `<Tag attr=%a ...>%c?</Tag>` shapes.
+    fn compile_elem_op(
+        &mut self,
+        element: &'t Element<'a>,
+        content: Option<u16>,
+        static_attr_text: bool,
+    ) -> std::result::Result<(), Bail> {
+        // `static_attr_text` forces the object form unconditionally, which is
+        // a shape the op models as "attrs always present"; handled below by
+        // emitting literal members. Build attr parts in order.
+        let _ = static_attr_text;
+        let mut parts: Vec<JAttrPart> = Vec::with_capacity(element.attrs.len());
+        self.flush_lit_run();
+        for attr in &element.attrs {
+            let n_ph = attr
+                .value
+                .iter()
+                .filter(|n| matches!(n, Node::Placeholder(_)))
+                .count();
+            match n_ph {
+                0 => {
+                    if !attr.value.iter().any(literal_nonempty) {
+                        continue; // statically empty: never a member
+                    }
+                    // Pre-render `"name":value` exactly as the emitter would.
+                    let arena = self.tree.arena();
+                    let mut sink = std::mem::take(&mut self.lits);
+                    let start = sink.len() as u32;
+                    let res = crate::binxml::ir_json::render_json_attr_member_materialized(
+                        arena, attr, &mut sink,
+                    );
+                    let lit_member = (start, sink.len() as u32);
+                    self.lits = sink;
+                    self.run_start = self.lits.len();
+                    res.map_err(|_| Bail)?;
+                    parts.push(JAttrPart {
+                        key: (0, 0),
+                        lit_member,
+                        slot: u16::MAX,
+                    });
+                }
+                1 if attr.value.len() == 1 => {
+                    let Node::Placeholder(ph) = &attr.value[0] else {
+                        return Err(Bail);
+                    };
+                    let name = attr.name.as_str().as_bytes().to_vec();
+                    let key = self.side_range(|c| {
+                        c.lits.push(b'"');
+                        c.lits.extend_from_slice(&name);
+                        c.lits.extend_from_slice(b"\":");
+                    });
+                    self.constraints.push(SlotConstraint::ForbidElem(ph.id));
+                    parts.push(JAttrPart {
+                        key,
+                        lit_member: (0, 0),
+                        slot: ph.id,
+                    });
+                }
+                _ => return Err(Bail),
+            }
+        }
+        if let Some(slot) = content {
+            self.constraints.push(SlotConstraint::ForbidElem(slot));
+        }
+        let empty = self.side_range(|c| c.lits.extend_from_slice(b"null"));
+        self.ops.push(JOp::Elem {
+            attrs: parts.into_boxed_slice(),
+            content,
+            empty,
+        });
+        Ok(())
+    }
+
+    /// Static-layout object: literal element children (each a member), plus
+    /// optional trailing placeholder children (`SlotChild`).
+    fn compile_object_body(
+        &mut self,
+        element: &'t Element<'a>,
+        container: bool,
+        ph_attrs: bool,
+    ) -> std::result::Result<(), Bail> {
+        if ph_attrs {
+            return Err(Bail); // object with placeholder attrs: fallback
+        }
+        self.lits.push(b'{');
+        let mut wrote_any = false;
+
+        // `#attributes` for literal attrs (static decision + static bytes).
+        if !element.attrs.is_empty()
+            && element
+                .attrs
+                .iter()
+                .any(|a| a.value.iter().any(literal_nonempty))
+        {
+            let arena = self.tree.arena();
+            let mut sink = std::mem::take(&mut self.lits);
+            let res = crate::binxml::ir_json::render_json_attributes_object_materialized(
+                arena,
+                &element.attrs,
+                &mut sink,
+            );
+            self.lits = sink;
+            res.map_err(|_| Bail)?;
+            wrote_any = true;
+        }
+
+        // Flattening / positional decisions are compile-time: literal `Data`
+        // children only (placeholder `Data` shapes bail via classify above).
+        let mut flatten_named = false;
+        if container {
+            for node in &element.children {
+                if let Node::Element(id) = node {
+                    let child = self.element(*id);
+                    if is_data_element_name(child.name.as_str())
+                        && let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name")
+                    {
+                        if attr.value.iter().any(|n| matches!(n, Node::Placeholder(_))) {
+                            return Err(Bail); // dynamic Data names: fallback
+                        }
+                        if attr.value.iter().any(literal_nonempty) {
+                            flatten_named = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let positional_data: Vec<ElementId> = if container && !flatten_named {
+            element
+                .children
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Element(id) if is_data_element_name(self.element(*id).name.as_str()) => {
+                        Some(*id)
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut positional_emitted = false;
+
+        // Compile-time `_N` suffix counting for static members.
+        let mut static_names: Vec<(Vec<u8>, u16)> = Vec::new();
+        let next_suffix = |name: &[u8], names: &mut Vec<(Vec<u8>, u16)>| -> u16 {
+            for (n, c) in names.iter_mut() {
+                if n.as_slice() == name {
+                    let s = *c;
+                    *c += 1;
+                    return s;
+                }
+            }
+            names.push((name.to_vec(), 1));
+            0
+        };
+
+        let mut seen_slot_child = false;
+        for node in &element.children {
+            match node {
+                Node::Element(id) => {
+                    if seen_slot_child {
+                        return Err(Bail); // static member after dynamic: comma hazard
+                    }
+                    let child = self.element(*id);
+                    let cname = child.name.as_str();
+                    if container && is_data_element_name(cname) {
+                        if flatten_named {
+                            let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name")
+                            else {
+                                continue; // unnamed Data skipped in named form
+                            };
+                            if !attr.value.iter().any(literal_nonempty) {
+                                continue; // empty literal name: skipped
+                            }
+                            if wrote_any {
+                                self.lits.push(b',');
+                            }
+                            wrote_any = true;
+                            // Key: JSON-escaped literal name text.
+                            let arena = self.tree.arena();
+                            let mut sink = std::mem::take(&mut self.lits);
+                            let res =
+                                crate::binxml::ir_json::render_json_key_from_nodes_materialized(
+                                    arena,
+                                    &attr.value,
+                                    &mut sink,
+                                );
+                            self.lits = sink;
+                            res.map_err(|_| Bail)?;
+                            self.compile_data_value(*id)?;
+                        } else if !positional_emitted && !positional_data.is_empty() {
+                            positional_emitted = true;
+                            if wrote_any {
+                                self.lits.push(b',');
+                            }
+                            wrote_any = true;
+                            self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                            if positional_data.len() == 1 {
+                                self.compile_data_value(positional_data[0])?;
+                            } else {
+                                self.lits.push(b'[');
+                                for (i, did) in positional_data.iter().enumerate() {
+                                    if i > 0 {
+                                        self.lits.push(b',');
+                                    }
+                                    self.compile_data_value(*did)?;
+                                }
+                                self.lits.push(b']');
+                            }
+                            self.lits.push(b'}');
+                        }
+                        continue;
+                    }
+                    // Normal member.
+                    if wrote_any {
+                        self.lits.push(b',');
+                    }
+                    wrote_any = true;
+                    let suffix = next_suffix(cname.as_bytes(), &mut static_names);
+                    self.lits.push(b'"');
+                    self.lits.extend_from_slice(cname.as_bytes());
+                    if suffix > 0 {
+                        self.lits.push(b'_');
+                        self.lits.extend_from_slice(suffix.to_string().as_bytes());
+                    }
+                    self.lits.extend_from_slice(b"\":");
+                    self.compile_element_value(*id, is_data_container_name(cname))?;
+                }
+                Node::Placeholder(ph) => {
+                    // Dynamic member: nested-instance value (or absent).
+                    self.flush_lit_run();
+                    let name_ranges: Vec<(LitRange, u16)> = static_names
+                        .iter()
+                        .map(|(n, c)| {
+                            let r = self.side_range(|cc| cc.lits.extend_from_slice(n));
+                            (r, *c)
+                        })
+                        .collect();
+                    self.constraints.push(SlotConstraint::ElemOrEmpty(ph.id));
+                    self.elem_slots.push((ph.id, 0));
+                    self.ops.push(JOp::SlotChild {
+                        slot: ph.id,
+                        static_names: name_ranges.into_boxed_slice(),
+                        lead_comma: wrote_any,
+                    });
+                    seen_slot_child = true;
+                }
+                other => {
+                    if literal_nonempty(other) {
+                        return Err(Bail); // would force #text: fallback
+                    }
+                }
+            }
+        }
+        self.lits.push(b'}');
+        Ok(())
+    }
+
+    /// `render_data_element_value` for a literal `<Data ...>` child: leaf
+    /// placeholder -> LeafVal with `""` empty form; literal-only -> rendered
+    /// at compile time; anything else bails.
+    fn compile_data_value(&mut self, id: ElementId) -> std::result::Result<(), Bail> {
+        let element = self.element(id);
+        if !subtree_has_placeholder(self.tree, element) {
+            let mut sink = std::mem::take(&mut self.lits);
+            let res = crate::binxml::ir_json::render_json_data_value_materialized(
+                self.tree.arena(),
+                element,
+                &mut sink,
+            );
+            self.lits = sink;
+            return res.map_err(|_| Bail);
+        }
+        if element.children.len() == 1
+            && let Node::Placeholder(ph) = &element.children[0]
+        {
+            self.flush_lit_run();
+            let empty = self.side_range(|c| c.lits.extend_from_slice(b"\"\""));
+            self.elem_slots.push((ph.id, 0));
+            self.ops.push(JOp::LeafVal { slot: ph.id, empty });
+            return Ok(());
+        }
+        Err(Bail)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON executor
+// ---------------------------------------------------------------------------
+
+/// Try to render one record's BinXML as JSON via the compiled-template path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_render_json_compiled<'a>(
+    bytes: &[u8],
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+    progs: &mut JsonProgramCache,
+    pf: &mut Preflight<JsonProgram>,
+    settings: &ParserSettings,
+    vr: &mut ValueRenderer,
+    out: &mut Vec<u8>,
+) -> bool {
+    let inst_off = match bytes.first() {
+        Some(0x0f) if bytes.len() > 5 && bytes[4] == 0x0c => 5,
+        Some(0x0c) => 1,
+        _ => return false,
+    };
+    let data_start = chunk.data.as_ptr() as usize;
+    let slice_start = bytes.as_ptr() as usize;
+    if slice_start < data_start || slice_start + bytes.len() > data_start + chunk.data.len() {
+        return false;
+    }
+    let stream_offset = slice_start - data_start;
+
+    pf.clear();
+    let (prog, slot_range, end) = match pf.scan_instance(
+        chunk,
+        stream_offset + inst_off,
+        0,
+        cache,
+        progs,
+        settings,
+        0,
+        true,
+    ) {
+        Ok(v) => v,
+        Err(PreflightBail) => return false,
+    };
+    let consumed = end - stream_offset;
+    if consumed > bytes.len() || (consumed < bytes.len() && bytes[consumed] != 0x00) {
+        return false;
+    }
+
+    let start = out.len();
+    match exec_json(&prog, slot_range, pf, chunk, vr, out) {
+        Ok(()) => true,
+        Err(_) => {
+            out.truncate(start);
+            false
+        }
+    }
+}
+
+/// Whether `ty` renders as a bare JSON number/bool (`write_value_as_number`).
+fn json_bare_type(ty: u8) -> bool {
+    matches!(ty, 0x03..=0x0a | 0x0d)
+}
+
+fn exec_json(
+    prog: &JsonProgram,
+    slot_range: SlotRange,
+    pf: &Preflight<JsonProgram>,
+    chunk: &EvtxChunk<'_>,
+    vr: &mut ValueRenderer,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let lits = &prog.lits;
+    let slot_at = |slot: u16| -> Option<RawSlot> {
+        if u32::from(slot) < slot_range.1 - slot_range.0 {
+            Some(pf.slots[slot_range.0 as usize + slot as usize])
+        } else {
+            None
+        }
+    };
+
+    macro_rules! write_lit {
+        ($r:expr) => {{
+            let (a, b) = $r;
+            out.extend_from_slice(&lits[a as usize..b as usize]);
+        }};
+    }
+    macro_rules! write_scalar {
+        ($s:expr) => {{
+            let s = $s;
+            let vb = &chunk.data[s.off as usize..s.off as usize + usize::from(s.len)];
+            let ansi = (s.ansi != NO_ANSI).then(|| pf.ansi[s.ansi as usize].as_str());
+            if json_bare_type(s.ty) {
+                vr.write_raw_value_text(out, s.ty, vb, ansi, StringEscapeMode::Json)?;
+            } else {
+                out.push(b'"');
+                vr.write_raw_value_text(out, s.ty, vb, ansi, StringEscapeMode::Json)?;
+                out.push(b'"');
+            }
+        }};
+    }
+
+    for op in &prog.ops {
+        match op {
+            JOp::Lit(r) => write_lit!(*r),
+            JOp::LeafVal { slot, empty } => match slot_at(*slot) {
+                None => write_lit!(*empty),
+                Some(s) => {
+                    if pf.slot_empty(&s, chunk.data) {
+                        write_lit!(*empty);
+                    } else if s.ty == 0x21 {
+                        if s.nested == NO_NESTED {
+                            return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                                "unresolved nested instance in compiled JSON",
+                            ));
+                        }
+                        let inst = &pf.nested[s.nested as usize];
+                        out.push(b'{');
+                        out.push(b'"');
+                        out.extend_from_slice(&inst.prog.root_name);
+                        out.extend_from_slice(b"\":");
+                        exec_json(&inst.prog, inst.slots, pf, chunk, vr, out)?;
+                        out.push(b'}');
+                    } else {
+                        write_scalar!(s);
+                    }
+                }
+            },
+            JOp::Elem {
+                attrs,
+                content,
+                empty,
+            } => {
+                // Evaluate attribute member presence.
+                let mut attr_present = false;
+                for part in attrs.iter() {
+                    if part.slot == u16::MAX {
+                        attr_present = true;
+                        break;
+                    }
+                    if let Some(s) = slot_at(part.slot)
+                        && !pf.slot_empty(&s, chunk.data)
+                    {
+                        attr_present = true;
+                        break;
+                    }
+                }
+                let content_slot =
+                    content.and_then(|c| slot_at(c).filter(|s| !pf.slot_empty(s, chunk.data)));
+                match (attr_present, content_slot) {
+                    (false, None) => write_lit!(*empty),
+                    (false, Some(s)) => write_scalar!(s),
+                    (true, content_slot) => {
+                        out.extend_from_slice(b"{\"#attributes\":{");
+                        let mut first = true;
+                        for part in attrs.iter() {
+                            if part.slot == u16::MAX {
+                                if !first {
+                                    out.push(b',');
+                                }
+                                first = false;
+                                write_lit!(part.lit_member);
+                            } else if let Some(s) = slot_at(part.slot)
+                                && !pf.slot_empty(&s, chunk.data)
+                            {
+                                if !first {
+                                    out.push(b',');
+                                }
+                                first = false;
+                                write_lit!(part.key);
+                                write_scalar!(s);
+                            }
+                        }
+                        out.push(b'}');
+                        if let Some(s) = content_slot {
+                            out.extend_from_slice(b",\"#text\":");
+                            write_scalar!(s);
+                        }
+                        out.push(b'}');
+                    }
+                }
+            }
+            JOp::SlotChild {
+                slot,
+                static_names,
+                lead_comma,
+            } => {
+                let Some(s) = slot_at(*slot) else { continue };
+                if pf.slot_empty(&s, chunk.data) || s.ty != 0x21 {
+                    continue; // constraint guarantees elem-or-empty
+                }
+                if s.nested == NO_NESTED {
+                    return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                        "unresolved nested instance in compiled JSON",
+                    ));
+                }
+                let inst = &pf.nested[s.nested as usize];
+                let name = inst.prog.root_name.as_slice();
+                // `_N` suffix: static members first, then prior dynamics.
+                let mut count: u16 = 0;
+                for (r, c) in static_names.iter() {
+                    if &lits[r.0 as usize..r.1 as usize] == name {
+                        count = *c;
+                        break;
+                    }
+                }
+                // (Prior dynamic same-name members would need scratch state;
+                // a second dynamic member with a colliding name is not
+                // expressible in compiled shapes today: one SlotChild per
+                // object is enforced at compile time via `seen_slot_child`.)
+                if *lead_comma {
+                    out.push(b',');
+                }
+                out.push(b'"');
+                out.extend_from_slice(name);
+                if count > 0 {
+                    out.push(b'_');
+                    out.extend_from_slice(count.to_string().as_bytes());
+                }
+                out.extend_from_slice(b"\":");
+                exec_json(&inst.prog, inst.slots, pf, chunk, vr, out)?;
+            }
+        }
+    }
+    Ok(())
 }

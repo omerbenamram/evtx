@@ -123,7 +123,8 @@ fn render_chunk(
                 let mut items = Vec::new();
                 {
                     use crate::binxml::compiled::{
-                        Preflight, XmlProgramCache, try_render_xml_compiled,
+                        JsonProgramCache, Preflight, XmlProgramCache, try_render_json_compiled,
+                        try_render_xml_compiled,
                     };
                     use crate::binxml::ir::{IrTemplateCache, build_record_content};
                     use crate::binxml::value_render::ValueRenderer;
@@ -135,6 +136,8 @@ fn render_chunk(
                     );
                     let mut progs = XmlProgramCache::default();
                     let mut preflight = Preflight::default();
+                    let mut json_progs = JsonProgramCache::default();
+                    let mut json_preflight = Preflight::default();
                     let mut value_renderer = ValueRenderer::new();
 
                     for raw in chunk_ref.iter_raw() {
@@ -149,8 +152,8 @@ fn render_chunk(
                                     // here so a chunk stays a single consumer-side write.
                                     let _ = writeln!(&mut data, "Record {}", event_record_id);
                                 }
-                                let compiled_done = matches!(format, RenderFormat::Xml)
-                                    && try_render_xml_compiled(
+                                let compiled_done = match format {
+                                    RenderFormat::Xml => try_render_xml_compiled(
                                         raw.bytes,
                                         chunk_ref,
                                         &mut ir_cache,
@@ -159,7 +162,18 @@ fn render_chunk(
                                         &settings,
                                         &mut value_renderer,
                                         &mut data,
-                                    );
+                                    ),
+                                    RenderFormat::Json => try_render_json_compiled(
+                                        raw.bytes,
+                                        chunk_ref,
+                                        &mut ir_cache,
+                                        &mut json_progs,
+                                        &mut json_preflight,
+                                        &settings,
+                                        &mut value_renderer,
+                                        &mut data,
+                                    ),
+                                };
                                 let rendered = if compiled_done {
                                     Ok(())
                                 } else {
