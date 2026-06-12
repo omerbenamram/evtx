@@ -1,21 +1,21 @@
-//! Compiled per-template XML splice programs (round-4 fast path).
+//! Compiled templates: the per-record fast path.
 //!
 //! Each cached template definition compiles once per (base indent, root?) key
-//! into a flat program: owned literal output bytes interleaved with
-//! substitution ops. Per-record rendering is then a descriptor scan (no
-//! `BinXmlValue` materialization, no IR walk, no render-time scans) plus a
-//! linear op loop that formats values straight from chunk bytes into the
-//! output buffer.
+//! into a flat program: pre-rendered output text plus a list of ops — copy
+//! this text range, format value N here. Per-record rendering is then a
+//! descriptor scan (no `BinXmlValue` materialization, no IR walk, no
+//! render-time scans) plus a linear op loop that formats values straight
+//! from chunk bytes into the output buffer.
 //!
 //! Coverage is deliberately partial: the compiler bails on shapes whose
-//! output depends on values in ways the op set doesn't model (array
-//! expansion, processing instructions, multi-placeholder content,
-//! runtime-forked layouts), and the per-record pre-flight bails on anything
-//! irregular (mis-sized scalars, unknown or array types, non-EOF trailers).
-//! A bail is lane selection, not a second renderer: the record materializes
-//! into an IR tree and the same walker that compiles programs renders it
-//! directly. The pre-flight runs before any output is written, so the
-//! executor never unwinds a partial record.
+//! output depends on values in ways the op set doesn't model (processing
+//! instructions, multi-placeholder content, runtime-forked layouts), and the
+//! per-record pre-flight bails on anything irregular (mis-sized scalars,
+//! unknown types, non-EOF trailers). A bailed record materializes into an IR
+//! tree, which the same walker that compiles templates renders directly —
+//! both paths share one implementation, so they cannot produce different
+//! bytes for the same record. The pre-flight runs before any output is
+//! written, so the executor never unwinds a partial record.
 
 use crate::ParserSettings;
 use crate::binxml::ir::{
