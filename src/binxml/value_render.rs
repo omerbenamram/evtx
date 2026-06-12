@@ -358,21 +358,19 @@ impl ValueRenderer {
     }
 
     /// Write a SID in `S-R-A-S1-..-Sn` form, matching `SidRef`'s `Display`.
+    ///
+    /// Wire layout: revision, sub-authority count, 48-bit big-endian
+    /// `IdentifierAuthority`, then 4-byte little-endian sub-authorities.
     fn write_sid<W: WriteExt>(&mut self, writer: &mut W, sid: &SidRef<'_>) -> Result<()> {
-        let bytes = sid.as_bytes();
-        if bytes.len() < 8 {
+        let &[revision, sub_count, a0, a1, a2, a3, a4, a5, ref subs @ ..] = sid.as_bytes() else {
             return self.write_bytes(writer, b"S-?");
-        }
-        // IdentifierAuthority is a 48-bit big-endian integer.
-        let mut authority: u64 = 0;
-        for &b in &bytes[2..8] {
-            authority = (authority << 8) | u64::from(b);
-        }
+        };
+        let authority = u64::from_be_bytes([0, 0, a0, a1, a2, a3, a4, a5]);
         self.write_bytes(writer, b"S-")?;
-        write_int!(self, writer, write_u8, bytes[0])?;
+        write_int!(self, writer, write_u8, revision)?;
         self.write_byte(writer, b'-')?;
         write_int!(self, writer, write_u64, authority)?;
-        for chunk in bytes[8..].chunks_exact(4).take(bytes[1] as usize) {
+        for chunk in subs.chunks_exact(4).take(sub_count as usize) {
             self.write_byte(writer, b'-')?;
             let sub = u32::from_le_bytes(chunk.try_into().expect("4-byte chunk"));
             write_int!(self, writer, write_u32, sub)?;

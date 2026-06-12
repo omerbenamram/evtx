@@ -12,15 +12,17 @@
 //! expansion, processing instructions, multi-placeholder content,
 //! runtime-forked layouts), and the per-record pre-flight bails on anything
 //! irregular (mis-sized scalars, unknown or array types, non-EOF trailers).
-//! Every bail routes the record through the existing render-direct path,
-//! which remains the behavioral source of truth. The pre-flight runs before
-//! any output is written, so the executor never unwinds a partial record.
+//! A bail is lane selection, not a second renderer: the record materializes
+//! into an IR tree and the same walker that compiles programs renders it
+//! directly. The pre-flight runs before any output is written, so the
+//! executor never unwinds a partial record.
 
 use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, build_tree_from_binxml_bytes_direct,
     read_template_definition_header_at,
 };
+use crate::binxml::tokens::{single_instance_offset, token};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::err::Result;
 use crate::evtx_chunk::EvtxChunk;
@@ -935,6 +937,20 @@ const TY_CLASS: [TyClass; 256] = {
     t
 };
 
+/// Fast-lane bail depth for nested instances (deeper chains use the slow
+/// lane, which is itself capped — see `ir::MAX_BINXML_NESTING`).
+const MAX_FAST_LANE_NESTING: usize = 8;
+
+/// Sanity cap on a template instance's substitution count (the wire could
+/// claim up to `u32::MAX`; nothing legitimate comes close).
+const MAX_SUBSTITUTIONS: usize = 4096;
+
+/// `consumed` bytes of `stream` were parsed as a nested/record instance: the
+/// remainder must be empty or start with EOF (the legacy trailer rule).
+fn ends_stream(stream: &[u8], consumed: usize) -> bool {
+    matches!(stream.get(consumed..), Some([]) | Some([token::EOF, ..]))
+}
+
 struct PreflightBail;
 
 impl From<crate::err::DeserializationError> for PreflightBail {
@@ -985,7 +1001,7 @@ impl<P: StoredProgram> Preflight<P> {
         base_indent: u16,
         is_root: bool,
     ) -> std::result::Result<(Arc<P>, SlotRange, usize), PreflightBail> {
-        if depth > 8 {
+        if depth > MAX_FAST_LANE_NESTING {
             return Err(PreflightBail);
         }
         let data = chunk.data;
@@ -1006,7 +1022,7 @@ impl<P: StoredProgram> Preflight<P> {
             )?;
         }
         let n = cur.u32()? as usize;
-        if n > 4096 {
+        if n > MAX_SUBSTITUTIONS {
             return Err(PreflightBail);
         }
 
@@ -1052,8 +1068,12 @@ impl<P: StoredProgram> Preflight<P> {
                     }
                 }
                 TyClass::Sid => {
-                    // SID: 8 + 4 * sub_authority_count bytes.
-                    if len < 8 || usize::from(len) != 8 + 4 * usize::from(data[off + 1]) {
+                    // SID payload: revision, sub-authority count, 48-bit
+                    // authority, then 4-byte sub-authorities.
+                    let &[_revision, sub_count, ..] = &data[off..end] else {
+                        return Err(PreflightBail);
+                    };
+                    if usize::from(len) != 8 + 4 * usize::from(sub_count) {
                         return Err(PreflightBail);
                     }
                 }
@@ -1094,7 +1114,7 @@ impl<P: StoredProgram> Preflight<P> {
                 continue;
             }
             let frag = s.bytes(data);
-            let Some(inst_off) = crate::binxml::tokens::single_instance_offset(frag) else {
+            let Some(inst_off) = single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
                 // where the executor supports it; otherwise fall back.
                 if P::ALLOW_GENERIC_FRAGS {
@@ -1113,10 +1133,7 @@ impl<P: StoredProgram> Preflight<P> {
                 false,
             )?;
             // The nested instance must span its whole payload (allow EOF pad).
-            let nconsumed = nend - s.off as usize;
-            if nconsumed > frag.len()
-                || (nconsumed < frag.len() && frag[nconsumed] != crate::binxml::tokens::token::EOF)
-            {
+            if !ends_stream(frag, nend - s.off as usize) {
                 return Err(PreflightBail);
             }
             if self.nested.len() >= usize::from(u16::MAX) {
@@ -1232,7 +1249,7 @@ pub(crate) fn try_render_xml_compiled<'a>(
     out: &mut Vec<u8>,
 ) -> bool {
     // Single-instance stream shape (mirrors `read_single_instance_stream`).
-    let Some(inst_off) = crate::binxml::tokens::single_instance_offset(bytes) else {
+    let Some(inst_off) = single_instance_offset(bytes) else {
         return false;
     };
     let data_start = chunk.data.as_ptr() as usize;
@@ -1258,10 +1275,7 @@ pub(crate) fn try_render_xml_compiled<'a>(
     };
 
     // Anything after the instance other than EOF (0x00) is unhandled here.
-    let consumed = end - stream_offset;
-    if consumed > bytes.len()
-        || (consumed < bytes.len() && bytes[consumed] != crate::binxml::tokens::token::EOF)
-    {
+    if !ends_stream(bytes, end - stream_offset) {
         return false;
     }
 
@@ -1960,7 +1974,7 @@ pub(crate) fn try_render_json_compiled<'a>(
     out: &mut Vec<u8>,
 ) -> bool {
     // Single-instance stream shape (mirrors `read_single_instance_stream`).
-    let Some(inst_off) = crate::binxml::tokens::single_instance_offset(bytes) else {
+    let Some(inst_off) = single_instance_offset(bytes) else {
         return false;
     };
     let data_start = chunk.data.as_ptr() as usize;
@@ -1984,10 +1998,7 @@ pub(crate) fn try_render_json_compiled<'a>(
         Ok(v) => v,
         Err(PreflightBail) => return false,
     };
-    let consumed = end - stream_offset;
-    if consumed > bytes.len()
-        || (consumed < bytes.len() && bytes[consumed] != crate::binxml::tokens::token::EOF)
-    {
+    if !ends_stream(bytes, end - stream_offset) {
         return false;
     }
 
