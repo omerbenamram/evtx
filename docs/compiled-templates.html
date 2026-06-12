@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compiling Windows Event Log Templates — how evtx got ~3× faster</title>
+<style>
+  :root {
+    --bg: #fdfdfb;
+    --fg: #1c2024;
+    --muted: #6b7280;
+    --accent: #4f46e5;
+    --card: #f4f4f0;
+    --border: #e2e2dc;
+    --lit-bg: #e8e8e2;
+    --lit-fg: #555;
+    --val-bg: #dbeafe;
+    --val-fg: #1d4ed8;
+    --attr-bg: #ede9fe;
+    --attr-fg: #6d28d9;
+    --body-bg: #ffedd5;
+    --body-fg: #c2410c;
+    --child-bg: #dcfce7;
+    --child-fg: #15803d;
+    --bar1: #b9b9b0;
+    --bar2: #8e8ed6;
+    --bar3: #4f46e5;
+    --good: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d;
+      --fg: #e7e9ee;
+      --muted: #9aa1ac;
+      --accent: #8b85f4;
+      --card: #1f2229;
+      --border: #2e323b;
+      --lit-bg: #2a2d35;
+      --lit-fg: #b6bac2;
+      --val-bg: #1e3a5f;
+      --val-fg: #93c5fd;
+      --attr-bg: #3b2f63;
+      --attr-fg: #c4b5fd;
+      --body-bg: #4a2e15;
+      --body-fg: #fdba74;
+      --child-bg: #14391f;
+      --child-fg: #86efac;
+      --bar1: #4a4d55;
+      --bar2: #6661c9;
+      --bar3: #8b85f4;
+      --good: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0 auto;
+    padding: 3.5rem 1.4rem 6rem;
+    max-width: 860px;
+    background: var(--bg);
+    color: var(--fg);
+    font: 17px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 2.1rem; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
+  h2 { font-size: 1.35rem; letter-spacing: -0.01em; margin: 2.8rem 0 0.8rem; }
+  h3 { font-size: 1.05rem; margin: 1.8rem 0 0.5rem; }
+  p { margin: 0.8rem 0; }
+  .subtitle { color: var(--muted); font-size: 1.12rem; margin: 0 0 0.5rem; }
+  .byline { color: var(--muted); font-size: 0.88rem; margin-bottom: 2.2rem; }
+  a { color: var(--accent); }
+  code, pre {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.86em;
+  }
+  code { background: var(--card); border-radius: 4px; padding: 0.1em 0.35em; }
+  pre {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  figure { margin: 1.6rem 0; }
+  figcaption { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top: 0.7rem; }
+  .statgrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 0.8rem;
+    margin: 1.8rem 0;
+  }
+  .stat {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.9rem 1rem 0.8rem;
+  }
+  .stat b { display: block; font-size: 1.55rem; letter-spacing: -0.02em; color: var(--accent); }
+  .stat span { color: var(--muted); font-size: 0.84rem; line-height: 1.35; display: block; margin-top: 0.15rem; }
+  .pipes { display: flex; flex-direction: column; gap: 1rem; }
+  .pipe {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.8rem 1rem;
+  }
+  .pipe h4 { margin: 0 0 0.5rem; font-size: 0.86rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem; }
+  .stage {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.3rem 0.65rem;
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+  .stage.hot { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .stage.dim { opacity: 0.65; }
+  .arr { color: var(--muted); font-size: 0.9rem; }
+  .per { font-size: 0.78rem; color: var(--muted); margin-top: 0.45rem; }
+  .tplbox pre { font-size: 0.8rem; }
+  .hole {
+    border-radius: 5px;
+    padding: 0.05em 0.3em;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .hole.val   { background: var(--val-bg); color: var(--val-fg); }
+  .hole.attr  { background: var(--attr-bg); color: var(--attr-fg); }
+  .hole.child { background: var(--child-bg); color: var(--child-fg); }
+  .hole.bodyc { background: var(--body-bg); color: var(--body-fg); }
+  .opstrip { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.9rem; }
+  .chip {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.74rem;
+    border-radius: 6px;
+    padding: 0.22em 0.5em;
+    font-weight: 600;
+  }
+  .chip.lit   { background: var(--lit-bg); color: var(--lit-fg); font-weight: 400; }
+  .chip.val   { background: var(--val-bg); color: var(--val-fg); }
+  .chip.attr  { background: var(--attr-bg); color: var(--attr-fg); }
+  .chip.child { background: var(--child-bg); color: var(--child-fg); }
+  .chip.bodyc { background: var(--body-bg); color: var(--body-fg); }
+  .lanes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.8rem;
+    margin: 0.8rem 0;
+  }
+  .lane {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.8rem 1rem;
+    background: var(--card);
+  }
+  .lane h4 { margin: 0 0 0.4rem; font-size: 0.9rem; }
+  .lane.fast h4 { color: var(--good); }
+  .lane.slow h4 { color: var(--body-fg); }
+  .lane p { font-size: 0.85rem; margin: 0.35rem 0; color: var(--muted); }
+  .converge {
+    text-align: center;
+    margin: 0.2rem 0 0;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+  .barchart { display: flex; flex-direction: column; gap: 0.45rem; margin: 1rem 0; }
+  .barrow { display: grid; grid-template-columns: 9.5rem 1fr 4.5rem; align-items: center; gap: 0.6rem; font-size: 0.85rem; }
+  .barrow .lbl { text-align: right; color: var(--muted); }
+  .bartrack { background: var(--card); border-radius: 6px; overflow: hidden; }
+  .bar { height: 1.15rem; border-radius: 6px; }
+  .barrow .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, monospace; font-size: 0.8rem; }
+  .grouplbl { margin: 0.9rem 0 0.3rem; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+  th, td { text-align: right; padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--card);
+    border-radius: 0 10px 10px 0;
+    padding: 0.7rem 1.1rem;
+    margin: 1.4rem 0;
+    font-size: 0.95rem;
+  }
+  .small { font-size: 0.85rem; color: var(--muted); }
+  ul { padding-left: 1.3rem; }
+  li { margin: 0.3rem 0; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+  @media (max-width: 640px) {
+    .lanes { grid-template-columns: 1fr; }
+    .barrow { grid-template-columns: 7rem 1fr 4rem; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Compiling Windows Event Log templates</h1>
+<p class="subtitle">How <a href="https://github.com/omerbenamram/evtx">evtx</a> went from walking trees to executing splice programs — roughly 3× faster single-threaded, byte-identical output, no <code>unsafe</code>.</p>
+<p class="byline">June 2026 · the round-4 performance campaign, explained</p>
+
+<div class="statgrid">
+  <div class="stat"><b>3.0× / 3.2×</b><span>JSON / XML single-thread speedup vs 0.12.1 (Zen&nbsp;2, pinned core)</span></div>
+  <div class="stat"><b>1.2M rec/s</b><span>records per second on one Apple M3&nbsp;Pro core, end to end</span></div>
+  <div class="stat"><b>0 bytes</b><span>of output changed — 27 sample logs × 5 output modes, every commit</span></div>
+  <div class="stat"><b>3 → 1</b><span>renderers: the old emitters and render-direct machinery are deleted; one walker remains</span></div>
+</div>
+
+<h2>The shape of the problem</h2>
+
+<p>An EVTX file is a sequence of 64&nbsp;KiB chunks, each holding a few hundred records. A record's payload is <em>binary XML</em> (BinXML): a tokenized tree format in which Microsoft made one excellent decision — they separated <strong>structure</strong> from <strong>data</strong>. The structure lives in a <em>template definition</em> (an element tree with typed holes), stored once per chunk. Each record is then just a <em>template instance</em>: a reference to a definition plus an array of typed substitution values.</p>
+
+<p>Rendered, a record looks like this — a Security 4688, process creation:</p>
+
+<pre><code>&lt;Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"&gt;
+  &lt;System&gt;
+    &lt;Provider Name="Microsoft-Windows-Security-Auditing" Guid="{54849625-…}"/&gt;
+    &lt;EventID&gt;4688&lt;/EventID&gt;
+    …
+    &lt;TimeCreated SystemTime="2016-10-06T01:47:07.166302Z"/&gt;
+    &lt;Computer&gt;WIN-WFBHIBE5GXZ.example.co.jp&lt;/Computer&gt;
+  &lt;/System&gt;
+  &lt;EventData&gt;
+    &lt;Data Name="NewProcessName"&gt;C:\Windows\System32\cmd.exe&lt;/Data&gt;
+    …
+  &lt;/EventData&gt;
+&lt;/Event&gt;</code></pre>
+
+<p>Almost every byte of that output is <em>constant per template</em>. Only the values change between records. And the workload is brutally repetitive: our 30&nbsp;MB benchmark log holds 62,000 records across 481 chunks but only <strong>32 distinct templates</strong>. Before this round, the parser re-walked a template's structure ~4,500 times per file — once per chunk per template, and then again, in spirit, for every single record.</p>
+
+<h2>Where three generations spent their time</h2>
+
+<figure>
+<div class="pipes">
+  <div class="pipe">
+    <h4>Gen 1 — materialize everything (≤ 0.11)</h4>
+    <div class="flow">
+      <span class="stage">BinXML bytes</span><span class="arr">→</span>
+      <span class="stage">token stream</span><span class="arr">→</span>
+      <span class="stage hot">clone template tree + resolve holes</span><span class="arr">→</span>
+      <span class="stage hot">walk tree, escape, format</span><span class="arr">→</span>
+      <span class="stage">output</span>
+    </div>
+    <p class="per">Per record: allocate and build a full tree, then traverse it. Tree cloning alone was ~28% of cycles.</p>
+  </div>
+  <div class="pipe">
+    <h4>Gen 2 — render-direct (0.12.x)</h4>
+    <div class="flow">
+      <span class="stage">BinXML bytes</span><span class="arr">→</span>
+      <span class="stage">decode values</span><span class="arr">→</span>
+      <span class="stage hot">walk the <em>cached</em> template tree, resolving holes on the fly</span><span class="arr">→</span>
+      <span class="stage">output</span>
+    </div>
+    <p class="per">Per record: no tree built, but still a full structural walk — every element re-classified (empty? inline? lines?), every value decoded into an enum, every name re-escaped. ~68% of single-thread time re-derived facts that are constant per template.</p>
+  </div>
+  <div class="pipe">
+    <h4>Gen 3 — compiled splice programs (this round)</h4>
+    <div class="flow">
+      <span class="stage dim">template, once:</span>
+      <span class="stage">walk definition</span><span class="arr">→</span>
+      <span class="stage">program {lits, ops}</span>
+    </div>
+    <div class="flow" style="margin-top:0.45rem">
+      <span class="stage dim">record:</span>
+      <span class="stage">scan descriptor table</span><span class="arr">→</span>
+      <span class="stage hot">execute ops: memcpy literals, format values from chunk bytes</span><span class="arr">→</span>
+      <span class="stage">output</span>
+    </div>
+    <p class="per">Per record: read N descriptors (4 bytes each), then a linear op loop. No tree, no token re-walk, no value enums, no layout decisions.</p>
+  </div>
+</div>
+<figcaption>What each generation does for every one of the 62,000 records.</figcaption>
+</figure>
+
+<p>The profile of gen&nbsp;2 made the bet obvious. Roughly a quarter of single-thread time decoded values into an intermediate enum, another sixth dispatched the emitter over the tree, a sixth escaped and wrote strings, and a seventh ran render-time layout scans — <em>per record</em>, for structure that is identical across thousands of records. The only honest fix was to stop re-deriving and start <strong>compiling</strong>.</p>
+
+<h2>The compiler</h2>
+
+<p>For each (template definition, output format) pair we now walk the definition <em>once</em> and partially evaluate everything static into a flat <strong>splice program</strong>: a byte buffer of pre-rendered literal output (already escaped, already indented, already serialized for the target format) interleaved with ops that say where record values get spliced in.</p>
+
+<figure class="tplbox">
+<pre><code>&lt;Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"&gt;
+  &lt;System&gt;
+    &lt;Provider Name="Microsoft-Windows-Security-Auditing" Guid="{54849625-…}"/&gt;
+    &lt;EventID&gt;<span class="hole val">⟨slot 3 · UInt16⟩</span>&lt;/EventID&gt;
+    &lt;TimeCreated SystemTime="<span class="hole attr">⟨slot 7 · FileTime⟩</span>"/&gt;
+    &lt;EventRecordID&gt;<span class="hole val">⟨slot 10 · UInt64⟩</span>&lt;/EventRecordID&gt;
+    &lt;Execution ProcessID="<span class="hole attr">⟨slot 8 · UInt32⟩</span>" ThreadID="<span class="hole attr">⟨slot 9 · UInt32⟩</span>"/&gt;
+    &lt;Computer&gt;<span class="hole val">⟨slot 12 · UTF-16 string⟩</span>&lt;/Computer&gt;
+  &lt;/System&gt;
+  <span class="hole child">⟨slot 19 · embedded BinXML → the EventData instance⟩</span>
+&lt;/Event&gt;</code></pre>
+<div class="opstrip">
+  <span class="chip lit">Lit "…&lt;EventID&gt;"</span>
+  <span class="chip val">Val{slot 3}</span>
+  <span class="chip lit">Lit "&lt;/EventID&gt;…SystemTime=\""</span>
+  <span class="chip val">Val{slot 7, in_attr}</span>
+  <span class="chip lit">Lit "\"&gt;…"</span>
+  <span class="chip val">Val{slot 10}</span>
+  <span class="chip attr">AttrVal{slot 8}</span>
+  <span class="chip attr">AttrVal{slot 9}</span>
+  <span class="chip bodyc">Body{slot 12, tails…}</span>
+  <span class="chip lit">Lit "&lt;/System&gt;"</span>
+  <span class="chip child">ChildSlot{slot 19, indent 2}</span>
+  <span class="chip lit">Lit "&lt;/Event&gt;"</span>
+</div>
+<figcaption>A template with its holes (top, abridged) and the compiled program (bottom): gray segments are pre-rendered literal runs spliced with <code>memcpy</code>; colored ops format one value each, straight from the record's bytes.</figcaption>
+</figure>
+
+<p>The XML op set is five variants; everything an op needs to make a runtime decision (is this value empty? is it a nested element?) is precomputed into it, including the alternative byte tails:</p>
+
+<pre><code>enum XOp {
+    /// Splice lits[range] into the output.
+    Lit(LitRange),
+    /// Escaped value text (element content or always-present attribute).
+    Val { slot: u16, in_attr: bool },
+    /// ` name="value"` — the whole attribute vanishes when the value is empty.
+    AttrVal { slot: u16, pre: LitRange },
+    /// Element content with one hole: empty / text / nested-element each
+    /// get a precompiled closing tail.
+    Body { slot: u16, optional: bool, indent: u16,
+           tail_text: LitRange, tail_empty: LitRange, tail_elem: LitRange },
+    /// A hole in child position: nothing, nested instance, or indented text.
+    ChildSlot { slot: u16, optional: bool, indent: u16, ind: LitRange },
+}</code></pre>
+
+<p>JSON compiles against the same IR with its own four-op set (<code>Lit</code>, <code>LeafVal</code>, <code>Elem</code>, <code>SlotChild</code>) that bakes in the trickier JSON semantics: <code>EventData</code>/<code>UserData</code> flattening, duplicate-key <code>_N</code> suffixes counted at compile time, the number-coercion rule (only integers and booleans go bare; floats, hex, timestamps, GUIDs and SIDs stay quoted), and <code>null</code>-vs-<code>""</code> empty forms.</p>
+
+<h2>Per record: scan, then execute</h2>
+
+<p>At render time a record is one header read plus its substitution descriptor table — <code>n</code> entries of (size, type). The pre-flight turns that into a table of raw slots, each a typed window into the chunk buffer:</p>
+
+<pre><code>struct RawSlot {
+    off: u32,      // value's offset in the chunk
+    len: u16,      // declared size
+    ty: u8,        // wire type
+    nested: u16,   // resolved nested-instance program, if any
+    ansi: u32,     // pre-decoded ANSI string, if any
+}</code></pre>
+
+<p>Validation is driven by a 256-entry <code>const</code> facts table built from the wire spec — the declarative replacement for a per-type match cascade (and measurably faster):</p>
+
+<pre><code>const TY_CLASS: [TyClass; 256] = { /* NULL→Sized, BOOL→Fixed(4),
+    GUID→Fixed(16), SID→Sid, UTF16_STRING→Utf16, …, everything else→Reject */ };</code></pre>
+
+<p>The executor is then a linear loop over the ops, formatting each value <em>once</em>, directly from chunk bytes into the output buffer — UTF-16 → UTF-8 with escaping fused in a SIMD path, integers via fixed-width decoders, no intermediate allocation. Values never materialize into an enum at all.</p>
+
+<h2>One walker, two lanes — no fallback renderer</h2>
+
+<p>The dangerous way to build this is a fast path with its own rendering logic and a "fallback" for everything else: two implementations of the same semantics, drifting apart one edge case at a time. That was rejected outright. The rule for this codebase is:</p>
+
+<div class="callout"><strong>A bail is lane selection, not a second renderer.</strong> The compiler <em>is</em> the renderer: walking a template it records ops at the holes; walking a materialized tree (where every hole is already resolved) the same code renders directly to the output. One implementation, two modes, identical decisions at every site.</div>
+
+<figure>
+<div class="lanes">
+  <div class="lane fast">
+    <h4>Fast lane — ~100% of Security records</h4>
+    <p>Pre-flight scans descriptors against <code>TY_CLASS</code> + per-program constraints, resolves nested instances, pre-decodes ANSI strings.</p>
+    <p>Execute the cached program. Infallible by construction: everything the executor touches was validated up front, so it never unwinds a half-written record.</p>
+  </div>
+  <div class="lane slow">
+    <h4>Slow lane — anything irregular</h4>
+    <p>Array-typed values, exotic or mis-sized descriptors, non-EOF trailers, runtime-forked layouts, deep nesting…</p>
+    <p>Materialize the IR tree, then <em>the same walker</em> renders it in direct mode. The old emitters, render-time scopes and override machinery are deleted.</p>
+  </div>
+</div>
+<p class="converge">↓ both lanes &nbsp;—&nbsp; byte-identical output, gated by a 27-sample × 5-mode sweep on every commit ↓</p>
+<figcaption>Lane selection. The fast lane covers 100% of records in Security logs, ~77–83% in System/Application (arrays are the gap — next on the list).</figcaption>
+</figure>
+
+<p>This is also where the campaign <em>removed</em> code: the unification stages deleted the standalone XML/JSON emitters and the render-time resolution layer — about 1,500 net lines — while keeping the speed. Wire-format facts got names along the way; the parser now reads like the spec it implements:</p>
+
+<pre><code>/// Offset of the TemplateInstance body in a (possibly fragment-wrapped)
+/// single-instance stream; None for any other shape.
+const fn single_instance_offset(bytes: &[u8]) -> Option&lt;usize&gt; {
+    match bytes {
+        [token::FRAGMENT_HEADER, _, _, _, token::TEMPLATE_INSTANCE, _, ..] => Some(5),
+        [token::TEMPLATE_INSTANCE, _, _, _, _, _, ..] => Some(1),
+        _ => None,
+    }
+}</code></pre>
+
+<h2>Compile once per file, not per chunk</h2>
+
+<p>Programs own their bytes (no lifetime ties to a chunk), so they are cached at two levels: a per-chunk map keyed by definition offset for the common case, backed by a parser-wide store keyed by template <em>content identity</em> — (GUID, size, hash of definition bytes) — behind an <code>RwLock</code>, shared by all worker threads via <code>Arc</code>. The 481 chunks of the benchmark file used to trigger ~4,500 template parses per read; now each of the 32 templates compiles exactly once per run, and multithreaded workers reuse each other's work.</p>
+
+<h2>Results</h2>
+
+<p>security_big_sample.evtx — 30&nbsp;MB, 62k records — single-threaded (<code>-t 1</code>), hyperfine, 10 runs. Three generations on the same Apple M3&nbsp;Pro:</p>
+
+<figure>
+<div class="barchart">
+  <div class="grouplbl">JSON</div>
+  <div class="barrow"><span class="lbl">0.11.2 · tree/record</span><div class="bartrack"><div class="bar" style="width:88.8%;background:var(--bar1)"></div></div><span class="num">161.5 ms</span></div>
+  <div class="barrow"><span class="lbl">0.12.1 · render-direct</span><div class="bartrack"><div class="bar" style="width:72.8%;background:var(--bar2)"></div></div><span class="num">132.4 ms</span></div>
+  <div class="barrow"><span class="lbl">now · compiled</span><div class="bartrack"><div class="bar" style="width:28.4%;background:var(--bar3)"></div></div><span class="num">51.7 ms</span></div>
+  <div class="grouplbl">XML</div>
+  <div class="barrow"><span class="lbl">0.11.2 · tree/record</span><div class="bartrack"><div class="bar" style="width:100%;background:var(--bar1)"></div></div><span class="num">181.8 ms</span></div>
+  <div class="barrow"><span class="lbl">0.12.1 · render-direct</span><div class="bartrack"><div class="bar" style="width:70.7%;background:var(--bar2)"></div></div><span class="num">128.5 ms</span></div>
+  <div class="barrow"><span class="lbl">now · compiled</span><div class="bartrack"><div class="bar" style="width:29.6%;background:var(--bar3)"></div></div><span class="num">53.8 ms</span></div>
+</div>
+<figcaption>One M3 Pro core: ~580 MB/s, ~1.2M records/s end to end, 3.1–3.4× vs 0.11.2.</figcaption>
+</figure>
+
+<p>On the canonical benchmark box (AMD Zen&nbsp;2, pinned to one core) the gap vs 0.12.1 is wider — this is the machine every change was gated on:</p>
+
+<table>
+  <thead><tr><th>Zen 2, 30 MB / 62k records</th><th>0.12.1</th><th>now</th><th>speedup</th></tr></thead>
+  <tbody>
+    <tr><td>JSON, single thread</td><td>233.8 ms</td><td>76.8 ms</td><td>3.0×</td></tr>
+    <tr><td>XML, single thread</td><td>228.9 ms</td><td>71.6 ms</td><td>3.2×</td></tr>
+    <tr><td>JSON, multithreaded</td><td>36.4 ms</td><td>~16 ms</td><td>~2.3×</td></tr>
+    <tr><td>XML, multithreaded</td><td>37.9 ms</td><td>~17 ms</td><td>~2.2×</td></tr>
+  </tbody>
+</table>
+
+<h2>Keeping it honest</h2>
+
+<ul>
+  <li><strong>Byte-identity:</strong> 27 sample logs (every odd shape in the corpus: ANSI codepages, WEVT-cached templates, separate-attribute JSON, zero-record files) × 5 output modes, diffed against the previous release after <em>every</em> commit. The sweep caught one real bug during development — generic BinXML fragments in JSON — before it ever landed.</li>
+  <li><strong>Tests:</strong> 99 integration tests plus insta snapshots, which also gate the per-record APIs.</li>
+  <li><strong>Adversarial review:</strong> a correctness pass over the new path found (and fixed) one genuine pre-existing DoS — unbounded recursion on crafted nesting chains, now capped at build, validation, and scan time — and the program store now recovers from lock poisoning instead of cascading panics.</li>
+  <li><strong><code>#![forbid(unsafe_code)]</code></strong> — all of this is safe Rust; the SIMD UTF-16 path lives behind the same guarantee.</li>
+</ul>
+
+<h2>What's left on the table</h2>
+
+<p>Arrays. A substitution can be array-typed, repeating its containing element once per item — System and Application logs have arrays in 17–23% of records, and those currently take the slow lane. Teaching the op set to expand arrays (<code>Expand</code> ops) is the last big structural bet. After that: a compiled variant for separate-attributes JSON, and short-string escape tails in the SIMD writer.</p>
+
+<p class="small">Benchmarks: <code>hyperfine -w2 -r10</code>, <code>evtx_dump -t 1 -o &lt;fmt&gt; -f /dev/null</code>, fast-alloc feature, Apple M3 Pro (macOS) and AMD Zen 2 (Linux, <code>taskset</code>-pinned). Output hashes and the full mode sweep are reproducible from the repo's samples directory.</p>
+
+</body>
+</html>
