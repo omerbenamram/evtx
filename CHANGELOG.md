@@ -10,11 +10,37 @@ and this project adheres to
 
 ### Changed
 
-- Records whose templates compile into splice programs (the common case) now
-  render via a per-template compiled fast path that formats substitution
-  values directly from chunk bytes: ~2.2-2.9x faster single-threaded XML/JSON
-  dumps and ~1.8-2.3x faster multi-threaded, with byte-identical output.
-  Irregular shapes transparently use the previous path.
+- Templates now compile once into pre-rendered output text plus a short list
+  of fill-in-the-value instructions, and records render by running that
+  program directly over their raw value bytes (no intermediate value enums,
+  no per-record tree walk). Compiled templates are cached per parser run and
+  shared across worker threads, so a file's templates compile once instead of
+  once per chunk. Versus 0.12.1 this makes single-threaded dumps ~3.0x (JSON)
+  and ~3.2x (XML) faster and multi-threaded dumps ~2.2x faster on a 30 MB
+  Security log, with byte-identical output (verified across 27 sample logs in
+  all five output modes).
+- String-array substitutions (the `<Data>` element repetition in System and
+  Application logs, 17-23% of their records) render on the compiled path too:
+  Application.evtx dumps ~2.1x faster than 0.12.1.
+- There is one rendering implementation left: records the compiled path
+  rejects (exotic value types, malformed value tables,
+  `--separate-json-attributes`) are parsed into a tree and rendered by the
+  same code that compiles templates, so both paths produce identical bytes by
+  construction. The render-direct machinery and the standalone XML/JSON
+  emitters from 0.12.0 are gone (~1,500 lines), and the per-record
+  `into_xml`/`into_json` APIs got faster by using the compiled cache.
+
+### Security
+
+- Bounded BinXML recursion on crafted input: nested template-instance chains
+  and element depth are now capped (64 nesting levels / 512 open elements),
+  turning a potential stack-overflow crash on malicious files into a parse
+  error. Real-world records nest one or two levels.
+
+### Added
+
+- `docs/compiled-templates.html` - a write-up of how template compilation
+  works, with a byte-level worked example and benchmark history.
 
 ## [0.12.1 - 2026-06-11]
 
