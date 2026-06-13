@@ -142,7 +142,7 @@ System: **Arch Linux** (`Linux 7.0.11-arch1-1 x86_64`).
 
 Benchmark commit: `99a6def`.
 
-The `evtx` columns were re-measured in June 2026 on this same machine, after the compiled-template rewrite landed (see [`docs/compiled-templates.html`](docs/compiled-templates.html)), using a PGO build — the same one the Linux (x86_64) and macOS release binaries ship (details below). The competitor figures are carried over unchanged from the January 2026 run on the same hardware — they are external tools whose performance has not changed.
+The `evtx` columns — and `pyevtx-rs`, our own Python bindings, which wrap the same Rust core — were re-measured in June 2026 on this same machine, after the compiled-template rewrite landed (see [`docs/compiled-templates.html`](docs/compiled-templates.html)). Both are the PGO builds that ship for Linux/macOS (the release binary and the PyPI wheel; details below). `pyevtx-rs` is bound by per-record Python marshaling (one dict per record) rather than the parser, so it does not see the full core speedup. The remaining competitor figures (libevtx, velocidex/evtx, golang-evtx, python-evtx) are carried over unchanged from the January 2026 run on the same hardware — external tools whose performance has not changed.
 
 Libraries benched:
 
@@ -154,10 +154,10 @@ Libraries benched:
 - `evtx` (This library)
 
 
-|                  | evtx (1 thread)      | evtx (8 threads)      | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (uses multiprocessing) | pyevtx-rs (CPython 3.13.11) | python-evtx (CPython 3.13.11) | python-evtx (PyPy 7.3.19) |
+|                  | evtx (1 thread)      | evtx (8 threads)      | evtx (24 threads)         | libevtx (C)          | velocidex/evtx (go)  | golang-evtx (uses multiprocessing) | pyevtx-rs (CPython 3.14.5) | python-evtx (CPython 3.13.11) | python-evtx (PyPy 7.3.19) |
 |------------------|----------------------|-----------------------|---------------------------|----------------------|----------------------|------------------------------------|-----------------------------|------------------------------|--------------------------|
-| 30MB evtx (XML)  | 71.6 ms ±   1.8 ms   | **20.7 ms ±   1.0 ms**    | 22.1 ms ±   1.7 ms        | 2.439 s ±   0.035 s  | No support           | No support                         | 0.367s (ran once)           | 2m41.075s (ran once)         | 40.096s (ran once)       |
-| 30MB evtx (JSON) | 75.1 ms ±   2.1 ms   | **20.5 ms ±   0.8 ms**    | 20.1 ms ±   0.9 ms        | No support           | 5.467 s ±   0.038 s  | 1.344 s ±   0.005 s               | 0.398s (ran once)           | No support                    | No support               |
+| 30MB evtx (XML)  | 71.6 ms ±   1.8 ms   | **20.7 ms ±   1.0 ms**    | 22.1 ms ±   1.7 ms        | 2.439 s ±   0.035 s  | No support           | No support                         | 204.6 ms ±   5.7 ms         | 2m41.075s (ran once)         | 40.096s (ran once)       |
+| 30MB evtx (JSON) | 75.1 ms ±   2.1 ms   | **20.5 ms ±   0.8 ms**    | 20.1 ms ±   0.9 ms        | No support           | 5.467 s ±   0.038 s  | 1.344 s ±   0.005 s               | 223.1 ms ±   4.7 ms         | No support                    | No support               |
 
 **Note**: numbers shown are `real-time` measurements (time it takes for invocation to complete). `user-time` measurements are higher when more using multithreading/multiprocessing, because of the synchronization overhead.
 
