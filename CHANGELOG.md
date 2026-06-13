@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.12.2 - 2026-06-13]
+
 ### Changed
 
 - Templates now compile once into pre-rendered output text plus a short list
@@ -41,6 +43,8 @@ and this project adheres to
 
 - `docs/compiled-templates.html` - a write-up of how template compilation
   works, with a byte-level worked example and benchmark history.
+
+**Full Changelog**: [`v0.12.1...v0.12.2`](https://github.com/omerbenamram/evtx/compare/v0.12.1...v0.12.2)
 
 ## [0.12.1 - 2026-06-11]
 
