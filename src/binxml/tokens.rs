@@ -153,7 +153,12 @@ pub(crate) fn read_template_values_cursor<'a>(
     }
 
     let number_of_substitutions = cursor.u32()?;
-    let mut value_descriptors = Vec::with_capacity(number_of_substitutions as usize);
+    // The loop below consumes exactly four bytes per descriptor, so a count larger than the bytes
+    // remaining cannot be satisfied by this input. Cap the reservation at that; the loop still fails
+    // on the short read, so what is accepted is unchanged.
+    let reservable = cursor.buf().len().saturating_sub(cursor.pos()) / 4;
+    let mut value_descriptors =
+        Vec::with_capacity((number_of_substitutions as usize).min(reservable));
 
     for _ in 0..number_of_substitutions {
         let size = cursor.u16()?;
@@ -174,7 +179,8 @@ pub(crate) fn read_template_values_cursor<'a>(
 
     trace!("{:?}", value_descriptors);
 
-    let mut values = Vec::with_capacity(number_of_substitutions as usize);
+    // One value per descriptor, and the descriptors are read by now, so the count is exact here.
+    let mut values = Vec::with_capacity(value_descriptors.len());
 
     for descriptor in value_descriptors {
         let position_before_reading_value = cursor.position();

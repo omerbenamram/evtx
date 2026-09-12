@@ -75,7 +75,9 @@ impl BinXmlNameRef {
             let len = cursor.u16_named("string_table_name_len")?;
 
             let nul_terminator_len = 4;
-            let data_size = BinXmlNameLink::data_size() + u32::from(len * 2) + nul_terminator_len;
+            // `len * 2` in u16 overflows for len > 32767: a panic under overflow checks, a silent
+            // wrap otherwise, which would leave the cursor misplaced. Widen before multiplying.
+            let data_size = BinXmlNameLink::data_size() + u32::from(len) * 2 + nul_terminator_len;
 
             cursor.set_pos_u64(position_before_string + u64::from(data_size), "Skip string")?;
         }
