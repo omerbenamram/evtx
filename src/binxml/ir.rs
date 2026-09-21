@@ -959,6 +959,7 @@ impl<'a> TemplateContent<'a> {
                 }
             });
         }
+        arena.reserve(instance.template.arena().count());
         clone_and_resolve(
             instance.template.arena(),
             instance.template.root(),

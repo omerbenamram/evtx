@@ -1631,15 +1631,13 @@ fn exec<'a, V: ValueSource<'a>>(
                 tail_empty,
                 tail_elem,
             } => {
-                if let Some(s) = slot_at(*slot).filter(|s| pf.array(*s)) {
+                if let Some(items) = slot_at(*slot).and_then(|s| pf.array(s)) {
                     // Array: the element repeats per item. Single-item arrays
                     // are not expanded by the materialize lane (the value node
                     // stays inline, empty or not); empty items in larger
                     // arrays drop their text node (two-line empty form).
-                    let count = pf.array_len(s);
-                    let multi = count > 1;
-                    for i in 0..count {
-                        let item = pf.array_item(s, i);
+                    let multi = items.len() > 1;
+                    for item in items {
                         write_lit!(*open);
                         if multi && item.is_empty() {
                             write_lit!(*tail_empty);
@@ -2320,9 +2318,7 @@ trait ValueSource<'a> {
     fn slots(&self, scope: Self::Scope) -> impl Fn(u16) -> Option<Self::Slot>;
     fn empty(&self, slot: Self::Slot) -> bool;
     fn element(&self, slot: Self::Slot) -> bool;
-    fn array(&self, slot: Self::Slot) -> bool;
-    fn array_len(&self, slot: Self::Slot) -> usize;
-    fn array_item(&self, slot: Self::Slot, index: usize) -> Utf16LeSlice<'a>;
+    fn array(&self, slot: Self::Slot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>>;
     fn bare(&self, slot: Self::Slot) -> bool;
     fn write(
         &self,
@@ -2362,20 +2358,15 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
         s.is_binxml_payload()
     }
     #[inline(always)]
-    fn array(&self, s: RawSlot) -> bool {
-        s.ty == value_ty::STR_ARRAY
-    }
-    #[inline(always)]
-    fn array_len(&self, s: RawSlot) -> usize {
-        self.pf.str_array_items(&s).len()
-    }
-    #[inline(always)]
-    fn array_item(&self, s: RawSlot, index: usize) -> Utf16LeSlice<'a> {
-        let (off, len) = self.pf.str_array_items(&s)[index];
-        Utf16LeSlice::new(
-            &self.data[off as usize..off as usize + usize::from(len)],
-            usize::from(len) / 2,
-        )
+    fn array(&self, s: RawSlot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>> {
+        (s.ty == value_ty::STR_ARRAY).then(|| {
+            self.pf.str_array_items(&s).iter().map(|&(off, len)| {
+                Utf16LeSlice::new(
+                    &self.data[off as usize..off as usize + usize::from(len)],
+                    usize::from(len) / 2,
+                )
+            })
+        })
     }
     #[inline(always)]
     fn bare(&self, s: RawSlot) -> bool {
@@ -2432,40 +2423,17 @@ impl<'s, 'a> ValueSource<'a> for DecodedValues<'s, 'a> {
         !matches!(s, ValidatedValue::Scalar(_))
     }
     #[inline(always)]
-    fn array(&self, s: Self::Slot) -> bool {
-        matches!(s, ValidatedValue::Scalar(BinXmlValue::StringArrayType(_)))
-    }
-    #[inline(always)]
-    fn array_len(&self, s: Self::Slot) -> usize {
-        let ValidatedValue::Scalar(BinXmlValue::StringArrayType(items)) = s else {
-            unreachable!()
-        };
-        items.len()
-    }
-    #[inline(always)]
-    fn array_item(&self, s: Self::Slot, index: usize) -> Utf16LeSlice<'a> {
-        let ValidatedValue::Scalar(BinXmlValue::StringArrayType(items)) = s else {
-            unreachable!()
-        };
-        items[index]
+    fn array(&self, s: Self::Slot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>> {
+        match s {
+            ValidatedValue::Scalar(BinXmlValue::StringArrayType(items)) => {
+                Some(items.iter().copied())
+            }
+            _ => None,
+        }
     }
     #[inline(always)]
     fn bare(&self, s: Self::Slot) -> bool {
-        use BinXmlValue::*;
-        matches!(
-            s,
-            ValidatedValue::Scalar(
-                Int8Type(_)
-                    | UInt8Type(_)
-                    | Int16Type(_)
-                    | UInt16Type(_)
-                    | Int32Type(_)
-                    | UInt32Type(_)
-                    | Int64Type(_)
-                    | UInt64Type(_)
-                    | BoolType(_)
-            )
-        )
+        matches!(s, ValidatedValue::Scalar(value) if json_bare_value(value))
     }
     #[inline(always)]
     fn write(
@@ -2602,6 +2570,22 @@ fn json_bare_type(ty: u8) -> bool {
     matches!(ty, value_ty::INT8..=value_ty::UINT64 | value_ty::BOOL)
 }
 
+fn json_bare_value(value: &BinXmlValue<'_>) -> bool {
+    use BinXmlValue::*;
+    matches!(
+        value,
+        Int8Type(_)
+            | UInt8Type(_)
+            | Int16Type(_)
+            | UInt16Type(_)
+            | Int32Type(_)
+            | UInt32Type(_)
+            | Int64Type(_)
+            | UInt64Type(_)
+            | BoolType(_)
+    )
+}
+
 fn exec_json<'a, V: ValueSource<'a>>(
     instance: Instance<V::Scope>,
     progs: &JsonProgramCache,
@@ -2642,33 +2626,31 @@ fn exec_json<'a, V: ValueSource<'a>>(
                 write_lit!(*prefix);
                 match slot_at(*slot) {
                     None => write_lit!(*empty),
-                    Some(s) if pf.array(s) => {
-                        // Positional-Data aggregation: one item renders bare
-                        // (like an unexpanded scalar), more become a JSON array.
-                        // Items are strings, so they are always quoted.
-                        let count = pf.array_len(s);
-                        let multi = count > 1;
-                        if multi {
-                            out.push(b'[');
-                        }
-                        for i in 0..count {
-                            if i > 0 {
-                                out.push(b',');
-                            }
-                            out.push(b'"');
-                            vr.write_value_text(
-                                out,
-                                &BinXmlValue::StringType(pf.array_item(s, i)),
-                                StringEscapeMode::Json,
-                            )?;
-                            out.push(b'"');
-                        }
-                        if multi {
-                            out.push(b']');
-                        }
-                    }
                     Some(s) => {
-                        if pf.empty(s) {
+                        if let Some(items) = pf.array(s) {
+                            // Positional-Data aggregation: one item renders bare
+                            // (like an unexpanded scalar), more become a JSON array.
+                            // Items are strings, so they are always quoted.
+                            let multi = items.len() > 1;
+                            if multi {
+                                out.push(b'[');
+                            }
+                            for (i, item) in items.enumerate() {
+                                if i > 0 {
+                                    out.push(b',');
+                                }
+                                out.push(b'"');
+                                vr.write_value_text(
+                                    out,
+                                    &BinXmlValue::StringType(item),
+                                    StringEscapeMode::Json,
+                                )?;
+                                out.push(b'"');
+                            }
+                            if multi {
+                                out.push(b']');
+                            }
+                        } else if pf.empty(s) {
                             write_lit!(*empty);
                         } else if pf.element(s) {
                             let Some(inst) = pf.nested(s) else {
@@ -2913,36 +2895,13 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         Ok(())
     }
 
-    fn write_i64_plain(&mut self, v: i64) -> Result<()> {
-        use sonic_rs::format::Formatter;
-        self.formatter
-            .write_i64(&mut self.lits, v)
-            .map_err(crate::err::EvtxError::from)?;
-        Ok(())
-    }
-
     /// Mirrors `write_value_as_number`.
-    fn value_as_number_plain(
-        &mut self,
-        value: &crate::binxml::value_variant::BinXmlValue<'_>,
-    ) -> Result<bool> {
-        use crate::binxml::value_variant::BinXmlValue;
-        match value {
-            BinXmlValue::Int8Type(v) => self.write_i64_plain(i64::from(*v)).map(|_| true),
-            BinXmlValue::Int16Type(v) => self.write_i64_plain(i64::from(*v)).map(|_| true),
-            BinXmlValue::Int32Type(v) => self.write_i64_plain(i64::from(*v)).map(|_| true),
-            BinXmlValue::Int64Type(v) => self.write_i64_plain(*v).map(|_| true),
-            BinXmlValue::UInt8Type(v) => self.write_u64_plain(u64::from(*v)).map(|_| true),
-            BinXmlValue::UInt16Type(v) => self.write_u64_plain(u64::from(*v)).map(|_| true),
-            BinXmlValue::UInt32Type(v) => self.write_u64_plain(u64::from(*v)).map(|_| true),
-            BinXmlValue::UInt64Type(v) => self.write_u64_plain(*v).map(|_| true),
-            BinXmlValue::BoolType(v) => {
-                self.lits
-                    .extend_from_slice(if *v { b"true" } else { b"false" });
-                Ok(true)
-            }
-            _ => Ok(false),
+    fn value_as_number_plain(&mut self, value: &BinXmlValue<'_>) -> Result<bool> {
+        if !json_bare_value(value) {
+            return Ok(false);
         }
+        self.vr.write_json_value_text(&mut self.lits, value)?;
+        Ok(true)
     }
 
     // --- content scans (scan_class over plain nodes, ctx-None semantics) ---
