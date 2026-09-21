@@ -893,75 +893,161 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
     Ok(IrTree::new(arena, root))
 }
 
-/// Parsed record content, as produced by [`build_record_content`].
-///
-/// The dominant record shape (`fragment header + single template instance`)
-/// is validated (templates parsed/cached, every substitution decoded — same
-/// error surface as full materialization) but not materialized: rendering
-/// happens straight from the record bytes via `binxml::compiled`. Every other
-/// shape gets a materialized tree, which the same walker renders.
+/// Parsed content retains the values and fragments checked before yielding a
+/// record, so both compiled rendering and materialization can reuse them.
 #[derive(Debug, Clone)]
 pub(crate) enum RecordContent<'a> {
     Tree(IrTree<'a>),
-    Template,
+    Template(TemplateContent<'a>),
 }
 
-/// Build record content from BinXML bytes: template-validation fast path when
-/// the record is a single template instance, materialized tree otherwise.
+#[derive(Debug, Clone)]
+pub(crate) enum ValidatedValue<'a> {
+    Scalar(BinXmlValue<'a>),
+    Template(usize),
+    Fragment(ElementId),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedInstance<'a> {
+    pub(crate) offset: u32,
+    pub(crate) template: Rc<IrTree<'a>>,
+    pub(crate) has_literal_array: bool,
+    pub(crate) has_arrays: bool,
+    pub(crate) values: Vec<ValidatedValue<'a>>,
+}
+
+/// Nested templates are stored deepest-first; child IDs remain valid when a
+/// record is retained, cloned, or rendered after another record.
+#[derive(Debug, Clone)]
+pub(crate) struct TemplateContent<'a> {
+    pub(crate) root: ValidatedInstance<'a>,
+    pub(crate) nested: Vec<ValidatedInstance<'a>>,
+    pub(crate) frags: std::mem::ManuallyDrop<IrArena<'a>>,
+}
+
+impl<'a> TemplateContent<'a> {
+    pub(crate) fn instance(&self, id: usize) -> &ValidatedInstance<'a> {
+        if id == usize::MAX {
+            &self.root
+        } else {
+            &self.nested[id]
+        }
+    }
+
+    pub(crate) fn materialize(&self, bump: &'a Bump) -> Result<IrTree<'a>> {
+        // Preserve fragment element IDs. No fragment bytes are parsed again.
+        let mut arena = (*self.frags).clone();
+        let root = self.materialize_instance(usize::MAX, bump, &mut arena)?;
+        Ok(IrTree::new(arena, root))
+    }
+
+    fn materialize_instance(
+        &self,
+        id: usize,
+        bump: &'a Bump,
+        arena: &mut IrArena<'a>,
+    ) -> Result<ElementId> {
+        let instance = self.instance(id);
+        let mut values = IrVec::with_capacity_in(instance.values.len(), bump);
+        for value in &instance.values {
+            values.push(match value {
+                ValidatedValue::Scalar(value) => TemplateValue::Value(value.clone()),
+                ValidatedValue::Fragment(id) => TemplateValue::BinXmlElement(*id),
+                ValidatedValue::Template(id) => {
+                    TemplateValue::BinXmlElement(self.materialize_instance(*id, bump, arena)?)
+                }
+            });
+        }
+        clone_and_resolve(
+            instance.template.arena(),
+            instance.template.root(),
+            &values,
+            bump,
+            arena,
+        )
+        .map(|(root, _)| root)
+    }
+}
+
 pub(crate) fn build_record_content<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
 ) -> Result<RecordContent<'a>> {
     if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
-        validate_tpl_instance(template_ref, chunk, cache, 0)?;
-        return Ok(RecordContent::Template);
+        let mut frags = IrArena::new_in(&chunk.arena);
+        let mut nested = Vec::new();
+        let root = validate_tpl_instance(template_ref, chunk, cache, &mut frags, &mut nested, 0)?;
+        return Ok(RecordContent::Template(TemplateContent {
+            root,
+            nested,
+            frags: std::mem::ManuallyDrop::new(frags),
+        }));
     }
     build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
 }
 
-/// Validate one template instance: parse/cache its definition and decode all
-/// substitution values, recursing into nested single-instance fragments and
-/// parsing generic fragments — exactly the error surface materialization had,
-/// without building the per-record structures. `depth` caps the recursion at
-/// [`MAX_BINXML_NESTING`] (chains beyond it route through the tree builder,
-/// whose entry guard rejects them).
 fn validate_tpl_instance<'a>(
     template_ref: BinXmlTemplateValues<'a>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
+    frags: &mut IrArena<'a>,
+    nested: &mut Vec<ValidatedInstance<'a>>,
     depth: usize,
-) -> Result<()> {
-    cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
-    for value in template_ref.values {
-        if let BinXmlValue::BinXmlType(bytes) = value {
+) -> Result<ValidatedInstance<'a>> {
+    let template =
+        cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
+    let has_literal_array = cache.template_has_literal_array(template_ref.template_def_offset);
+    let mut values: Vec<_> = template_ref
+        .values
+        .into_iter()
+        .map(ValidatedValue::Scalar)
+        .collect();
+    let mut has_arrays = false;
+    for value in &mut values {
+        let ValidatedValue::Scalar(scalar) = value else {
+            unreachable!()
+        };
+        has_arrays |= scalar.expandable_array_len().is_some();
+        if let BinXmlValue::BinXmlType(bytes) = *scalar {
             if bytes.is_empty() {
+                *value = ValidatedValue::Scalar(BinXmlValue::NullType);
                 continue;
             }
             if depth < MAX_BINXML_NESTING
                 && let Some(inner) = read_single_instance_stream(bytes, chunk)?
             {
-                validate_tpl_instance(inner, chunk, cache, depth + 1)?;
+                let child = validate_tpl_instance(inner, chunk, cache, frags, nested, depth + 1)?;
+                *value = ValidatedValue::Template(nested.len());
+                nested.push(child);
                 continue;
             }
-            // Generic fragment: parse (and discard) to surface the same errors.
-            let mut arena = IrArena::new_in(&chunk.arena);
-            build_tree_from_binxml_bytes_direct_with_mode(BuildTreeFromBinXmlBytesDirectArgs {
-                bytes,
-                data: chunk.data,
-                chunk: Some(chunk),
-                cache,
-                ansi_codec: chunk.settings.get_ansi_codec(),
-                bump: &chunk.arena,
-                arena: &mut arena,
-                mode: BuildMode::Record,
-                has_dep_id: false,
-                name_encoding: BinXmlNameEncoding::Offset,
-                depth: depth + 1,
-            })?;
+            let id = build_tree_from_binxml_bytes_direct_with_mode(
+                BuildTreeFromBinXmlBytesDirectArgs {
+                    bytes,
+                    data: chunk.data,
+                    chunk: Some(chunk),
+                    cache,
+                    ansi_codec: chunk.settings.get_ansi_codec(),
+                    bump: &chunk.arena,
+                    arena: frags,
+                    mode: BuildMode::Record,
+                    has_dep_id: false,
+                    name_encoding: BinXmlNameEncoding::Offset,
+                    depth: depth + 1,
+                },
+            )?;
+            *value = ValidatedValue::Fragment(id);
         }
     }
-    Ok(())
+    Ok(ValidatedInstance {
+        offset: template_ref.template_def_offset,
+        template,
+        has_literal_array,
+        has_arrays,
+        values,
+    })
 }
 
 /// Parse `bytes` as a `[0x0f fragment header] 0x0c TemplateInstance (EOF | end)`

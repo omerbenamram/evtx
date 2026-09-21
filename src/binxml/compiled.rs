@@ -1,33 +1,31 @@
 //! Compiled templates: the per-record fast path.
 //!
-//! Each cached template definition compiles once per (base indent, root?) key
-//! into a flat program: pre-rendered output text plus a list of ops — copy
-//! this text range, format value N here. Per-record rendering is then a
-//! descriptor scan (no `BinXmlValue` materialization, no IR walk, no
-//! render-time scans) plus a linear op loop that formats values straight
-//! from chunk bytes into the output buffer.
+//! Each cached definition compiles into a flat program of literal ranges and
+//! value operations. The executors accept checked byte spans from the CLI or
+//! retained, validated substitutions from the record iterator.
 //!
-//! Coverage is deliberately partial: the compiler bails on shapes whose
-//! output depends on values in ways the op set doesn't model (processing
-//! instructions, multi-placeholder content, runtime-forked layouts), and the
-//! per-record pre-flight bails on anything irregular (mis-sized scalars,
-//! unknown types, non-EOF trailers). A bailed record materializes into an IR
-//! tree, which the same walker that compiles templates renders directly —
-//! both paths share one implementation, so they cannot produce different
-//! bytes for the same record. The pre-flight runs before any output is
-//! written, so the executor never unwinds a partial record.
+//! Raw input needs descriptor preflight. Retained values only need program
+//! compatibility checks: their types, bounds, nested templates and fragments
+//! were validated before the record was yielded. Both sources share the same
+//! executors and value formatters.
+//!
+//! Unsupported shapes use the materialized walker. The record API builds that
+//! tree from retained values and fragments without parsing the record again;
+//! the CLI materializes its raw input. Failed execution rolls output back
+//! before falling back.
 
 use crate::ParserSettings;
 use crate::binxml::ir::{
-    IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, build_tree_from_binxml_bytes_direct,
-    read_template_definition_header_at,
+    IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
+    build_tree_from_binxml_bytes_direct, read_template_definition_header_at,
 };
 use crate::binxml::tokens::{single_instance_offset, token};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
+use crate::binxml::value_variant::BinXmlValue;
 use crate::err::Result;
 use crate::evtx_chunk::EvtxChunk;
-use crate::model::ir::{Attr, Element, ElementId, IrTree, Node, Placeholder, Text};
-use crate::utils::ByteCursor;
+use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
+use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use std::sync::Arc;
 
@@ -194,8 +192,8 @@ impl StoredProgram for JsonProgram {
 pub(crate) struct RenderCaches {
     pub(crate) xml: XmlProgramCache,
     pub(crate) json: JsonProgramCache,
-    pub(crate) pf_xml: Preflight,
-    pub(crate) pf_json: Preflight,
+    // Reusable plan contains only indices; records retain their own values.
+    nested: Vec<Option<Instance<usize>>>,
 }
 
 impl std::fmt::Debug for RenderCaches {
@@ -269,7 +267,7 @@ impl TemplateProgram for XmlProgram {
 struct Bail;
 
 struct XmlCompiler<'t, 'a> {
-    tree: &'t IrTree<'a>,
+    arena: &'t IrArena<'a>,
     lits: Vec<u8>,
     ops: Vec<XOp>,
     /// Start of the not-yet-flushed literal run (`lits[run_start..]`).
@@ -306,7 +304,7 @@ fn compile_xml_template(
         return None;
     }
     let mut c = XmlCompiler {
-        tree,
+        arena: tree.arena(),
         lits: Vec::with_capacity(512),
         ops: Vec::with_capacity(32),
         run_start: 0,
@@ -344,7 +342,7 @@ pub(crate) fn render_tree_xml(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let mut c = XmlCompiler {
-        tree,
+        arena: tree.arena(),
         lits: std::mem::take(out),
         ops: Vec::new(),
         run_start: 0,
@@ -362,14 +360,15 @@ pub(crate) fn render_tree_xml(
 }
 
 /// Render a materialized fragment subtree at `indent` (executor cold path).
-fn render_subtree_xml(
-    tree: &IrTree<'_>,
+fn render_fragment_xml(
+    arena: &IrArena<'_>,
+    root: ElementId,
     indent: u16,
     indent_on: bool,
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let mut c = XmlCompiler {
-        tree,
+        arena,
         lits: std::mem::take(out),
         ops: Vec::new(),
         run_start: 0,
@@ -379,7 +378,7 @@ fn render_subtree_xml(
         vr: ValueRenderer::new(),
         materialized: true,
     };
-    let res = c.compile_element(tree.root(), indent);
+    let res = c.compile_element(root, indent);
     debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
     *out = c.lits;
     res
@@ -387,7 +386,7 @@ fn render_subtree_xml(
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
     fn element_ref(&self, id: ElementId) -> &'t Element<'a> {
-        self.tree.arena().get(id).expect("invalid element id")
+        self.arena.get(id).expect("invalid element id")
     }
 
     fn flush_lit_run(&mut self) {
@@ -957,9 +956,9 @@ impl RawSlot {
 
 /// A cached program and the substitution slots for one validated instance.
 #[derive(Clone, Copy)]
-struct Instance {
+struct Instance<S = SlotRange> {
     prog: usize,
-    slots: SlotRange,
+    slots: S,
 }
 
 /// Reusable per-chunk pre-flight scratch.
@@ -1160,12 +1159,10 @@ impl Preflight {
 
         let prog = get_or_compile(
             chunk,
-            def_offset,
-            base_indent,
-            is_root,
-            cache,
+            (def_offset, base_indent, is_root),
             progs,
             settings,
+            TemplateSource::Bytes(cache),
         )
         .ok_or(PreflightBail)?;
 
@@ -1332,16 +1329,19 @@ impl Preflight {
     }
 }
 
+enum TemplateSource<'s, 'a> {
+    Bytes(&'s mut IrTemplateCache<'a>),
+    Validated(&'s IrTree<'a>, bool),
+}
+
 fn get_or_compile<'a, P: StoredProgram>(
     chunk: &'a EvtxChunk<'a>,
-    def_offset: u32,
-    base_indent: u16,
-    is_root: bool,
-    cache: &mut IrTemplateCache<'a>,
+    key: (u32, u16, bool),
     progs: &mut ProgramCache<P>,
     settings: &ParserSettings,
+    source: TemplateSource<'_, 'a>,
 ) -> Option<usize> {
-    let key = (def_offset, base_indent, is_root);
+    let (def_offset, base_indent, is_root) = key;
     if let Some(entry) = progs.by_key.get(&key) {
         return *entry;
     }
@@ -1361,13 +1361,17 @@ fn get_or_compile<'a, P: StoredProgram>(
         return progs.insert(key, entry.clone());
     }
 
-    let compiled =
-        cache
+    let compiled = match source {
+        TemplateSource::Validated(tree, has_literal_array) => {
+            P::compile(tree, has_literal_array, base_indent, is_root, settings).map(Arc::new)
+        }
+        TemplateSource::Bytes(cache) => cache
             .template_for_compile(chunk, def_offset)
             .ok()
             .and_then(|(tree, has_literal_array)| {
                 P::compile(&tree, has_literal_array, base_indent, is_root, settings).map(Arc::new)
-            });
+            }),
+    };
     if let Some(sk) = store_key {
         P::shard(store)
             .write()
@@ -1443,7 +1447,18 @@ pub(crate) fn try_render_xml_compiled<'a>(
     }
 
     let start = out.len();
-    match exec(instance, progs, pf, chunk, cache, vr, out) {
+    match exec(
+        instance,
+        progs,
+        &RawValues {
+            pf,
+            data: chunk.data,
+        },
+        chunk,
+        Some(cache),
+        vr,
+        out,
+    ) {
         Ok(()) => true,
         Err(_) => {
             // Unreachable post-preflight except for attribute-position BinXml
@@ -1461,30 +1476,29 @@ enum SlotClass {
     Element,
 }
 
-fn exec<'a>(
-    instance: Instance,
+fn exec<'a, V: ValueSource<'a>>(
+    instance: Instance<V::Scope>,
     progs: &XmlProgramCache,
-    pf: &Preflight,
+    pf: &V,
     chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
+    mut cache: Option<&mut IrTemplateCache<'a>>,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
-    let slots = &pf.slots[instance.slots.0 as usize..instance.slots.1 as usize];
-    let slot_at = |slot: u16| slots.get(usize::from(slot)).copied();
+    let slot_at = pf.slots(instance.slots);
     let classify = |slot: u16, optional: bool| -> SlotClass {
         match slot_at(slot) {
             None => SlotClass::Skip,
             Some(s) => {
-                if pf.slot_empty(&s, chunk.data) {
+                if pf.empty(s) {
                     if optional {
                         SlotClass::Skip
                     } else {
                         SlotClass::TextLike
                     }
-                } else if s.is_binxml_payload() {
+                } else if pf.element(s) {
                     SlotClass::Element
                 } else {
                     SlotClass::TextLike
@@ -1501,13 +1515,10 @@ fn exec<'a>(
     macro_rules! write_val {
         ($s:expr, $in_attr:expr) => {{
             let s = $s;
-            let vb = s.bytes(chunk.data);
-            let ansi = s.ansi_idx().map(|i| pf.ansi[i].as_str());
-            vr.write_raw_value_text(
+            pf.write(
+                s,
+                vr,
                 out,
-                s.ty,
-                vb,
-                ansi,
                 StringEscapeMode::Xml {
                     in_attribute: $in_attr,
                 },
@@ -1520,7 +1531,7 @@ fn exec<'a>(
             XOp::Lit(r) => write_lit!(*r),
             XOp::Val { slot, in_attr } => {
                 if let Some(s) = slot_at(*slot) {
-                    if s.is_binxml_payload() {
+                    if pf.element(s) {
                         return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                             "element node inside attribute value",
                         ));
@@ -1530,9 +1541,9 @@ fn exec<'a>(
             }
             XOp::AttrVal { slot, pre } => {
                 if let Some(s) = slot_at(*slot)
-                    && !pf.slot_empty(&s, chunk.data)
+                    && !pf.empty(s)
                 {
-                    if s.is_binxml_payload() {
+                    if pf.element(s) {
                         return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                             "element node inside attribute value",
                         ));
@@ -1566,11 +1577,11 @@ fn exec<'a>(
                             out.push(b'\n');
                         }
                         render_element_slot(
-                            &s,
+                            s,
                             progs,
                             pf,
                             chunk,
-                            cache,
+                            cache.as_deref_mut(),
                             vr,
                             *indent + INDENT_WIDTH,
                             prog.indent_on,
@@ -1599,11 +1610,11 @@ fn exec<'a>(
                 SlotClass::Element => {
                     let s = slot_at(*slot).expect("element class implies present");
                     render_element_slot(
-                        &s,
+                        s,
                         progs,
                         pf,
                         chunk,
-                        cache,
+                        cache.as_deref_mut(),
                         vr,
                         *indent,
                         prog.indent_on,
@@ -1620,23 +1631,22 @@ fn exec<'a>(
                 tail_empty,
                 tail_elem,
             } => {
-                if let Some(s) = slot_at(*slot).filter(|s| s.ty == value_ty::STR_ARRAY) {
+                if let Some(s) = slot_at(*slot).filter(|s| pf.array(*s)) {
                     // Array: the element repeats per item. Single-item arrays
                     // are not expanded by the materialize lane (the value node
                     // stays inline, empty or not); empty items in larger
                     // arrays drop their text node (two-line empty form).
-                    let items = pf.str_array_items(&s);
-                    let multi = items.len() > 1;
-                    for &(ioff, ilen) in items {
+                    let count = pf.array_len(s);
+                    let multi = count > 1;
+                    for i in 0..count {
+                        let item = pf.array_item(s, i);
                         write_lit!(*open);
-                        if multi && ilen == 0 {
+                        if multi && item.is_empty() {
                             write_lit!(*tail_empty);
                         } else {
-                            vr.write_raw_value_text(
+                            vr.write_value_text(
                                 out,
-                                value_ty::UTF16_STRING,
-                                &chunk.data[ioff as usize..ioff as usize + usize::from(ilen)],
-                                None,
+                                &BinXmlValue::StringType(item),
                                 StringEscapeMode::Xml {
                                     in_attribute: false,
                                 },
@@ -1661,11 +1671,11 @@ fn exec<'a>(
                                 out.push(b'\n');
                             }
                             render_element_slot(
-                                &s,
+                                s,
                                 progs,
                                 pf,
                                 chunk,
-                                cache,
+                                cache.as_deref_mut(),
                                 vr,
                                 *indent + INDENT_WIDTH,
                                 prog.indent_on,
@@ -1684,25 +1694,30 @@ fn exec<'a>(
 /// Render an element-class slot: a nested compiled instance, or a generic
 /// BinXml fragment via the materialized fallback renderer.
 #[allow(clippy::too_many_arguments)]
-fn render_element_slot<'a>(
-    s: &RawSlot,
+fn render_element_slot<'a, V: ValueSource<'a>>(
+    s: V::Slot,
     progs: &XmlProgramCache,
-    pf: &Preflight,
+    pf: &V,
     chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
+    cache: Option<&mut IrTemplateCache<'a>>,
     vr: &mut ValueRenderer,
     indent: u16,
     indent_on: bool,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    if let Some(idx) = s.nested_idx() {
-        let inst = &pf.nested[idx];
-        return exec(*inst, progs, pf, chunk, cache, vr, out);
+    if let Some(inst) = pf.nested(s) {
+        return exec(inst, progs, pf, chunk, cache, vr, out);
+    }
+    if let Some((arena, root)) = pf.fragment(s) {
+        return render_fragment_xml(arena, root, indent, indent_on, out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
-    let frag = s.bytes(chunk.data);
+    let Some(cache) = cache else {
+        return Err(unresolved_placeholder());
+    };
+    let frag = pf.bytes(s).ok_or_else(unresolved_placeholder)?;
     let tree = build_tree_from_binxml_bytes_direct(frag, chunk, cache)?;
-    render_subtree_xml(&tree, indent, indent_on, out)
+    render_fragment_xml(tree.arena(), tree.root(), indent, indent_on, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -2278,7 +2293,16 @@ pub(crate) fn try_render_json_compiled<'a>(
     }
 
     let start = out.len();
-    match exec_json(instance, progs, pf, chunk, vr, out) {
+    match exec_json(
+        instance,
+        progs,
+        &RawValues {
+            pf,
+            data: chunk.data,
+        },
+        vr,
+        out,
+    ) {
         Ok(()) => true,
         Err(_) => {
             out.truncate(start);
@@ -2287,23 +2311,307 @@ pub(crate) fn try_render_json_compiled<'a>(
     }
 }
 
+/// The same executors consume either the CLI's checked byte spans or values
+/// already validated by the record iterator. Implementations are specialized
+/// at compile time; the decoded path never reads substitution bytes again.
+trait ValueSource<'a> {
+    type Scope: Copy;
+    type Slot: Copy;
+    fn slots(&self, scope: Self::Scope) -> impl Fn(u16) -> Option<Self::Slot>;
+    fn empty(&self, slot: Self::Slot) -> bool;
+    fn element(&self, slot: Self::Slot) -> bool;
+    fn array(&self, slot: Self::Slot) -> bool;
+    fn array_len(&self, slot: Self::Slot) -> usize;
+    fn array_item(&self, slot: Self::Slot, index: usize) -> Utf16LeSlice<'a>;
+    fn bare(&self, slot: Self::Slot) -> bool;
+    fn write(
+        &self,
+        slot: Self::Slot,
+        vr: &mut ValueRenderer,
+        out: &mut Vec<u8>,
+        mode: StringEscapeMode,
+    ) -> Result<()>;
+    fn nested(&self, slot: Self::Slot) -> Option<Instance<Self::Scope>>;
+    fn fragment(&self, _slot: Self::Slot) -> Option<(&IrArena<'a>, ElementId)> {
+        None
+    }
+    fn bytes(&self, _slot: Self::Slot) -> Option<&'a [u8]> {
+        None
+    }
+}
+
+struct RawValues<'s, 'a> {
+    pf: &'s Preflight,
+    data: &'a [u8],
+}
+
+impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
+    type Scope = SlotRange;
+    type Slot = RawSlot;
+    #[inline(always)]
+    fn slots(&self, scope: SlotRange) -> impl Fn(u16) -> Option<RawSlot> {
+        let slots = &self.pf.slots[scope.0 as usize..scope.1 as usize];
+        move |id| slots.get(usize::from(id)).copied()
+    }
+    #[inline(always)]
+    fn empty(&self, s: RawSlot) -> bool {
+        self.pf.slot_empty(&s, self.data)
+    }
+    #[inline(always)]
+    fn element(&self, s: RawSlot) -> bool {
+        s.is_binxml_payload()
+    }
+    #[inline(always)]
+    fn array(&self, s: RawSlot) -> bool {
+        s.ty == value_ty::STR_ARRAY
+    }
+    #[inline(always)]
+    fn array_len(&self, s: RawSlot) -> usize {
+        self.pf.str_array_items(&s).len()
+    }
+    #[inline(always)]
+    fn array_item(&self, s: RawSlot, index: usize) -> Utf16LeSlice<'a> {
+        let (off, len) = self.pf.str_array_items(&s)[index];
+        Utf16LeSlice::new(
+            &self.data[off as usize..off as usize + usize::from(len)],
+            usize::from(len) / 2,
+        )
+    }
+    #[inline(always)]
+    fn bare(&self, s: RawSlot) -> bool {
+        json_bare_type(s.ty)
+    }
+    #[inline(always)]
+    fn write(
+        &self,
+        s: RawSlot,
+        vr: &mut ValueRenderer,
+        out: &mut Vec<u8>,
+        mode: StringEscapeMode,
+    ) -> Result<()> {
+        vr.write_raw_value_text(
+            out,
+            s.ty,
+            s.bytes(self.data),
+            s.ansi_idx().map(|i| self.pf.ansi[i].as_str()),
+            mode,
+        )
+    }
+    #[inline(always)]
+    fn nested(&self, s: RawSlot) -> Option<Instance> {
+        s.nested_idx().map(|i| self.pf.nested[i])
+    }
+    #[inline(always)]
+    fn bytes(&self, s: RawSlot) -> Option<&'a [u8]> {
+        Some(s.bytes(self.data))
+    }
+}
+
+struct DecodedValues<'s, 'a> {
+    content: &'s TemplateContent<'a>,
+    nested: &'s mut Vec<Option<Instance<usize>>>,
+}
+
+impl<'s, 'a> ValueSource<'a> for DecodedValues<'s, 'a> {
+    type Scope = usize;
+    type Slot = &'s ValidatedValue<'a>;
+    #[inline(always)]
+    fn slots(&self, scope: usize) -> impl Fn(u16) -> Option<Self::Slot> {
+        let values = &self.content.instance(scope).values;
+        move |id| values.get(usize::from(id))
+    }
+    #[inline(always)]
+    fn empty(&self, s: Self::Slot) -> bool {
+        match s {
+            ValidatedValue::Scalar(v) => crate::model::ir::is_optional_empty(v),
+            _ => false,
+        }
+    }
+    #[inline(always)]
+    fn element(&self, s: Self::Slot) -> bool {
+        !matches!(s, ValidatedValue::Scalar(_))
+    }
+    #[inline(always)]
+    fn array(&self, s: Self::Slot) -> bool {
+        matches!(s, ValidatedValue::Scalar(BinXmlValue::StringArrayType(_)))
+    }
+    #[inline(always)]
+    fn array_len(&self, s: Self::Slot) -> usize {
+        let ValidatedValue::Scalar(BinXmlValue::StringArrayType(items)) = s else {
+            unreachable!()
+        };
+        items.len()
+    }
+    #[inline(always)]
+    fn array_item(&self, s: Self::Slot, index: usize) -> Utf16LeSlice<'a> {
+        let ValidatedValue::Scalar(BinXmlValue::StringArrayType(items)) = s else {
+            unreachable!()
+        };
+        items[index]
+    }
+    #[inline(always)]
+    fn bare(&self, s: Self::Slot) -> bool {
+        use BinXmlValue::*;
+        matches!(
+            s,
+            ValidatedValue::Scalar(
+                Int8Type(_)
+                    | UInt8Type(_)
+                    | Int16Type(_)
+                    | UInt16Type(_)
+                    | Int32Type(_)
+                    | UInt32Type(_)
+                    | Int64Type(_)
+                    | UInt64Type(_)
+                    | BoolType(_)
+            )
+        )
+    }
+    #[inline(always)]
+    fn write(
+        &self,
+        s: Self::Slot,
+        vr: &mut ValueRenderer,
+        out: &mut Vec<u8>,
+        mode: StringEscapeMode,
+    ) -> Result<()> {
+        let ValidatedValue::Scalar(value) = s else {
+            return Err(unresolved_placeholder());
+        };
+        vr.write_value_text(out, value, mode)
+    }
+    #[inline(always)]
+    fn nested(&self, s: Self::Slot) -> Option<Instance<usize>> {
+        match s {
+            ValidatedValue::Template(id) => self.nested[*id],
+            _ => None,
+        }
+    }
+    #[inline(always)]
+    fn fragment(&self, s: Self::Slot) -> Option<(&IrArena<'a>, ElementId)> {
+        match s {
+            ValidatedValue::Fragment(id) => Some((&self.content.frags, *id)),
+            _ => None,
+        }
+    }
+}
+
+impl<'a> DecodedValues<'_, 'a> {
+    /// Check program compatibility only. All values, nested templates and
+    /// fragments have already been decoded and validated by the iterator.
+    fn prepare<P: StoredProgram>(
+        &mut self,
+        scope: usize,
+        depth: usize,
+        indent: u16,
+        root: bool,
+        chunk: &'a EvtxChunk<'a>,
+        progs: &mut ProgramCache<P>,
+    ) -> Option<Instance<usize>> {
+        use BinXmlValue::*;
+        if depth > MAX_FAST_LANE_NESTING {
+            return None;
+        }
+        let input = self.content.instance(scope);
+        let prog = get_or_compile(
+            chunk,
+            (input.offset, indent, root),
+            progs,
+            &chunk.settings,
+            TemplateSource::Validated(&input.template, input.has_literal_array),
+        )?;
+        if input.has_arrays {
+            for (i, value) in input.values.iter().enumerate() {
+                if let ValidatedValue::Scalar(value) = value
+                    && value.expandable_array_len().is_some()
+                {
+                    match value {
+                        StringArrayType(items)
+                            if !items.is_empty()
+                                && u16::try_from(i).ok().is_some_and(|i| {
+                                    progs.programs[prog].expand_slots().contains(&i)
+                                }) => {}
+                        _ => return None,
+                    }
+                }
+            }
+        }
+        for item in 0..progs.programs[prog].elem_slots().len() {
+            let (id, child_indent) = progs.programs[prog].elem_slots()[item];
+            match input.values.get(usize::from(id)) {
+                Some(ValidatedValue::Template(id)) => {
+                    let child = self.prepare(*id, depth + 1, child_indent, false, chunk, progs)?;
+                    self.nested[*id] = Some(child);
+                }
+                Some(ValidatedValue::Fragment(_)) if !P::ALLOW_GENERIC_FRAGS => return None,
+                _ => {}
+            }
+        }
+        for &constraint in progs.programs[prog].constraints() {
+            let (id, forbid) = match constraint {
+                SlotConstraint::ForbidElem(id) => (id, true),
+                SlotConstraint::ElemOrEmpty(id) => (id, false),
+            };
+            if let Some(slot) = self.slots(scope)(id)
+                && ((forbid && self.element(slot))
+                    || (!forbid && !self.element(slot) && !self.empty(slot)))
+            {
+                return None;
+            }
+        }
+        Some(Instance { prog, slots: scope })
+    }
+}
+
+pub(crate) fn try_render_validated<'a>(
+    content: &TemplateContent<'a>,
+    chunk: &'a EvtxChunk<'a>,
+    caches: &mut RenderCaches,
+    json: bool,
+    out: &mut Vec<u8>,
+) -> bool {
+    caches.nested.clear();
+    caches.nested.resize(content.nested.len(), None);
+    let mut values = DecodedValues {
+        content,
+        nested: &mut caches.nested,
+    };
+    let mut vr = ValueRenderer::new();
+    let start = out.len();
+    let rendered = if json {
+        let Some(instance) = values.prepare(usize::MAX, 0, 0, true, chunk, &mut caches.json) else {
+            return false;
+        };
+        exec_json(instance, &caches.json, &values, &mut vr, out)
+    } else {
+        let Some(instance) = values.prepare(usize::MAX, 0, 0, true, chunk, &mut caches.xml) else {
+            return false;
+        };
+        exec(instance, &caches.xml, &values, chunk, None, &mut vr, out)
+    };
+    if rendered.is_ok() {
+        true
+    } else {
+        out.truncate(start);
+        false
+    }
+}
+
 /// Whether `ty` renders as a bare JSON number/bool (`write_value_as_number`).
 fn json_bare_type(ty: u8) -> bool {
     matches!(ty, value_ty::INT8..=value_ty::UINT64 | value_ty::BOOL)
 }
 
-fn exec_json(
-    instance: Instance,
+fn exec_json<'a, V: ValueSource<'a>>(
+    instance: Instance<V::Scope>,
     progs: &JsonProgramCache,
-    pf: &Preflight,
-    chunk: &EvtxChunk<'_>,
+    pf: &V,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
-    let slots = &pf.slots[instance.slots.0 as usize..instance.slots.1 as usize];
-    let slot_at = |slot: u16| slots.get(usize::from(slot)).copied();
+    let slot_at = pf.slots(instance.slots);
 
     macro_rules! write_lit {
         ($r:expr) => {
@@ -2313,13 +2621,11 @@ fn exec_json(
     macro_rules! write_scalar {
         ($s:expr) => {{
             let s = $s;
-            let vb = s.bytes(chunk.data);
-            let ansi = s.ansi_idx().map(|i| pf.ansi[i].as_str());
-            if json_bare_type(s.ty) {
-                vr.write_raw_value_text(out, s.ty, vb, ansi, StringEscapeMode::Json)?;
+            if pf.bare(s) {
+                pf.write(s, vr, out, StringEscapeMode::Json)?;
             } else {
                 out.push(b'"');
-                vr.write_raw_value_text(out, s.ty, vb, ansi, StringEscapeMode::Json)?;
+                pf.write(s, vr, out, StringEscapeMode::Json)?;
                 out.push(b'"');
             }
         }};
@@ -2336,25 +2642,23 @@ fn exec_json(
                 write_lit!(*prefix);
                 match slot_at(*slot) {
                     None => write_lit!(*empty),
-                    Some(s) if s.ty == value_ty::STR_ARRAY => {
+                    Some(s) if pf.array(s) => {
                         // Positional-Data aggregation: one item renders bare
                         // (like an unexpanded scalar), more become a JSON array.
                         // Items are strings, so they are always quoted.
-                        let items = pf.str_array_items(&s);
-                        let multi = items.len() > 1;
+                        let count = pf.array_len(s);
+                        let multi = count > 1;
                         if multi {
                             out.push(b'[');
                         }
-                        for (i, &(ioff, ilen)) in items.iter().enumerate() {
+                        for i in 0..count {
                             if i > 0 {
                                 out.push(b',');
                             }
                             out.push(b'"');
-                            vr.write_raw_value_text(
+                            vr.write_value_text(
                                 out,
-                                value_ty::UTF16_STRING,
-                                &chunk.data[ioff as usize..ioff as usize + usize::from(ilen)],
-                                None,
+                                &BinXmlValue::StringType(pf.array_item(s, i)),
                                 StringEscapeMode::Json,
                             )?;
                             out.push(b'"');
@@ -2364,20 +2668,19 @@ fn exec_json(
                         }
                     }
                     Some(s) => {
-                        if pf.slot_empty(&s, chunk.data) {
+                        if pf.empty(s) {
                             write_lit!(*empty);
-                        } else if s.is_binxml_payload() {
-                            let Some(idx) = s.nested_idx() else {
+                        } else if pf.element(s) {
+                            let Some(inst) = pf.nested(s) else {
                                 return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                                     "unresolved nested instance in compiled JSON",
                                 ));
                             };
-                            let inst = &pf.nested[idx];
                             out.push(b'{');
                             out.push(b'"');
                             out.extend_from_slice(&progs.programs[inst.prog].root_name);
                             out.extend_from_slice(b"\":");
-                            exec_json(*inst, progs, pf, chunk, vr, out)?;
+                            exec_json(inst, progs, pf, vr, out)?;
                             out.push(b'}');
                         } else {
                             write_scalar!(s);
@@ -2394,11 +2697,10 @@ fn exec_json(
                 let attr_present = attrs.iter().any(|part| match *part {
                     JAttrPart::Literal(_) => true,
                     JAttrPart::Placeholder { slot, .. } => {
-                        slot_at(slot).is_some_and(|s| !pf.slot_empty(&s, chunk.data))
+                        slot_at(slot).is_some_and(|s| !pf.empty(s))
                     }
                 });
-                let content_slot =
-                    content.and_then(|c| slot_at(c).filter(|s| !pf.slot_empty(s, chunk.data)));
+                let content_slot = content.and_then(|c| slot_at(c).filter(|s| !pf.empty(*s)));
                 match (attr_present, content_slot) {
                     (false, None) => write_lit!(*empty),
                     (false, Some(s)) => write_scalar!(s),
@@ -2416,7 +2718,7 @@ fn exec_json(
                                 }
                                 JAttrPart::Placeholder { key, slot } => {
                                     if let Some(s) = slot_at(slot)
-                                        && !pf.slot_empty(&s, chunk.data)
+                                        && !pf.empty(s)
                                     {
                                         if !first {
                                             out.push(b',');
@@ -2443,15 +2745,14 @@ fn exec_json(
                 lead_comma,
             } => {
                 let Some(s) = slot_at(*slot) else { continue };
-                if pf.slot_empty(&s, chunk.data) || !s.is_binxml_payload() {
+                if pf.empty(s) || !pf.element(s) {
                     continue; // constraint guarantees elem-or-empty
                 }
-                let Some(idx) = s.nested_idx() else {
+                let Some(inst) = pf.nested(s) else {
                     return Err(crate::err::EvtxError::FailedToCreateRecordModel(
                         "unresolved nested instance in compiled JSON",
                     ));
                 };
-                let inst = &pf.nested[idx];
                 let name = progs.programs[inst.prog].root_name.as_slice();
                 // `_N` suffix: static members first, then prior dynamics.
                 let mut count: u16 = 0;
@@ -2475,7 +2776,7 @@ fn exec_json(
                     out.extend_from_slice(count.to_string().as_bytes());
                 }
                 out.extend_from_slice(b"\":");
-                exec_json(*inst, progs, pf, chunk, vr, out)?;
+                exec_json(inst, progs, pf, vr, out)?;
             }
         }
     }

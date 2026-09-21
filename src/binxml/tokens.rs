@@ -153,36 +153,27 @@ pub(crate) fn read_template_values_cursor<'a>(
     }
 
     let number_of_substitutions = cursor.u32()?;
-    // The loop below consumes exactly four bytes per descriptor, so a count larger than the bytes
-    // remaining cannot be satisfied by this input. Cap the reservation at that; the loop still fails
-    // on the short read, so what is accepted is unchanged.
-    let reservable = cursor.buf().len().saturating_sub(cursor.pos()) / 4;
-    let mut value_descriptors =
-        Vec::with_capacity((number_of_substitutions as usize).min(reservable));
-
+    let descriptor_start = cursor.pos();
+    // Validate the entire table before reading values, preserving both error
+    // precedence and cursor positions for truncated/unknown descriptors.
     for _ in 0..number_of_substitutions {
-        let size = cursor.u16()?;
+        let _ = cursor.u16()?;
         let value_type_token = cursor.u8()?;
-
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
+        BinXmlValueType::from_u8(value_type_token).ok_or(
             DeserializationError::InvalidValueVariant {
                 value: value_type_token,
                 offset: cursor.position(),
             },
         )?;
-
-        // Empty
         let _ = cursor.u8()?;
-
-        value_descriptors.push(TemplateValueDescriptor { size, value_type })
     }
-
-    trace!("{:?}", value_descriptors);
-
-    // One value per descriptor, and the descriptors are read by now, so the count is exact here.
-    let mut values = Vec::with_capacity(value_descriptors.len());
-
-    for descriptor in value_descriptors {
+    let descriptors = &cursor.buf()[descriptor_start..cursor.pos()];
+    let mut values = Vec::with_capacity(descriptors.len() / 4);
+    for &[lo, hi, ty, _] in descriptors.as_chunks::<4>().0 {
+        let descriptor = TemplateValueDescriptor {
+            size: u16::from_le_bytes([lo, hi]),
+            value_type: BinXmlValueType::from_u8(ty).expect("validated descriptor type"),
+        };
         let position_before_reading_value = cursor.position();
         trace!(
             "Offset `0x{offset:08x} ({offset})`: Substitution: {substitution:?}",
@@ -391,4 +382,44 @@ pub(crate) fn read_open_start_element_cursor(
     };
 
     Ok(BinXMLOpenStartElement { data_size, name })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use encoding::all::WINDOWS_1252;
+
+    #[test]
+    fn descriptor_errors_precede_value_errors() {
+        for ty in [0xff, 0x04] {
+            let mut bytes = vec![0; 9];
+            bytes.extend_from_slice(&2u32.to_le_bytes());
+            bytes.extend_from_slice(&[8, 0, 0x11, 0]); // first value would be truncated
+            bytes.extend_from_slice(&[1, 0, ty]); // second descriptor lacks padding
+            let bump = Bump::new();
+            let mut cursor = ByteCursor::with_pos(&bytes, 0).unwrap();
+            let error =
+                read_template_values_cursor(&mut cursor, None, WINDOWS_1252, &bump).unwrap_err();
+            assert_eq!(cursor.pos(), 20);
+            if ty == 0xff {
+                assert!(matches!(
+                    error,
+                    DeserializationError::InvalidValueVariant {
+                        value: 0xff,
+                        offset: 20
+                    }
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    DeserializationError::Truncated {
+                        offset: 20,
+                        need: 1,
+                        have: 0,
+                        ..
+                    }
+                ));
+            }
+        }
+    }
 }
