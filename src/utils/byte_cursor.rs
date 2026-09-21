@@ -231,15 +231,7 @@ impl<'a> ByteCursor<'a> {
             return Err(Self::invalid_data(what, self.pos as u64));
         }
 
-        let mut actual_chars = bytes.len() / 2;
-        for (idx, chunk) in bytes.chunks_exact(2).enumerate() {
-            if chunk[0] == 0 && chunk[1] == 0 {
-                actual_chars = idx;
-                break;
-            }
-        }
-
-        Ok(Some(Utf16LeSlice::new(bytes, actual_chars)))
+        Ok(Some(Utf16LeSlice::until_nul(bytes)))
     }
 
     /// Read a `u16` length prefix (number of UTF-16 code units), then that many code units,
