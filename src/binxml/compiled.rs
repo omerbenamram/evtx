@@ -122,9 +122,33 @@ pub(crate) struct XmlProgram {
     expand_slots: Vec<u16>,
 }
 
-/// Per-chunk program cache. `None` marks templates that failed to compile so
-/// they are not retried for every record.
-pub(crate) type ProgramCache<P> = AHashMap<(u32, u16, bool), Option<Arc<P>>>;
+/// Per-chunk programs have stable indices, so records borrow them without
+/// cloning the cross-chunk Arc. `None` caches failed compilations.
+pub(crate) struct ProgramCache<P> {
+    by_key: AHashMap<(u32, u16, bool), Option<usize>>,
+    programs: Vec<Arc<P>>,
+}
+
+impl<P> Default for ProgramCache<P> {
+    fn default() -> Self {
+        Self {
+            by_key: AHashMap::default(),
+            programs: Vec::new(),
+        }
+    }
+}
+
+impl<P> ProgramCache<P> {
+    fn insert(&mut self, key: (u32, u16, bool), program: Option<Arc<P>>) -> Option<usize> {
+        let index = program.map(|program| {
+            let index = self.programs.len();
+            self.programs.push(program);
+            index
+        });
+        self.by_key.insert(key, index);
+        index
+    }
+}
 
 /// Cross-chunk program store: templates are identical across chunks (same
 /// GUID + size + definition bytes), so programs compile once per file/parser
@@ -170,15 +194,15 @@ impl StoredProgram for JsonProgram {
 pub(crate) struct RenderCaches {
     pub(crate) xml: XmlProgramCache,
     pub(crate) json: JsonProgramCache,
-    pub(crate) pf_xml: Preflight<XmlProgram>,
-    pub(crate) pf_json: Preflight<JsonProgram>,
+    pub(crate) pf_xml: Preflight,
+    pub(crate) pf_json: Preflight,
 }
 
 impl std::fmt::Debug for RenderCaches {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RenderCaches")
-            .field("xml_programs", &self.xml.len())
-            .field("json_programs", &self.json.len())
+            .field("xml_programs", &self.xml.by_key.len())
+            .field("json_programs", &self.json.by_key.len())
             .finish()
     }
 }
@@ -931,32 +955,23 @@ impl RawSlot {
     }
 }
 
-struct NestedInst<P> {
-    prog: Arc<P>,
+/// A cached program and the substitution slots for one validated instance.
+#[derive(Clone, Copy)]
+struct Instance {
+    prog: usize,
     slots: SlotRange,
 }
 
 /// Reusable per-chunk pre-flight scratch.
-pub(crate) struct Preflight<P> {
+#[derive(Default)]
+pub(crate) struct Preflight {
     slots: Vec<RawSlot>,
-    nested: Vec<NestedInst<P>>,
+    nested: Vec<Instance>,
     ansi: Vec<String>,
     /// Per string-array slot: `(start, count)` into `array_items`.
     arrays: Vec<(u32, u32)>,
     /// Flat `(offset, byte len)` spans of string-array items (NUL-free).
     array_items: Vec<(u32, u16)>,
-}
-
-impl<P> Default for Preflight<P> {
-    fn default() -> Self {
-        Preflight {
-            slots: Vec::new(),
-            nested: Vec::new(),
-            ansi: Vec::new(),
-            arrays: Vec::new(),
-            array_items: Vec::new(),
-        }
-    }
 }
 
 /// Substitution value-type wire bytes (MS-EVEN6 §2.2.4.1) interpreted by the
@@ -1072,7 +1087,7 @@ impl From<crate::err::EvtxError> for PreflightBail {
     }
 }
 
-impl<P: StoredProgram> Preflight<P> {
+impl Preflight {
     fn clear(&mut self) {
         self.slots.clear();
         self.nested.clear();
@@ -1105,9 +1120,9 @@ impl<P: StoredProgram> Preflight<P> {
 
     /// Scan a `TemplateInstance` whose header starts at absolute `pos` (the
     /// byte after the 0x0c token). Appends slots/nested entries and returns
-    /// `(program, slot_range, end_pos)`.
+    /// `(instance, end_pos)`.
     #[allow(clippy::too_many_arguments)]
-    fn scan_instance<'a>(
+    fn scan_instance<'a, P: StoredProgram>(
         &mut self,
         chunk: &'a EvtxChunk<'a>,
         pos: usize,
@@ -1117,7 +1132,7 @@ impl<P: StoredProgram> Preflight<P> {
         settings: &ParserSettings,
         base_indent: u16,
         is_root: bool,
-    ) -> std::result::Result<(Arc<P>, SlotRange, usize), PreflightBail> {
+    ) -> std::result::Result<(Instance, usize), PreflightBail> {
         if depth > MAX_FAST_LANE_NESTING {
             return Err(PreflightBail);
         }
@@ -1197,7 +1212,7 @@ impl<P: StoredProgram> Preflight<P> {
                 TyClass::StrArray => {
                     // Admitted only on slots the program compiled as
                     // expandable; everything else keeps the slow lane.
-                    if len % 2 != 0 || !prog.expand_slots().contains(&(i as u16)) {
+                    if len % 2 != 0 || !progs.programs[prog].expand_slots().contains(&(i as u16)) {
                         return Err(PreflightBail);
                     }
                 }
@@ -1249,7 +1264,9 @@ impl<P: StoredProgram> Preflight<P> {
         let slot_range = (slot_start, self.slots.len() as u32);
 
         // Resolve nested instances for slots this program renders as elements.
-        for &(slot_id, child_indent) in prog.elem_slots() {
+        // Recursive scans may append programs; keep indices, not a borrow of the cache.
+        for element in 0..progs.programs[prog].elem_slots().len() {
+            let (slot_id, child_indent) = progs.programs[prog].elem_slots()[element];
             if u32::from(slot_id) >= slot_range.1 - slot_range.0 {
                 continue; // out-of-range -> Skip at exec
             }
@@ -1267,7 +1284,7 @@ impl<P: StoredProgram> Preflight<P> {
                 }
                 return Err(PreflightBail);
             };
-            let (nprog, nslots, nend) = self.scan_instance(
+            let (instance, nend) = self.scan_instance(
                 chunk,
                 s.off as usize + inst_off,
                 depth + 1,
@@ -1285,14 +1302,11 @@ impl<P: StoredProgram> Preflight<P> {
                 return Err(PreflightBail);
             }
             self.slots[idx].nested = self.nested.len() as u16;
-            self.nested.push(NestedInst {
-                prog: nprog,
-                slots: nslots,
-            });
+            self.nested.push(instance);
         }
 
         // Per-slot constraints (kept rare; violations route to the fallback).
-        for &c in prog.constraints() {
+        for &c in progs.programs[prog].constraints() {
             let (slot_id, forbid_elem) = match c {
                 SlotConstraint::ForbidElem(s) => (s, true),
                 SlotConstraint::ElemOrEmpty(s) => (s, false),
@@ -1308,7 +1322,13 @@ impl<P: StoredProgram> Preflight<P> {
             }
         }
 
-        Ok((prog, slot_range, off))
+        Ok((
+            Instance {
+                prog,
+                slots: slot_range,
+            },
+            off,
+        ))
     }
 }
 
@@ -1320,10 +1340,10 @@ fn get_or_compile<'a, P: StoredProgram>(
     cache: &mut IrTemplateCache<'a>,
     progs: &mut ProgramCache<P>,
     settings: &ParserSettings,
-) -> Option<Arc<P>> {
+) -> Option<usize> {
     let key = (def_offset, base_indent, is_root);
-    if let Some(entry) = progs.get(&key) {
-        return entry.clone();
+    if let Some(entry) = progs.by_key.get(&key) {
+        return *entry;
     }
 
     // Cross-chunk store, keyed by template content identity.
@@ -1338,8 +1358,7 @@ fn get_or_compile<'a, P: StoredProgram>(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(sk)
     {
-        progs.insert(key, entry.clone());
-        return entry.clone();
+        return progs.insert(key, entry.clone());
     }
 
     let compiled =
@@ -1355,8 +1374,7 @@ fn get_or_compile<'a, P: StoredProgram>(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(sk, compiled.clone());
     }
-    progs.insert(key, compiled.clone());
-    compiled
+    progs.insert(key, compiled)
 }
 
 /// Template content identity at `def_offset`: (GUID, data size, bytes hash).
@@ -1388,7 +1406,7 @@ pub(crate) fn try_render_xml_compiled<'a>(
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     progs: &mut XmlProgramCache,
-    pf: &mut Preflight<XmlProgram>,
+    pf: &mut Preflight,
     settings: &ParserSettings,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
@@ -1405,7 +1423,7 @@ pub(crate) fn try_render_xml_compiled<'a>(
     let stream_offset = slice_start - data_start;
 
     pf.clear();
-    let (prog, slot_range, end) = match pf.scan_instance(
+    let (instance, end) = match pf.scan_instance(
         chunk,
         stream_offset + inst_off,
         0,
@@ -1425,7 +1443,7 @@ pub(crate) fn try_render_xml_compiled<'a>(
     }
 
     let start = out.len();
-    match exec(&prog, slot_range, pf, chunk, cache, vr, out) {
+    match exec(instance, progs, pf, chunk, cache, vr, out) {
         Ok(()) => true,
         Err(_) => {
             // Unreachable post-preflight except for attribute-position BinXml
@@ -1444,16 +1462,17 @@ enum SlotClass {
 }
 
 fn exec<'a>(
-    prog: &XmlProgram,
-    slot_range: SlotRange,
-    pf: &Preflight<XmlProgram>,
+    instance: Instance,
+    progs: &XmlProgramCache,
+    pf: &Preflight,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
-    let slots = &pf.slots[slot_range.0 as usize..slot_range.1 as usize];
+    let slots = &pf.slots[instance.slots.0 as usize..instance.slots.1 as usize];
     let slot_at = |slot: u16| slots.get(usize::from(slot)).copied();
     let classify = |slot: u16, optional: bool| -> SlotClass {
         match slot_at(slot) {
@@ -1548,6 +1567,7 @@ fn exec<'a>(
                         }
                         render_element_slot(
                             &s,
+                            progs,
                             pf,
                             chunk,
                             cache,
@@ -1578,7 +1598,17 @@ fn exec<'a>(
                 }
                 SlotClass::Element => {
                     let s = slot_at(*slot).expect("element class implies present");
-                    render_element_slot(&s, pf, chunk, cache, vr, *indent, prog.indent_on, out)?;
+                    render_element_slot(
+                        &s,
+                        progs,
+                        pf,
+                        chunk,
+                        cache,
+                        vr,
+                        *indent,
+                        prog.indent_on,
+                        out,
+                    )?;
                 }
             },
             XOp::Expand {
@@ -1632,6 +1662,7 @@ fn exec<'a>(
                             }
                             render_element_slot(
                                 &s,
+                                progs,
                                 pf,
                                 chunk,
                                 cache,
@@ -1655,7 +1686,8 @@ fn exec<'a>(
 #[allow(clippy::too_many_arguments)]
 fn render_element_slot<'a>(
     s: &RawSlot,
-    pf: &Preflight<XmlProgram>,
+    progs: &XmlProgramCache,
+    pf: &Preflight,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     vr: &mut ValueRenderer,
@@ -1665,7 +1697,7 @@ fn render_element_slot<'a>(
 ) -> Result<()> {
     if let Some(idx) = s.nested_idx() {
         let inst = &pf.nested[idx];
-        return exec(&inst.prog, inst.slots, pf, chunk, cache, vr, out);
+        return exec(*inst, progs, pf, chunk, cache, vr, out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
     let frag = s.bytes(chunk.data);
@@ -2191,7 +2223,7 @@ pub(crate) fn try_render_json_compiled<'a>(
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     progs: &mut JsonProgramCache,
-    pf: &mut Preflight<JsonProgram>,
+    pf: &mut Preflight,
     settings: &ParserSettings,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
@@ -2208,7 +2240,7 @@ pub(crate) fn try_render_json_compiled<'a>(
     let stream_offset = slice_start - data_start;
 
     pf.clear();
-    let (prog, slot_range, end) = match pf.scan_instance(
+    let (instance, end) = match pf.scan_instance(
         chunk,
         stream_offset + inst_off,
         0,
@@ -2226,7 +2258,7 @@ pub(crate) fn try_render_json_compiled<'a>(
     }
 
     let start = out.len();
-    match exec_json(&prog, slot_range, pf, chunk, vr, out) {
+    match exec_json(instance, progs, pf, chunk, vr, out) {
         Ok(()) => true,
         Err(_) => {
             out.truncate(start);
@@ -2241,15 +2273,16 @@ fn json_bare_type(ty: u8) -> bool {
 }
 
 fn exec_json(
-    prog: &JsonProgram,
-    slot_range: SlotRange,
-    pf: &Preflight<JsonProgram>,
+    instance: Instance,
+    progs: &JsonProgramCache,
+    pf: &Preflight,
     chunk: &EvtxChunk<'_>,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
-    let slots = &pf.slots[slot_range.0 as usize..slot_range.1 as usize];
+    let slots = &pf.slots[instance.slots.0 as usize..instance.slots.1 as usize];
     let slot_at = |slot: u16| slots.get(usize::from(slot)).copied();
 
     macro_rules! write_lit {
@@ -2316,9 +2349,9 @@ fn exec_json(
                         let inst = &pf.nested[idx];
                         out.push(b'{');
                         out.push(b'"');
-                        out.extend_from_slice(&inst.prog.root_name);
+                        out.extend_from_slice(&progs.programs[inst.prog].root_name);
                         out.extend_from_slice(b"\":");
-                        exec_json(&inst.prog, inst.slots, pf, chunk, vr, out)?;
+                        exec_json(*inst, progs, pf, chunk, vr, out)?;
                         out.push(b'}');
                     } else {
                         write_scalar!(s);
@@ -2392,7 +2425,7 @@ fn exec_json(
                     ));
                 };
                 let inst = &pf.nested[idx];
-                let name = inst.prog.root_name.as_slice();
+                let name = progs.programs[inst.prog].root_name.as_slice();
                 // `_N` suffix: static members first, then prior dynamics.
                 let mut count: u16 = 0;
                 for (r, c) in static_names.iter() {
@@ -2415,7 +2448,7 @@ fn exec_json(
                     out.extend_from_slice(count.to_string().as_bytes());
                 }
                 out.extend_from_slice(b"\":");
-                exec_json(&inst.prog, inst.slots, pf, chunk, vr, out)?;
+                exec_json(*inst, progs, pf, chunk, vr, out)?;
             }
         }
     }
@@ -3080,5 +3113,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         self.lits.push(b'}');
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn chunk_remains_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<crate::EvtxChunk<'static>>();
     }
 }
