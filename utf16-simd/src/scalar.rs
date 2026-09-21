@@ -121,6 +121,7 @@ fn xml_escape(byte: u8, in_attribute: bool) -> Option<&'static [u8]> {
 /// Process a single UTF-16 code unit (and possibly a surrogate pair).
 ///
 /// Returns the next code unit index.
+#[inline(always)]
 pub(crate) unsafe fn escape_one(
     bytes: *const u8,
     max_units: usize,
