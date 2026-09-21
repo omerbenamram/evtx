@@ -1090,6 +1090,7 @@ impl<P: StoredProgram> Preflight<P> {
 
     /// Emptiness of a slot, mirroring `is_optional_empty` over the value the
     /// regular path would have decoded (string NUL-truncation included).
+    #[inline(always)]
     fn slot_empty(&self, s: &RawSlot, data: &[u8]) -> bool {
         match s.ty {
             value_ty::NULL => true,
@@ -1452,13 +1453,8 @@ fn exec<'a>(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let lits = &prog.lits;
-    let slot_at = |slot: u16| -> Option<RawSlot> {
-        if u32::from(slot) < slot_range.1 - slot_range.0 {
-            Some(pf.slots[slot_range.0 as usize + slot as usize])
-        } else {
-            None
-        }
-    };
+    let slots = &pf.slots[slot_range.0 as usize..slot_range.1 as usize];
+    let slot_at = |slot: u16| slots.get(usize::from(slot)).copied();
     let classify = |slot: u16, optional: bool| -> SlotClass {
         match slot_at(slot) {
             None => SlotClass::Skip,
@@ -2253,13 +2249,8 @@ fn exec_json(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let lits = &prog.lits;
-    let slot_at = |slot: u16| -> Option<RawSlot> {
-        if u32::from(slot) < slot_range.1 - slot_range.0 {
-            Some(pf.slots[slot_range.0 as usize + slot as usize])
-        } else {
-            None
-        }
-    };
+    let slots = &pf.slots[slot_range.0 as usize..slot_range.1 as usize];
+    let slot_at = |slot: u16| slots.get(usize::from(slot)).copied();
 
     macro_rules! write_lit {
         ($r:expr) => {
