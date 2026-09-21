@@ -1726,7 +1726,11 @@ enum JOp {
     /// A leaf element value: `null`/`""` when empty, bare number for
     /// int/bool-typed slots, nested-instance object for BinXml slots,
     /// quoted escaped string otherwise.
-    LeafVal { slot: u16, empty: LitRange },
+    LeafVal {
+        prefix: LitRange,
+        slot: u16,
+        empty: LitRange,
+    },
     /// `write_element_value` for an element with placeholder attributes and
     /// at most one placeholder content child (no element children possible).
     Elem {
@@ -1936,6 +1940,22 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
     }
 
+    // Fuse the literal prefix with its value to avoid a second dispatch per field.
+    fn push_leaf_val(&mut self, slot: u16, empty: LitRange) {
+        let prefix = if let Some(JOp::Lit(prefix)) = self.ops.last() {
+            let prefix = *prefix;
+            self.ops.pop();
+            prefix
+        } else {
+            LitRange(0, 0)
+        };
+        self.ops.push(JOp::LeafVal {
+            prefix,
+            slot,
+            empty,
+        });
+    }
+
     /// Leaf value op (single placeholder content, no attribute text).
     fn compile_leaf_val(
         &mut self,
@@ -1951,7 +1971,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         self.flush_lit_run();
         let empty = self.side_range(|c| c.lits.extend_from_slice(empty_form));
         self.elem_slots.push((slot, 0));
-        self.ops.push(JOp::LeafVal { slot, empty });
+        self.push_leaf_val(slot, empty);
         Ok(())
     }
 
@@ -2205,7 +2225,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             if expandable {
                 self.expand_slots.push(ph.id);
             }
-            self.ops.push(JOp::LeafVal { slot: ph.id, empty });
+            self.push_leaf_val(ph.id, empty);
             return Ok(());
         }
         Err(Bail)
@@ -2308,56 +2328,63 @@ fn exec_json(
     for op in &prog.ops {
         match op {
             JOp::Lit(r) => write_lit!(*r),
-            JOp::LeafVal { slot, empty } => match slot_at(*slot) {
-                None => write_lit!(*empty),
-                Some(s) if s.ty == value_ty::STR_ARRAY => {
-                    // Positional-Data aggregation: one item renders bare
-                    // (like an unexpanded scalar), more become a JSON array.
-                    // Items are strings, so they are always quoted.
-                    let items = pf.str_array_items(&s);
-                    let multi = items.len() > 1;
-                    if multi {
-                        out.push(b'[');
-                    }
-                    for (i, &(ioff, ilen)) in items.iter().enumerate() {
-                        if i > 0 {
-                            out.push(b',');
+            JOp::LeafVal {
+                prefix,
+                slot,
+                empty,
+            } => {
+                write_lit!(*prefix);
+                match slot_at(*slot) {
+                    None => write_lit!(*empty),
+                    Some(s) if s.ty == value_ty::STR_ARRAY => {
+                        // Positional-Data aggregation: one item renders bare
+                        // (like an unexpanded scalar), more become a JSON array.
+                        // Items are strings, so they are always quoted.
+                        let items = pf.str_array_items(&s);
+                        let multi = items.len() > 1;
+                        if multi {
+                            out.push(b'[');
                         }
-                        out.push(b'"');
-                        vr.write_raw_value_text(
-                            out,
-                            value_ty::UTF16_STRING,
-                            &chunk.data[ioff as usize..ioff as usize + usize::from(ilen)],
-                            None,
-                            StringEscapeMode::Json,
-                        )?;
-                        out.push(b'"');
+                        for (i, &(ioff, ilen)) in items.iter().enumerate() {
+                            if i > 0 {
+                                out.push(b',');
+                            }
+                            out.push(b'"');
+                            vr.write_raw_value_text(
+                                out,
+                                value_ty::UTF16_STRING,
+                                &chunk.data[ioff as usize..ioff as usize + usize::from(ilen)],
+                                None,
+                                StringEscapeMode::Json,
+                            )?;
+                            out.push(b'"');
+                        }
+                        if multi {
+                            out.push(b']');
+                        }
                     }
-                    if multi {
-                        out.push(b']');
+                    Some(s) => {
+                        if pf.slot_empty(&s, chunk.data) {
+                            write_lit!(*empty);
+                        } else if s.is_binxml_payload() {
+                            let Some(idx) = s.nested_idx() else {
+                                return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                                    "unresolved nested instance in compiled JSON",
+                                ));
+                            };
+                            let inst = &pf.nested[idx];
+                            out.push(b'{');
+                            out.push(b'"');
+                            out.extend_from_slice(&progs.programs[inst.prog].root_name);
+                            out.extend_from_slice(b"\":");
+                            exec_json(*inst, progs, pf, chunk, vr, out)?;
+                            out.push(b'}');
+                        } else {
+                            write_scalar!(s);
+                        }
                     }
                 }
-                Some(s) => {
-                    if pf.slot_empty(&s, chunk.data) {
-                        write_lit!(*empty);
-                    } else if s.is_binxml_payload() {
-                        let Some(idx) = s.nested_idx() else {
-                            return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                                "unresolved nested instance in compiled JSON",
-                            ));
-                        };
-                        let inst = &pf.nested[idx];
-                        out.push(b'{');
-                        out.push(b'"');
-                        out.extend_from_slice(&progs.programs[inst.prog].root_name);
-                        out.extend_from_slice(b"\":");
-                        exec_json(*inst, progs, pf, chunk, vr, out)?;
-                        out.push(b'}');
-                    } else {
-                        write_scalar!(s);
-                    }
-                }
-            },
+            }
             JOp::Elem {
                 attrs,
                 content,
