@@ -66,7 +66,7 @@ impl ValueRenderer {
         self.write_value_text(writer, value, StringEscapeMode::Xml { in_attribute })
     }
 
-    fn write_value_text<W: WriteExt>(
+    pub(crate) fn write_value_text<W: WriteExt>(
         &mut self,
         writer: &mut W,
         value: &BinXmlValue<'_>,

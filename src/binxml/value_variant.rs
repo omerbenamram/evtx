@@ -259,6 +259,7 @@ impl<'a> BinXmlValue<'a> {
         Ok(data)
     }
 
+    #[inline(always)]
     pub(crate) fn deserialize_value_type_cursor_in(
         value_type: &BinXmlValueType,
         cursor: &mut ByteCursor<'a>,

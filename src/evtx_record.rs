@@ -107,60 +107,22 @@ impl<'a> EvtxRecord<'a> {
     /// program when the record's templates compile (the common case), the
     /// same materialized walker otherwise.
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
-        use crate::binxml::compiled::{
-            render_tree_json, render_tree_xml, try_render_json_compiled, try_render_xml_compiled,
-        };
-        use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
-        use crate::binxml::value_render::ValueRenderer;
-
-        let chunk = self.chunk;
-        let start = self.binxml_offset as usize;
-        let bytes = &chunk.data[start..start + self.binxml_size as usize];
-        let caches = &mut *chunk.render_caches.borrow_mut();
-        // Program-cache misses re-parse the template through this transient
-        // cache (once per template per chunk); hits skip it entirely.
-        let mut ir_cache = IrTemplateCache::with_capacity(0, &chunk.arena);
-        let mut vr = ValueRenderer::new();
-        let done = if json {
-            try_render_json_compiled(
-                bytes,
-                chunk,
-                &mut ir_cache,
-                &mut caches.json,
-                &mut caches.pf_json,
-                &chunk.settings,
-                &mut vr,
-                data,
-            )
-        } else {
-            try_render_xml_compiled(
-                bytes,
-                chunk,
-                &mut ir_cache,
-                &mut caches.xml,
-                &mut caches.pf_xml,
-                &chunk.settings,
-                &mut vr,
-                data,
-            )
-        };
-        if done {
-            return Ok(());
-        }
-        // Slow lane: walk a fully materialized tree (reusing the one built at
-        // iteration time when available).
+        use crate::binxml::compiled::{render_tree_json, render_tree_xml, try_render_validated};
         let render = |tree: &crate::model::ir::IrTree<'_>, data: &mut Vec<u8>| {
             if json {
-                render_tree_json(tree, &chunk.settings, data)
+                render_tree_json(tree, &self.chunk.settings, data)
             } else {
-                render_tree_xml(tree, &chunk.settings, data)
+                render_tree_xml(tree, &self.chunk.settings, data)
             }
         };
         match &self.content {
             RecordContent::Tree(tree) => render(tree, data),
-            RecordContent::Template => {
-                let tree = build_tree_from_binxml_bytes_direct(bytes, chunk, &mut ir_cache)?;
-                render(&tree, data)
+            RecordContent::Template(content) => {
+                let mut caches = self.chunk.render_caches.borrow_mut();
+                if try_render_validated(content, self.chunk, &mut caches, json, data) {
+                    return Ok(());
+                }
+                render(&content.materialize(&self.chunk.arena)?, data)
             }
         }
     }
@@ -327,5 +289,155 @@ impl<'a> EvtxRecord<'a> {
         }
 
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod validated_content_tests {
+    use super::*;
+    use crate::binxml::ir::ValidatedValue;
+    use crate::binxml::value_variant::BinXmlValue;
+    use crate::{EvtxChunkData, ParserSettings};
+    use std::sync::Arc;
+
+    fn first_chunk() -> EvtxChunkData {
+        let file = include_bytes!("../samples/security.evtx");
+        EvtxChunkData::new(file[4096..4096 + 65536].to_vec(), false).unwrap()
+    }
+
+    #[test]
+    fn rendering_uses_validated_values_in_both_paths() {
+        for separate in [false, true] {
+            let mut data = first_chunk();
+            let mut chunk = data
+                .parse(Arc::new(
+                    ParserSettings::default().separate_json_attributes(separate),
+                ))
+                .unwrap();
+            let mut record = chunk.iter().next().unwrap().unwrap();
+            let RecordContent::Template(content) = &mut record.content else {
+                panic!("template fixture")
+            };
+            let value = content
+                .root
+                .values
+                .iter_mut()
+                .find(|value| matches!(value, ValidatedValue::Scalar(BinXmlValue::StringType(_))))
+                .unwrap();
+            // Changing only the retained value proves that neither compiled
+            // rendering nor the separate-attributes fallback re-reads bytes.
+            *value = ValidatedValue::Scalar(BinXmlValue::AnsiStringType("validated-substitution"));
+            assert!(
+                record
+                    .clone()
+                    .into_json()
+                    .unwrap()
+                    .data
+                    .contains("validated-substitution")
+            );
+            assert!(
+                record
+                    .into_xml()
+                    .unwrap()
+                    .data
+                    .contains("validated-substitution")
+            );
+        }
+    }
+
+    #[test]
+    fn rendering_reuses_validated_fragments() {
+        use crate::binxml::ir::{TemplateContent, ValidatedInstance};
+        use crate::binxml::value_variant::BinXmlValueType;
+        use crate::model::ir::{Element, IrArena, IrTree, Name, Node, Placeholder, Text};
+        use std::{mem::ManuallyDrop, rc::Rc};
+
+        let mut data = first_chunk();
+        let mut chunk = data.parse(Arc::new(ParserSettings::default())).unwrap();
+        let mut record = chunk.iter().next().unwrap().unwrap();
+        let bump = &record.chunk.arena;
+        let mut template = IrArena::new_in(bump);
+        let mut root = Element::new_in(Name::new("Root"), bump);
+        root.push_child(Node::Placeholder(Placeholder {
+            id: 0,
+            value_type: BinXmlValueType::BinXmlType,
+            optional: false,
+        }));
+        let root = template.new_node(root);
+        let mut frags = IrArena::new_in(bump);
+        let mut child = Element::new_in(Name::new("Child"), bump);
+        child.push_child(Node::Text(Text::utf8("validated-fragment")));
+        let child = frags.new_node(child);
+        record.content = RecordContent::Template(TemplateContent {
+            root: ValidatedInstance {
+                offset: u32::MAX,
+                template: Rc::new(IrTree::new(template, root)),
+                has_literal_array: false,
+                has_arrays: false,
+                values: vec![ValidatedValue::Fragment(child)],
+            },
+            nested: Vec::new(),
+            frags: ManuallyDrop::new(frags),
+        });
+        // This content has no corresponding wire bytes. XML uses the compiled
+        // fragment path; JSON's generic-fragment fallback materializes it.
+        assert!(
+            record
+                .clone()
+                .into_xml()
+                .unwrap()
+                .data
+                .contains("validated-fragment")
+        );
+        assert!(
+            record
+                .into_json()
+                .unwrap()
+                .data
+                .contains("validated-fragment")
+        );
+    }
+
+    #[test]
+    fn retained_records_render_after_other_records_and_in_both_formats() {
+        let mut data = first_chunk();
+        let mut chunk = data.parse(Arc::new(ParserSettings::default())).unwrap();
+        let records: Vec<_> = chunk.iter().take(12).map(Result::unwrap).collect();
+        let expected: Vec<_> = records
+            .iter()
+            .map(|record| {
+                (
+                    record.clone().into_json().unwrap().data,
+                    record.clone().into_xml().unwrap().data,
+                )
+            })
+            .collect();
+        for (record, (json, xml)) in records.into_iter().zip(expected).rev() {
+            assert_eq!(record.clone().into_xml().unwrap().data, xml);
+            assert_eq!(record.into_json().unwrap().data, json);
+        }
+    }
+
+    #[test]
+    fn invalid_substitution_fails_before_record_is_yielded() {
+        let mut data = first_chunk();
+        let mut payload = vec![0x0c, 0];
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&u32::MAX.to_le_bytes()); // unused definition
+        payload.extend_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&[8, 0, 0x11, 0]); // FILETIME descriptor
+        payload.extend_from_slice(&u64::MAX.to_le_bytes()); // invalid timestamp
+        let size = (24 + payload.len() + 4) as u32;
+        data.data[512 + 4..512 + 8].copy_from_slice(&size.to_le_bytes());
+        data.data[512 + 24..512 + 24 + payload.len()].copy_from_slice(&payload);
+        let mut chunk = data.parse(Arc::new(ParserSettings::default())).unwrap();
+        let error = chunk.iter().next().unwrap().unwrap_err();
+        let EvtxError::FailedToParseRecord { source, .. } = error else {
+            panic!("{error:?}")
+        };
+        assert!(matches!(
+            *source,
+            EvtxError::DeserializationError(DeserializationError::InvalidDateTimeError)
+        ));
     }
 }
