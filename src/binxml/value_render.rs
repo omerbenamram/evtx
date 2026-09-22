@@ -177,14 +177,7 @@ impl ValueRenderer {
             value_ty::NULL => Ok(()),
             // StringType: truncate at the first NUL unit (mirrors `utf16_by_char_count`).
             value_ty::UTF16_STRING => {
-                let mut units = bytes.len() / 2;
-                for (idx, chunk) in bytes.chunks_exact(2).enumerate() {
-                    if chunk[0] == 0 && chunk[1] == 0 {
-                        units = idx;
-                        break;
-                    }
-                }
-                self.write_utf16_escaped(writer, Utf16LeSlice::new(bytes, units), mode)
+                self.write_utf16_escaped(writer, Utf16LeSlice::until_nul(bytes), mode)
             }
             value_ty::ANSI_STRING => {
                 self.write_str_escaped(writer, decoded_ansi.unwrap_or(""), mode)

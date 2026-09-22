@@ -202,7 +202,7 @@ impl<'a> IrTemplateCache<'a> {
         bump: &'a Bump,
         depth: usize,
     ) -> Result<ElementId> {
-        let template =
+        let (template, _) =
             self.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
         arena.reserve(template.arena().count());
         let values =
@@ -217,14 +217,6 @@ impl<'a> IrTemplateCache<'a> {
         Ok(root)
     }
 
-    /// Whether the cached template at `offset` contains a literal expandable array
-    /// (precomputed at parse time; false for uncached offsets).
-    fn template_has_literal_array(&self, template_def_offset: u32) -> bool {
-        self.templates
-            .get(&template_def_offset)
-            .is_some_and(|(_, flag)| *flag)
-    }
-
     /// Cached template tree + literal-array flag, for the compiled-template
     /// path (`binxml::compiled`).
     pub(crate) fn template_for_compile(
@@ -232,11 +224,11 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
     ) -> Result<(Rc<IrTree<'a>>, bool)> {
-        let tree = self.get_or_parse_template_direct(chunk, template_def_offset, 0)?;
-        Ok((tree, self.template_has_literal_array(template_def_offset)))
+        self.get_or_parse_template_direct(chunk, template_def_offset, 0)
     }
 
-    /// Load a template definition from the chunk (or return a cached copy).
+    /// Load a template definition from the chunk (or return a cached copy),
+    /// with its "contains a literal expandable array" flag.
     ///
     /// The returned [`IrTree`] is stored in the cache and contains `Node::Placeholder` nodes.
     /// It is never rendered directly; instead it is used as the source for
@@ -246,13 +238,13 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
         depth: usize,
-    ) -> Result<Rc<IrTree<'a>>> {
-        if let Some((existing, _)) = self.templates.get(&template_def_offset) {
-            return Ok(Rc::clone(existing));
+    ) -> Result<(Rc<IrTree<'a>>, bool)> {
+        if let Some(existing) = self.templates.get(&template_def_offset) {
+            return Ok(existing.clone());
         }
         let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
 
-        let parse_from_chunk = (|| -> Result<Rc<IrTree<'a>>> {
+        let parse_from_chunk = (|| -> Result<(Rc<IrTree<'a>>, bool)> {
             let data_start = template_def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
             let data_end = data_start.checked_add(header.data_size as usize).ok_or(
                 EvtxError::FailedToCreateRecordModel("template data size overflow"),
@@ -289,7 +281,7 @@ impl<'a> IrTemplateCache<'a> {
                 template_def_offset,
                 (Rc::clone(&template), has_literal_array),
             );
-            Ok(template)
+            Ok((template, has_literal_array))
         })();
 
         match parse_from_chunk {
@@ -344,7 +336,7 @@ impl<'a> IrTemplateCache<'a> {
                             template_def_offset,
                             (Rc::clone(&template), has_literal_array),
                         );
-                        return Ok(template);
+                        return Ok((template, has_literal_array));
                     }
                 }
 
@@ -959,6 +951,7 @@ impl<'a> TemplateContent<'a> {
                 }
             });
         }
+        arena.reserve(instance.template.arena().count());
         clone_and_resolve(
             instance.template.arena(),
             instance.template.root(),
@@ -996,9 +989,8 @@ fn validate_tpl_instance<'a>(
     nested: &mut Vec<ValidatedInstance<'a>>,
     depth: usize,
 ) -> Result<ValidatedInstance<'a>> {
-    let template =
+    let (template, has_literal_array) =
         cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
-    let has_literal_array = cache.template_has_literal_array(template_ref.template_def_offset);
     let mut values: Vec<_> = template_ref
         .values
         .into_iter()
@@ -1023,21 +1015,7 @@ fn validate_tpl_instance<'a>(
                 nested.push(child);
                 continue;
             }
-            let id = build_tree_from_binxml_bytes_direct_with_mode(
-                BuildTreeFromBinXmlBytesDirectArgs {
-                    bytes,
-                    data: chunk.data,
-                    chunk: Some(chunk),
-                    cache,
-                    ansi_codec: chunk.settings.get_ansi_codec(),
-                    bump: &chunk.arena,
-                    arena: frags,
-                    mode: BuildMode::Record,
-                    has_dep_id: false,
-                    name_encoding: BinXmlNameEncoding::Offset,
-                    depth: depth + 1,
-                },
-            )?;
+            let id = parse_record_fragment(bytes, chunk, cache, frags, &chunk.arena, depth)?;
             *value = ValidatedValue::Fragment(id);
         }
     }
@@ -1047,6 +1025,30 @@ fn validate_tpl_instance<'a>(
         has_literal_array,
         has_arrays,
         values,
+    })
+}
+
+/// Parse a non-empty embedded BinXML substitution payload into `arena`.
+fn parse_record_fragment<'a>(
+    bytes: &'a [u8],
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+    arena: &mut IrArena<'a>,
+    bump: &'a Bump,
+    depth: usize,
+) -> Result<ElementId> {
+    build_tree_from_binxml_bytes_direct_with_mode(BuildTreeFromBinXmlBytesDirectArgs {
+        bytes,
+        data: chunk.data,
+        chunk: Some(chunk),
+        cache,
+        ansi_codec: chunk.settings.get_ansi_codec(),
+        bump,
+        arena,
+        mode: BuildMode::Record,
+        has_dep_id: false,
+        name_encoding: BinXmlNameEncoding::Offset,
+        depth: depth + 1,
     })
 }
 
@@ -1219,21 +1221,7 @@ fn template_values_from_values_in<'a>(
                     values.push(TemplateValue::Value(BinXmlValue::NullType));
                     continue;
                 }
-                let element_id = build_tree_from_binxml_bytes_direct_with_mode(
-                    BuildTreeFromBinXmlBytesDirectArgs {
-                        bytes,
-                        data: chunk.data,
-                        chunk: Some(chunk),
-                        cache,
-                        ansi_codec: chunk.settings.get_ansi_codec(),
-                        bump,
-                        arena,
-                        mode: BuildMode::Record,
-                        has_dep_id: false,
-                        name_encoding: BinXmlNameEncoding::Offset,
-                        depth: depth + 1,
-                    },
-                )?;
+                let element_id = parse_record_fragment(bytes, chunk, cache, arena, bump, depth)?;
                 values.push(TemplateValue::BinXmlElement(element_id));
             }
             other => values.push(TemplateValue::Value(other)),

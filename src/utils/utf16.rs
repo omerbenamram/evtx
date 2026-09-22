@@ -34,6 +34,16 @@ impl<'a> Utf16LeSlice<'a> {
         Utf16LeSlice { bytes, num_chars }
     }
 
+    /// Borrow the code units preceding the first UTF-16 NUL, if present.
+    pub(crate) fn until_nul(bytes: &'a [u8]) -> Self {
+        let units = bytes.as_chunks::<2>().0;
+        let count = units
+            .iter()
+            .position(|unit| *unit == [0, 0])
+            .unwrap_or(units.len());
+        Self::new(bytes, count)
+    }
+
     /// Create an empty UTF-16LE slice.
     pub(crate) fn empty() -> Self {
         Utf16LeSlice {
@@ -188,6 +198,33 @@ fn decode_utf16le_unit_value(
         _ => {
             let ch = char::from_u32(u32::from(cu)).ok_or(Utf16LeDecodeError::InvalidData)?;
             Ok((ch, 1))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Utf16LeSlice;
+
+    #[test]
+    fn nul_search_preserves_code_units_on_unaligned_input() {
+        for fill in [1u16, 0x100, 0x7fff, 0x8000, 0xd800, 0xffff] {
+            for len in 0..=33 {
+                for nul in 0..=len {
+                    let mut bytes = vec![0xaa]; // unaligned slice start
+                    for i in 0..len {
+                        bytes.extend_from_slice(&if i == nul { 0 } else { fill }.to_le_bytes());
+                    }
+                    let bytes = &bytes[1..];
+                    let actual = Utf16LeSlice::until_nul(bytes);
+                    assert_eq!(
+                        actual.num_chars(),
+                        nul,
+                        "fill {fill:#x}, len {len}, NUL {nul}"
+                    );
+                    assert_eq!(actual.as_bytes(), &bytes[..nul * 2]);
+                }
+            }
         }
     }
 }
