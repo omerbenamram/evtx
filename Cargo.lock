@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "evtx"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1607,7 +1607,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "utf16-simd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "sonic-rs",
 ]

@@ -1,6 +1,6 @@
 [package]
 name = "utf16-simd"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "SIMD-accelerated UTF-16/UTF-16LE -> UTF-8 escaping (JSON/XML)"

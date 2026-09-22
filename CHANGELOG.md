@@ -8,6 +8,30 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.12.3 - 2026-09-22]
+
+### Changed
+
+- Record rendering reuses validated substitution values, nested templates, and
+  fragments instead of decoding them again. Validation still completes before
+  records are yielded, and unsupported compiled shapes reuse the retained values
+  when building the fallback tree.
+- Reduced compiled-renderer overhead with indexed program caches, cheaper slot
+  access, fused JSON literal/value operations, and shared UTF-16 NUL scanning.
+- Updated `utf16-simd` to 0.1.1, which inlines the scalar UTF-16 escaping path.
+
+### Fixed
+
+- Preserve XML and JSON output when a string-array substitution is used both at
+  an expansion site and in a scalar position: fall back to materialization so
+  every occurrence expands correctly.
+- Reject truncated substitution descriptor tables before allocating value
+  storage, preventing excessive allocation from malformed substitution counts.
+- Widen string-table name lengths before calculating byte sizes, preventing
+  overflow and incorrect cursor movement on malformed input.
+
+**Full Changelog**: [`v0.12.2...v0.12.3`](https://github.com/omerbenamram/evtx/compare/v0.12.2...v0.12.3)
+
 ## [0.12.2 - 2026-06-13]
 
 ### Changed
