@@ -122,7 +122,7 @@ jobs:
       - name: Set up Homebrew (macOS only)
         if: runner.os == 'macOS'
         id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@master
+        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Install LLVM 19 (macOS only)
         if: runner.os == 'macOS'
