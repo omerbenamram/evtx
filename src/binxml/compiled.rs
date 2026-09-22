@@ -217,6 +217,21 @@ pub(crate) enum SlotConstraint {
     ElemOrEmpty(u16),
 }
 
+impl SlotConstraint {
+    fn slot(self) -> u16 {
+        match self {
+            Self::ForbidElem(slot) | Self::ElemOrEmpty(slot) => slot,
+        }
+    }
+
+    fn violated(self, is_elem: bool, empty: bool) -> bool {
+        match self {
+            Self::ForbidElem(_) => is_elem,
+            Self::ElemOrEmpty(_) => !is_elem && !empty,
+        }
+    }
+}
+
 /// What the generic pre-flight needs from a compiled program.
 pub(crate) trait TemplateProgram: Sized {
     /// Whether the executor can render non-instance BinXml fragments in
@@ -1304,17 +1319,11 @@ impl Preflight {
 
         // Per-slot constraints (kept rare; violations route to the fallback).
         for &c in progs.programs[prog].constraints() {
-            let (slot_id, forbid_elem) = match c {
-                SlotConstraint::ForbidElem(s) => (s, true),
-                SlotConstraint::ElemOrEmpty(s) => (s, false),
-            };
-            if u32::from(slot_id) >= slot_range.1 - slot_range.0 {
+            if u32::from(c.slot()) >= slot_range.1 - slot_range.0 {
                 continue; // out-of-range resolves to Skip everywhere
             }
-            let s = self.slots[slot_start as usize + slot_id as usize];
-            let is_elem = s.is_binxml_payload();
-            let empty = self.slot_empty(&s, data);
-            if (forbid_elem && is_elem) || (!forbid_elem && !is_elem && !empty) {
+            let s = &self.slots[slot_start as usize + c.slot() as usize];
+            if c.violated(s.is_binxml_payload(), self.slot_empty(s, data)) {
                 return Err(PreflightBail);
             }
         }
@@ -1487,7 +1496,8 @@ fn exec<'a, V: ValueSource<'a>>(
 ) -> Result<()> {
     let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
-    let slot_at = pf.slots(instance.slots);
+    let slots = pf.slots(instance.slots);
+    let slot_at = |id: u16| slots.get(usize::from(id));
     let classify = |slot: u16, optional: bool| -> SlotClass {
         match slot_at(slot) {
             None => SlotClass::Skip,
@@ -1693,7 +1703,7 @@ fn exec<'a, V: ValueSource<'a>>(
 /// BinXml fragment via the materialized fallback renderer.
 #[allow(clippy::too_many_arguments)]
 fn render_element_slot<'a, V: ValueSource<'a>>(
-    s: V::Slot,
+    s: &V::Value,
     progs: &XmlProgramCache,
     pf: &V,
     chunk: &'a EvtxChunk<'a>,
@@ -2314,24 +2324,24 @@ pub(crate) fn try_render_json_compiled<'a>(
 /// at compile time; the decoded path never reads substitution bytes again.
 trait ValueSource<'a> {
     type Scope: Copy;
-    type Slot: Copy;
-    fn slots(&self, scope: Self::Scope) -> impl Fn(u16) -> Option<Self::Slot>;
-    fn empty(&self, slot: Self::Slot) -> bool;
-    fn element(&self, slot: Self::Slot) -> bool;
-    fn array(&self, slot: Self::Slot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>>;
-    fn bare(&self, slot: Self::Slot) -> bool;
+    type Value;
+    fn slots(&self, scope: Self::Scope) -> &[Self::Value];
+    fn empty(&self, slot: &Self::Value) -> bool;
+    fn element(&self, slot: &Self::Value) -> bool;
+    fn array(&self, slot: &Self::Value) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>>;
+    fn bare(&self, slot: &Self::Value) -> bool;
     fn write(
         &self,
-        slot: Self::Slot,
+        slot: &Self::Value,
         vr: &mut ValueRenderer,
         out: &mut Vec<u8>,
         mode: StringEscapeMode,
     ) -> Result<()>;
-    fn nested(&self, slot: Self::Slot) -> Option<Instance<Self::Scope>>;
-    fn fragment(&self, _slot: Self::Slot) -> Option<(&IrArena<'a>, ElementId)> {
+    fn nested(&self, slot: &Self::Value) -> Option<Instance<Self::Scope>>;
+    fn fragment(&self, _slot: &Self::Value) -> Option<(&IrArena<'a>, ElementId)> {
         None
     }
-    fn bytes(&self, _slot: Self::Slot) -> Option<&'a [u8]> {
+    fn bytes(&self, _slot: &Self::Value) -> Option<&'a [u8]> {
         None
     }
 }
@@ -2343,24 +2353,23 @@ struct RawValues<'s, 'a> {
 
 impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
     type Scope = SlotRange;
-    type Slot = RawSlot;
+    type Value = RawSlot;
     #[inline(always)]
-    fn slots(&self, scope: SlotRange) -> impl Fn(u16) -> Option<RawSlot> {
-        let slots = &self.pf.slots[scope.0 as usize..scope.1 as usize];
-        move |id| slots.get(usize::from(id)).copied()
+    fn slots(&self, scope: SlotRange) -> &[RawSlot] {
+        &self.pf.slots[scope.0 as usize..scope.1 as usize]
     }
     #[inline(always)]
-    fn empty(&self, s: RawSlot) -> bool {
-        self.pf.slot_empty(&s, self.data)
+    fn empty(&self, s: &RawSlot) -> bool {
+        self.pf.slot_empty(s, self.data)
     }
     #[inline(always)]
-    fn element(&self, s: RawSlot) -> bool {
+    fn element(&self, s: &RawSlot) -> bool {
         s.is_binxml_payload()
     }
     #[inline(always)]
-    fn array(&self, s: RawSlot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>> {
+    fn array(&self, s: &RawSlot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>> {
         (s.ty == value_ty::STR_ARRAY).then(|| {
-            self.pf.str_array_items(&s).iter().map(|&(off, len)| {
+            self.pf.str_array_items(s).iter().map(|&(off, len)| {
                 Utf16LeSlice::new(
                     &self.data[off as usize..off as usize + usize::from(len)],
                     usize::from(len) / 2,
@@ -2369,13 +2378,13 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
         })
     }
     #[inline(always)]
-    fn bare(&self, s: RawSlot) -> bool {
+    fn bare(&self, s: &RawSlot) -> bool {
         json_bare_type(s.ty)
     }
     #[inline(always)]
     fn write(
         &self,
-        s: RawSlot,
+        s: &RawSlot,
         vr: &mut ValueRenderer,
         out: &mut Vec<u8>,
         mode: StringEscapeMode,
@@ -2389,11 +2398,11 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
         )
     }
     #[inline(always)]
-    fn nested(&self, s: RawSlot) -> Option<Instance> {
+    fn nested(&self, s: &RawSlot) -> Option<Instance> {
         s.nested_idx().map(|i| self.pf.nested[i])
     }
     #[inline(always)]
-    fn bytes(&self, s: RawSlot) -> Option<&'a [u8]> {
+    fn bytes(&self, s: &RawSlot) -> Option<&'a [u8]> {
         Some(s.bytes(self.data))
     }
 }
@@ -2403,27 +2412,26 @@ struct DecodedValues<'s, 'a> {
     nested: &'s mut Vec<Option<Instance<usize>>>,
 }
 
-impl<'s, 'a> ValueSource<'a> for DecodedValues<'s, 'a> {
+impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
     type Scope = usize;
-    type Slot = &'s ValidatedValue<'a>;
+    type Value = ValidatedValue<'a>;
     #[inline(always)]
-    fn slots(&self, scope: usize) -> impl Fn(u16) -> Option<Self::Slot> {
-        let values = &self.content.instance(scope).values;
-        move |id| values.get(usize::from(id))
+    fn slots(&self, scope: usize) -> &[ValidatedValue<'a>] {
+        &self.content.instance(scope).values
     }
     #[inline(always)]
-    fn empty(&self, s: Self::Slot) -> bool {
+    fn empty(&self, s: &Self::Value) -> bool {
         match s {
             ValidatedValue::Scalar(v) => crate::model::ir::is_optional_empty(v),
             _ => false,
         }
     }
     #[inline(always)]
-    fn element(&self, s: Self::Slot) -> bool {
+    fn element(&self, s: &Self::Value) -> bool {
         !matches!(s, ValidatedValue::Scalar(_))
     }
     #[inline(always)]
-    fn array(&self, s: Self::Slot) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>> {
+    fn array(&self, s: &Self::Value) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>> {
         match s {
             ValidatedValue::Scalar(BinXmlValue::StringArrayType(items)) => {
                 Some(items.iter().copied())
@@ -2432,13 +2440,13 @@ impl<'s, 'a> ValueSource<'a> for DecodedValues<'s, 'a> {
         }
     }
     #[inline(always)]
-    fn bare(&self, s: Self::Slot) -> bool {
+    fn bare(&self, s: &Self::Value) -> bool {
         matches!(s, ValidatedValue::Scalar(value) if json_bare_value(value))
     }
     #[inline(always)]
     fn write(
         &self,
-        s: Self::Slot,
+        s: &Self::Value,
         vr: &mut ValueRenderer,
         out: &mut Vec<u8>,
         mode: StringEscapeMode,
@@ -2446,17 +2454,24 @@ impl<'s, 'a> ValueSource<'a> for DecodedValues<'s, 'a> {
         let ValidatedValue::Scalar(value) = s else {
             return Err(unresolved_placeholder());
         };
+        if matches!(value, BinXmlValue::StringArrayType(_)) {
+            // Reused array slots must expand at every occurrence. Scalar ops
+            // fall back to materialization, matching the raw source.
+            return Err(crate::err::EvtxError::FailedToCreateRecordModel(
+                "array substitution outside its expand op",
+            ));
+        }
         vr.write_value_text(out, value, mode)
     }
     #[inline(always)]
-    fn nested(&self, s: Self::Slot) -> Option<Instance<usize>> {
+    fn nested(&self, s: &Self::Value) -> Option<Instance<usize>> {
         match s {
             ValidatedValue::Template(id) => self.nested[*id],
             _ => None,
         }
     }
     #[inline(always)]
-    fn fragment(&self, s: Self::Slot) -> Option<(&IrArena<'a>, ElementId)> {
+    fn fragment(&self, s: &Self::Value) -> Option<(&IrArena<'a>, ElementId)> {
         match s {
             ValidatedValue::Fragment(id) => Some((&self.content.frags, *id)),
             _ => None,
@@ -2516,13 +2531,8 @@ impl<'a> DecodedValues<'_, 'a> {
             }
         }
         for &constraint in progs.programs[prog].constraints() {
-            let (id, forbid) = match constraint {
-                SlotConstraint::ForbidElem(id) => (id, true),
-                SlotConstraint::ElemOrEmpty(id) => (id, false),
-            };
-            if let Some(slot) = self.slots(scope)(id)
-                && ((forbid && self.element(slot))
-                    || (!forbid && !self.element(slot) && !self.empty(slot)))
+            if let Some(slot) = input.values.get(usize::from(constraint.slot()))
+                && constraint.violated(self.element(slot), self.empty(slot))
             {
                 return None;
             }
@@ -2595,7 +2605,8 @@ fn exec_json<'a, V: ValueSource<'a>>(
 ) -> Result<()> {
     let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
-    let slot_at = pf.slots(instance.slots);
+    let slots = pf.slots(instance.slots);
+    let slot_at = |id: u16| slots.get(usize::from(id));
 
     macro_rules! write_lit {
         ($r:expr) => {
@@ -2895,7 +2906,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         Ok(())
     }
 
-    /// Mirrors `write_value_as_number`.
+    /// Pre-render a bare JSON number/bool (see `json_bare_value`).
     fn value_as_number_plain(&mut self, value: &BinXmlValue<'_>) -> Result<bool> {
         if !json_bare_value(value) {
             return Ok(false);

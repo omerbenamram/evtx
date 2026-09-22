@@ -297,12 +297,14 @@ mod validated_content_tests {
     use super::*;
     use crate::binxml::ir::ValidatedValue;
     use crate::binxml::value_variant::BinXmlValue;
+    use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
     use crate::{EvtxChunkData, ParserSettings};
     use std::sync::Arc;
 
     fn first_chunk() -> EvtxChunkData {
         let file = include_bytes!("../samples/security.evtx");
-        EvtxChunkData::new(file[4096..4096 + 65536].to_vec(), false).unwrap()
+        let chunk = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        EvtxChunkData::new(chunk.to_vec(), false).unwrap()
     }
 
     #[test]
@@ -396,6 +398,79 @@ mod validated_content_tests {
                 .data
                 .contains("validated-fragment")
         );
+    }
+
+    #[test]
+    fn repeated_array_slots_fall_back_in_both_formats() {
+        use crate::binxml::compiled::{
+            RenderCaches, render_tree_json, render_tree_xml, try_render_validated,
+        };
+        use crate::binxml::ir::{TemplateContent, ValidatedInstance};
+        use crate::binxml::value_variant::BinXmlValueType;
+        use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
+        use crate::utils::Utf16LeSlice;
+        use std::{mem::ManuallyDrop, rc::Rc};
+
+        let mut data = first_chunk();
+        let chunk = data
+            .parse(Arc::new(ParserSettings::default().indent(false)))
+            .unwrap();
+        let bump = &chunk.arena;
+        let mut arena = IrArena::new_in(bump);
+        let mut root = Element::new_in(Name::new("EventData"), bump);
+        let slot = Node::Placeholder(Placeholder {
+            id: 0,
+            value_type: BinXmlValueType::StringArrayType,
+            optional: false,
+        });
+        // The same array is used in an attribute, ordinary text, and a Data
+        // expansion site. Every occurrence must expand, not become "x,y".
+        for name in ["Sub", "Other", "Data"] {
+            let mut element = Element::new_in(Name::new(name), bump);
+            if name == "Sub" {
+                let mut value = IrVec::new_in(bump);
+                value.push(slot.clone());
+                element.attrs.push(Attr {
+                    name: Name::new("a"),
+                    value,
+                });
+            } else {
+                element.push_child(slot.clone());
+            }
+            root.push_child(Node::Element(arena.new_node(element)));
+        }
+        let root = arena.new_node(root);
+        let items =
+            bump.alloc_slice_copy(&[Utf16LeSlice::new(b"x\0", 1), Utf16LeSlice::new(b"y\0", 1)]);
+        let content = TemplateContent {
+            root: ValidatedInstance {
+                offset: u32::MAX,
+                template: Rc::new(IrTree::new(arena, root)),
+                has_literal_array: false,
+                has_arrays: true,
+                values: vec![ValidatedValue::Scalar(BinXmlValue::StringArrayType(items))],
+            },
+            nested: Vec::new(),
+            frags: ManuallyDrop::new(IrArena::new_in(bump)),
+        };
+        let tree = content.materialize(bump).unwrap();
+        let mut caches = RenderCaches::default();
+        let compiled = [false, true].map(|json| {
+            let mut output = b"prefix".to_vec();
+            let compiled = try_render_validated(&content, &chunk, &mut caches, json, &mut output);
+            if !compiled {
+                assert_eq!(output, b"prefix", "partial output must be rolled back");
+                let mut materialized = Vec::new();
+                if json {
+                    render_tree_json(&tree, &chunk.settings, &mut materialized).unwrap();
+                } else {
+                    render_tree_xml(&tree, &chunk.settings, &mut materialized).unwrap();
+                }
+                assert!(!String::from_utf8(materialized).unwrap().contains("x,y"));
+            }
+            compiled
+        });
+        assert_eq!(compiled, [false, false], "XML and JSON must materialize");
     }
 
     #[test]
