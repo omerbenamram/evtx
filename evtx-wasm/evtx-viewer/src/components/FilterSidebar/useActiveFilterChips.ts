@@ -1,107 +1,63 @@
+import { formatFacetValue, toggleFacet } from "./facetUtils";
 import { useMemo } from "react";
 import type { FacetConfig } from "./FacetSection";
-import type { FilterOptions } from "../../lib/types";
-import { useFiltersState } from "../../state/store";
+import { eventDataField } from "../../lib/columnSql";
+import { formatUtc } from "../../lib/timeline";
+import { useFilters } from "../../hooks/useFilters";
 
-export interface ActiveChip {
+interface ActiveChip {
   key: string;
   label: string;
   remove: () => void;
 }
 
-/**
- * Derive the list of active filter "chips" for display in the sidebar.
- * All remove callbacks are fully memoised so the consumer can pass them
- * straight to the chip UI component without additional wrappers.
- */
-export function useActiveFilterChips(
-  facetConfigs: FacetConfig[],
-  onChange: (next: FilterOptions) => void,
-  toggleFacetValue: (facet: FacetConfig, value: string | number) => void
-): ActiveChip[] {
-  const filters = useFiltersState();
+export function useActiveFilterChips(facetConfigs: FacetConfig[]): ActiveChip[] {
+  const { filters, updateFilters } = useFilters();
   return useMemo(() => {
     const chips: ActiveChip[] = [];
 
-    // Global search term
-    if (filters.searchTerm && filters.searchTerm.trim() !== "") {
+    const query = filters.searchQuery?.trim();
+    if (query) {
+      chips.push({
+        key: "query",
+        label: `Search: ${query}`,
+        remove: () => updateFilters((current) => ({ ...current, searchQuery: "" })),
+      });
+    }
+    if (filters.timeRange) {
+      const { start, end } = filters.timeRange;
+      chips.push({
+        key: "timeRange",
+        label: `Time: ${formatUtc(start)} to before ${formatUtc(end)}`,
+        remove: () => updateFilters((current) => ({ ...current, timeRange: undefined })),
+      });
+    }
+    const term = filters.searchTerm?.trim();
+    if (term) {
       chips.push({
         key: "search",
-        label: `Search: "${filters.searchTerm.trim()}"`,
-        remove: () => onChange({ ...filters, searchTerm: "" }),
+        label: `Search: "${term}"`,
+        remove: () => updateFilters((current) => ({ ...current, searchTerm: "" })),
       });
     }
 
-    // Facet-based chips (built-ins + dynamic columns)
-    facetConfigs.forEach((facet) => {
-      let values: (string | number)[] = [];
-      if (facet.filterKey) {
-        values =
-          (filters[facet.filterKey as keyof FilterOptions] as
-            | (string | number)[]
-            | undefined) ?? [];
-      } else {
-        values = filters.columnEquals?.[facet.id] ?? [];
-      }
-
-      values.forEach((v) => {
-        const display = facet.displayValue ? facet.displayValue(v) : String(v);
-        const label = `${facet.label}: ${display}`;
-        chips.push({
-          key: `${facet.id}-${v}`,
-          label,
-          remove: () => toggleFacetValue(facet, v),
-        });
-      });
-    });
-
-    // EventData include chips
-    (filters.eventData ? Object.entries(filters.eventData) : []).forEach(
-      ([field, vals]) => {
-        vals.forEach((v) => {
+    // Hidden columns may still have filters; keep those removable too.
+    for (const map of ["include", "exclude"] as const) {
+      for (const [id, values] of Object.entries(filters[map] ?? {})) {
+        const facet = facetConfigs.find((item) => item.id === id) ?? {
+          id,
+          label: eventDataField(id) ?? id,
+        };
+        for (const value of values) {
           chips.push({
-            key: `ed-${field}-${v}`,
-            label: `${field}: ${v}`,
-            remove: () => {
-              const currentVals = filters.eventData![field] ?? [];
-              const newVals = currentVals.filter((x) => x !== v);
-              const newEventData = { ...filters.eventData } as Record<
-                string,
-                string[]
-              >;
-              if (newVals.length) newEventData[field] = newVals;
-              else delete newEventData[field];
-              onChange({ ...filters, eventData: newEventData });
-            },
+            key: `${map}-${id}-${value}`,
+            label: `${facet.label}${map === "exclude" ? " is not" : ":"} ${formatFacetValue(facet, value)}`,
+            remove: () => updateFilters((current) => toggleFacet(current, id, value, map, false)),
           });
-        });
+        }
       }
-    );
-
-    // EventData exclude chips
-    (filters.eventDataExclude
-      ? Object.entries(filters.eventDataExclude)
-      : []
-    ).forEach(([field, vals]) => {
-      vals.forEach((v) => {
-        chips.push({
-          key: `edex-${field}-${v}`,
-          label: `¬${field}: ${v}`,
-          remove: () => {
-            const currentVals = filters.eventDataExclude![field] ?? [];
-            const newVals = currentVals.filter((x) => x !== v);
-            const newEventDataEx = { ...filters.eventDataExclude } as Record<
-              string,
-              string[]
-            >;
-            if (newVals.length) newEventDataEx[field] = newVals;
-            else delete newEventDataEx[field];
-            onChange({ ...filters, eventDataExclude: newEventDataEx });
-          },
-        });
-      });
-    });
+    }
 
     return chips;
-  }, [filters, facetConfigs, onChange, toggleFacetValue]);
+  }, [filters, facetConfigs, updateFilters]);
 }

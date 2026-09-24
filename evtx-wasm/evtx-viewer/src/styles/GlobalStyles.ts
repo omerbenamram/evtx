@@ -7,6 +7,11 @@ export const GlobalStyles = createGlobalStyle`
     padding: 0;
   }
 
+  :root {
+    color-scheme: ${({ theme }) => theme.colorScheme};
+    accent-color: ${({ theme }) => theme.colors.accent.primary};
+  }
+
   html, body {
     height: 100%;
     overflow: hidden;
@@ -15,11 +20,14 @@ export const GlobalStyles = createGlobalStyle`
   body {
     font-family: ${({ theme }) => theme.fonts.body};
     font-size: ${({ theme }) => theme.fontSize.body};
+    line-height: 1.35;
     color: ${({ theme }) => theme.colors.text.primary};
     background-color: ${({ theme }) => theme.colors.background.primary};
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  button, input, select { font: inherit; }
 
   #root {
     height: 100%;
@@ -48,16 +56,14 @@ export const GlobalStyles = createGlobalStyle`
     background: ${({ theme }) => theme.colors.border.dark};
   }
 
-  /* Selection */
   ::selection {
     background-color: ${({ theme }) => theme.colors.selection.background};
     color: ${({ theme }) => theme.colors.text.primary};
   }
 
-  /* Focus styles */
   :focus-visible {
     outline: 2px solid ${({ theme }) => theme.colors.accent.primary};
-    outline-offset: 2px;
+    outline-offset: 1px;
   }
 
   /* Disable focus outline for mouse users */
@@ -65,54 +71,8 @@ export const GlobalStyles = createGlobalStyle`
     outline: none;
   }
 
-  /* Tables */
-  table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-
-  /* Links */
-  a {
-    color: ${({ theme }) => theme.colors.text.link};
-    text-decoration: none;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-
-  /* Code */
   code, pre {
     font-family: ${({ theme }) => theme.fonts.mono};
     font-size: ${({ theme }) => theme.fontSize.caption};
-  }
-
-  /* Tooltips */
-  [data-tooltip] {
-    position: relative;
-
-    &::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      background-color: ${({ theme }) => theme.colors.text.primary};
-      color: ${({ theme }) => theme.colors.text.white};
-      padding: ${({ theme }) => theme.spacing.xs} ${({ theme }) =>
-  theme.spacing.sm};
-      border-radius: ${({ theme }) => theme.borderRadius.sm};
-      font-size: ${({ theme }) => theme.fontSize.caption};
-      white-space: nowrap;
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity ${({ theme }) => theme.transitions.fast};
-      margin-bottom: ${({ theme }) => theme.spacing.xs};
-    }
-
-    &:hover::after {
-      opacity: 1;
-      visibility: visible;
-    }
   }
 `;

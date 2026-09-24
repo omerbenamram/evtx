@@ -1,13 +1,16 @@
 import type { EvtxFileInfo } from "../../lib/types";
 
-// ---------------- Types & State ----------------
 export interface EvtxMetaState {
   isLoading: boolean;
   loadingMessage: string;
   matchedCount: number;
   totalRecords: number;
+  ingestProgress: number;
   fileInfo: EvtxFileInfo | null;
   currentFileId: string | null;
+  loadError: string | null;
+  warnings: string[];
+  cancelled: boolean;
 }
 
 export const evtxInitialState: EvtxMetaState = {
@@ -15,33 +18,17 @@ export const evtxInitialState: EvtxMetaState = {
   loadingMessage: "",
   matchedCount: 0,
   totalRecords: 0,
+  ingestProgress: 0,
   fileInfo: null,
   currentFileId: null,
+  loadError: null,
+  warnings: [],
+  cancelled: false,
 };
 
-// ---------------- Action Types ----------------
-export type EvtxAction = {
-  type: "evtx/UPDATE";
-  payload: Partial<EvtxMetaState>;
-};
+export type EvtxAction = { type: "evtx/UPDATE"; payload: Partial<EvtxMetaState> };
 
-// ---------------- Reducer ----------------
-export function evtxReducer(
-  state: EvtxMetaState = evtxInitialState,
-  action: EvtxAction
-): EvtxMetaState {
-  switch (action.type) {
-    case "evtx/UPDATE":
-      return { ...state, ...action.payload };
-    default:
-      return state;
-  }
-}
-
-// ---------------- Action Creators ----------------
-export const updateEvtxMeta = (
-  payload: Partial<EvtxMetaState>
-): EvtxAction => ({
+export const updateEvtxMeta = (payload: Partial<EvtxMetaState>): EvtxAction => ({
   type: "evtx/UPDATE",
   payload,
 });

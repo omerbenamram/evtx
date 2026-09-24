@@ -1,126 +1,123 @@
-import { useCallback, useRef, useState } from "react";
-import { LazyEvtxReader } from "../lib/lazyReader";
-import { EvtxParser } from "../lib/parser";
-import { DuckDbDataSource } from "../lib/duckDbDataSource";
-import type { EvtxFileInfo, EvtxRecord } from "../lib/types";
-import {
-  useFiltersState,
-  useColumnsState,
-  useGlobalDispatch,
-} from "../state/store";
-import { updateEvtxMeta } from "../state/evtx/evtxSlice";
-import {
-  setIngestProgress as dispatchIngestProgress,
-  setIngestTotal,
-  setIngestFileId,
-} from "../state/ingest/ingestSlice";
-import { logger } from "../lib/logger";
-import EvtxStorage from "../lib/storage";
+import { useCallback, useEffect, useRef } from "react";
+import { EvtxWorkerReader } from "../lib/workerReader";
+import { useGlobalDispatch } from "../state/store";
+import { evtxInitialState, updateEvtxMeta } from "../state/evtx/evtxSlice";
+import EvtxStorage, { fileIdFor } from "../lib/storage";
 import { startFullIngest } from "../lib/fullIngest";
+import { clearLogs, initDuckDB, countRecords } from "../lib/duckdb";
+import { errorMessage } from "../lib/types";
 
-interface UseEvtxIngestReturn {
-  records: EvtxRecord[];
-  parser: EvtxParser | null;
-  fileInfo: EvtxFileInfo | null;
-  dataSource: DuckDbDataSource | null;
-  updateDataSource: (ds: DuckDbDataSource | null) => void;
-  loadFile: (file: File) => Promise<void>;
-}
-
-export function useEvtxIngest(): UseEvtxIngestReturn {
-  const filters = useFiltersState();
-  const columns = useColumnsState();
+export function useEvtxIngest() {
   const dispatch = useGlobalDispatch();
+  const active = useRef<AbortController | null>(null);
+  const pending = useRef<Promise<void>>(Promise.resolve());
+  const currentFile = useRef<File | null>(null);
 
-  const [records, setRecords] = useState<EvtxRecord[]>([]);
-  const [parser, setParser] = useState<EvtxParser | null>(null);
-  const [fileInfo, setFileInfo] = useState<EvtxFileInfo | null>(null);
-  const [dataSource, setDataSource] = useState<DuckDbDataSource | null>(null);
+  useEffect(() => () => active.current?.abort(), []);
 
-  const ingestAbortRef = useRef<AbortController | null>(null);
+  const cancel = useCallback(() => active.current?.abort(), []);
 
   const loadFile = useCallback(
-    async (file: File) => {
-      dispatch(updateEvtxMeta({ matchedCount: 0 }));
-      dispatch(setIngestTotal(0));
-      setDataSource(null);
-      dispatch(
-        updateEvtxMeta({ isLoading: true, loadingMessage: "Loading file..." })
-      );
+    (file: File): Promise<void> => {
+      active.current?.abort();
+      const controller = new AbortController();
+      active.current = controller;
+      currentFile.current = file;
+      const { signal } = controller;
+      const previous = pending.current;
 
-      try {
-        const reader = await LazyEvtxReader.fromFile(file);
-        setDataSource(new DuckDbDataSource({}, columns));
-
-        const initial = await reader.getWindow({
-          chunkIndex: 0,
-          start: 0,
-          limit: 1000,
-        });
-        setRecords(initial);
-        dispatch(updateEvtxMeta({ matchedCount: initial.length }));
-
-        const evtxParser = new EvtxParser();
-        const info = await evtxParser.parseFile(file);
-        const storage = await EvtxStorage.getInstance();
-        const fileId = await storage.deriveFileId(file);
-        dispatch(setIngestFileId(fileId));
-        dispatch(updateEvtxMeta({ currentFileId: fileId }));
-
-        setFileInfo(info);
-        // Propagate file info to global state so components like StatusBar can show it
-        dispatch(updateEvtxMeta({ fileInfo: info }));
-        setParser(evtxParser);
-
-        ingestAbortRef.current?.abort();
-
-        void (async () => {
-          try {
-            const { clearLogs, countRecords } = await import("../lib/duckdb");
-            await clearLogs();
-            const ctrl = new AbortController();
-            ingestAbortRef.current = ctrl;
-            dispatch(dispatchIngestProgress(0));
-
-            await startFullIngest(
-              reader,
-              (pct) => dispatch(dispatchIngestProgress(pct)),
-              { signal: ctrl.signal }
-            );
-
-            try {
-              const total = await countRecords({});
-              dispatch(setIngestTotal(total));
+      const task = (async () => {
+        // An already-submitted database insert must finish before the next clear.
+        await previous;
+        if (signal.aborted) return;
+        dispatch(
+          updateEvtxMeta({ ...evtxInitialState, isLoading: true, loadingMessage: "Opening log…" }),
+        );
+        let reader: EvtxWorkerReader | undefined;
+        let hasTable = false;
+        const warnings = new Set<string>();
+        const warn = (message: string) => {
+          // ponytail: retain 100 diagnostics; add downloadable diagnostics if full reports are needed.
+          if (warnings.size < 100) warnings.add(message);
+          else warnings.add("Additional import warnings omitted after the first 100.");
+        };
+        try {
+          reader = new EvtxWorkerReader(signal);
+          const [opened] = await Promise.all([reader.open(file), initDuckDB()]);
+          signal.throwIfAborted();
+          await clearLogs();
+          hasTable = true;
+          signal.throwIfAborted();
+          dispatch(
+            updateEvtxMeta({
+              fileInfo: opened.info,
+              currentFileId: fileIdFor(file),
+              loadingMessage: "Importing events…",
+            }),
+          );
+          let lastPublished = 0;
+          await startFullIngest(
+            reader,
+            opened.info.totalChunks,
+            signal,
+            (progress, records) => {
+              const now = performance.now();
+              if (lastPublished && now - lastPublished < 150 && progress !== 1) return;
+              lastPublished = now;
               dispatch(
-                updateEvtxMeta({ totalRecords: total, matchedCount: total })
+                updateEvtxMeta({
+                  totalRecords: records,
+                  ingestProgress: progress,
+                  warnings: [...warnings],
+                }),
               );
-            } catch (err) {
-              console.warn("Failed to get totalRecords", err);
+            },
+            warn,
+          );
+          signal.throwIfAborted();
+          // The worker owns the only parser and releases its file memory here.
+          reader.close();
+          dispatch(updateEvtxMeta({ loadingMessage: "Saving to Recent Logs…" }));
+          // Only a completed import is kept in Recent Logs.
+          await EvtxStorage.getInstance()
+            .then((storage) => storage.saveFile(file, opened.info.totalChunks))
+            .catch((cause: unknown) =>
+              warn(`This log could not be saved in Recent Logs: ${errorMessage(cause)}`),
+            );
+        } catch (error) {
+          if (active.current !== controller) return;
+          if (signal.aborted) dispatch(updateEvtxMeta({ cancelled: true }));
+          else dispatch(updateEvtxMeta({ loadError: errorMessage(error) }));
+        } finally {
+          reader?.close();
+          if (active.current === controller) {
+            if (hasTable) {
+              try {
+                const totalRecords = await countRecords({});
+                dispatch(updateEvtxMeta({ totalRecords }));
+              } catch (error) {
+                dispatch(updateEvtxMeta({ loadError: errorMessage(error) }));
+              }
             }
-
-            setDataSource(new DuckDbDataSource(filters, columns));
-          } catch (e) {
-            if (e instanceof DOMException && e.name === "AbortError") return;
-            console.warn("Full ingest failed", e);
-            dispatch(dispatchIngestProgress(1));
+            dispatch(
+              updateEvtxMeta({
+                isLoading: false,
+                loadingMessage: "",
+                warnings: [...warnings],
+              }),
+            );
           }
-        })();
-      } catch (err) {
-        logger.error("Failed to load file via lazy reader", err);
-        alert("Failed to parse file. Please check if it's a valid EVTX file.");
-      } finally {
-        dispatch(updateEvtxMeta({ isLoading: false, loadingMessage: "" }));
-      }
+        }
+      })();
+      pending.current = task;
+      return task;
     },
-    [columns, filters, dispatch]
+    [dispatch],
   );
 
-  return {
-    records,
-    parser,
-    fileInfo,
-    dataSource,
-    updateDataSource: setDataSource,
-    loadFile,
-  } as const;
+  const reload = useCallback(
+    () => (currentFile.current ? loadFile(currentFile.current) : Promise.resolve()),
+    [loadFile],
+  );
+  return { loadFile, cancel, reload, currentFile };
 }

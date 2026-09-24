@@ -1,15 +1,7 @@
-import "styled-components";
-import { theme } from "./theme";
+import type { lightTheme } from "./theme";
 
-type AppTheme = typeof theme;
+type AppTheme = typeof lightTheme;
 
 declare module "styled-components" {
-  export interface DefaultTheme extends AppTheme {
-    /**
-     * NOTE: This dummy property exists solely to avoid TypeScript's
-     * "empty interface" restriction when `no-empty-interface` is enabled.
-     * It has no practical effect at runtime.
-     */
-    readonly __brand?: "DefaultTheme";
-  }
+  export interface DefaultTheme extends AppTheme {}
 }

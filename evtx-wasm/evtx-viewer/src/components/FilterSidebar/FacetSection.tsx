@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  Section,
   SectionHeader,
   SectionIcon,
   OptionsContainer,
@@ -14,27 +13,24 @@ import {
   Search20Regular,
 } from "@fluentui/react-icons";
 import { SearchContainer, SearchInput, SelectableRow } from "../Windows";
-import type { FilterOptions } from "../../lib/types";
-
-// ---------------- Types ----------------
+import { formatFacetValue } from "./facetUtils";
 
 export interface FacetConfig {
   id: string;
   label: string;
-  filterKey?: keyof FilterOptions;
   searchable?: boolean;
-  displayValue?: (v: string | number) => string;
+  displayValue?: (value: string) => string;
 }
 
 interface FacetSectionProps {
   facet: FacetConfig;
-  counts: Map<string | number, number>;
+  counts: Map<string, number>;
   isOpen: boolean;
   searchTerm: string;
   toggleOpen: (key: string) => void;
   onSearchTermChange: (key: string, term: string) => void;
-  toggleFacetValue: (facet: FacetConfig, value: string | number) => void;
-  selectedChecker: (val: string | number) => boolean;
+  toggleFacetValue: (id: string, value: string) => void;
+  selected: string[];
 }
 
 const FacetSection: React.FC<FacetSectionProps> = ({
@@ -45,32 +41,33 @@ const FacetSection: React.FC<FacetSectionProps> = ({
   toggleOpen,
   onSearchTermChange,
   toggleFacetValue,
-  selectedChecker,
+  selected,
 }) => {
   const entries = React.useMemo(() => {
     const term = searchTerm.toLowerCase();
     return Array.from(counts.entries())
-      .filter(([k]) =>
-        term === "" ? true : String(k).toLowerCase().includes(term)
-      )
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 200);
-  }, [counts, searchTerm]);
+      .filter(([key]) => formatFacetValue(facet, key).toLowerCase().includes(term))
+      .toSorted((a, b) => b[1] - a[1]);
+  }, [counts, searchTerm, facet]);
 
   return (
-    <Section>
-      <SectionHeader $isOpen={isOpen} onClick={() => toggleOpen(facet.id)}>
-        <SectionIcon>
-          {isOpen ? <ChevronDown20Regular /> : <ChevronRight20Regular />}
-        </SectionIcon>
+    <div>
+      <SectionHeader
+        type="button"
+        aria-expanded={isOpen}
+        $isOpen={isOpen}
+        onClick={() => toggleOpen(facet.id)}
+      >
+        <SectionIcon>{isOpen ? <ChevronDown20Regular /> : <ChevronRight20Regular />}</SectionIcon>
         {facet.label}
       </SectionHeader>
       {isOpen && (
         <>
           {facet.searchable && (
-            <SearchContainer>
+            <SearchContainer $compact style={{ margin: "4px 12px" }}>
               <Search20Regular />
               <SearchInput
+                aria-label={`Search ${facet.label.toLowerCase()}`}
                 placeholder={`Search ${facet.label.toLowerCase()}...`}
                 value={searchTerm}
                 onChange={(e) => onSearchTermChange(facet.id, e.target.value)}
@@ -79,15 +76,12 @@ const FacetSection: React.FC<FacetSectionProps> = ({
           )}
           <OptionsContainer>
             {entries.map(([val, count]) => {
-              const selected = selectedChecker(val);
+              const checked = selected.includes(val);
               return (
-                <SelectableRow key={String(val)} $selected={selected}>
-                  <Checkbox
-                    checked={selected}
-                    onChange={() => toggleFacetValue(facet, val)}
-                  />
-                  <OptionLabel>
-                    {facet.displayValue ? facet.displayValue(val) : String(val)}
+                <SelectableRow key={val} $selected={checked}>
+                  <Checkbox checked={checked} onChange={() => toggleFacetValue(facet.id, val)} />
+                  <OptionLabel title={val || "(Not set)"}>
+                    {formatFacetValue(facet, val)}
                   </OptionLabel>
                   <Counts>{count}</Counts>
                 </SelectableRow>
@@ -96,7 +90,7 @@ const FacetSection: React.FC<FacetSectionProps> = ({
           </OptionsContainer>
         </>
       )}
-    </Section>
+    </div>
   );
 };
 

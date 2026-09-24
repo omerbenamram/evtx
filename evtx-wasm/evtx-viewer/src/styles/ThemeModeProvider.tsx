@@ -1,57 +1,39 @@
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useCallback,
-  useMemo,
-} from "react";
+import React, { createContext, useContext, useState } from "react";
 import { ThemeProvider } from "styled-components";
 import { lightTheme, darkTheme, type ThemeMode } from "./theme";
-/* eslint-disable react-refresh/only-export-components */
 
 interface ThemeModeContextValue {
   mode: ThemeMode;
   toggle: () => void;
 }
+const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
 
-const ThemeModeContext = createContext<ThemeModeContextValue>({
-  mode: "light",
-  /* eslint-disable-next-line @typescript-eslint/no-empty-function */
-  toggle: () => {},
-});
+export function useThemeMode(): ThemeModeContextValue {
+  const context = useContext(ThemeModeContext);
+  if (!context) throw new Error("Theme mode must be used inside ThemeModeProvider.");
+  return context;
+}
 
-export const useThemeMode = (): ThemeModeContextValue =>
-  useContext(ThemeModeContext);
-
-export const ThemeModeProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
+export function ThemeModeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<ThemeMode>(() => {
-    if (typeof window !== "undefined") {
-      const stored = window.localStorage.getItem("theme-mode");
-      if (stored === "light" || stored === "dark") return stored;
+    try {
+      return localStorage.getItem("theme-mode") === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
     }
-    return "light";
   });
-
-  const toggle = useCallback(() => {
-    setMode((prev) => {
-      const next: ThemeMode = prev === "light" ? "dark" : "light";
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("theme-mode", next);
-      }
-      return next;
-    });
-  }, []);
-
-  const theme = useMemo(
-    () => (mode === "dark" ? darkTheme : lightTheme),
-    [mode]
-  );
-
+  function toggle() {
+    const next = mode === "light" ? "dark" : "light";
+    setMode(next);
+    try {
+      localStorage.setItem("theme-mode", next);
+    } catch (cause) {
+      console.warn("Theme preference could not be saved.", cause);
+    }
+  }
   return (
     <ThemeModeContext.Provider value={{ mode, toggle }}>
-      <ThemeProvider theme={theme}>{children}</ThemeProvider>
+      <ThemeProvider theme={mode === "dark" ? darkTheme : lightTheme}>{children}</ThemeProvider>
     </ThemeModeContext.Provider>
   );
-};
+}

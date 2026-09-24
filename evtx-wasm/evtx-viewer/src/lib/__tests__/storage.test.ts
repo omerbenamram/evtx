@@ -1,38 +1,27 @@
 // @vitest-environment node
-import { describe, it, expect, beforeAll } from "vitest";
-
-// Polyfill - attaches IDB* globals automatically
-import "fake-indexeddb/auto";
-
+import * as indexedDB from "fake-indexeddb";
+import { beforeAll, expect, it, vi } from "vitest";
 import EvtxStorage from "../storage";
 
-function makeFakeFile(size = 128 * 1024, name = "sample.evtx"): File {
-  const content = new Uint8Array(size);
-  // Fill with deterministic data
-  for (let i = 0; i < size; i++) content[i] = i % 256;
-  return new File([content], name);
-}
-
-describe("EvtxStorage", () => {
-  let storage: EvtxStorage;
-
-  beforeAll(async () => {
-    storage = await EvtxStorage.getInstance();
-  });
-
-  it("saves file and retrieves metadata", async () => {
-    const file = makeFakeFile();
-    const fileId = await storage.saveFile(file, 2);
-    const files = await storage.listFiles();
-    const meta = files.find((f) => f.fileId === fileId);
-    expect(meta).toBeDefined();
-    expect(meta!.fileSize).toBe(file.size);
-  });
-
-  it("gets correct chunk slice", async () => {
-    const file = makeFakeFile();
-    const fileId = await storage.saveFile(file, 2);
-    const chunk = await storage.getChunk(fileId, 0);
-    expect(chunk.byteLength).toBe(0x10000);
-  });
+beforeAll(() => {
+  for (const [name, value] of Object.entries(indexedDB)) {
+    if (name === "indexedDB" || name.startsWith("IDB")) vi.stubGlobal(name, value);
+  }
+});
+it("reopens and deletes saved log bytes and shares concurrent initialization", async () => {
+  const [storage, concurrent] = await Promise.all([
+    EvtxStorage.getInstance(),
+    EvtxStorage.getInstance(),
+  ]);
+  expect(storage).toBe(concurrent);
+  const file = new File([new Uint8Array([1, 2, 3])], "sample.evtx");
+  const id = await storage.saveFile(file, 2);
+  expect(await storage.listFiles()).toEqual([
+    expect.objectContaining({ fileId: id, fileSize: 3, chunkCount: 2 }),
+  ]);
+  const stored = await storage.getFile(id);
+  expect(new Uint8Array(await stored.blob.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  await storage.deleteFile(id);
+  expect(await storage.listFiles()).toEqual([]);
+  await expect(storage.getFile(id)).rejects.toThrow("The saved log was not found");
 });

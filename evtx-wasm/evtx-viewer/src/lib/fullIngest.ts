@@ -1,52 +1,38 @@
-import type { LazyEvtxReader } from "./lazyReader";
-import { insertArrowIPC, initDuckDB } from "../lib/duckdb";
+import { insertArrowIPC } from "./duckdb";
+import type { EvtxWorkerReader } from "./workerReader";
+import { EvtxChunkError } from "./workerProtocol";
 
-export interface FullIngestOptions {
-  /** AbortSignal to cancel an in-flight ingest when a new file is opened */
-  signal?: AbortSignal;
-  /** Size of each Arrow batch – default 10 000 */
-  batchSize?: number;
-}
-
-export type IngestProgressCallback = (pct: number) => void;
-
-/**
- * Stream the entire EVTX file via LazyEvtxReader into DuckDB using Arrow batches.
- * Progress is reported as fraction [0,1].
- */
+/** One batch in flight: parsing cannot outrun the database or retain old batches. */
 export async function startFullIngest(
-  reader: LazyEvtxReader,
-  onProgress?: IngestProgressCallback,
-  opts: FullIngestOptions = {}
-): Promise<void> {
-  const { signal } = opts;
-  const { totalChunks } = await reader.getFileInfo();
-
-  await initDuckDB();
-
-  for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
-    if (signal?.aborted) return;
-    // Retrieve Arrow IPC for the whole chunk from Rust/WASM
-    const { buffer } = await reader.getArrowIPCChunk(chunkIdx);
-
-    // Insert into DuckDB in one go – DuckDB handles chunking internally.
-    if (signal?.aborted) return;
-    await insertArrowIPC(buffer);
-
-    if (onProgress) {
-      const pct = (chunkIdx + 1) / totalChunks;
-      const clamped = Math.min(1, pct);
-      console.debug(`Full ingest progress: ${(clamped * 100).toFixed(2)}%`);
-      onProgress(clamped);
+  reader: Pick<EvtxWorkerReader, "getArrowIPCChunk">,
+  totalChunks: number,
+  signal: AbortSignal,
+  onProgress: (progress: number, records: number) => void,
+  onWarning: (warning: string) => void,
+  writeBatch = insertArrowIPC,
+): Promise<number> {
+  let records = 0;
+  for (let index = 0; index < totalChunks; index++) {
+    signal.throwIfAborted();
+    let chunk;
+    try {
+      chunk = await reader.getArrowIPCChunk(index);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof EvtxChunkError)) throw error;
+      onWarning(`Chunk ${index + 1}: ${error.message}`);
     }
-
-    // allow UI thread to breathe between chunks
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    signal.throwIfAborted();
+    if (chunk) {
+      for (const warning of chunk.errors) onWarning(`Chunk ${index + 1}: ${warning}`);
+      if (chunk.rows > 0) {
+        await writeBatch(new Uint8Array(chunk.buffer));
+        records += chunk.rows;
+      }
+    }
+    signal.throwIfAborted();
+    onProgress((index + 1) / totalChunks, records);
   }
-
-  if (onProgress) {
-    // eslint-disable-next-line no-console
-    console.debug("Full ingest progress: 100% (complete)");
-    onProgress(1);
-  }
+  onProgress(1, records);
+  return records;
 }

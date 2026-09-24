@@ -1,31 +1,57 @@
-import styled from "styled-components";
+import { styled, css } from "styled-components";
 
-/** Container for search box consisting of an icon and an input. */
-export const SearchContainer = styled.div`
-  display: flex;
-  align-items: center;
-  gap: ${({ theme }) => theme.spacing.xs};
-  background: ${({ theme }) => theme.colors.background.secondary};
-  border: 1px solid ${({ theme }) => theme.colors.border.light};
+const fieldStyle = css<{ $compact?: boolean }>`
+  min-width: 0;
+  min-height: ${({ theme, $compact }) => theme.controlHeight[$compact ? "small" : "medium"]};
+  padding: 3px 8px;
+  border: 1px solid ${({ theme }) => theme.colors.border.medium};
   border-radius: ${({ theme }) => theme.borderRadius.sm};
-  padding: 4px 8px;
-  transition: border-color ${({ theme }) => theme.transitions.fast};
-
-  &:focus-within {
-    border-color: ${({ theme }) => theme.colors.accent.primary};
+  color: ${({ theme }) => theme.colors.text.primary};
+  background: ${({ theme }) => theme.colors.background.secondary};
+  font: inherit;
+  line-height: 1.25;
+  &::placeholder {
+    color: ${({ theme }) => theme.colors.text.secondary};
+  }
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 `;
 
-/** Input element used inside SearchContainer */
-export const SearchInput = styled.input`
-  flex: 1;
-  border: none;
-  background: transparent;
-  outline: none;
-  font-size: ${({ theme }) => theme.fontSize.caption};
-  color: ${({ theme }) => theme.colors.text.primary};
+export const Input = styled.input<{ $compact?: boolean }>`
+  ${fieldStyle}
+`;
 
-  &::placeholder {
-    color: ${({ theme }) => theme.colors.text.tertiary};
+export const Select = styled.select<{ $compact?: boolean }>`
+  ${fieldStyle}
+  max-width: 100%;
+`;
+
+export const SearchContainer = styled.div<{ $compact?: boolean }>`
+  ${fieldStyle}
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  &:focus-within {
+    outline: 2px solid ${({ theme }) => theme.colors.accent.primary};
+    outline-offset: -2px;
+  }
+  svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+`;
+
+export const SearchInput = styled(Input)`
+  flex: 1;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  &:focus-visible {
+    outline: none;
   }
 `;

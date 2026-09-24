@@ -1,47 +1,37 @@
-import { filtersReducer, filtersInitialState } from "./filters/filtersSlice";
-import { columnsReducer, columnsInitialState } from "./columns/columnsSlice";
-import { ingestReducer, ingestInitialState } from "./ingest/ingestSlice";
-import type { IngestState } from "./ingest/ingestSlice";
-import { evtxReducer, evtxInitialState } from "./evtx/evtxSlice";
-import type { EvtxMetaState, EvtxAction } from "./evtx/evtxSlice";
-
 import type { FiltersAction } from "./filters/filtersSlice";
-import type { ColumnsAction } from "./columns/columnsSlice";
-import type { IngestAction } from "./ingest/ingestSlice";
-
+import { columnsReducer, type ColumnsAction } from "./columns/columnsSlice";
+import { evtxInitialState, type EvtxMetaState, type EvtxAction } from "./evtx/evtxSlice";
+import { getDefaultColumns } from "../lib/columns";
 import type { FilterOptions, TableColumn } from "../lib/types";
-
-// ----------------- Global State & Actions -----------------
 
 export interface GlobalState {
   filters: FilterOptions;
   columns: TableColumn[];
-  ingest: IngestState;
   evtx: EvtxMetaState;
 }
 
-export type GlobalAction =
-  | FiltersAction
-  | ColumnsAction
-  | IngestAction
-  | EvtxAction;
+export type GlobalAction = FiltersAction | ColumnsAction | EvtxAction;
 
 export const globalInitialState: GlobalState = {
-  filters: filtersInitialState,
-  columns: columnsInitialState,
-  ingest: ingestInitialState,
+  filters: {},
+  columns: getDefaultColumns(),
   evtx: evtxInitialState,
 };
 
-// Root reducer delegates to slice reducers.
-export function rootReducer(
-  state: GlobalState = globalInitialState,
-  action: GlobalAction
-): GlobalState {
-  return {
-    filters: filtersReducer(state.filters, action as FiltersAction),
-    columns: columnsReducer(state.columns, action as ColumnsAction),
-    ingest: ingestReducer(state.ingest, action as IngestAction),
-    evtx: evtxReducer(state.evtx, action as EvtxAction),
-  };
+export function rootReducer(state: GlobalState, action: GlobalAction): GlobalState {
+  switch (action.type) {
+    case "filters/SET":
+      return { ...state, filters: action.payload };
+    case "filters/UPDATE":
+      return { ...state, filters: action.payload(state.filters) };
+    case "filters/CLEAR":
+      return { ...state, filters: {} };
+    case "columns/SET":
+    case "columns/ADD":
+    case "columns/REMOVE":
+    case "columns/RESIZE":
+      return { ...state, columns: columnsReducer(state.columns, action) };
+    case "evtx/UPDATE":
+      return { ...state, evtx: { ...state.evtx, ...action.payload } };
+  }
 }
