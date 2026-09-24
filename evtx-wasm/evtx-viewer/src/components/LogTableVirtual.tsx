@@ -22,7 +22,8 @@ import { TitleBand } from "./EventDetailsPane";
 import { ColumnFilterMenu, type FilterValue } from "./ColumnFilterMenu";
 import { timeZoneLabel, useTimeZone } from "../lib/timeZone";
 import { Button, ContextMenu, type ContextMenuItem } from "./Windows";
-import { getColumnFacetCounts } from "../lib/duckdb";
+import { getColumnFacetCounts, MATCHED_COLUMN_ID } from "../lib/duckdb";
+import { searchWords, withoutField, withTerm } from "../lib/searchQuery";
 import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
 import {
@@ -56,6 +57,9 @@ const TableContainer = styled.section`
   /* With a selection, keyboard focus is drawn on the selected row instead. */
   &:focus-visible:has(tr[aria-selected="true"]) {
     outline: none;
+  }
+  td[data-column-id="${MATCHED_COLUMN_ID}"] {
+    color: ${({ theme }) => theme.colors.text.secondary};
   }
   &:focus-visible tr[aria-selected="true"] {
     outline: 1px solid ${({ theme }) => theme.colors.focus};
@@ -152,6 +156,8 @@ const FilterButton = styled(Button).attrs({ variant: "subtle" })<{ $active: bool
     visibility: visible;
   }
 `;
+/** Grid-only columns: no sort, filter or header menu, not saved or listed in Choose columns. */
+const NON_FILTERABLE = new Set([MATCHED_COLUMN_ID]);
 const Notice = styled.div`
   padding: 12px;
   color: ${({ theme }) => theme.colors.text.primary};
@@ -202,7 +208,16 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
   const timeZone = useTimeZone();
   const theme = useTheme();
   const dispatch = useGlobalDispatch();
-  const { columns, resizeColumn, removeColumn } = useColumns();
+  const { columns: dataColumns, resizeColumn, removeColumn } = useColumns();
+  const words = useMemo(() => searchWords(filters.searchQuery), [filters.searchQuery]);
+  // While the query has words, a leading "Matched in" column says where each row matched.
+  const columns = useMemo<TableColumn[]>(
+    () =>
+      words.length
+        ? [{ id: MATCHED_COLUMN_ID, header: "Matched in" }, ...dataColumns]
+        : dataColumns,
+    [words, dataColumns],
+  );
   const [draftWidth, setDraftWidth] = useState<{ id: string; width: number } | null>(null);
   const [activeColumn, setActiveColumn] = useState<string | null>(null);
   // Content widths fill in columns the user has not sized; a resize commits to column state.
@@ -367,7 +382,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
     try {
       const counts = await getColumnFacetCounts(column.id, filters);
       if (request !== filterRequest.current) return;
-      const facet = buildFacetConfigs(columns).find((item) => item.id === column.id) ?? {
+      const facet = buildFacetConfigs(dataColumns).find((item) => item.id === column.id) ?? {
         id: column.id,
         label: column.header,
       };
@@ -438,7 +453,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
       {
         id: "hide-column",
         label: "Hide column",
-        disabled: columns.length < 2,
+        disabled: dataColumns.length < 2,
         onClick: () => removeColumn(column.id),
       },
       { id: "choose-columns", label: "Choose columns…", onClick: onManageColumns },
@@ -501,10 +516,16 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
           {
             id: "filter-value",
             label: `Filter ${column.header} to this value`,
+            disabled: NON_FILTERABLE.has(column.id),
             onClick: () =>
               updateFilters((previous) => ({
                 ...previous,
-                include: { ...previous.include, [column.id]: [value] },
+                searchQuery: withTerm(
+                  withoutField(previous.searchQuery ?? "", column.id),
+                  column.id,
+                  value,
+                  false,
+                ),
               })),
           },
         ],
@@ -656,6 +677,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                 const upcoming = nextSort(sort, col.id) ?? DEFAULT_SORT;
                 const zone = col.id === "time" ? timeZoneLabel(timeZone) : null;
                 const shortZone = timeZone === "utc" ? "UTC" : "local";
+                const fixed = NON_FILTERABLE.has(col.id);
                 return (
                   <TH
                     key={col.id}
@@ -663,12 +685,16 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                     title={zone ? `${col.header} (${zone})` : undefined}
                     onContextMenu={(event) => {
                       event.preventDefault();
+                      if (fixed) return;
                       const invoker =
                         event.currentTarget.querySelector<HTMLButtonElement>("button");
                       openHeaderMenu(col, { x: event.clientX, y: event.clientY }, invoker);
                     }}
                     onKeyDown={(event) => {
-                      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                      if (
+                        fixed ||
+                        (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                      )
                         return;
                       event.preventDefault();
                       event.stopPropagation();
@@ -686,33 +712,38 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                         type="button"
                         $right={right}
                         aria-label={`Sort by ${col.header} ${upcoming.desc ? "descending" : "ascending"}`}
+                        disabled={fixed}
                         onClick={() => setSort((current) => nextSort(current, col.id))}
                       >
                         <span>
                           {col.header}
                           {zone && <small> ({shortZone})</small>}
                         </span>
-                        <Glyph $active={sorted} aria-hidden="true">
-                          {!sorted ? (
-                            <ArrowSort16Regular />
-                          ) : effectiveSort.desc ? (
-                            <ArrowDown16Filled />
-                          ) : (
-                            <ArrowUp16Filled />
-                          )}
-                        </Glyph>
+                        {!fixed && (
+                          <Glyph $active={sorted} aria-hidden="true">
+                            {!sorted ? (
+                              <ArrowSort16Regular />
+                            ) : effectiveSort.desc ? (
+                              <ArrowDown16Filled />
+                            ) : (
+                              <ArrowUp16Filled />
+                            )}
+                          </Glyph>
+                        )}
                       </SortButton>
-                      <FilterButton
-                        $active={filtered}
-                        icon={filtered ? <Filter16Filled /> : <Filter16Regular />}
-                        aria-label={`Filter ${col.header}`}
-                        aria-haspopup="true"
-                        aria-expanded={currentFilterMenu?.column.id === col.id}
-                        onClick={(event) => {
-                          if (currentFilterMenu?.column.id === col.id) closeFilterMenu();
-                          else void openFilterMenu(col, event.currentTarget);
-                        }}
-                      />
+                      {!fixed && (
+                        <FilterButton
+                          $active={filtered}
+                          icon={filtered ? <Filter16Filled /> : <Filter16Regular />}
+                          aria-label={`Filter ${col.header}`}
+                          aria-haspopup="true"
+                          aria-expanded={currentFilterMenu?.column.id === col.id}
+                          onClick={(event) => {
+                            if (currentFilterMenu?.column.id === col.id) closeFilterMenu();
+                            else void openFilterMenu(col, event.currentTarget);
+                          }}
+                        />
+                      )}
                     </HeaderControls>
                     <ResizeHandle
                       label={`Resize ${col.header} column`}
@@ -722,7 +753,8 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                       max={MAX_COLUMN_WIDTH}
                       onResize={(width) => setDraftWidth({ id: col.id, width })}
                       onCommit={(width) => {
-                        resizeColumn(col.id, width);
+                        if (fixed) setAutoWidths((previous) => ({ ...previous, [col.id]: width }));
+                        else resizeColumn(col.id, width);
                         setDraftWidth(null);
                       }}
                       style={{ position: "absolute", right: -3, top: 0, height: "100%", margin: 0 }}
@@ -747,6 +779,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                   onCellContextMenu={handleCellContextMenu}
                   columns={columns}
                   timeZone={timeZone}
+                  words={words}
                 />
               ) : (
                 <tr

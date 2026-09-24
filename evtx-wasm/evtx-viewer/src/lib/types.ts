@@ -89,18 +89,22 @@ export interface TableColumn {
   align?: "right";
 }
 
-/**
- * Filter values are strings keyed by column id. An included "" also matches NULL, like the
- * facets' "(Not set)"; excluding a value always keeps rows where the column is NULL.
- */
+/** The query text is the only column and text filter; the time range comes from the timeline. */
 export interface FilterOptions {
   searchQuery?: string;
-  /** Case-insensitive substrings of the raw event JSON. */
-  contains?: string[];
-  notContains?: string[];
   timeRange?: { start: Date; end: Date };
+}
+
+/**
+ * What parseSearchQuery makes of the query, for buildWhere. Values are strings keyed by column
+ * id; an included "" also matches NULL, and excluding a value keeps rows where it is NULL.
+ */
+export interface ParsedQuery {
   include?: Record<string, string[]>;
   exclude?: Record<string, string[]>;
+  /** Case-insensitive words that must appear in a value of the raw event JSON. */
+  contains?: string[];
+  notContains?: string[];
 }
 
 export const errorMessage = (cause: unknown, fallback = String(cause)) =>

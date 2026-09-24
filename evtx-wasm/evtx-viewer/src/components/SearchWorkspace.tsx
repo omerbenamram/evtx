@@ -9,7 +9,7 @@ import {
 } from "@fluentui/react-icons";
 import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
-import { parseSearchQuery, SEARCH_FIELDS } from "../lib/searchQuery";
+import { mergeQuery, parseSearchQuery, SEARCH_FIELDS } from "../lib/searchQuery";
 import { errorMessage } from "../lib/types";
 import {
   readSavedViews,
@@ -146,7 +146,8 @@ const SYNTAX: [string, string][] = [
   ["@TargetUserName:bob", "Event data field"],
   ["-channel:Security", "Exclude matches"],
   ['"logon type"', "Quote values with spaces"],
-  ["failed", "Other words match anywhere in the event"],
+  ['@TargetUserName:""', "Field is not set"],
+  ["failed", "Other words match any value in the event"],
 ];
 const SHORTCUTS: [string, string][] = [
   ["Ctrl/⌘+O", "Open log"],
@@ -158,13 +159,17 @@ const SHORTCUTS: [string, string][] = [
 export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
   const { filters, setFilters, updateFilters, clearFilters } = useFilters();
   const { columns, setColumns } = useColumns();
-  const [draft, setDraft] = useState(filters.searchQuery ?? "");
-  const [draftFilters, setDraftFilters] = useState(filters);
+  const searchQuery = filters.searchQuery ?? "";
+  const [draft, setDraft] = useState(searchQuery);
+  const [committed, setCommitted] = useState(searchQuery);
   const [helpAnchor, setHelpAnchor] = useState<HTMLElement | null>(null);
-  if (draftFilters !== filters) {
-    setDraftFilters(filters);
-    if (draftFilters.searchQuery !== filters.searchQuery || Object.keys(filters).length === 0)
-      setDraft(filters.searchQuery ?? "");
+  if (committed !== searchQuery) {
+    setCommitted(searchQuery);
+    // A click edited the query: show it, keeping any words the user is still typing.
+    if (draft !== searchQuery)
+      setDraft(
+        draft === committed ? searchQuery : (mergeQuery(draft, committed, searchQuery) ?? draft),
+      );
   }
   const [saveName, setSaveName] = useState<string | null>(null);
   const nameInput = useRef<HTMLInputElement>(null);
@@ -190,7 +195,6 @@ export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
     }
   }, [draft]);
 
-  const searchQuery = filters.searchQuery ?? "";
   useEffect(() => {
     if (disabled || queryError || draft === searchQuery) return;
     const timer = setTimeout(

@@ -3,20 +3,20 @@ import { globalInitialState, rootReducer } from "../rootReducer";
 import { setFilters, updateFilters, clearFilters } from "../filters/filtersSlice";
 
 it("composes queued filter updates against current state and keeps columns on clear", () => {
-  let state = rootReducer(globalInitialState, setFilters({ include: { eventId: ["4624"] } }));
+  let state = rootReducer(globalInitialState, setFilters({ searchQuery: "event_id:4624" }));
   const originalColumns = state.columns;
   const addHost = updateFilters((filters) => ({
     ...filters,
-    include: { ...filters.include, computer: ["HOST"] },
+    searchQuery: `${filters.searchQuery} computer:HOST`,
   }));
-  const excludeProvider = updateFilters((filters) => ({
+  const setRange = updateFilters((filters) => ({
     ...filters,
-    exclude: { provider: ["Security"] },
+    timeRange: { start: new Date(0), end: new Date(1) },
   }));
-  state = rootReducer(rootReducer(state, addHost), excludeProvider);
+  state = rootReducer(rootReducer(state, addHost), setRange);
   expect(state.filters).toEqual({
-    include: { eventId: ["4624"], computer: ["HOST"] },
-    exclude: { provider: ["Security"] },
+    searchQuery: "event_id:4624 computer:HOST",
+    timeRange: { start: new Date(0), end: new Date(1) },
   });
   state = rootReducer(state, clearFilters());
   expect(state.filters).toEqual({});

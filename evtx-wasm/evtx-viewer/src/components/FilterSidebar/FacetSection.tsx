@@ -24,6 +24,8 @@ export interface FacetConfig {
   id: string;
   label: string;
   displayValue?: (value: string, zone?: TimeZone) => string;
+  /** Keep the counts' order (oldest first) instead of ranking by count. */
+  chronological?: boolean;
 }
 
 interface FacetSectionProps {
@@ -58,13 +60,12 @@ const FacetSection: React.FC<FacetSectionProps> = ({
   const zone = useTimeZone();
   const entries = React.useMemo(() => {
     const term = searchTerm.toLowerCase();
-    return Array.from(counts.entries(), ([value, count]) => ({
+    const shown = Array.from(counts.entries(), ([value, count]) => ({
       value,
       count,
       label: formatFacetValue(facet, value, zone),
-    }))
-      .filter(({ label }) => label.toLowerCase().includes(term))
-      .toSorted((a, b) => b.count - a.count);
+    })).filter(({ label }) => label.toLowerCase().includes(term));
+    return facet.chronological ? shown : shown.toSorted((a, b) => b.count - a.count);
   }, [counts, searchTerm, facet, zone]);
   let total = 0;
   for (const count of counts.values()) total += count;

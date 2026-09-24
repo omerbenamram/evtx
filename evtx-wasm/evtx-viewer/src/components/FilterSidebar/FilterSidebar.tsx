@@ -3,7 +3,13 @@ import { Notice, SidebarBody, SidebarContainer } from "./styles";
 import { Button, SidebarHeader } from "../Windows";
 import FacetSection from "./FacetSection";
 import { useFacetCounts } from "./useFacetCounts";
-import { buildFacetConfigs, clearFacet, facetValues, toggleFacet } from "./facetUtils";
+import {
+  buildFacetConfigs,
+  clearFacet,
+  excludedValues,
+  facetValues,
+  toggleFacet,
+} from "./facetUtils";
 import { useActiveFilterChips } from "./useActiveFilterChips";
 import { useColumns } from "../../hooks/useColumns";
 import { useFilters } from "../../hooks/useFilters";
@@ -69,8 +75,7 @@ export const FilterSidebar: React.FC = () => {
               toggleFacetValue={toggleFacetValue}
               selected={facetValues(filters, facet.id)}
               filteredCount={
-                (filters.include?.[facet.id]?.length ?? 0) +
-                (filters.exclude?.[facet.id]?.length ?? 0)
+                facetValues(filters, facet.id).length + excludedValues(filters, facet.id).length
               }
               onClear={clearSection}
             />

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { buildEventDataColumn, getDefaultColumns } from "./columns";
-import { columnSql, eventDataField } from "./columnSql";
+import { eventDataField } from "./columnSql";
 import { parseSearchQuery } from "./searchQuery";
 import type { TableColumn } from "./types";
 import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from "../state/columns/columnsSlice";
@@ -8,20 +8,6 @@ import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH } from "../state/columns/columnsSlic
 export const SAVED_VIEWS_KEY = "evtx-viewer-saved-searches-v1";
 export type SavedView = z.infer<typeof savedViewSchema>;
 
-// Values are always escaped SQL literals; keys must name a known column, and typed columns
-// only take values DuckDB can convert, since one bad literal fails every query of the view.
-const columnFiltersSchema = z
-  .record(z.string().max(256), z.array(z.string().max(4096)).max(256))
-  .refine((columns) => Object.keys(columns).length <= 256)
-  .refine((columns) =>
-    Object.entries(columns).every(([id, values]) => {
-      const column = columnSql(id);
-      return (
-        column !== undefined &&
-        values.every((value) => !value || (column.values?.test(value) ?? true))
-      );
-    }),
-  );
 const savedDateSchema = z.iso
   .datetime()
   .refine(
@@ -29,6 +15,8 @@ const savedDateSchema = z.iso
       Number.isFinite(new Date(value).getTime()) && new Date(value).toISOString() === value,
   )
   .transform((value) => new Date(value));
+// The query is the view's only column and text filter; it must parse, since a bad one fails
+// every query of the view.
 const querySchema = z
   .string()
   .max(8192)
@@ -42,8 +30,6 @@ const querySchema = z
   });
 const savedFiltersSchema = z.object({
   searchQuery: querySchema.optional(),
-  include: columnFiltersSchema.optional(),
-  exclude: columnFiltersSchema.optional(),
   timeRange: z
     .object({ start: savedDateSchema, end: savedDateSchema })
     .refine(({ start, end }) => start < end)

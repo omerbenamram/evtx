@@ -4,6 +4,7 @@ import type { TableColumn, TabularRow } from "../lib/types";
 import { cellText, levelSeverity, type Severity } from "../lib/columns";
 import { ROW_HEIGHT } from "../lib/rowWindow";
 import type { TimeZone } from "../lib/timeZone";
+import { highlight } from "./Highlight";
 
 export const TR = styled.tr<{ $isSelected: boolean; $severity: Severity | null }>`
   height: ${ROW_HEIGHT}px;
@@ -44,6 +45,8 @@ interface LogRowProps {
   columns: TableColumn[];
   /** Time cells format in this zone; a change re-renders the memoized row. */
   timeZone: TimeZone;
+  /** Search words to mark in cell text. */
+  words: string[];
   onRowClick: (index: number, columnId: string) => void;
   onCellContextMenu: (
     index: number,
@@ -60,6 +63,7 @@ export const LogRow = React.memo(function LogRow({
   onCellContextMenu,
   rowIndex,
   columns,
+  words,
 }: LogRowProps) {
   return (
     <TR
@@ -80,7 +84,7 @@ export const LogRow = React.memo(function LogRow({
             onClick={() => onRowClick(rowIndex, column.id)}
             onContextMenu={(event) => onCellContextMenu(rowIndex, column, record, event)}
           >
-            {column.accessor ? column.accessor(record) : text}
+            {column.accessor ? column.accessor(record) : highlight(text, words)}
           </TD>
         );
       })}

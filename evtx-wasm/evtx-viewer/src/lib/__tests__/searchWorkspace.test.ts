@@ -1,7 +1,15 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { getEventDataFields, parseEvtxRecord } from "../types";
-import { parseSearchQuery } from "../searchQuery";
+import {
+  formatTerm,
+  mergeQuery,
+  parseSearchQuery,
+  queryTerms,
+  withoutField,
+  withoutTerm,
+  withTerm,
+} from "../searchQuery";
 import { readSavedViews, restoreColumns, writeSavedViews, type SavedView } from "../savedViews";
 import { formatTimeInput, parseTimeRange, rangeForBuckets } from "../timeline";
 
@@ -48,13 +56,69 @@ describe("event search", () => {
   });
 });
 
+const roundTrip = (id: string | undefined, value: string, exclude = false) => {
+  const [{ values, ...term }] = queryTerms(formatTerm(id, value, exclude));
+  expect([term.id, values, term.exclude]).toEqual([id, [value], exclude]);
+};
+
+describe("query editing", () => {
+  it("serializes canonical fields and quotes values that need it, parsing them back", () => {
+    expect(formatTerm("eventId", "4672", false)).toBe("event_id:4672");
+    expect(formatTerm("level", "4", true)).toBe("-level:4");
+    expect(formatTerm("eventData.SubjectUserName", "fsir", false)).toBe("@SubjectUserName:fsir");
+    expect(formatTerm("eventData.a.b-c", "x", false)).toBe("@a.b-c:x");
+    expect(formatTerm("eventData.Logon Type", "a b", false)).toBe('@"Logon Type":"a b"');
+    expect(formatTerm("provider", 'say "hi"', false)).toBe('provider:"say \\"hi\\""');
+    expect(formatTerm("user", "", false)).toBe('user:""');
+    expect(formatTerm(undefined, "-x", false)).toBe('"-x"');
+    for (const value of ["fsir", "a b", 'q"uote', "C:\\Windows\\cmd.exe", "x:y", "\\", "-1", ""])
+      roundTrip("eventData.Path", value);
+    roundTrip("eventData.a:b c", "v");
+    roundTrip("time", "2016-10-06T00:00:00.000000Z", true);
+    roundTrip(undefined, "a:b");
+    roundTrip(undefined, "-dash");
+    roundTrip(undefined, "C:\\Windows", true);
+  });
+
+  it('parses field:"" as not set, keeps field: an error, and keeps text numbers as typed', () => {
+    expect(parseSearchQuery('user:"" -@Name:""')).toEqual({
+      include: { user: [""] },
+      exclude: { "eventData.Name": [""] },
+    });
+    expect(() => parseSearchQuery("user:")).toThrow(Error);
+    expect(parseSearchQuery("@LogonId:0012 event_id:0012")).toEqual({
+      include: { "eventData.LogonId": ["0012"], eventId: ["12"] },
+    });
+  });
+
+  it("replaces opposite terms, never duplicates, and keeps the rest of the text", () => {
+    const query = 'fsir  @SubjectUserName:fsir "logon type"';
+    expect(withTerm(query, "eventData.SubjectUserName", "fsir", false)).toBe(query);
+    expect(withTerm(query, "eventData.SubjectUserName", "fsir", true)).toBe(
+      'fsir "logon type" -@SubjectUserName:fsir',
+    );
+    expect(withTerm("-level:4", "level", "4", false)).toBe("level:4");
+    expect(withTerm("", "level", "4", true)).toBe("-level:4");
+    expect(withoutTerm(query, "eventData.SubjectUserName", "fsir")).toBe('fsir "logon type"');
+    expect(withoutTerm(query, undefined, "fsir")).toBe('@SubjectUserName:fsir "logon type"');
+    expect(withoutTerm(query, undefined, "fsir", true)).toBe(query);
+    expect(withoutField("event_id:1 x -event_id:2 level:4", "eventId")).toBe("x level:4");
+  });
+
+  it("merges a click edit into a draft the user is still typing", () => {
+    expect(mergeQuery("level:4 fsi", "level:4", "level:4 event_id:1")).toBe(
+      "level:4 fsi event_id:1",
+    );
+    expect(mergeQuery("level:4 fsi", "level:4", "")).toBe("fsi");
+    expect(mergeQuery('fsi "open', "", "level:4")).toBeUndefined();
+  });
+});
+
 describe("saved searches", () => {
   const view: SavedView = {
     name: "Failed logins",
     filters: {
-      searchQuery: "event_id:4625",
-      include: { "eventData.TargetUserName": ["Alice"], level: [""] },
-      exclude: { provider: ["Security"] },
+      searchQuery: 'event_id:4625 @TargetUserName:Alice level:"" -provider:Security',
       timeRange: {
         start: new Date("2026-09-24T10:00:00Z"),
         end: new Date("2026-09-24T11:00:00Z"),
@@ -79,10 +143,9 @@ describe("saved searches", () => {
     for (const patch of [
       { filters: { searchQuery: "event_id:wrong" } },
       { filters: { timeRange: { start: "bad", end: "bad" } } },
-      { filters: { include: { unknown: ["x"] } } },
-      { filters: { exclude: { constructor: ["x"] } } },
-      { filters: { include: { level: ["abc"] } } },
-      { filters: { exclude: { time: ["yesterday"] } } },
+      { filters: { searchQuery: "level:abc" } },
+      { filters: { searchQuery: "-time:yesterday" } },
+      { filters: { searchQuery: 'provider:"open' } },
       { columns: [{ id: "eventData.name'); DROP TABLE logs; --" }] },
       { columns: [{ id: "eventId", width: -1 }] },
     ]) {

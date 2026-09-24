@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EvtxWasmParser, initSync } from "../../wasm/evtx_wasm.js";
-import { getEventDataFields } from "../types";
+import { getEventDataFields, type ParsedQuery } from "../types";
 import { openTestDatabase } from "./database";
 import {
   buildWhere,
@@ -12,14 +12,21 @@ import {
   findRowIndex,
   getColumnFacetCounts,
   LOGS_TABLE_SQL,
+  type QueryFilters,
 } from "../duckdb";
 import { eventDataExpression } from "../columnSql";
+import { withTerm } from "../searchQuery";
+import { formatTimeBucket, parseTimeRangeKey } from "../timeZone";
 import { getTimeHistogram } from "../timeline";
 
 let connection: Awaited<ReturnType<typeof openTestDatabase>>;
 const query = async (sql: string) => connection.query(sql);
 const count = (searchQuery: string) => countRecords({ searchQuery }, query);
 const columns = [{ id: "eventId", header: "Event ID" }];
+const matched = (searchQuery: string) =>
+  fetchTabular(columns, { searchQuery }, 512, 0, null, query).then((rows) =>
+    rows.map((row) => row.matchedIn),
+  );
 beforeAll(async () => {
   connection = await openTestDatabase();
 });
@@ -68,10 +75,11 @@ describe("real DuckDB event queries", () => {
     expect(await countRecords({ include: { time: [String(rows[0].time)] } }, query)).toBe(1);
     expect(await countRecords({ exclude: { time: [String(rows[0].time)] } }, query)).toBe(2);
     expect(await countRecords({ include: { time: [""] } }, query)).toBe(1);
-    expect(await getColumnFacetCounts("time", {}, 20, query)).toEqual([
-      { v: "", c: 1 },
-      { v: "2025-01-01T00:00:00.000000Z", c: 1 },
-      { v: "2025-01-02T00:00:00.000000Z", c: 1 },
+    // A one-day span buckets by hour; values are [start, end) epoch-ms ranges.
+    const [jan1, jan2] = [Date.parse("2025-01-01T00:00Z"), Date.parse("2025-01-02T00:00Z")];
+    expect(await getColumnFacetCounts("time", {}, 20, query, "utc")).toEqual([
+      { v: `${jan1}/${jan1 + 3_600_000}`, c: 1 },
+      { v: `${jan2}/${jan2 + 3_600_000}`, c: 1 },
     ]);
   });
 
@@ -114,6 +122,64 @@ describe("real DuckDB event queries", () => {
     expect(await count("-channel:Security")).toBe(2);
     expect(await count("event_id:4624 event_id:4625 channel:Security")).toBe(2);
     expect(await count("-4625")).toBe(3);
+  });
+
+  it("filters the same rows from helper-built query text as from column value lists", async () => {
+    connection.query(`INSERT INTO logs (EventID, Level, Provider, UserID, Raw) VALUES
+      (7, 0, '', NULL, '{"Event":{"System":{"EventID":7}}}'),
+      (8, 4, 'a "b" c', 'S-1', '{"Event":{"System":{"EventID":8},"EventData":{"Logon Type":"x:y"}}}')`);
+    const cases: [string, string, boolean][][] = [
+      [["provider", "O'Brien", false]],
+      [["level", "4", true]],
+      [["level", "", false]],
+      [
+        ["level", "0", false],
+        ["level", "", false],
+      ],
+      [["user", "", false]],
+      [["user", "", true]],
+      [
+        ["provider", "", false],
+        ["eventId", "7", true],
+      ],
+      [["provider", 'a "b" c', false]],
+      [["eventData.a.b'~/", "x'y", false]],
+      [["eventData.Logon Type", "x:y", false]],
+      [
+        ["eventData.Logon Type", "x:y", true],
+        ["computer", "HOST", true],
+      ],
+    ];
+    for (const terms of cases) {
+      const lists: Required<Pick<ParsedQuery, "include" | "exclude">> = {
+        include: {},
+        exclude: {},
+      };
+      let searchQuery = "";
+      for (const [id, value, exclude] of terms) {
+        (lists[exclude ? "exclude" : "include"][id] ??= []).push(value);
+        searchQuery = withTerm(searchQuery, id, value, exclude);
+      }
+      const keys = async (filters: QueryFilters) =>
+        (await fetchRecords(filters, 100, -1, query)).map(({ key }) => key);
+      expect([searchQuery, await keys({ searchQuery })]).toEqual([searchQuery, await keys(lists)]);
+    }
+  });
+
+  it("matches words in values, not key names, and says where each row matched", async () => {
+    connection.query(`INSERT INTO logs (EventID, Raw) VALUES
+      (9, '{"Event_attributes":{"xmlns":"http://schemas.microsoft.com/win/2004/08/events/event"},"Event":{"System":{"EventID":9},"EventData":{"TargetUserName":"FSIR","CommandLine":"\\"C:\\\\a.exe\\" fsir"}}}')`);
+    expect(await count("event")).toBe(0);
+    expect(await count("system")).toBe(0);
+    expect(await count("targetusername")).toBe(0);
+    expect(await count("4624")).toBe(2);
+    expect(await count("fsir")).toBe(1);
+    expect(await count("a.exe")).toBe(1);
+    expect(await count("-fsir")).toBe(3);
+    expect(await matched("fsir")).toEqual(["TargetUserName: FSIR"]);
+    expect(await matched("a.exe")).toEqual(['CommandLine: \\"C:\\a.exe\\" fsir']);
+    expect(await matched("4625")).toEqual(["EventID: 4625"]);
+    expect(await matched("event_id:9")).toEqual([undefined]);
   });
 
   it("keeps NULL rows when excluding values and leaves excluded values out of facets", async () => {
@@ -244,6 +310,64 @@ describe("real DuckDB event queries", () => {
     }
     const times = rows.map((row) => String(row.time));
     expect(times).toEqual(times.toSorted());
+  });
+
+  it("buckets time facets by calendar unit in the chosen zone, across DST", async () => {
+    const saved = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      const facet = (zone: "utc" | "local", filters = {}) =>
+        getColumnFacetCounts("time", filters, 20, query, zone);
+      const labels = async (zone: "utc" | "local") =>
+        (await facet(zone)).map(({ v, c }) => [formatTimeBucket(v, zone), c]);
+      // Hourly across the fall-back weekend: local Nov 6 has 25 hours.
+      connection.query(`DELETE FROM logs;
+        INSERT INTO logs (Level, TimeCreated, Raw)
+        SELECT i % 5, TIMESTAMP '2016-11-04 04:00' + INTERVAL (i) HOUR, '{}' FROM range(96) AS t(i)`);
+      expect(await labels("local")).toEqual([
+        ["11/04/2016", 24],
+        ["11/05/2016", 24],
+        ["11/06/2016", 25],
+        ["11/07/2016", 23],
+      ]);
+      expect(await labels("utc")).toEqual([
+        ["11/04/2016", 20],
+        ["11/05/2016", 24],
+        ["11/06/2016", 24],
+        ["11/07/2016", 24],
+        ["11/08/2016", 4],
+      ]);
+      // Other filters narrow it; its own time range does not, and a bucket's range counts match it.
+      const levelFour = { include: { level: ["4"] } };
+      const buckets = await facet("local", {
+        ...levelFour,
+        timeRange: { start: new Date(0), end: new Date(1) },
+      });
+      expect(buckets.reduce((sum, { c }) => sum + c, 0)).toBe(await countRecords(levelFour, query));
+      for (const { v, c } of buckets)
+        expect(await countRecords({ ...levelFour, timeRange: parseTimeRangeKey(v) }, query)).toBe(
+          c,
+        );
+
+      // Two days get hours, in each zone's own clock; nine months get months.
+      connection.query(`DELETE FROM logs;
+        INSERT INTO logs (TimeCreated, Raw) VALUES ('2016-10-06 04:30', '{}'), ('2016-10-08 03:00', '{}')`);
+      expect(await labels("utc")).toEqual([
+        ["10/06/2016, 04:00", 1],
+        ["10/08/2016, 03:00", 1],
+      ]);
+      expect(await labels("local")).toEqual([
+        ["10/06/2016, 00:00", 1],
+        ["10/07/2016, 23:00", 1],
+      ]);
+      connection.query(`INSERT INTO logs (TimeCreated, Raw) VALUES ('2017-07-01 12:00', '{}')`);
+      expect(await labels("local")).toEqual([
+        ["Oct 2016", 2],
+        ["Jul 2017", 1],
+      ]);
+    } finally {
+      process.env.TZ = saved;
+    }
   });
 
   it("propagates corrupt stored events and SQL errors rather than dropping evidence", async () => {

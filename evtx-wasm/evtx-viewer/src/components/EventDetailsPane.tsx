@@ -12,6 +12,8 @@ import { buildEventDataColumn, getDefaultColumns } from "../lib/columns";
 import { EVENT_DATA_PREFIX } from "../lib/columnSql";
 import { formatEventTime, timeZoneLabel, useTimeZone } from "../lib/timeZone";
 import { toggleFacet } from "./FilterSidebar/facetUtils";
+import { searchWords } from "../lib/searchQuery";
+import { highlight } from "./Highlight";
 import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
 import { Button, ContextMenu, Tooltip } from "./Windows";
@@ -184,7 +186,8 @@ interface Props {
 }
 
 export function EventDetailsPane({ record, height }: Props) {
-  const { updateFilters } = useFilters();
+  const { filters, updateFilters } = useFilters();
+  const words = searchWords(filters.searchQuery);
   const { columns, addColumn } = useColumns();
   const zone = useTimeZone();
   const [tab, setTab] = useState<"general" | "details">("general");
@@ -277,7 +280,9 @@ export function EventDetailsPane({ record, height }: Props) {
       >
         <dt>{row.name}</dt>
         <dd>
-          <Value $mono={Boolean(row.mono) || RAW_VALUE.test(row.value)}>{row.value}</Value>
+          <Value $mono={Boolean(row.mono) || RAW_VALUE.test(row.value)}>
+            {highlight(row.value, words)}
+          </Value>
           <Actions>
             {items
               .filter((item) => !item.disabled)

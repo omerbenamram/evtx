@@ -33,7 +33,7 @@ describe("paged real event data", () => {
       return connection.query(sql);
     };
     const source = new DuckDbDataSource(
-      { include: { eventId: ["1", "2", "3"] } },
+      { searchQuery: "event_id:1 event_id:2 event_id:3" },
       columns,
       null,
       undefined,
@@ -135,7 +135,7 @@ describe("paged real event data", () => {
     for (const incompatible of [
       previous.withSort({ id: "eventId", desc: true }),
       new DuckDbDataSource(
-        { include: { eventId: ["42"] } },
+        { searchQuery: "event_id:42" },
         columns,
         null,
         undefined,
@@ -161,9 +161,9 @@ describe("paged real event data", () => {
     const at = (loaded: number, filters: FilterOptions = {}, sort: RowSort | null = null) =>
       new DuckDbDataSource(filters, columns, null, undefined, loaded, query).withSort(sort);
     const sort = { id: "eventId", desc: true };
-    const filtered = { include: { eventId: ["1"] } };
+    const filtered = { searchQuery: "event_id:1" };
     const invalid = { timeRange: { start: new Date(2), end: new Date(1) } };
-    const cleared = { include: { eventId: [] } };
+    const cleared = { searchQuery: " " };
     expect(at(200, cleared).replaces(at(100, cleared), true)).toBe(true);
     for (const [next, shown] of [
       [at(200, {}, sort), at(100, {}, sort)],

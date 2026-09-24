@@ -7,10 +7,12 @@ import {
   type TabularRow,
   type EvtxRecord,
   type FilterOptions,
+  type ParsedQuery,
 } from "./types";
-import { parseSearchQuery } from "./searchQuery";
+import { parseSearchQuery, searchWords } from "./searchQuery";
 import { columnSql } from "./columnSql";
 import type { RowSort } from "./duckDbDataSource";
+import { getTimeZone, timeBuckets, type TimeZone } from "./timeZone";
 
 /** Bumped per cleared table so readers of an older log can tell their rows are gone. */
 let activeSessionId = 0;
@@ -73,6 +75,8 @@ const rawRowSchema = z.object({ Raw: z.string() });
 const keyedRawRowSchema = rawRowSchema.extend({ key: countSchema });
 const positionRowSchema = z.object({ position: countSchema });
 const facetRowSchema = z.object({ v: z.string(), c: countSchema });
+const epochMs = z.union([z.number(), z.bigint()]).transform(Number).nullable();
+const timeBoundsSchema = z.object({ lo: epochMs, hi: epochMs });
 
 /** No stale-session check: loadFile awaits the previous import before the next clearLogs. */
 export async function insertArrowIPC(buffer: Uint8Array): Promise<void> {
@@ -90,8 +94,34 @@ function resolveColumn(id: string) {
 }
 
 // Raw is serialized JSON, so match the term as JSON would write it (C:\x is stored as C:\\x).
+const jsonText = (term: string) => JSON.stringify(term.toLowerCase()).slice(1, -1);
+const regexText = (text: string) => text.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&");
+// Every event carries this namespace; its "…/events/event" must not match the word "event".
+const XMLNS =
+  '"Event_attributes":{"xmlns":"http://schemas.microsoft.com/win/2004/08/events/event"}';
+const STRING_BODY = String.raw`(?:[^"\\]|\\.)*`;
+
+/** A string value (a string not followed by ":") or a number that contains the word. */
+function valuePattern(term: string): string {
+  const word = regexText(jsonText(term));
+  const text = String.raw`"[^"]*${word}${STRING_BODY}"[,}\]]`;
+  return /^[\d.]+$/.test(term) ? String.raw`${text}|[:,\[]-?[\d.]*${word}` : text;
+}
+
+/** Words match values, not key names; `contains` first skips most rows cheaply. */
 function rawText(term: string): string {
-  return `contains(lower(Raw), '${escapeSqlString(JSON.stringify(term.toLowerCase()).slice(1, -1))}')`;
+  const lower = `replace(lower(Raw), '${escapeSqlString(XMLNS.toLowerCase())}', '')`;
+  return `(contains(lower(Raw), '${escapeSqlString(jsonText(term))}') AND regexp_matches(${lower}, '${escapeSqlString(valuePattern(term))}'))`;
+}
+
+/** "Field: value" of the first value that contains `term`; an array item has no field name. */
+export function matchedInSql(term: string): string {
+  const word = regexText(jsonText(term));
+  const pattern = String.raw`"([^"\\]*)":(?:"(${STRING_BODY}${word}${STRING_BODY})"|(-?[\d.]*${word}[\d.e+-]*))`;
+  const raw = `replace(Raw, '${escapeSqlString(XMLNS)}', '')`;
+  const group = (n: number) => `regexp_extract(${raw}, '${escapeSqlString(pattern)}', ${n}, 'i')`;
+  // ponytail: only \\ is unescaped; decode other JSON escapes if they show up in practice.
+  return `nullif(concat_ws(': ', nullif(${group(1)}, ''), replace(${group(2)} || ${group(3)}, '\\\\', '\\')), '')`;
 }
 
 /** Included "" also selects NULL, like the facets' "(Not set)"; exclude keeps NULL rows. */
@@ -105,7 +135,9 @@ function valuesPredicate(id: string, values: string[], exclude: boolean): string
   return `${unset ? `coalesce(${key}, '')` : key} IN (${list})`;
 }
 
-export function buildWhere(filters: FilterOptions): string {
+export type QueryFilters = FilterOptions & ParsedQuery;
+
+export function buildWhere(filters: QueryFilters): string {
   const clauses: string[] = [];
   if (filters.searchQuery?.trim()) {
     const queryWhere = buildWhere(parseSearchQuery(filters.searchQuery));
@@ -132,14 +164,14 @@ export function buildWhere(filters: FilterOptions): string {
   return clauses.join(" AND ");
 }
 
-export function whereClause(filters: FilterOptions): string {
+export function whereClause(filters: QueryFilters): string {
   const where = buildWhere(filters);
   return where ? `WHERE ${where}` : "";
 }
 
 /** Matching records in file order after row key `afterKey`; keyset pages stay stable and linear. */
 export async function fetchRecords(
-  filters: FilterOptions,
+  filters: QueryFilters,
   limit = 100,
   afterKey = -1,
   query = queryLogs,
@@ -158,7 +190,7 @@ export async function clearLogs(): Promise<void> {
   await queryLogs("DELETE FROM logs");
 }
 
-export async function countRecords(filters: FilterOptions, query = queryLogs): Promise<number> {
+export async function countRecords(filters: QueryFilters, query = queryLogs): Promise<number> {
   const res = await query(`SELECT count(*) as cnt FROM logs ${whereClause(filters)}`);
   return countRowSchema.parse(res.toArray()[0]).cnt;
 }
@@ -177,9 +209,12 @@ export function buildOrderBy(
   return `${typed} ${sort.desc ? "DESC" : "ASC"} NULLS LAST, ${rowid} ASC`;
 }
 
+/** The grid's "Matched in" column while the query has words; it is not a real column. */
+export const MATCHED_COLUMN_ID = "matchedIn";
+
 export async function fetchTabular(
   columns: TableColumn[],
-  filters: FilterOptions,
+  filters: QueryFilters,
   limit = 512,
   offset = 0,
   sort: RowSort | null = null,
@@ -187,6 +222,8 @@ export async function fetchTabular(
 ): Promise<TabularRow[]> {
   const fields = columns.map((col) => `${resolveColumn(col.id).sql} AS ${quoteIdentifier(col.id)}`);
   fields.push('CAST(rid AS VARCHAR) AS "rowKey"');
+  const [word] = searchWords(filters.searchQuery);
+  if (word) fields.push(`${matchedInSql(word)} AS "${MATCHED_COLUMN_ID}"`);
   // Slice the page first so display expressions run on its rows only, not every match.
   const order = buildOrderBy(columns, sort, "rid");
   const res = await query(`SELECT ${fields.join(", ")} FROM (
@@ -205,7 +242,7 @@ export async function fetchRecordByKey(key: string, query = queryLogs): Promise<
 
 export async function findRowIndex(
   key: string,
-  filters: FilterOptions,
+  filters: QueryFilters,
   columns: TableColumn[],
   sort: RowSort | null,
   query = queryLogs,
@@ -219,15 +256,38 @@ export async function findRowIndex(
   return row ? positionRowSchema.parse(row).position : null;
 }
 
+/** Time counts by calendar bucket in `zone`, oldest first; each value is a `timeRangeKey`. */
+async function getTimeFacetCounts(whereSql: string, zone: TimeZone, query: typeof queryLogs) {
+  const bounds =
+    await query(`SELECT epoch_ms(min(TimeCreated)) AS lo, epoch_ms(max(TimeCreated)) AS hi
+    FROM logs ${whereSql}`);
+  const { lo, hi } = timeBoundsSchema.parse(bounds.toArray()[0]);
+  if (lo === null || hi === null) return [];
+  // ponytail: events without a time get no bucket; they are rare in real logs.
+  const buckets = timeBuckets(lo, hi, zone).map(([start, end]) => `(${start}, ${end})`);
+  const res = await query(`SELECT concat(bucket_start, '/', bucket_end) AS v, count(*) AS c
+    FROM logs JOIN (VALUES ${buckets.join(",")}) AS b(bucket_start, bucket_end)
+      ON TimeCreated >= epoch_ms(bucket_start) AND TimeCreated < epoch_ms(bucket_end)
+    ${whereSql} GROUP BY bucket_start, bucket_end ORDER BY bucket_start`);
+  return res.toArray().map((row) => facetRowSchema.parse(row));
+}
+
 export async function getColumnFacetCounts(
   id: string,
-  filters: FilterOptions,
+  filters: QueryFilters,
   limit = 250,
   query = queryLogs,
+  zone = getTimeZone(),
 ) {
   const { sql, typed } = resolveColumn(id);
   // Leave out this column's own selections so users can multi-select; excluded values stay hidden.
-  const whereSql = whereClause({ ...filters, include: { ...filters.include, [id]: [] } });
+  const { searchQuery, ...rest } = filters;
+  const parsed = { ...rest, ...parseSearchQuery(searchQuery ?? "") };
+  const own = { ...parsed, include: { ...parsed.include, [id]: [] } };
+  // Time's own selection also covers the time range, which its buckets set.
+  if (id === "time")
+    return getTimeFacetCounts(whereClause({ ...own, timeRange: undefined }), zone, query);
+  const whereSql = whereClause(own);
   const value = `coalesce(CAST(${sql} AS VARCHAR), '')`;
   // A typed column groups and ranks before formatting; its ISO text sorts like the timestamp.
   const res = await query(
