@@ -1,60 +1,73 @@
-// Windows 10 desktop controls: neutral surfaces, square borders, system type.
+// Classic Event Viewer layout drawn with Windows 11 (WinUI) colors and metrics. See DESIGN.md.
 export const lightTheme = {
   colorScheme: "light",
   colors: {
-    background: {
-      primary: "#F3F3F3",
-      secondary: "#FFFFFF",
-      tertiary: "#F9F9F9",
-      hover: "#F5F5F5",
-      active: "#E0E0E0",
+    surface: {
+      base: "#F3F3F3", // behind menu bar, toolbar, status bar
+      pane: "#FFFFFF", // tree, grid, facets, details, flyouts
+    },
+    stroke: {
+      divider: "#E5E5E5", // pane separators, flyout border
+      control: "#D1D1D1", // button and field border
+      strong: "#8A8A8A", // field bottom edge, scrollbar thumb
     },
     text: {
-      primary: "#000000",
-      secondary: "#5C5C5C",
-      tertiary: "#686868",
+      primary: "#1A1A1A",
+      secondary: "#5D5D5D",
+      tertiary: "#8A8A8A",
     },
     accent: {
-      primary: "#0078D4",
+      rest: "#005FB8",
+      hover: "#1A6DBF",
+      pressed: "#3380C7",
+      text: "#FFFFFF", // text on accent fill
     },
-    border: {
-      light: "#E0E0E0",
-      medium: "#C8C8C8",
-      dark: "#A0A0A0",
+    band: {
+      background: "#6E6E6E",
+      text: "#FFFFFF",
     },
-    status: {
-      error: "#C42B1C",
+    severity: {
+      error: "#C42B1C", // critical and error
+      warning: "#9D5D00",
+      verbose: "#8A8A8A",
     },
-    selection: {
-      background: "#E5F1FB",
-      border: "#0078D4",
+    fill: {
+      hover: "rgba(0, 0, 0, 0.04)",
+      pressed: "rgba(0, 0, 0, 0.02)",
+      selected: "rgba(0, 95, 184, 0.12)",
     },
+    focus: "#005FB8",
   },
   fonts: {
-    body: '"Segoe UI", -apple-system, BlinkMacSystemFont, "Roboto", "Helvetica Neue", sans-serif',
-    mono: '"Cascadia Code", "Consolas", "Courier New", monospace',
+    body: '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif',
+    mono: '"Cascadia Mono", Consolas, monospace',
   },
   fontSize: {
-    caption: "12px",
-    body: "13px",
+    body: "12px",
+    secondary: "11px",
     title: "20px",
   },
-  controlHeight: { small: "28px", medium: "32px" },
+  size: {
+    toolbarControl: "24px",
+    control: "28px",
+    row: "22px",
+    header: "24px",
+  },
   spacing: {
     xs: "4px",
     sm: "8px",
     md: "12px",
     lg: "16px",
   },
-  borderRadius: {
-    sm: "2px",
-    lg: "2px",
+  radius: {
+    control: "4px",
+    flyout: "8px",
   },
-  shadows: {
-    elevation: "0 8px 16px rgba(0, 0, 0, 0.14)",
+  shadow: {
+    flyout: "0 8px 16px rgba(0, 0, 0, 0.14)",
   },
-  transitions: {
-    fast: "120ms ease-out",
+  motion: {
+    fast: "120ms cubic-bezier(0, 0, 0, 1)",
   },
 };
 
@@ -62,32 +75,20 @@ export const darkTheme: typeof lightTheme = {
   ...lightTheme,
   colorScheme: "dark",
   colors: {
-    ...lightTheme.colors,
-    background: {
-      primary: "#1F1F1F",
-      secondary: "#252526",
-      tertiary: "#2D2D2D",
-      hover: "#37373D",
-      active: "#3F3F46",
+    surface: { base: "#202020", pane: "#2B2B2B" },
+    stroke: { divider: "#1D1D1D", control: "#454545", strong: "#9A9A9A" },
+    text: { primary: "#FFFFFF", secondary: "#C5C5C5", tertiary: "#9A9A9A" },
+    accent: { rest: "#60CDFF", hover: "#5AB8E6", pressed: "#52A6CF", text: "#000000" },
+    band: { background: "#3A3A3A", text: "#FFFFFF" },
+    severity: { error: "#FF99A4", warning: "#FCE100", verbose: "#9A9A9A" },
+    fill: {
+      hover: "rgba(255, 255, 255, 0.06)",
+      pressed: "rgba(255, 255, 255, 0.04)",
+      selected: "rgba(96, 205, 255, 0.18)",
     },
-    text: {
-      primary: "#F3F3F3",
-      secondary: "#C1C1C1",
-      tertiary: "#9B9B9B",
-    },
-    accent: {
-      primary: "#0A84FF",
-    },
-    border: {
-      light: "#3C3C3C",
-      medium: "#505050",
-      dark: "#707070",
-    },
-    selection: {
-      background: "#264F78",
-      border: "#3794FF",
-    },
+    focus: "#60CDFF",
   },
 };
 
 export type ThemeMode = "light" | "dark";
+export type ThemePreference = ThemeMode | "system";

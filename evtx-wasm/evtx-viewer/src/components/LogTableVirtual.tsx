@@ -1,17 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { styled } from "styled-components";
-import { ArrowDown16Regular, ArrowUp16Regular, Filter20Regular } from "@fluentui/react-icons";
+import { styled, useTheme } from "styled-components";
+import {
+  ArrowDown16Filled,
+  ArrowSort16Regular,
+  ArrowUp16Filled,
+  Filter16Filled,
+  Filter16Regular,
+} from "@fluentui/react-icons";
 import { errorMessage, type EvtxRecord, type TableColumn, type TabularRow } from "../lib/types";
 import { DuckDbDataSource, type RowSort } from "../lib/duckDbDataSource";
-import { getDefaultColumns } from "../lib/columns";
+import { autoColumnWidth, FALLBACK_COLUMN_WIDTH } from "../lib/columns";
 import { MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH } from "../state/columns/columnsSlice";
 import { ResizeHandle } from "./Windows/ResizeHandle";
 import { EventDetailsPane } from "./EventDetailsPane";
 import { useEventRows } from "../lib/useEventRows";
-import { TABLE_HEADER_HEIGHT } from "../lib/rowWindow";
+import { ROW_HEIGHT, TABLE_HEADER_HEIGHT } from "../lib/rowWindow";
 import { useEvtxMetaState, useGlobalDispatch } from "../state/store";
 import { updateEvtxMeta } from "../state/evtx/evtxSlice";
-import { LogRow, ROW_HEIGHT } from "./LogRow";
+import { LogRow, TD } from "./LogRow";
+import { TitleBand } from "./EventDetailsPane";
+import { ColumnFilterMenu, type FilterValue } from "./ColumnFilterMenu";
+import { timeZoneLabel, useTimeZone } from "../lib/timeZone";
 import { Button, ContextMenu, type ContextMenuItem } from "./Windows";
 import { getColumnFacetCounts } from "../lib/duckdb";
 import { useFilters } from "../hooks/useFilters";
@@ -37,9 +46,20 @@ const TableContainer = styled.section`
   min-height: 0;
   overflow: auto;
   position: relative;
+  background: ${({ theme }) => theme.colors.surface.pane};
+  scrollbar-width: thin;
+  font-variant-numeric: tabular-nums;
   &:focus-visible {
-    outline: 2px solid ${({ theme }) => theme.colors.accent.primary};
-    outline-offset: -2px;
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -1px;
+  }
+  /* With a selection, keyboard focus is drawn on the selected row instead. */
+  &:focus-visible:has(tr[aria-selected="true"]) {
+    outline: none;
+  }
+  &:focus-visible tr[aria-selected="true"] {
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -1px;
   }
 `;
 const Table = styled.table`
@@ -47,48 +67,95 @@ const Table = styled.table`
   border-spacing: 0;
   table-layout: fixed;
 `;
+const Band = styled(TitleBand)`
+  gap: 24px;
+  span + span {
+    font-weight: 400;
+  }
+`;
 const THead = styled.thead`
   position: sticky;
   top: 0;
   z-index: 10;
-  background: ${({ theme }) => theme.colors.background.secondary};
+  background: ${({ theme }) => theme.colors.surface.pane};
 `;
+// Column separators are the resize handles' 1px lines.
 const TH = styled.th`
   position: relative;
-  text-align: left;
-  padding: 2px 8px 2px 4px;
+  padding: 0;
   height: ${TABLE_HEADER_HEIGHT}px;
   box-sizing: border-box;
-  border-right: 1px solid ${({ theme }) => theme.colors.border.light};
-  border-bottom: 2px solid ${({ theme }) => theme.colors.border.medium};
-  background: ${({ theme }) => theme.colors.background.secondary};
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
+  background: ${({ theme }) => theme.colors.surface.pane};
   font-weight: 600;
   white-space: nowrap;
-  &:last-child {
-    border-right: none;
-  }
 `;
-const HeaderControls = styled.div`
+const HeaderControls = styled.div<{ $right: boolean }>`
   display: flex;
+  flex-direction: ${({ $right }) => ($right ? "row-reverse" : "row")};
   align-items: center;
-  gap: 2px;
+  height: ${TABLE_HEADER_HEIGHT - 1}px;
 `;
-const HeaderButton = styled(Button).attrs({ size: "small", variant: "subtle" })<{
-  $filter?: boolean;
-}>`
-  justify-content: ${({ $filter }) => ($filter ? "center" : "flex-start")};
-  min-width: ${({ $filter }) => ($filter ? "28px" : "0")};
-  flex: ${({ $filter }) => ($filter ? "0 0 28px" : "1")};
-  padding: 2px 4px;
-  span {
+const SortButton = styled.button<{ $right: boolean }>`
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: ${({ $right }) => ($right ? "row-reverse" : "row")};
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+  padding: 0 ${({ $right }) => ($right ? "8px 0 4px" : "4px 0 8px")};
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+  &:hover {
+    background: ${({ theme }) => theme.colors.fill.hover};
+  }
+  &:focus-visible {
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -1px;
+  }
+  > span {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  small {
+    color: ${({ theme }) => theme.colors.text.tertiary};
+    font-size: ${({ theme }) => theme.fontSize.secondary};
+    font-weight: 400;
+  }
+`;
+// Glyphs show on header hover/focus; an active sort or filter keeps a filled glyph.
+const Glyph = styled.span<{ $active: boolean }>`
+  display: inline-flex;
+  flex: 0 0 16px;
+  color: ${({ theme, $active }) => ($active ? theme.colors.text.primary : theme.colors.text.tertiary)};
+  visibility: ${({ $active }) => ($active ? "visible" : "hidden")};
+  ${TH}:hover &,
+  ${TH}:focus-within & {
+    visibility: visible;
+  }
+`;
+const FilterButton = styled(Button).attrs({ variant: "subtle" })<{ $active: boolean }>`
+  flex: 0 0 20px;
+  min-width: 20px;
+  height: 20px;
+  margin: 0 2px;
+  padding: 0;
+  color: ${({ theme, $active }) => ($active ? theme.colors.accent.rest : theme.colors.text.secondary)};
+  visibility: ${({ $active }) => ($active ? "visible" : "hidden")};
+  ${TH}:hover &,
+  ${TH}:focus-within &,
+  &[aria-expanded="true"] {
+    visibility: visible;
   }
 `;
 const Notice = styled.div`
   padding: 12px;
   color: ${({ theme }) => theme.colors.text.primary};
-  background: ${({ theme }) => theme.colors.background.secondary};
+  background: ${({ theme }) => theme.colors.surface.pane};
   button {
     margin-left: 8px;
   }
@@ -104,17 +171,50 @@ interface Props {
   onManageColumns: () => void;
 }
 
+/** Event Viewer's order when the user has not chosen a sort. */
+const DEFAULT_SORT: RowSort = { id: "time", desc: true };
+/** Header click: ascending, descending, back to the default (time toggles newest/oldest). */
+export function nextSort(current: RowSort | null, id: string): RowSort | null {
+  const shown = current ?? DEFAULT_SORT;
+  if (shown.id !== id) return { id, desc: false };
+  if (!shown.desc) return id === DEFAULT_SORT.id ? null : { id, desc: true };
+  return current ? null : { id, desc: false };
+}
+const AUTOSIZE_SAMPLE = 200;
+/** Widest text as the grid lays it out (canvas ignores tabular-nums), in one layout pass. */
+function measureTexts(font: string, texts: string[], header: boolean): number {
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:absolute;visibility:hidden;width:max-content;white-space:pre;";
+  // After cssText: the font shorthand would reset font-variant-numeric.
+  probe.style.font = `${header ? 600 : 400} 12px ${font}`;
+  probe.style.fontVariantNumeric = "tabular-nums";
+  for (const text of new Set(texts))
+    probe.append(Object.assign(document.createElement("div"), { textContent: text }));
+  document.body.append(probe);
+  const width = probe.getBoundingClientRect().width;
+  probe.remove();
+  return width;
+}
+
 export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }) => {
   const { filters, updateFilters } = useFilters();
-  const { isLoading } = useEvtxMetaState();
+  const { isLoading, fileInfo, totalRecords } = useEvtxMetaState();
+  const timeZone = useTimeZone();
+  const theme = useTheme();
   const dispatch = useGlobalDispatch();
   const { columns, resizeColumn, removeColumn } = useColumns();
   const [draftWidth, setDraftWidth] = useState<{ id: string; width: number } | null>(null);
   const [activeColumn, setActiveColumn] = useState<string | null>(null);
+  // Content widths fill in columns the user has not sized; a resize commits to column state.
+  const [autoWidths, setAutoWidths] = useState<Record<string, number>>({});
   const columnWidth = (column: TableColumn) =>
-    draftWidth?.id === column.id ? draftWidth.width : (column.width ?? 140);
+    draftWidth?.id === column.id
+      ? draftWidth.width
+      : (column.width ?? autoWidths[column.id] ?? FALLBACK_COLUMN_WIDTH);
+  // null = the default sort (time, newest first).
   const [sort, setSort] = useState<RowSort | null>(null);
-  const next = useMemo(() => dataSource.withSort(sort), [dataSource, sort]);
+  const effectiveSort = sort ?? DEFAULT_SORT;
+  const next = useMemo(() => dataSource.withSort(sort ?? DEFAULT_SORT), [dataSource, sort]);
   const [source, setSource] = useState(next);
   if (source !== next && next.replaces(source, isLoading)) {
     // Reusing before this render keeps shown rows mounted instead of flashing placeholders.
@@ -178,7 +278,14 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
       const shownSource = shown.current;
       const request = ++selectionRequest.current;
       setDetailError(null);
-      setSelection({ source: shownSource, index, key: null, record: null });
+      // Keep the previous record while the next one loads: dropping it unmounts the details
+      // pane for a frame, the table grows into its space and renders extra rows there.
+      setSelection((previous) => ({
+        source: shownSource,
+        index,
+        key: null,
+        record: previous?.record ?? null,
+      }));
       void (async () => {
         try {
           const row = await shownSource.getRow(index);
@@ -203,7 +310,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
   const selectedKey = selected?.key;
   const selectionSource = selected?.source;
   useEffect(() => {
-    if (!sort || !selectedKey || selectionSource === source) return;
+    if (!selectedKey || selectionSource === source) return;
     let current = true;
     void source
       .indexOf(selectedKey)
@@ -219,7 +326,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
     return () => {
       current = false;
     };
-  }, [source, sort, selectedKey, selectionSource, showError]);
+  }, [source, selectedKey, selectionSource, showError]);
 
   const handleRowClick = useCallback(
     (index: number, columnId: string) => {
@@ -242,52 +349,39 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
     setMenu(null);
   }, []);
 
-  const openFilterMenu = async (
-    column: TableColumn,
-    position: { x: number; y: number },
-    returnFocus: HTMLElement | null,
-  ) => {
+  const [filterMenu, setFilterMenu] = useState<{
+    queryKey: string;
+    column: TableColumn;
+    anchor: HTMLElement;
+    values: FilterValue[] | null;
+  } | null>(null);
+  const currentFilterMenu = filterMenu?.queryKey === source.queryKey ? filterMenu : null;
+  const closeFilterMenu = useCallback(() => {
+    filterRequest.current++;
+    setFilterMenu(null);
+  }, []);
+  const openFilterMenu = async (column: TableColumn, anchor: HTMLElement) => {
     const request = ++filterRequest.current;
-    const label = `Filter ${column.header}`;
-    setMenu({
-      queryKey: source.queryKey,
-      position,
-      returnFocus,
-      label,
-      items: [{ id: "loading", label: "Loading values…", disabled: true }],
-    });
+    setMenu(null);
+    setFilterMenu({ queryKey: source.queryKey, column, anchor, values: null });
     try {
       const counts = await getColumnFacetCounts(column.id, filters);
       if (request !== filterRequest.current) return;
-      const current = facetValues(filters, column.id);
-      const filtered = isFiltered(filters, column.id);
       const facet = buildFacetConfigs(columns).find((item) => item.id === column.id) ?? {
         id: column.id,
         label: column.header,
       };
-      setMenu({
-        queryKey: source.queryKey,
-        position,
-        returnFocus,
-        label,
-        items: [
-          {
-            id: "clear",
-            label: "Clear column filter",
-            disabled: !filtered,
-            onClick: () => updateFilters((previous) => clearFacet(previous, column.id)),
-          },
-          ...counts.map(({ v, c }) => ({
-            id: `value:${v}`,
-            label: `${formatFacetValue(facet, v)} (${c})`,
-            checked: current.includes(v),
-            onClick: () => updateFilters((previous) => toggleFacet(previous, column.id, v)),
-          })),
-        ],
-      });
+      const values = counts.map(({ v, c }) => ({
+        value: v,
+        label: formatFacetValue(facet, v),
+        count: Number(c),
+      }));
+      setFilterMenu((current) =>
+        current?.column.id === column.id ? { ...current, values } : current,
+      );
     } catch (cause) {
       if (request !== filterRequest.current) return;
-      setMenu(null);
+      setFilterMenu(null);
       showError(errorMessage(cause, "Unable to load filter values."));
     }
   };
@@ -298,22 +392,35 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
     returnFocus: HTMLElement | null,
   ) => {
     filterRequest.current++;
+    const sorted = effectiveSort.id === column.id;
+    const sortTo = (desc: boolean) => () =>
+      setSort(
+        column.id === DEFAULT_SORT.id && desc === DEFAULT_SORT.desc
+          ? null
+          : { id: column.id, desc },
+      );
     const actions: ContextMenuItem[] = [
       {
         id: "sort-ascending",
         label: "Sort ascending",
-        onClick: () => setSort({ id: column.id, desc: false }),
+        checked: sorted && !effectiveSort.desc,
+        radio: true,
+        onClick: sortTo(false),
       },
       {
         id: "sort-descending",
         label: "Sort descending",
-        onClick: () => setSort({ id: column.id, desc: true }),
+        checked: sorted && effectiveSort.desc,
+        radio: true,
+        onClick: sortTo(true),
       },
+      { id: "sort-separator", separator: true },
       {
         id: "filter",
         label: "Filter values…",
+        disabled: !returnFocus,
         onClick: () => {
-          void openFilterMenu(column, position, returnFocus);
+          if (returnFocus) void openFilterMenu(column, returnFocus);
         },
       },
       {
@@ -322,14 +429,11 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
         disabled: !isFiltered(filters, column.id),
         onClick: () => updateFilters((previous) => clearFacet(previous, column.id)),
       },
+      { id: "column-separator", separator: true },
       {
         id: "reset-width",
         label: "Reset column width",
-        onClick: () =>
-          resizeColumn(
-            column.id,
-            getDefaultColumns().find((item) => item.id === column.id)?.width ?? 200,
-          ),
+        onClick: () => resizeColumn(column.id, autoWidths[column.id] ?? FALLBACK_COLUMN_WIDTH),
       },
       {
         id: "hide-column",
@@ -423,7 +527,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
   );
   const handleTableKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
     // Until a sorted refresh re-ranks the selection, its index points into the old order.
-    if (sort && selected && selected.source !== source) return;
+    if (selected && selected.source !== source) return;
     if (event.target !== event.currentTarget) return;
     if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
       event.preventDefault();
@@ -461,25 +565,68 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
     selectRow(index);
     scrollToIndex(index);
   };
+  // Size unsized columns once from the first loaded rows (later-added columns likewise).
+  // Set during render, like `source` above, so the grid never paints the fallback widths twice.
+  const unsized = columns.filter(
+    (column) => column.width === undefined && autoWidths[column.id] === undefined,
+  );
+  const sample: TabularRow[] = [];
+  for (let index = 0; unsized.length && index < Math.min(totalRows, AUTOSIZE_SAMPLE); index++) {
+    const row = source.peekRow(index);
+    if (row) sample.push(row);
+  }
+  if (sample.length) {
+    const measure = (texts: string[], header: boolean) =>
+      measureTexts(theme.fonts.body, texts, header);
+    setAutoWidths((previous) => ({
+      ...previous,
+      ...Object.fromEntries(
+        unsized.map((column) => [column.id, autoColumnWidth(column, sample, measure)]),
+      ),
+    }));
+  }
+
+  // The band names the log's channel ("Security"), as Event Viewer does; the file name until known.
+  const [channel, setChannel] = useState<string | null>(null);
+  const hasRows = totalRows > 0;
+  useEffect(() => {
+    if (!hasRows) return;
+    let current = true;
+    getColumnFacetCounts("channel", {}, 1)
+      .then(([top]) => {
+        if (current && top?.v) setChannel(top.v);
+      })
+      .catch(() => undefined); // ponytail: the file name stays as the fallback title.
+    return () => {
+      current = false;
+    };
+  }, [hasRows]);
+
   const spacer = (height: number) =>
     height > 0 && (
       <tr aria-hidden="true">
-        <td aria-hidden="true" colSpan={columns.length} style={{ height, padding: 0 }} />
+        <td aria-hidden="true" colSpan={columns.length + 1} style={{ height, padding: 0 }} />
       </tr>
     );
   const top = Math.max(0, (items[0]?.start ?? TABLE_HEADER_HEIGHT) - TABLE_HEADER_HEIGHT);
   const bottom = items.length ? Math.max(0, totalHeight - items[items.length - 1].end) : 0;
   const tableWidth = columns.reduce((width, column) => width + columnWidth(column), 0);
+  const logName = channel ?? fileInfo?.fileName.replace(/\.evtx$/i, "");
   return (
     <Container ref={outerRef}>
+      {logName && (
+        <Band>
+          <span>{logName}</span>
+          <span>
+            Number of events: {totalRecords.toLocaleString()}
+            {totalRows !== totalRecords && ` · ${totalRows.toLocaleString()} shown`}
+          </span>
+        </Band>
+      )}
       {(error || currentError) && (
         <Notice role="alert">
           {error || currentError}
-          {error && (
-            <Button size="small" onClick={retry}>
-              Retry
-            </Button>
-          )}
+          {error && <Button onClick={retry}>Retry</Button>}
         </Notice>
       )}
       <TableContainer
@@ -491,96 +638,99 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
         <Table
           aria-label="Event log"
           aria-rowcount={totalRows + 1}
-          style={{ width: tableWidth, minWidth: tableWidth }}
+          // The last, unsized column stretches so header and rows run edge to edge.
+          style={{ width: `max(${tableWidth}px, 100%)` }}
         >
           <colgroup>
             {columns.map((col) => (
               <col key={col.id} style={{ width: columnWidth(col) }} />
             ))}
+            <col />
           </colgroup>
           <THead>
             <tr>
-              {columns.map((col) => (
-                <TH
-                  key={col.id}
-                  scope="col"
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    const invoker = event.currentTarget.querySelector<HTMLButtonElement>("button");
-                    openHeaderMenu(col, { x: event.clientX, y: event.clientY }, invoker);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
-                      return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    const bounds = event.currentTarget.getBoundingClientRect();
-                    openHeaderMenu(
-                      col,
-                      { x: bounds.left, y: bounds.bottom },
-                      event.target instanceof HTMLElement ? event.target : null,
-                    );
-                  }}
-                  aria-sort={
-                    sort?.id === col.id ? (sort.desc ? "descending" : "ascending") : "none"
-                  }
-                >
-                  <HeaderControls>
-                    <HeaderButton
-                      type="button"
-                      aria-label={
-                        sort?.id === col.id && sort.desc
-                          ? `Clear sort for ${col.header}`
-                          : `Sort by ${col.header}${sort?.id === col.id ? " descending" : " ascending"}`
-                      }
-                      onClick={() =>
-                        setSort((current) =>
-                          current?.id === col.id
-                            ? current.desc
-                              ? null
-                              : { id: col.id, desc: true }
-                            : { id: col.id, desc: false },
-                        )
-                      }
-                    >
-                      <span>{col.header}</span>
-                      {sort?.id === col.id &&
-                        (sort.desc ? <ArrowDown16Regular /> : <ArrowUp16Regular />)}
-                    </HeaderButton>
-                    <HeaderButton
-                      type="button"
-                      $filter
-                      active={isFiltered(filters, col.id)}
-                      aria-label={`Filter ${col.header}`}
-                      aria-haspopup="menu"
-                      aria-expanded={currentMenu?.label === `Filter ${col.header}`}
-                      onClick={(event) => {
-                        const bounds = event.currentTarget.getBoundingClientRect();
-                        void openFilterMenu(
-                          col,
-                          { x: bounds.left, y: bounds.bottom },
-                          event.currentTarget,
-                        );
-                      }}
-                    >
-                      <Filter20Regular />
-                    </HeaderButton>
-                  </HeaderControls>
-                  <ResizeHandle
-                    label={`Resize ${col.header} column`}
-                    orientation="vertical"
-                    value={columnWidth(col)}
-                    min={MIN_COLUMN_WIDTH}
-                    max={MAX_COLUMN_WIDTH}
-                    onResize={(width) => setDraftWidth({ id: col.id, width })}
-                    onCommit={(width) => {
-                      resizeColumn(col.id, width);
-                      setDraftWidth(null);
+              {columns.map((col) => {
+                const sorted = effectiveSort.id === col.id;
+                const filtered = isFiltered(filters, col.id);
+                const right = col.align === "right";
+                const upcoming = nextSort(sort, col.id) ?? DEFAULT_SORT;
+                const zone = col.id === "time" ? timeZoneLabel(timeZone) : null;
+                const shortZone = timeZone === "utc" ? "UTC" : "local";
+                return (
+                  <TH
+                    key={col.id}
+                    scope="col"
+                    title={zone ? `${col.header} (${zone})` : undefined}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      const invoker =
+                        event.currentTarget.querySelector<HTMLButtonElement>("button");
+                      openHeaderMenu(col, { x: event.clientX, y: event.clientY }, invoker);
                     }}
-                    style={{ position: "absolute", right: -3, top: 0, height: "100%" }}
-                  />
-                </TH>
-              ))}
+                    onKeyDown={(event) => {
+                      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                        return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      openHeaderMenu(
+                        col,
+                        { x: bounds.left, y: bounds.bottom },
+                        event.target instanceof HTMLElement ? event.target : null,
+                      );
+                    }}
+                    aria-sort={sorted ? (effectiveSort.desc ? "descending" : "ascending") : "none"}
+                  >
+                    <HeaderControls $right={right}>
+                      <SortButton
+                        type="button"
+                        $right={right}
+                        aria-label={`Sort by ${col.header} ${upcoming.desc ? "descending" : "ascending"}`}
+                        onClick={() => setSort((current) => nextSort(current, col.id))}
+                      >
+                        <span>
+                          {col.header}
+                          {zone && <small> ({shortZone})</small>}
+                        </span>
+                        <Glyph $active={sorted} aria-hidden="true">
+                          {!sorted ? (
+                            <ArrowSort16Regular />
+                          ) : effectiveSort.desc ? (
+                            <ArrowDown16Filled />
+                          ) : (
+                            <ArrowUp16Filled />
+                          )}
+                        </Glyph>
+                      </SortButton>
+                      <FilterButton
+                        $active={filtered}
+                        icon={filtered ? <Filter16Filled /> : <Filter16Regular />}
+                        aria-label={`Filter ${col.header}`}
+                        aria-haspopup="true"
+                        aria-expanded={currentFilterMenu?.column.id === col.id}
+                        onClick={(event) => {
+                          if (currentFilterMenu?.column.id === col.id) closeFilterMenu();
+                          else void openFilterMenu(col, event.currentTarget);
+                        }}
+                      />
+                    </HeaderControls>
+                    <ResizeHandle
+                      label={`Resize ${col.header} column`}
+                      orientation="vertical"
+                      value={columnWidth(col)}
+                      min={MIN_COLUMN_WIDTH}
+                      max={MAX_COLUMN_WIDTH}
+                      onResize={(width) => setDraftWidth({ id: col.id, width })}
+                      onCommit={(width) => {
+                        resizeColumn(col.id, width);
+                        setDraftWidth(null);
+                      }}
+                      style={{ position: "absolute", right: -3, top: 0, height: "100%", margin: 0 }}
+                    />
+                  </TH>
+                );
+              })}
+              <TH aria-hidden="true" />
             </tr>
           </THead>
           <tbody>
@@ -592,11 +742,11 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                   key={row.rowKey}
                   record={row}
                   rowIndex={item.index}
-                  isEven={item.index % 2 === 0}
                   isSelected={Boolean(selected?.key && selected.key === row.rowKey)}
                   onRowClick={handleRowClick}
                   onCellContextMenu={handleCellContextMenu}
                   columns={columns}
+                  timeZone={timeZone}
                 />
               ) : (
                 <tr
@@ -604,9 +754,7 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
                   aria-rowindex={item.index + 2}
                   style={{ height: ROW_HEIGHT }}
                 >
-                  <td colSpan={columns.length} style={{ padding: "0 8px" }}>
-                    Loading event…
-                  </td>
+                  <TD colSpan={columns.length + 1}>Loading event…</TD>
                 </tr>
               );
             })}
@@ -637,6 +785,23 @@ export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }
           onClose={closeMenu}
           returnFocus={currentMenu.returnFocus}
           ariaLabel={currentMenu.label}
+        />
+      )}
+      {currentFilterMenu && (
+        <ColumnFilterMenu
+          key={currentFilterMenu.column.id}
+          anchor={currentFilterMenu.anchor}
+          label={`Filter ${currentFilterMenu.column.header}`}
+          values={currentFilterMenu.values}
+          included={facetValues(filters, currentFilterMenu.column.id)}
+          filtered={isFiltered(filters, currentFilterMenu.column.id)}
+          onToggle={(value) =>
+            updateFilters((previous) => toggleFacet(previous, currentFilterMenu.column.id, value))
+          }
+          onClear={() =>
+            updateFilters((previous) => clearFacet(previous, currentFilterMenu.column.id))
+          }
+          onClose={closeFilterMenu}
         />
       )}
     </Container>

@@ -1,25 +1,29 @@
 import React from "react";
 import {
+  Section,
   SectionHeader,
-  SectionIcon,
+  SectionToggle,
+  SelectedCount,
+  FacetSearch,
   OptionsContainer,
+  FacetRow,
   Counts,
   Checkbox,
   OptionLabel,
 } from "./styles";
 import {
-  ChevronRight20Regular,
-  ChevronDown20Regular,
-  Search20Regular,
+  ChevronRight16Regular,
+  ChevronDown16Regular,
+  Search16Regular,
 } from "@fluentui/react-icons";
-import { SearchContainer, SearchInput, SelectableRow } from "../Windows";
+import { Button, SearchContainer, SearchInput, Tooltip } from "../Windows";
 import { formatFacetValue } from "./facetUtils";
+import { useTimeZone, type TimeZone } from "../../lib/timeZone";
 
 export interface FacetConfig {
   id: string;
   label: string;
-  searchable?: boolean;
-  displayValue?: (value: string) => string;
+  displayValue?: (value: string, zone?: TimeZone) => string;
 }
 
 interface FacetSectionProps {
@@ -31,7 +35,13 @@ interface FacetSectionProps {
   onSearchTermChange: (key: string, term: string) => void;
   toggleFacetValue: (id: string, value: string) => void;
   selected: string[];
+  /** Included plus excluded values; 0 hides Clear. */
+  filteredCount: number;
+  onClear: (id: string) => void;
 }
+
+// ponytail: tooltip only for values likely to truncate; measure scrollWidth if short ones clip.
+const LONG_VALUE = 24;
 
 const FacetSection: React.FC<FacetSectionProps> = ({
   facet,
@@ -42,55 +52,80 @@ const FacetSection: React.FC<FacetSectionProps> = ({
   onSearchTermChange,
   toggleFacetValue,
   selected,
+  filteredCount,
+  onClear,
 }) => {
+  const zone = useTimeZone();
   const entries = React.useMemo(() => {
     const term = searchTerm.toLowerCase();
-    return Array.from(counts.entries())
-      .filter(([key]) => formatFacetValue(facet, key).toLowerCase().includes(term))
-      .toSorted((a, b) => b[1] - a[1]);
-  }, [counts, searchTerm, facet]);
+    return Array.from(counts.entries(), ([value, count]) => ({
+      value,
+      count,
+      label: formatFacetValue(facet, value, zone),
+    }))
+      .filter(({ label }) => label.toLowerCase().includes(term))
+      .toSorted((a, b) => b.count - a.count);
+  }, [counts, searchTerm, facet, zone]);
+  let total = 0;
+  for (const count of counts.values()) total += count;
 
   return (
-    <div>
-      <SectionHeader
-        type="button"
-        aria-expanded={isOpen}
-        $isOpen={isOpen}
-        onClick={() => toggleOpen(facet.id)}
-      >
-        <SectionIcon>{isOpen ? <ChevronDown20Regular /> : <ChevronRight20Regular />}</SectionIcon>
-        {facet.label}
+    <Section>
+      <SectionHeader>
+        <SectionToggle type="button" aria-expanded={isOpen} onClick={() => toggleOpen(facet.id)}>
+          {isOpen ? <ChevronDown16Regular /> : <ChevronRight16Regular />}
+          <span>{facet.label}</span>
+          {filteredCount > 0 && (
+            <SelectedCount aria-label={`${filteredCount} filtered`}>{filteredCount}</SelectedCount>
+          )}
+        </SectionToggle>
+        {filteredCount > 0 && (
+          <Button
+            variant="subtle"
+            aria-label={`Clear ${facet.label} filter`}
+            onClick={() => onClear(facet.id)}
+          >
+            Clear
+          </Button>
+        )}
       </SectionHeader>
       {isOpen && (
         <>
-          {facet.searchable && (
-            <SearchContainer $compact style={{ margin: "4px 12px" }}>
-              <Search20Regular />
-              <SearchInput
-                aria-label={`Search ${facet.label.toLowerCase()}`}
-                placeholder={`Search ${facet.label.toLowerCase()}...`}
-                value={searchTerm}
-                onChange={(e) => onSearchTermChange(facet.id, e.target.value)}
-              />
-            </SearchContainer>
+          {counts.size > 10 && (
+            <FacetSearch>
+              <SearchContainer>
+                <Search16Regular />
+                <SearchInput
+                  aria-label={`Search ${facet.label}`}
+                  placeholder="Search"
+                  value={searchTerm}
+                  onChange={(e) => onSearchTermChange(facet.id, e.target.value)}
+                />
+              </SearchContainer>
+            </FacetSearch>
           )}
           <OptionsContainer>
-            {entries.map(([val, count]) => {
-              const checked = selected.includes(val);
+            {entries.map(({ value, count, label }) => {
+              const text = <OptionLabel>{label}</OptionLabel>;
               return (
-                <SelectableRow key={val} $selected={checked}>
-                  <Checkbox checked={checked} onChange={() => toggleFacetValue(facet.id, val)} />
-                  <OptionLabel title={val || "(Not set)"}>
-                    {formatFacetValue(facet, val)}
-                  </OptionLabel>
-                  <Counts>{count}</Counts>
-                </SelectableRow>
+                // SAFETY: `--share` is a CSS custom property, which CSSProperties does not list.
+                <FacetRow
+                  key={value}
+                  style={{ "--share": `${(count / total) * 100}%` } as React.CSSProperties}
+                >
+                  <Checkbox
+                    checked={selected.includes(value)}
+                    onChange={() => toggleFacetValue(facet.id, value)}
+                  />
+                  {label.length > LONG_VALUE ? <Tooltip label={label}>{text}</Tooltip> : text}
+                  <Counts>{count.toLocaleString()}</Counts>
+                </FacetRow>
               );
             })}
           </OptionsContainer>
         </>
       )}
-    </div>
+    </Section>
   );
 };
 

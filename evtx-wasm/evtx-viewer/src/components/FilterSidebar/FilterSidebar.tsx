@@ -1,9 +1,9 @@
 import React, { useCallback, useState } from "react";
-import { SidebarContainer } from "./styles";
+import { Notice, SidebarBody, SidebarContainer } from "./styles";
 import { Button, SidebarHeader } from "../Windows";
 import FacetSection from "./FacetSection";
 import { useFacetCounts } from "./useFacetCounts";
-import { buildFacetConfigs, facetValues, toggleFacet } from "./facetUtils";
+import { buildFacetConfigs, clearFacet, facetValues, toggleFacet } from "./facetUtils";
 import { useActiveFilterChips } from "./useActiveFilterChips";
 import { useColumns } from "../../hooks/useColumns";
 import { useFilters } from "../../hooks/useFilters";
@@ -35,6 +35,10 @@ export const FilterSidebar: React.FC = () => {
     (id: string, value: string) => updateFilters((current) => toggleFacet(current, id, value)),
     [updateFilters],
   );
+  const clearSection = useCallback(
+    (id: string) => updateFilters((current) => clearFacet(current, id)),
+    [updateFilters],
+  );
 
   const hasActiveFilters = useActiveFilterChips(facetConfigs).length > 0;
 
@@ -43,28 +47,35 @@ export const FilterSidebar: React.FC = () => {
       <SidebarHeader>
         <span>Filters</span>
         {hasActiveFilters && !filtersDisabled && (
-          <Button variant="subtle" size="small" onClick={clearFilters}>
-            Clear
+          <Button variant="subtle" onClick={clearFilters}>
+            Clear all
           </Button>
         )}
       </SidebarHeader>
 
       {filtersDisabled ? (
-        <div style={{ padding: 16 }}>Filters will be available when the log finishes loading.</div>
+        <Notice>Available after import.</Notice>
       ) : (
-        facetConfigs.map((facet) => (
-          <FacetSection
-            key={facet.id}
-            facet={facet}
-            counts={dynCounts[facet.id] ?? new Map()}
-            isOpen={openSections[facet.id] ?? true}
-            searchTerm={searchTerms[facet.id] ?? ""}
-            toggleOpen={toggleSection}
-            onSearchTermChange={handleSearchChange}
-            toggleFacetValue={toggleFacetValue}
-            selected={facetValues(filters, facet.id)}
-          />
-        ))
+        <SidebarBody>
+          {facetConfigs.map((facet) => (
+            <FacetSection
+              key={facet.id}
+              facet={facet}
+              counts={dynCounts[facet.id] ?? new Map()}
+              isOpen={openSections[facet.id] ?? true}
+              searchTerm={searchTerms[facet.id] ?? ""}
+              toggleOpen={toggleSection}
+              onSearchTermChange={handleSearchChange}
+              toggleFacetValue={toggleFacetValue}
+              selected={facetValues(filters, facet.id)}
+              filteredCount={
+                (filters.include?.[facet.id]?.length ?? 0) +
+                (filters.exclude?.[facet.id]?.length ?? 0)
+              }
+              onClear={clearSection}
+            />
+          ))}
+        </SidebarBody>
       )}
     </SidebarContainer>
   );

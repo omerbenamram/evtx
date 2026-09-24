@@ -1,60 +1,90 @@
-import type { FilterOptions } from "./types";
+import { columnSql, EVENT_DATA_PREFIX, SYSTEM_COLUMN_IDS } from "./columnSql";
+import { levelName, type FilterOptions } from "./types";
 
-/** Search field -> table column id. */
-const SEARCH_COLUMNS = new Map([
+export const SEARCH_FIELDS = [
+  "level",
+  "event_id",
+  "provider",
+  "channel",
+  "computer",
+  "user",
+  "task",
+  "opcode",
+  "keywords",
+];
+
+/** Query field (lowercase) -> column id. */
+const FIELDS = new Map([
+  ...SYSTEM_COLUMN_IDS.map((id) => [id.toLowerCase(), id] as const),
   ["event_id", "eventId"],
-  ["provider", "provider"],
-  ["computer", "computer"],
-  ["channel", "channel"],
+  ["id", "eventId"],
+  ["source", "provider"],
+  ["host", "computer"],
+  ["log", "channel"],
 ]);
-export const SEARCH_FIELDS = [...SEARCH_COLUMNS.keys()];
 
-/** A small field syntax; values become filters, never SQL expressions. */
-export function parseSearchQuery(input: string): FilterOptions {
-  const tokens: { value: string; literal: boolean }[] = [];
-  let token = "";
-  let literal = false;
+interface Token {
+  value: string;
+  negated: boolean;
+  literal: boolean;
+}
+
+function tokenize(input: string): Token[] {
+  const tokens: Token[] = [];
+  let current: Token | undefined;
   let quoted = false;
   let escaped = false;
   for (const char of input.trim()) {
     if (escaped) {
-      token += char;
+      current!.value += char;
       escaped = false;
     } else if (quoted && char === "\\") {
       escaped = true;
     } else if (char === '"') {
-      if (!token && !quoted) literal = true;
+      current ??= { value: "", negated: false, literal: false };
+      if (!quoted && !current.value) current.literal = true;
       quoted = !quoted;
-    } else if (/\s/.test(char) && !quoted) {
-      if (token) tokens.push({ value: token, literal });
-      token = "";
-      literal = false;
+    } else if (!quoted && /\s/.test(char)) {
+      if (current) tokens.push(current);
+      current = undefined;
+    } else if (!current) {
+      current = { value: char === "-" ? "" : char, negated: char === "-", literal: false };
     } else {
-      token += char;
+      current.value += char;
     }
   }
   if (quoted || escaped) throw new Error("Close the quoted value before searching.");
-  if (token) tokens.push({ value: token, literal });
+  if (current) tokens.push(current);
+  return tokens;
+}
 
+/** `field:value`, `@EventDataName:value`, `-` to exclude, other words match the raw event. */
+export function parseSearchQuery(input: string): FilterOptions {
   const filters: FilterOptions = {};
-  const text: string[] = [];
-  for (const { value: part, literal: isLiteral } of tokens) {
-    const [, rawField = "", value] = (!isLiteral && /^([a-z_]+):(.*)$/i.exec(part)) || [];
-    const field = rawField.toLowerCase();
+  for (const { value, negated, literal } of tokenize(input)) {
+    const [, field = "", raw = ""] = (!literal && /^(@?[\w.-]+):(.*)$/s.exec(value)) || [];
     // Unknown prefixes stay text so C:\Windows or http://host remain searchable.
-    const column = SEARCH_COLUMNS.get(field);
-    if (!column) {
-      text.push(part);
+    const id = field.startsWith("@")
+      ? EVENT_DATA_PREFIX + field.slice(1)
+      : FIELDS.get(field.toLowerCase());
+    if (!id) {
+      if (value) (filters[negated ? "notContains" : "contains"] ??= []).push(value);
+      else if (negated) (filters.contains ??= []).push("-");
       continue;
     }
-    if (!value) throw new Error(`Enter a value after ${field}:`);
-    if (column === "eventId" && (!/^\d+$/.test(value) || Number(value) > 65535)) {
-      throw new Error("Event ID must be a whole number from 0 to 65535.");
-    }
-    ((filters.include ??= {})[column] ??= []).push(
-      column === "eventId" ? String(Number(value)) : value,
-    );
+    if (!raw) throw new Error(`Enter a value after ${field}:`);
+    const values = columnValues(id, raw);
+    if (!values.length) throw new Error(`“${raw}” is not a valid ${field} value.`);
+    ((filters[negated ? "exclude" : "include"] ??= {})[id] ??= []).push(...values);
   }
-  if (text.length) filters.searchTerm = text.join(" ");
   return filters;
+}
+
+function columnValues(id: string, raw: string): string[] {
+  if (id === "level" && !/^\d+$/.test(raw)) {
+    const names = Array.from({ length: 6 }, (_, level) => String(level));
+    return names.filter((level) => levelName(level).toLowerCase() === raw.toLowerCase());
+  }
+  const value = /^\d+$/.test(raw) ? String(Number(raw)) : raw;
+  return columnSql(id)?.values?.test(value) === false ? [] : [value];
 }

@@ -1,41 +1,55 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { styled } from "styled-components";
 import type { TableColumn } from "../lib/types";
 import { useColumns } from "../hooks/useColumns";
-import { SidebarHeader, Button, SelectableRow, Input } from "./Windows";
+import { Input, Popover } from "./Windows";
 
-const Row = styled(SelectableRow)`
-  justify-content: flex-start;
-`;
-const Container = styled.div`
+const Panel = styled.section`
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  background: ${({ theme }) => theme.colors.background.secondary};
-`;
-const Body = styled.div`
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  padding: ${({ theme }) => theme.spacing.sm};
+  gap: 4px;
+  width: 260px;
 `;
 const List = styled.div`
-  flex: 1 1 auto;
-  min-height: 0;
+  max-height: min(420px, 60dvh);
   overflow: auto;
+`;
+const Row = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: ${({ theme }) => theme.size.row};
+  padding: 0 8px;
+  border-radius: ${({ theme }) => theme.radius.control};
+  cursor: default;
+  &:hover {
+    background: ${({ theme }) => theme.colors.fill.hover};
+  }
+  > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  input {
+    margin: 0;
+  }
+`;
+const Empty = styled.p`
+  padding: 4px 8px;
+  color: ${({ theme }) => theme.colors.text.secondary};
 `;
 
 interface Props {
+  anchor: HTMLElement;
   onClose: () => void;
 }
 
-export const ColumnManager: React.FC<Props> = ({ onClose }) => {
+export const ColumnManager: React.FC<Props> = ({ anchor, onClose }) => {
   const { columns: active, allColumns, addColumn, removeColumn } = useColumns();
   const [term, setTerm] = useState("");
+  const search = useRef<HTMLInputElement>(null);
+  // Runs after Popover has shown itself (child effects first).
+  useEffect(() => search.current?.focus(), []);
 
   const activeIds = useMemo(() => new Set(active.map((c) => c.id)), [active]);
 
@@ -50,27 +64,20 @@ export const ColumnManager: React.FC<Props> = ({ onClose }) => {
   };
 
   return (
-    <Container>
-      <SidebarHeader>
-        <span>Columns</span>
-        <Button size="small" variant="subtle" onClick={onClose}>
-          Close
-        </Button>
-      </SidebarHeader>
-      <Body>
+    <Popover anchor={anchor} onClose={onClose}>
+      <Panel aria-label="Table columns">
         <Input
-          style={{ width: "100%", marginBottom: 8 }}
+          ref={search}
           aria-label="Search columns"
-          placeholder="Search columns…"
+          placeholder="Search columns"
           value={term}
           onChange={(e) => setTerm(e.target.value)}
         />
         <List>
           {filtered.map((col) => (
-            <Row key={col.id} $selected={activeIds.has(col.id)}>
+            <Row key={col.id} title={col.header}>
               <input
                 type="checkbox"
-                aria-label={col.header}
                 disabled={active.length === 1 && activeIds.has(col.id)}
                 checked={activeIds.has(col.id)}
                 onChange={() => toggle(col)}
@@ -78,8 +85,9 @@ export const ColumnManager: React.FC<Props> = ({ onClose }) => {
               <span>{col.header}</span>
             </Row>
           ))}
+          {!filtered.length && <Empty>No matching columns</Empty>}
         </List>
-      </Body>
-    </Container>
+      </Panel>
+    </Popover>
   );
 };

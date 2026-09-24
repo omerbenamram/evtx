@@ -42,7 +42,6 @@ const querySchema = z
   });
 const savedFiltersSchema = z.object({
   searchQuery: querySchema.optional(),
-  searchTerm: z.string().max(8192).optional(),
   include: columnFiltersSchema.optional(),
   exclude: columnFiltersSchema.optional(),
   timeRange: z

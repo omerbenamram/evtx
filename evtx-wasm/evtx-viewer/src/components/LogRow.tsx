@@ -1,43 +1,49 @@
 import React from "react";
 import { styled } from "styled-components";
 import type { TableColumn, TabularRow } from "../lib/types";
+import { cellText, levelSeverity, type Severity } from "../lib/columns";
+import { ROW_HEIGHT } from "../lib/rowWindow";
+import type { TimeZone } from "../lib/timeZone";
 
-export const ROW_HEIGHT = 30;
-
-const TR = styled.tr<{ $isSelected: boolean; $isEven: boolean }>`
+export const TR = styled.tr<{ $isSelected: boolean; $severity: Severity | null }>`
   height: ${ROW_HEIGHT}px;
-  background: ${({ theme, $isSelected, $isEven }) =>
-    $isSelected
-      ? theme.colors.selection.background
-      : $isEven
-        ? theme.colors.background.tertiary
-        : theme.colors.background.secondary};
+  background: ${({ theme, $isSelected }) =>
+    $isSelected ? theme.colors.fill.selected : "transparent"};
   cursor: default;
   &:hover {
     background: ${({ theme, $isSelected }) =>
-      $isSelected ? theme.colors.selection.background : theme.colors.background.hover};
+      $isSelected ? theme.colors.fill.selected : theme.colors.fill.hover};
+  }
+  > td:first-child {
+    box-shadow: ${({ theme, $severity }) =>
+      $severity ? `inset 3px 0 0 ${theme.colors.severity[$severity]}` : "none"};
+  }
+  @media (forced-colors: active) {
+    &[aria-selected="true"] {
+      background: Highlight;
+      color: HighlightText;
+    }
   }
 `;
 
-const TD = styled.td`
-  padding: 4px 8px;
+export const TD = styled.td<{ $align?: "right" }>`
+  padding: 0 8px;
   box-sizing: border-box;
   height: ${ROW_HEIGHT}px;
-  border-right: 1px solid ${({ theme }) => theme.colors.border.light};
+  line-height: ${ROW_HEIGHT - 1}px;
+  text-align: ${({ $align }) => $align ?? "left"};
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  &:last-child {
-    border-right: none;
-  }
 `;
 
 interface LogRowProps {
   record: TabularRow;
-  isEven: boolean;
   isSelected: boolean;
   rowIndex: number;
   columns: TableColumn[];
+  /** Time cells format in this zone; a change re-renders the memoized row. */
+  timeZone: TimeZone;
   onRowClick: (index: number, columnId: string) => void;
   onCellContextMenu: (
     index: number,
@@ -49,7 +55,6 @@ interface LogRowProps {
 
 export const LogRow = React.memo(function LogRow({
   record,
-  isEven,
   isSelected,
   onRowClick,
   onCellContextMenu,
@@ -58,23 +63,28 @@ export const LogRow = React.memo(function LogRow({
 }: LogRowProps) {
   return (
     <TR
-      $isEven={isEven}
       $isSelected={isSelected}
+      $severity={levelSeverity(record.level)}
       data-row-idx={rowIndex}
       aria-rowindex={rowIndex + 2}
       aria-selected={isSelected}
     >
-      {columns.map((column) => (
-        <TD
-          key={column.id}
-          data-column-id={column.id}
-          title={String(record[column.id] ?? "")}
-          onClick={() => onRowClick(rowIndex, column.id)}
-          onContextMenu={(event) => onCellContextMenu(rowIndex, column, record, event)}
-        >
-          {column.accessor ? column.accessor(record) : String(record[column.id] ?? "-")}
-        </TD>
-      ))}
+      {columns.map((column) => {
+        const text = cellText(column, record);
+        return (
+          <TD
+            key={column.id}
+            $align={column.align}
+            data-column-id={column.id}
+            title={text}
+            onClick={() => onRowClick(rowIndex, column.id)}
+            onContextMenu={(event) => onCellContextMenu(rowIndex, column, record, event)}
+          >
+            {column.accessor ? column.accessor(record) : text}
+          </TD>
+        );
+      })}
+      <td aria-hidden="true" onClick={() => onRowClick(rowIndex, columns[0]?.id ?? "")} />
     </TR>
   );
 });

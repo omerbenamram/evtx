@@ -18,6 +18,7 @@ import { getTimeHistogram } from "../timeline";
 
 let connection: Awaited<ReturnType<typeof openTestDatabase>>;
 const query = async (sql: string) => connection.query(sql);
+const count = (searchQuery: string) => countRecords({ searchQuery }, query);
 const columns = [{ id: "eventId", header: "Event ID" }];
 beforeAll(async () => {
   connection = await openTestDatabase();
@@ -103,6 +104,18 @@ describe("real DuckDB event queries", () => {
     ).toBe(1);
   });
 
+  it("searches level names, exclusions, event data fields and backslashes in raw text", async () => {
+    connection.query(
+      String.raw`INSERT INTO logs (EventID, Level, Channel, Raw) VALUES (1, 2, 'System', '{"Event":{"EventData":{"Path":"C:\\Windows\\cmd.exe"}}}')`,
+    );
+    expect(await count(String.raw`C:\Windows\cmd.exe`)).toBe(1);
+    expect(await count(String.raw`@Path:C:\Windows\cmd.exe`)).toBe(1);
+    expect(await count("level:error")).toBe(2);
+    expect(await count("-channel:Security")).toBe(2);
+    expect(await count("event_id:4624 event_id:4625 channel:Security")).toBe(2);
+    expect(await count("-4625")).toBe(3);
+  });
+
   it("keeps NULL rows when excluding values and leaves excluded values out of facets", async () => {
     expect(await countRecords({ exclude: { level: ["4"] } }, query)).toBe(2);
     expect(await countRecords({ exclude: { level: [""] } }, query)).toBe(3);
@@ -125,6 +138,22 @@ describe("real DuckDB event queries", () => {
     expect(buckets[0].start).toBe(Date.parse("2025-01-01T00:00:00Z"));
     expect(buckets.at(-1)?.end).toBe(Date.parse("2025-01-02T00:00:00Z") + 1);
     expect(buckets.reduce((sum, bucket) => sum + bucket.count, 0)).toBe(2);
+  });
+
+  it("stacks histogram buckets by level group without losing events", async () => {
+    connection.query(`DELETE FROM logs;
+      INSERT INTO logs (EventID, Level, TimeCreated, Raw)
+      SELECT i, [1, 2, 3, 4, 0, 5, NULL][i % 7 + 1], TIMESTAMP '2025-01-01' + INTERVAL (i * 7) MINUTE, '{}'
+      FROM range(500) AS t(i)`);
+    const buckets = await getTimeHistogram({}, query);
+    expect(buckets.length).toBeGreaterThan(1);
+    for (const bucket of buckets)
+      expect(bucket.error + bucket.warning + bucket.information).toBe(bucket.count);
+    const sum = (key: "count" | "error" | "warning" | "information") =>
+      buckets.reduce((total, bucket) => total + bucket[key], 0);
+    expect([sum("count"), sum("error"), sum("warning"), sum("information")]).toEqual([
+      500, 144, 72, 284,
+    ]);
   });
 
   it("groups null and empty facets before limiting and keeps self-filtered alternatives visible", async () => {

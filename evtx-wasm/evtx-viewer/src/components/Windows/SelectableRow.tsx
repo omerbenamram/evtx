@@ -6,15 +6,15 @@ export const SelectableRow = styled.label<{ $selected?: boolean }>`
   justify-content: space-between;
   gap: ${({ theme }) => theme.spacing.sm};
   min-width: 0;
-  min-height: 28px;
-  padding: 3px 0;
-  font-size: ${({ theme }) => theme.fontSize.caption};
+  min-height: ${({ theme }) => theme.size.row};
+  padding: 0;
+  font-size: ${({ theme }) => theme.fontSize.body};
   cursor: pointer;
 
   ${({ $selected, theme }) =>
     $selected &&
     css`
-      color: ${theme.colors.accent.primary};
+      color: ${theme.colors.accent.rest};
       font-weight: 600;
     `}
 `;

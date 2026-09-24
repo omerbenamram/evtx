@@ -89,6 +89,11 @@ function resolveColumn(id: string) {
   return column;
 }
 
+// Raw is serialized JSON, so match the term as JSON would write it (C:\x is stored as C:\\x).
+function rawText(term: string): string {
+  return `contains(lower(Raw), '${escapeSqlString(JSON.stringify(term.toLowerCase()).slice(1, -1))}')`;
+}
+
 /** Included "" also selects NULL, like the facets' "(Not set)"; exclude keeps NULL rows. */
 function valuesPredicate(id: string, values: string[], exclude: boolean): string {
   const { sql, typed = sql } = resolveColumn(id);
@@ -112,10 +117,8 @@ export function buildWhere(filters: FilterOptions): string {
   for (const [id, values] of Object.entries(filters.exclude ?? {}))
     if (values.length) clauses.push(valuesPredicate(id, values, true));
 
-  if (filters.searchTerm?.trim()) {
-    const term = escapeSqlString(filters.searchTerm.toLowerCase().trim());
-    clauses.push(`contains(lower(Raw), '${term}')`);
-  }
+  for (const term of filters.contains ?? []) clauses.push(rawText(term));
+  for (const term of filters.notContains ?? []) clauses.push(`NOT ${rawText(term)}`);
 
   if (filters.timeRange) {
     const { start, end } = filters.timeRange;

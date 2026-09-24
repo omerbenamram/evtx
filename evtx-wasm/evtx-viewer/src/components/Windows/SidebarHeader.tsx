@@ -1,16 +1,17 @@
 import { styled } from "styled-components";
 
+// Pane caption: 28px, 12px semibold, fits one 24px subtle button on the right.
 export const SidebarHeader = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
-  min-height: 36px;
+  height: ${({ theme }) => theme.size.control};
   gap: ${({ theme }) => theme.spacing.sm};
-  padding: 4px ${({ theme }) => theme.spacing.md};
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
+  padding: 0 4px 0 ${({ theme }) => theme.spacing.sm};
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
   font-weight: 600;
-  background: ${({ theme }) => theme.colors.background.tertiary};
+  background: ${({ theme }) => theme.colors.surface.pane};
   position: sticky;
   top: 0;
   z-index: 5;

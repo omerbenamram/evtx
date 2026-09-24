@@ -8,7 +8,7 @@ const Overlay = styled.div<{ $isVisible: boolean }>`
   left: 0;
   right: 0;
   bottom: 0;
-  background: ${({ theme }) => theme.colors.background.primary};
+  background: ${({ theme }) => theme.colors.surface.base};
   display: ${(props) => (props.$isVisible ? "flex" : "none")};
   align-items: center;
   justify-content: center;
@@ -20,23 +20,24 @@ const DropZone = styled.div<{ $isDragOver: boolean }>`
   height: 300px;
   border: 1px dashed
     ${({ $isDragOver, theme }) =>
-      $isDragOver ? theme.colors.accent.primary : theme.colors.border.medium};
-  border-radius: ${({ theme }) => theme.borderRadius.lg};
+      $isDragOver ? theme.colors.accent.rest : theme.colors.stroke.control};
+  border-radius: ${({ theme }) => theme.radius.flyout};
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: ${({ theme }) => theme.spacing.lg};
   background: ${({ $isDragOver, theme }) =>
-    $isDragOver ? theme.colors.selection.background : theme.colors.background.secondary};
+    $isDragOver ? theme.colors.fill.selected : theme.colors.surface.pane};
 `;
 
 const IconWrapper = styled.div<{ $isDragOver: boolean }>`
   color: ${({ $isDragOver, theme }) =>
-    $isDragOver ? theme.colors.accent.primary : theme.colors.text.secondary};
+    $isDragOver ? theme.colors.accent.rest : theme.colors.text.secondary};
 `;
 
 const Title = styled.h2`
+  font-weight: 600;
   font-size: ${({ theme }) => theme.fontSize.title};
   color: ${({ theme }) => theme.colors.text.primary};
   margin: 0;

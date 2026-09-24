@@ -2,26 +2,21 @@ import { useState, useCallback, useEffect } from "react";
 import { styled } from "styled-components";
 import { useThemeMode } from "./styles/ThemeModeProvider";
 import { GlobalStyles } from "./styles/GlobalStyles";
-import {
-  Button,
-  MenuBar,
-  ProgressBar,
-  Toolbar,
-  ToolbarButton,
-  ToolbarSeparator,
-} from "./components/Windows";
+import { Button, MenuBar, Toolbar, ToolbarButton, ToolbarSeparator } from "./components/Windows";
 import { ResizeHandle } from "./components/Windows/ResizeHandle";
 import { FileTree } from "./components/FileTree";
 import { DragDropOverlay } from "./components/DragDropOverlay";
 import { StatusBar } from "./components/StatusBar";
 import {
-  Open20Regular,
-  Save20Regular,
-  Filter20Regular,
-  ArrowClockwise20Regular,
-  ArrowExportLtr20Regular,
-  Table20Regular,
+  Open16Regular,
+  Save16Regular,
+  Filter16Regular,
+  ArrowClockwise16Regular,
+  ArrowExportLtr16Regular,
+  Table16Regular,
+  PanelLeft16Regular,
 } from "@fluentui/react-icons";
+import { setTimeZone, useTimeZone } from "./lib/timeZone";
 import { useFilters } from "./hooks/useFilters";
 import { FilterSidebar } from "./components/FilterSidebar/FilterSidebar";
 import { LogTableVirtual } from "./components/LogTableVirtual";
@@ -35,30 +30,56 @@ import { errorMessage } from "./lib/types";
 
 const PANEL_MIN_WIDTH = 220;
 const PANEL_MAX_WIDTH = 400;
+// Below the supported 1024px width the side panes float over the grid instead of docking.
+const NARROW = "(max-width: 1023px)";
 
 const Shell = styled.div`
   display: flex;
   flex-direction: column;
   height: 100dvh;
-  background: ${({ theme }) => theme.colors.background.primary};
+  overflow: hidden;
+  background: ${({ theme }) => theme.colors.surface.base};
+`;
+const Bar = styled(Toolbar)`
+  flex-wrap: nowrap;
+  overflow: hidden;
+`;
+// Toolbar labels collapse to icon-only buttons on narrow windows.
+const Label = styled.span`
+  @media ${NARROW} {
+    display: none;
+  }
 `;
 const Main = styled.div`
-  @media (max-width: 700px) {
-    > hr {
-      display: none;
-    }
-  }
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  @media ${NARROW} {
+    > hr {
+      display: none;
+    }
+  }
 `;
-const Sidebar = styled.aside<{ $width: number }>`
-  width: ${({ $width }) => $width}px;
+const Pane = styled.aside<{ $width: number; $side: "left" | "right" }>`
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
-  border-right: 1px solid ${({ theme }) => theme.colors.border.light};
-  @media (max-width: 700px) {
-    display: none;
+  width: ${({ $width }) => $width}px;
+  min-height: 0;
+  overflow: auto;
+  background: ${({ theme }) => theme.colors.surface.pane};
+  @media ${NARROW} {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    ${({ $side }) => $side}: 0;
+    z-index: 30;
+    max-width: calc(100% - 48px);
+    border-${({ $side }) => ($side === "left" ? "right" : "left")}: 1px solid
+      ${({ theme }) => theme.colors.stroke.divider};
+    box-shadow: ${({ theme }) => theme.shadow.flyout};
   }
 `;
 const Records = styled.main`
@@ -67,54 +88,54 @@ const Records = styled.main`
   flex: 1;
   min-width: 0;
   min-height: 0;
-`;
-const SidePanel = styled.aside<{ $width: number }>`
-  width: ${({ $width }) => $width}px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: auto;
-  border-left: 1px solid ${({ theme }) => theme.colors.border.light};
-  @media (max-width: 700px) {
-    position: absolute;
-    right: 0;
-    top: 72px;
-    bottom: 24px;
-    z-index: 10;
-    background: ${({ theme }) => theme.colors.background.secondary};
-  }
+  background: ${({ theme }) => theme.colors.surface.pane};
 `;
 const Notice = styled.div`
-  padding: 8px 12px;
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
-  background: ${({ theme }) => theme.colors.background.secondary};
-  font-size: 13px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  progress {
-    width: 160px;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
+  background: ${({ theme }) => theme.colors.surface.base};
+  summary {
+    cursor: default;
+  }
+  ul {
+    margin: 4px 0 0 20px;
+    max-height: 120px;
+    overflow: auto;
   }
 `;
 const Empty = styled.div`
   flex: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
-  padding: 32px;
+  padding: 16px;
+`;
+const DropArea = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(480px, 100%);
+  padding: 32px 24px;
+  border: 1px dashed ${({ theme }) => theme.colors.stroke.strong};
+  border-radius: ${({ theme }) => theme.radius.flyout};
   text-align: center;
-  background: ${({ theme }) => theme.colors.background.secondary};
   h1 {
-    font-size: 20px;
+    font-size: ${({ theme }) => theme.fontSize.title};
+    line-height: 28px;
     font-weight: 600;
   }
   p {
     color: ${({ theme }) => theme.colors.text.secondary};
-    max-width: 440px;
-    line-height: 1.5;
+  }
+  div {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
   }
 `;
 
@@ -133,18 +154,22 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [filesWidth, setFilesWidth] = useState(220);
   const [filtersWidth, setFiltersWidth] = useState(280);
-  const [columnsWidth, setColumnsWidth] = useState(260);
-  const [showColumns, setShowColumns] = useState(false);
+  const [showTree, setShowTree] = useState(() => !window.matchMedia(NARROW).matches);
+  // The Columns flyout anchors to the toolbar button; null = closed.
+  const [columnsAnchor, setColumnsAnchor] = useState<HTMLElement | null>(null);
+  const showColumns = useCallback(
+    () => setColumnsAnchor(document.getElementById("columns-button")),
+    [],
+  );
+  const zone = useTimeZone();
   const [treeVersion, setTreeVersion] = useState(0);
   const [actionError, setActionError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const { filters, clearFilters } = useFilters();
-  const { mode, toggle } = useThemeMode();
+  const { preference, setPreference } = useThemeMode();
   const {
     isLoading,
-    loadingMessage,
     matchedCount,
-    totalRecords,
     fileInfo,
     dataSource,
     currentFileId,
@@ -262,21 +287,43 @@ export default function App() {
         {
           id: "open",
           label: "Open…",
-          icon: <Open20Regular />,
+          icon: <Open16Regular />,
           shortcut: "Ctrl/⌘+O",
           onClick: open,
         },
         {
           id: "save",
           label: "Save Original Log As…",
-          icon: <Save20Regular />,
+          icon: <Save16Regular />,
           shortcut: "Ctrl/⌘+S",
           disabled: !fileInfo,
           onClick: saveOriginal,
         },
+      ],
+    },
+    {
+      id: "action",
+      label: "Action",
+      submenu: [
+        {
+          id: "refresh",
+          label: "Refresh",
+          icon: <ArrowClockwise16Regular />,
+          shortcut: "F5",
+          disabled: !fileInfo,
+          onClick: () => void reload(),
+        },
+        {
+          id: "clear-filters",
+          label: "Clear Filters",
+          disabled: !dataSource,
+          onClick: clearFilters,
+        },
+        { id: "action-separator", separator: true as const },
         {
           id: "export",
           label: "Export Matching Events as JSON…",
+          icon: <ArrowExportLtr16Regular />,
           disabled: exportDisabled,
           onClick: () => void exportJson(),
         },
@@ -287,26 +334,50 @@ export default function App() {
       label: "View",
       submenu: [
         {
+          id: "tree",
+          label: "Log Tree",
+          checked: showTree,
+          onClick: () => setShowTree((value) => !value),
+        },
+        {
           id: "filters",
-          label: showFilters ? "Hide Filters" : "Show Filters",
+          label: "Filters Pane",
+          checked: showFilters,
           onClick: () => setShowFilters((value) => !value),
         },
+        { id: "columns", label: "Columns…", onClick: showColumns },
+        { id: "theme-separator", separator: true as const },
+        ...(["system", "light", "dark"] as const).map((value) => ({
+          id: `theme-${value}`,
+          label: { system: "System Theme", light: "Light Theme", dark: "Dark Theme" }[value],
+          checked: preference === value,
+          radio: true,
+          onClick: () => setPreference(value),
+        })),
+        { id: "zone-separator", separator: true as const },
+        ...(["local", "utc"] as const).map((value) => ({
+          id: `zone-${value}`,
+          label: { local: "Local Time", utc: "UTC" }[value],
+          checked: zone === value,
+          radio: true,
+          onClick: () => setTimeZone(value),
+        })),
+      ],
+    },
+    {
+      id: "help",
+      label: "Help",
+      submenu: [
         {
-          id: "columns",
-          label: showColumns ? "Hide Columns" : "Manage Columns",
-          onClick: () => setShowColumns((value) => !value),
+          id: "syntax",
+          label: "Search Syntax and Shortcuts",
+          onClick: () => document.getElementById("search-help")?.click(),
         },
         {
-          id: "refresh",
-          label: "Reload Log",
-          shortcut: "F5",
-          disabled: !fileInfo,
-          onClick: () => void reload(),
-        },
-        {
-          id: "theme",
-          label: mode === "dark" ? "Light Mode" : "Dark Mode",
-          onClick: toggle,
+          id: "about",
+          label: "About EVTX Viewer",
+          onClick: () =>
+            window.open("https://github.com/omerbenamram/evtx", "_blank", "noopener,noreferrer"),
         },
       ],
     },
@@ -317,59 +388,65 @@ export default function App() {
       <GlobalStyles />
       <Shell>
         <MenuBar items={menus} />
-        <Toolbar>
-          <ToolbarButton icon={<Open20Regular />} title="Open log (Ctrl/⌘+O)" onClick={open}>
-            Open
+        <Bar>
+          <ToolbarButton
+            icon={<Open16Regular />}
+            label="Open log (Ctrl/⌘+O)"
+            aria-label="Open"
+            onClick={open}
+          >
+            <Label>Open</Label>
           </ToolbarButton>
           <ToolbarSeparator />
           <ToolbarButton
-            icon={<Filter20Regular />}
-            title="Show filters"
-            isActive={showFilters}
+            icon={<PanelLeft16Regular />}
+            label="Show log tree"
+            active={showTree}
+            onClick={() => setShowTree((value) => !value)}
+          />
+          <ToolbarButton
+            icon={<Filter16Regular />}
+            label="Show filters pane"
+            aria-label="Filters"
+            active={showFilters}
             onClick={() => setShowFilters((value) => !value)}
           >
-            Filters
+            <Label>Filters</Label>
           </ToolbarButton>
           <ToolbarButton
-            icon={<Table20Regular />}
-            title="Manage columns"
-            isActive={showColumns}
-            onClick={() => setShowColumns((value) => !value)}
+            id="columns-button"
+            icon={<Table16Regular />}
+            label="Choose columns"
+            aria-label="Columns"
+            active={!!columnsAnchor}
+            onClick={(event) => {
+              const button = event.currentTarget;
+              setColumnsAnchor((current) => (current ? null : button));
+            }}
           >
-            Columns
+            <Label>Columns</Label>
           </ToolbarButton>
           <ToolbarSeparator />
           <ToolbarButton
-            icon={<ArrowClockwise20Regular />}
-            title="Reload log (F5)"
+            icon={<ArrowClockwise16Regular />}
+            label="Refresh (F5)"
             disabled={!fileInfo}
             onClick={() => void reload()}
           />
           <ToolbarButton
-            icon={<ArrowExportLtr20Regular />}
-            title="Export matching events as JSON"
+            icon={<ArrowExportLtr16Regular />}
+            label="Export matching events as JSON"
+            aria-label="Export"
             disabled={exportDisabled}
             onClick={() => void exportJson()}
           >
-            {exporting ? "Exporting…" : "Export"}
+            <Label>{exporting ? "Exporting…" : "Export"}</Label>
           </ToolbarButton>
-        </Toolbar>
-        {isLoading && (
-          <Notice as="output">
-            <span>
-              {loadingMessage} {totalRecords.toLocaleString()} events available
-            </span>
-            <ProgressBar value={ingestProgress} />
-            <Button size="small" onClick={cancel} disabled={ingestProgress >= 1}>
-              Cancel import
-            </Button>
-          </Notice>
-        )}
+        </Bar>
         {(loadError || actionError) && (
           <Notice role="alert">
             <span>{actionError ?? loadError}</span>
             <Button
-              size="small"
               onClick={() => {
                 setActionError(null);
                 void reload();
@@ -377,17 +454,13 @@ export default function App() {
             >
               Retry
             </Button>
-            <Button size="small" onClick={open}>
-              Open another log
-            </Button>
+            <Button onClick={open}>Open another log</Button>
           </Notice>
         )}
         {cancelled && (
           <Notice as="output">
             Import cancelled. Showing the events loaded so far.
-            <Button size="small" onClick={() => void reload()}>
-              Restart import
-            </Button>
+            <Button onClick={() => void reload()}>Restart import</Button>
           </Notice>
         )}
         {warnings.length > 0 && (
@@ -406,23 +479,27 @@ export default function App() {
           </Notice>
         )}
         <Main>
-          <Sidebar $width={filesWidth}>
-            <FileTree
-              onNodeSelect={handleNodeSelect}
-              selectedNodeId={selectedNodeId}
-              activeFileId={currentFileId}
-              ingestProgress={isLoading ? ingestProgress : 1}
-              refreshVersion={treeVersion}
-            />
-          </Sidebar>
-          <ResizeHandle
-            label="Resize log sidebar"
-            value={filesWidth}
-            min={160}
-            max={400}
-            orientation="vertical"
-            onResize={setFilesWidth}
-          />
+          {showTree && (
+            <>
+              <Pane aria-label="Event logs" $side="left" $width={filesWidth}>
+                <FileTree
+                  onNodeSelect={handleNodeSelect}
+                  selectedNodeId={selectedNodeId}
+                  activeFileId={currentFileId}
+                  ingestProgress={isLoading ? ingestProgress : 1}
+                  refreshVersion={treeVersion}
+                />
+              </Pane>
+              <ResizeHandle
+                label="Resize log tree"
+                value={filesWidth}
+                min={160}
+                max={400}
+                orientation="vertical"
+                onResize={setFilesWidth}
+              />
+            </>
+          )}
           <Records>
             <SearchWorkspace disabled={!dataSource} />
             {dataSource ? (
@@ -431,31 +508,28 @@ export default function App() {
                 <LogTableVirtual
                   key={currentFileId ?? "no-file"}
                   dataSource={dataSource}
-                  onManageColumns={() => setShowColumns(true)}
+                  onManageColumns={showColumns}
                 />
               </>
             ) : (
               <Empty>
-                <h1>Open a Windows event log</h1>
-                <p>
-                  Drop an .evtx file here to search and inspect its events. Your log is processed
-                  locally in this browser.
-                </p>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <Button size="small" onClick={open}>
-                    Open log…
-                  </Button>
-                  <Button size="small" onClick={() => void openSample()}>
-                    Try example log
-                  </Button>
-                </div>
+                <DropArea>
+                  <h1>Open a Windows event log</h1>
+                  <p>Drop an .evtx file here. It is processed locally in this browser.</p>
+                  <div>
+                    <Button variant="accent" icon={<Open16Regular />} onClick={open}>
+                      Open log…
+                    </Button>
+                    <Button onClick={() => void openSample()}>Try example log</Button>
+                  </div>
+                </DropArea>
               </Empty>
             )}
           </Records>
           {showFilters && (
             <>
               <ResizeHandle
-                label="Resize filters panel"
+                label="Resize filters pane"
                 value={filtersWidth}
                 min={PANEL_MIN_WIDTH}
                 max={PANEL_MAX_WIDTH}
@@ -463,30 +537,17 @@ export default function App() {
                 reverse
                 onResize={setFiltersWidth}
               />
-              <SidePanel aria-label="Event filters" $width={filtersWidth}>
+              <Pane aria-label="Event filters" $side="right" $width={filtersWidth}>
                 <FilterSidebar />
-              </SidePanel>
-            </>
-          )}
-          {showColumns && (
-            <>
-              <ResizeHandle
-                label="Resize columns panel"
-                value={columnsWidth}
-                min={PANEL_MIN_WIDTH}
-                max={PANEL_MAX_WIDTH}
-                orientation="vertical"
-                reverse
-                onResize={setColumnsWidth}
-              />
-              <SidePanel aria-label="Table columns" $width={columnsWidth}>
-                <ColumnManager onClose={() => setShowColumns(false)} />
-              </SidePanel>
+              </Pane>
             </>
           )}
         </Main>
-        <StatusBar />
+        <StatusBar onCancel={cancel} />
         <DragDropOverlay onFileSelect={handleFileSelect} />
+        {columnsAnchor && (
+          <ColumnManager anchor={columnsAnchor} onClose={() => setColumnsAnchor(null)} />
+        )}
       </Shell>
     </>
   );

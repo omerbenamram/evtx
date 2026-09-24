@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { styled } from "styled-components";
 import {
+  Delete16Regular,
   Dismiss16Regular,
-  Save20Regular,
-  Search20Regular,
-  Info20Regular,
+  QuestionCircle16Regular,
+  Save16Regular,
+  Search16Regular,
 } from "@fluentui/react-icons";
 import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
@@ -19,43 +20,147 @@ import {
 } from "../lib/savedViews";
 import { buildFacetConfigs } from "./FilterSidebar/facetUtils";
 import { useActiveFilterChips } from "./FilterSidebar/useActiveFilterChips";
-import { ActiveFiltersBar, FilterChip } from "./FilterSidebar/styles";
-import { Button, Input, Select, SearchContainer, SearchInput } from "./Windows";
+import { Button, Input, Popover, Select, SearchContainer, SearchInput, Tooltip } from "./Windows";
 
 const Workspace = styled.section`
   flex-shrink: 0;
-  background: ${({ theme }) => theme.colors.background.secondary};
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
+  background: ${({ theme }) => theme.colors.surface.pane};
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
 `;
 const SearchRow = styled.form`
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: 4px;
+  padding: 4px 8px;
+  min-width: 0;
+`;
+const QueryField = styled.div`
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 120px;
 `;
 const QueryBox = styled(SearchContainer)`
-  flex: 1 1 280px;
-  min-width: 160px;
+  padding-right: 2px;
+  color: ${({ theme }) => theme.colors.text.secondary};
+  input {
+    color: ${({ theme }) => theme.colors.text.primary};
+  }
+`;
+// Overlays the grid below the box, so an error never moves the table.
+const QueryError = styled.div`
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 2px);
+  left: 0;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid ${({ theme }) => theme.colors.severity.error};
+  border-radius: ${({ theme }) => theme.radius.control};
+  background: ${({ theme }) => theme.colors.surface.pane};
+  color: ${({ theme }) => theme.colors.severity.error};
+  box-shadow: ${({ theme }) => theme.shadow.flyout};
+  pointer-events: none;
+`;
+const IconButton = styled(Button)`
+  width: 24px;
+  padding: 0;
+  color: ${({ theme }) => theme.colors.text.secondary};
 `;
 const NameInput = styled(Input)`
   flex: 1;
 `;
 const SavedSelect = styled(Select)`
-  width: 176px;
+  flex: 0 1 168px;
+  min-width: 96px;
 `;
-const Message = styled.p<{ $error?: boolean }>`
-  padding: 0 12px 8px;
-  font-size: ${({ theme }) => theme.fontSize.caption};
-  color: ${({ theme, $error }) => ($error ? theme.colors.status.error : theme.colors.text.secondary)};
+const Message = styled.p`
+  padding: 0 8px 4px;
+  color: ${({ theme }) => theme.colors.severity.error};
 `;
+const Chips = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 4px;
+`;
+const Chip = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 360px;
+  height: ${({ theme }) => theme.size.row};
+  padding: 0 2px 0 8px;
+  border: 1px solid ${({ theme }) => theme.colors.stroke.control};
+  border-radius: ${({ theme }) => theme.radius.control};
+  background: ${({ theme }) => theme.colors.fill.hover};
+  > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+`;
+const ChipDismiss = styled.button`
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: ${({ theme }) => theme.colors.text.secondary};
+  cursor: default;
+  &:hover:not(:disabled) {
+    background: ${({ theme }) => theme.colors.fill.hover};
+    color: ${({ theme }) => theme.colors.text.primary};
+  }
+`;
+const Help = styled.section`
+  width: 360px;
+  padding: 8px;
+  h2 {
+    font-size: inherit;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+  h2 + dl {
+    margin-bottom: 12px;
+  }
+  dl {
+    display: grid;
+    grid-template-columns: 136px 1fr;
+    gap: 4px 12px;
+  }
+  dt code {
+    font-family: ${({ theme }) => theme.fonts.mono};
+  }
+  dd {
+    color: ${({ theme }) => theme.colors.text.secondary};
+  }
+`;
+
+const SYNTAX: [string, string][] = [
+  ["event_id:4624", `Field match. Fields: ${SEARCH_FIELDS.join(", ")}`],
+  ["@TargetUserName:bob", "Event data field"],
+  ["-channel:Security", "Exclude matches"],
+  ['"logon type"', "Quote values with spaces"],
+  ["failed", "Other words match anywhere in the event"],
+];
+const SHORTCUTS: [string, string][] = [
+  ["Ctrl/⌘+O", "Open log"],
+  ["Ctrl/⌘+S", "Save original log"],
+  ["F5", "Refresh"],
+  ["Enter", "Apply search now"],
+];
 
 export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
   const { filters, setFilters, updateFilters, clearFilters } = useFilters();
   const { columns, setColumns } = useColumns();
   const [draft, setDraft] = useState(filters.searchQuery ?? "");
   const [draftFilters, setDraftFilters] = useState(filters);
-  const [showHelp, setShowHelp] = useState(false);
+  const [helpAnchor, setHelpAnchor] = useState<HTMLElement | null>(null);
   if (draftFilters !== filters) {
     setDraftFilters(filters);
     if (draftFilters.searchQuery !== filters.searchQuery || Object.keys(filters).length === 0)
@@ -137,46 +242,57 @@ export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
             updateFilters((current) => ({ ...current, searchQuery: draft }));
         }}
       >
-        <QueryBox>
-          <Search20Regular aria-hidden="true" />
-          <SearchInput
-            id="event-search"
-            aria-label="Search events"
-            aria-describedby="event-search-help"
-            aria-invalid={!!queryError}
-            disabled={disabled}
-            list="event-search-fields"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="Search events or event_id:4624"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-          />
-          {draft && (
-            <Button
-              type="button"
-              size="small"
-              variant="subtle"
-              aria-label="Clear search"
+        <QueryField>
+          <QueryBox>
+            <Search16Regular aria-hidden="true" />
+            <SearchInput
+              id="event-search"
+              aria-label="Search events"
+              aria-describedby={queryError ? "event-search-error" : undefined}
+              aria-invalid={!!queryError}
               disabled={disabled}
-              onClick={() => {
-                setDraft("");
-                updateFilters((current) => ({ ...current, searchQuery: "" }));
-              }}
-              icon={<Dismiss16Regular />}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Search events, e.g. event_id:4624 -user:SYSTEM"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
             />
+            {draft && (
+              <Tooltip label="Clear search">
+                <IconButton
+                  type="button"
+                  variant="subtle"
+                  aria-label="Clear search"
+                  disabled={disabled}
+                  onClick={() => {
+                    setDraft("");
+                    updateFilters((current) => ({ ...current, searchQuery: "" }));
+                  }}
+                  icon={<Dismiss16Regular />}
+                />
+              </Tooltip>
+            )}
+          </QueryBox>
+          {queryError && (
+            <QueryError id="event-search-error" role="alert">
+              {queryError}
+            </QueryError>
           )}
-        </QueryBox>
-        <datalist id="event-search-fields">
-          {SEARCH_FIELDS.map((field) => {
-            const prefix = draft.replace(/\S*$/, "");
-            return (
-              <option key={field} value={`${prefix}${field}:`}>
-                {field}
-              </option>
-            );
-          })}
-        </datalist>
+        </QueryField>
+        <Tooltip label="Search syntax and shortcuts">
+          <IconButton
+            id="search-help"
+            type="button"
+            variant="subtle"
+            aria-label="Search syntax and shortcuts"
+            aria-expanded={!!helpAnchor}
+            icon={<QuestionCircle16Regular />}
+            onClick={(event) => {
+              const button = event.currentTarget;
+              setHelpAnchor((open) => (open ? null : button));
+            }}
+          />
+        </Tooltip>
         <SavedSelect
           aria-label="Saved searches"
           disabled={disabled || !views.length}
@@ -198,37 +314,55 @@ export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
             </option>
           ))}
         </SavedSelect>
+        {displayedSelection && (
+          <Tooltip label="Delete saved search">
+            <IconButton
+              type="button"
+              variant="subtle"
+              aria-label="Delete saved search"
+              icon={<Delete16Regular />}
+              onClick={() => {
+                if (persist(views.filter((view) => view.name !== selectedView)))
+                  setSelectedView("");
+              }}
+            />
+          </Tooltip>
+        )}
         <Button
           type="button"
-          size="small"
           disabled={disabled || !!queryError}
-          icon={<Save20Regular />}
+          icon={<Save16Regular />}
           onClick={() => setSaveName("")}
         >
           Save search
         </Button>
-        <Button
-          size="small"
-          variant="subtle"
-          aria-label="Search syntax"
-          aria-expanded={showHelp}
-          title="Search syntax"
-          icon={<Info20Regular />}
-          onClick={() => setShowHelp((value) => !value)}
-        />
-        {displayedSelection && (
-          <Button
-            type="button"
-            size="small"
-            variant="subtle"
-            onClick={() => {
-              if (persist(views.filter((view) => view.name !== selectedView))) setSelectedView("");
-            }}
-          >
-            Delete saved search
-          </Button>
-        )}
       </SearchRow>
+      {helpAnchor && (
+        <Popover anchor={helpAnchor} onClose={() => setHelpAnchor(null)}>
+          <Help aria-label="Search syntax and shortcuts">
+            <h2>Search syntax</h2>
+            <dl>
+              {SYNTAX.map(([example, meaning]) => (
+                <div key={example} style={{ display: "contents" }}>
+                  <dt>
+                    <code>{example}</code>
+                  </dt>
+                  <dd>{meaning}</dd>
+                </div>
+              ))}
+            </dl>
+            <h2>Keyboard shortcuts</h2>
+            <dl>
+              {SHORTCUTS.map(([keys, action]) => (
+                <div key={keys} style={{ display: "contents" }}>
+                  <dt>{keys}</dt>
+                  <dd>{action}</dd>
+                </div>
+              ))}
+            </dl>
+          </Help>
+        </Popover>
+      )}
       {saveName !== null && (
         <SearchRow
           onSubmit={(event) => {
@@ -260,47 +394,32 @@ export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
             value={saveName}
             onChange={(event) => setSaveName(event.target.value)}
           />
-          <Button type="submit" size="small" disabled={!saveName.trim() || !!queryError}>
+          <Button type="submit" disabled={!saveName.trim() || !!queryError}>
             {views.some((view) => view.name === saveName.trim()) ? "Replace saved search" : "Save"}
           </Button>
-          <Button type="button" size="small" variant="subtle" onClick={() => setSaveName(null)}>
+          <Button type="button" variant="subtle" onClick={() => setSaveName(null)}>
             Cancel
           </Button>
         </SearchRow>
       )}
-      <Message
-        id="event-search-help"
-        hidden={!showHelp && !queryError}
-        $error={!!queryError}
-        role={queryError ? "alert" : undefined}
-      >
-        {queryError ||
-          `Fields: ${SEARCH_FIELDS.join(", ")}. Quote values with spaces. Plain text matches event data.`}
-      </Message>
-      {storageError && (
-        <Message $error role="alert">
-          {storageError}
-        </Message>
-      )}
+      {storageError && <Message role="alert">{storageError}</Message>}
       {chips.length > 0 && (
-        <ActiveFiltersBar aria-label="Active filters">
+        <Chips aria-label="Active filters">
           {chips.map((chip) => (
-            <FilterChip key={chip.key}>
-              {chip.label}
-              <Button
-                size="small"
-                variant="subtle"
+            <Chip key={chip.key} title={chip.label}>
+              <span>{chip.label}</span>
+              <ChipDismiss
+                type="button"
                 aria-label={`Remove ${chip.label}`}
                 onClick={chip.remove}
                 disabled={disabled}
               >
                 <Dismiss16Regular aria-hidden="true" />
-              </Button>
-            </FilterChip>
+              </ChipDismiss>
+            </Chip>
           ))}
           <Button
             type="button"
-            size="small"
             variant="subtle"
             disabled={disabled}
             onClick={() => {
@@ -310,7 +429,7 @@ export function SearchWorkspace({ disabled = false }: { disabled?: boolean }) {
           >
             Clear filters
           </Button>
-        </ActiveFiltersBar>
+        </Chips>
       )}
     </Workspace>
   );

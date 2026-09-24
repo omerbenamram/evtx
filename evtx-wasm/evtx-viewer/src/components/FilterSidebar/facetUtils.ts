@@ -1,5 +1,5 @@
 import { levelName, type TableColumn, type FilterOptions } from "../../lib/types";
-import { formatDateTime } from "../../lib/columns";
+import { formatEventTime, type TimeZone } from "../../lib/timeZone";
 import type { FacetConfig } from "./FacetSection";
 
 /**
@@ -9,9 +9,9 @@ import type { FacetConfig } from "./FacetSection";
 export function buildFacetConfigs(columns: TableColumn[]): FacetConfig[] {
   const builtins: FacetConfig[] = [
     { id: "level", label: "Level", displayValue: levelName },
-    { id: "time", label: "Date / Time", displayValue: formatDateTime },
-    { id: "provider", label: "Provider", searchable: true },
-    { id: "channel", label: "Channel", searchable: true },
+    { id: "time", label: "Date / Time", displayValue: formatEventTime },
+    { id: "provider", label: "Provider" },
+    { id: "channel", label: "Channel" },
     { id: "eventId", label: "Event ID" },
   ];
   const dynamic = columns
@@ -20,8 +20,9 @@ export function buildFacetConfigs(columns: TableColumn[]): FacetConfig[] {
   return [...builtins, ...dynamic];
 }
 
-export function formatFacetValue(facet: FacetConfig, value: string): string {
-  return value === "" ? "(Not set)" : (facet.displayValue?.(value) ?? value);
+/** `zone` defaults to View > Time zone. */
+export function formatFacetValue(facet: FacetConfig, value: string, zone?: TimeZone): string {
+  return value === "" ? "(Not set)" : (facet.displayValue?.(value, zone) ?? value);
 }
 
 /** Included values, which facet checkboxes show; excluded ones drop out of the counts. */

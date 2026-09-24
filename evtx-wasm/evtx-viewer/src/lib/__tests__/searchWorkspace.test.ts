@@ -3,42 +3,45 @@ import { describe, expect, it } from "vitest";
 import { getEventDataFields, parseEvtxRecord } from "../types";
 import { parseSearchQuery } from "../searchQuery";
 import { readSavedViews, restoreColumns, writeSavedViews, type SavedView } from "../savedViews";
-import { parseUtcRange, rangeForBuckets } from "../timeline";
+import { formatTimeInput, parseTimeRange, rangeForBuckets } from "../timeline";
 
 describe("event search", () => {
-  it("translates allowlisted fields, quoted values and plain text without SQL", () => {
+  it("maps fields to columns, - to exclude, @ to event data, and words to raw text", () => {
     expect(
       parseSearchQuery(
-        'event_id:4624 event_id:4625 provider:"O\'Brien Security" computer:HOST-1 channel:Security failed login',
+        'event_id:4624 ID:4625 source:"O\'Brien Security" -channel:Security @TargetUserName:bob level:error failed -"logon type"',
       ),
     ).toEqual({
       include: {
         eventId: ["4624", "4625"],
         provider: ["O'Brien Security"],
-        computer: ["HOST-1"],
-        channel: ["Security"],
+        "eventData.TargetUserName": ["bob"],
+        level: ["2"],
       },
-      searchTerm: "failed login",
+      exclude: { channel: ["Security"] },
+      contains: ["failed"],
+      notContains: ["logon type"],
     });
-    expect(parseSearchQuery("event_id:004624")).toEqual({ include: { eventId: ["4624"] } });
-    expect(parseSearchQuery('"field:literal"')).toEqual({
-      searchTerm: "field:literal",
+    expect(parseSearchQuery("event_id:004624 task:12544")).toEqual({
+      include: { eventId: ["4624"], task: ["12544"] },
     });
+    expect(parseSearchQuery('"field:literal" -')).toEqual({ contains: ["field:literal", "-"] });
     expect(parseSearchQuery('provider:"a\\"b"')).toEqual({ include: { provider: ['a"b'] } });
     expect(parseSearchQuery(" ")).toEqual({});
     expect(parseSearchQuery("C:\\Windows\\cmd.exe http://x constructor:x")).toEqual({
-      searchTerm: "C:\\Windows\\cmd.exe http://x constructor:x",
+      contains: ["C:\\Windows\\cmd.exe", "http://x", "constructor:x"],
     });
   });
 
-  it("rejects incomplete or unsupported queries instead of silently broadening results", () => {
+  it("rejects incomplete or invalid field values instead of silently broadening results", () => {
     for (const query of [
       'provider:"unfinished',
       "event_id:",
       "event_id:12.5",
       "event_id:-1",
-      "event_id:65536",
       "Provider:",
+      "level:loud",
+      "task:abc",
     ]) {
       expect(() => parseSearchQuery(query)).toThrow(Error);
     }
@@ -97,11 +100,11 @@ describe("saved searches", () => {
   });
 });
 
-describe("UTC time selection", () => {
+describe("time selection", () => {
   it("keeps inclusive start and exclusive end for backward or single bucket selections", () => {
     const buckets = [
-      { start: 1000, end: 2000, count: 2 },
-      { start: 2000, end: 3000, count: 1 },
+      { start: 1000, end: 2000, count: 2, error: 0, warning: 0, information: 2 },
+      { start: 2000, end: 3000, count: 1, error: 1, warning: 0, information: 0 },
     ];
     expect(rangeForBuckets(buckets, 1, 0)).toEqual({
       start: new Date(1000),
@@ -113,15 +116,25 @@ describe("UTC time selection", () => {
     });
     expect(rangeForBuckets([], 0, 0)).toBeUndefined();
   });
-  it("parses inputs as UTC and refuses empty or reversed intervals", () => {
-    expect(parseUtcRange("2026-09-24T10:00:00.123", "2026-09-24T11:00")).toEqual({
+  it("parses inputs in the chosen zone and refuses empty or reversed intervals", () => {
+    expect(parseTimeRange("2026-09-24T10:00:00.123", "2026-09-24 11:00", "utc")).toEqual({
       start: new Date("2026-09-24T10:00:00.123Z"),
       end: new Date("2026-09-24T11:00:00Z"),
     });
-    expect(() => parseUtcRange("2026-09-24T11:00", "2026-09-24T10:00")).toThrow(Error);
-    expect(() => parseUtcRange("", "2026-09-24T10:00")).toThrow(Error);
-    expect(() => parseUtcRange("2026-09-24T10:00", "2026-09-24T10:00")).toThrow(Error);
-    expect(() => parseUtcRange("2026-02-30T10:00", "2026-03-01T10:00")).toThrow(Error);
+    expect(parseTimeRange("2026-09-24 10:00:00.5", "2026-09-24 11:00", "local")).toEqual({
+      start: new Date(2026, 8, 24, 10, 0, 0, 500),
+      end: new Date(2026, 8, 24, 11),
+    });
+    const instant = new Date("2026-09-24T10:00:00.123Z");
+    for (const zone of ["utc", "local"] as const) {
+      expect(
+        parseTimeRange(formatTimeInput(instant, zone), "2027-01-01 00:00", zone).start,
+      ).toEqual(instant);
+    }
+    expect(() => parseTimeRange("2026-09-24T11:00", "2026-09-24T10:00", "utc")).toThrow(Error);
+    expect(() => parseTimeRange("", "2026-09-24T10:00", "utc")).toThrow(Error);
+    expect(() => parseTimeRange("2026-09-24T10:00", "2026-09-24T10:00", "utc")).toThrow(Error);
+    expect(() => parseTimeRange("2026-02-30T10:00", "2026-03-01T10:00", "local")).toThrow(Error);
   });
 });
 

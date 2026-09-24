@@ -50,8 +50,9 @@ export function formatEventValue(value: z.infer<ReturnType<typeof z.json>> | und
   return text.success ? text.data : JSON.stringify(value);
 }
 
+// Level 0 (LogAlways) reads "Information", as in Event Viewer.
 const EVENT_LEVEL_NAMES = new Map([
-  [0, "LogAlways"],
+  [0, "Information"],
   [1, "Critical"],
   [2, "Error"],
   [3, "Warning"],
@@ -83,7 +84,9 @@ export interface TableColumn {
   id: string;
   header: string;
   accessor?: (row: TabularRow) => ReactNode;
+  /** Set by the user (resize, saved view); unset columns size to their content. */
   width?: number;
+  align?: "right";
 }
 
 /**
@@ -92,7 +95,9 @@ export interface TableColumn {
  */
 export interface FilterOptions {
   searchQuery?: string;
-  searchTerm?: string;
+  /** Case-insensitive substrings of the raw event JSON. */
+  contains?: string[];
+  notContains?: string[];
   timeRange?: { start: Date; end: Date };
   include?: Record<string, string[]>;
   exclude?: Record<string, string[]>;

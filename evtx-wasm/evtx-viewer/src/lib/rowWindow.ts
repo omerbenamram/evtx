@@ -1,4 +1,6 @@
-export const TABLE_HEADER_HEIGHT = 36;
+// Grid metrics (DESIGN.md "Grid"): 22px rows under a 24px header.
+export const ROW_HEIGHT = 22;
+export const TABLE_HEADER_HEIGHT = 24;
 const OVERSCAN_ROWS = 20;
 
 interface Viewport {

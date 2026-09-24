@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from "react";
 import EvtxStorage from "../lib/storage";
 import { styled } from "styled-components";
-import { TreeView, type TreeNode, ContextMenu, SidebarHeader } from "./Windows";
+import { TreeView, type TreeNode, ContextMenu } from "./Windows";
 import { errorMessage } from "../lib/types";
 import {
-  Folder20Regular,
-  FolderOpen20Filled,
-  Document20Regular,
-  Delete20Regular,
+  Folder16Regular,
+  FolderOpen16Regular,
+  DocumentBulletList16Regular,
+  Delete16Regular,
+  Desktop16Regular,
 } from "@fluentui/react-icons";
 
 const TreeContainer = styled.div`
@@ -15,8 +16,13 @@ const TreeContainer = styled.div`
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
-  background: ${({ theme }) => theme.colors.background.secondary};
+  padding-top: 2px;
+  background: ${({ theme }) => theme.colors.surface.pane};
   user-select: none;
+`;
+const ErrorText = styled.p`
+  padding: 4px 8px;
+  color: ${({ theme }) => theme.colors.severity.error};
 `;
 
 interface EventLogNode {
@@ -34,13 +40,13 @@ const baseStructure: EventLogNode[] = [
   {
     id: "examples",
     label: "Example Logs",
-    icon: <Folder20Regular />,
-    expandedIcon: <FolderOpen20Filled />,
+    icon: <Folder16Regular />,
+    expandedIcon: <FolderOpen16Regular />,
     children: [
       {
         id: "sample-security",
         label: "security.evtx (sample)",
-        icon: <Document20Regular />,
+        icon: <DocumentBulletList16Regular />,
         logPath: "samples/security.evtx",
       },
     ],
@@ -55,12 +61,12 @@ async function fetchRecentNodes(): Promise<EventLogNode[]> {
     {
       id: "recent",
       label: "Recent Logs",
-      icon: <Folder20Regular />,
-      expandedIcon: <FolderOpen20Filled />,
+      icon: <Folder16Regular />,
+      expandedIcon: <FolderOpen16Regular />,
       children: files.map((f) => ({
         id: `recent-${f.fileId}`,
         label: f.fileName,
-        icon: <Document20Regular />,
+        icon: <DocumentBulletList16Regular />,
         fileId: f.fileId,
       })),
     },
@@ -105,12 +111,19 @@ export const FileTree: React.FC<FileTreeProps> = ({
     };
   }, [refreshVersion, refresh]);
 
+  const root: EventLogNode = {
+    id: "root",
+    label: "Event Viewer (Local)",
+    icon: <Desktop16Regular />,
+    children: treeData,
+  };
+
   const convertToTreeNodes = (nodes: EventLogNode[]): TreeNode[] =>
     nodes.map((node) => ({
       id: node.id,
       label:
         node.fileId && node.fileId === activeFileId && ingestProgress < 1
-          ? `${node.label} (${Math.max(0.01, ingestProgress * 100).toFixed(2)}%)`
+          ? `${node.label} (${Math.floor(ingestProgress * 100)}%)`
           : node.label,
       icon: node.icon,
       expandedIcon: node.expandedIcon,
@@ -166,18 +179,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
 
   return (
     <TreeContainer>
-      <SidebarHeader>Event Logs</SidebarHeader>
-      {error && (
-        <p role="alert" style={{ padding: 12 }}>
-          {error}
-        </p>
-      )}
+      {error && <ErrorText role="alert">{error}</ErrorText>}
       <TreeView
-        nodes={convertToTreeNodes(treeData)}
+        nodes={convertToTreeNodes([root])}
         selectedNodeId={selectedNodeId}
         onNodeClick={handleSelect}
         onNodeContextMenu={handleContextMenu}
-        defaultExpanded={["examples", "recent"]}
+        defaultExpanded={["root", "examples", "recent"]}
       />
 
       {menuState && (
@@ -190,7 +198,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
             {
               id: "delete",
               label: "Remove from recent logs",
-              icon: <Delete20Regular />,
+              icon: <Delete16Regular />,
               onClick: () => void handleDelete(),
             },
           ]}

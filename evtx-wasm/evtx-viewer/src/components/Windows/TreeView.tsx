@@ -22,32 +22,36 @@ const Tree = styled.div`
   color: ${({ theme }) => theme.colors.text.primary};
   user-select: none;
 `;
+// Event Viewer tree: 22px rows, 16px indent per level; selected = light accent fill + 1px outline.
 const Row = styled.div<{ $level: number; $selected: boolean }>`
   display: flex;
   align-items: center;
   gap: 4px;
-  min-height: 28px;
-  padding: 3px 8px 3px ${({ $level }) => $level * 18 + 8}px;
-  border: 1px solid
-    ${({ theme, $selected }) => ($selected ? theme.colors.selection.border : "transparent")};
-  background: ${({ theme, $selected }) => ($selected ? theme.colors.selection.background : "transparent")};
+  height: ${({ theme }) => theme.size.row};
+  padding: 0 8px 0 ${({ $level }) => $level * 16 + 4}px;
+  background: ${({ theme, $selected }) => ($selected ? theme.colors.fill.selected : "transparent")};
+  box-shadow: ${({ theme, $selected }) =>
+    $selected ? `inset 0 0 0 1px ${theme.colors.accent.rest}` : "none"};
   cursor: default;
   &:hover {
-    background: ${({ theme }) => theme.colors.background.hover};
+    background: ${({ theme, $selected }) =>
+      $selected ? theme.colors.fill.selected : theme.colors.fill.hover};
   }
   &:focus-visible {
     outline-offset: -2px;
   }
   svg {
-    width: 16px;
-    height: 16px;
     flex-shrink: 0;
+  }
+  @media (forced-colors: active) {
+    ${({ $selected }) => ($selected ? "outline: 1px solid Highlight; outline-offset: -1px;" : "")}
   }
 `;
 const Disclosure = styled.span`
   display: inline-flex;
   width: 16px;
   flex-shrink: 0;
+  color: ${({ theme }) => theme.colors.text.secondary};
 `;
 const Label = styled.span`
   min-width: 0;
@@ -110,7 +114,12 @@ export function TreeView({
             tabIndex={focused === node.id || (!focused && level === 0) ? 0 : -1}
             $level={level}
             $selected={selectedNodeId === node.id}
-            title={node.label}
+            onMouseEnter={(event) => {
+              // ponytail: native title only when the label is cut off; short names get none.
+              const label = event.currentTarget.lastElementChild;
+              event.currentTarget.title =
+                label && label.scrollWidth > label.clientWidth ? node.label : "";
+            }}
             onFocus={() => setFocused(node.id)}
             onKeyDown={(event) => keyDown(event, node, parent)}
             onClick={(event) => {

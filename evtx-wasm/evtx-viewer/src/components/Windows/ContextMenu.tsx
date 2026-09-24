@@ -1,73 +1,103 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import React, { useLayoutEffect, useRef } from "react";
 import { styled } from "styled-components";
 import { Checkmark16Regular } from "@fluentui/react-icons";
+import { Popover, type PopoverAnchor } from "./Popover";
 
-export interface ContextMenuItem {
-  id: string;
-  label: string;
-  icon?: React.ReactNode;
-  shortcut?: string;
-  checked?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-}
+export type ContextMenuItem =
+  | { id: string; separator: true }
+  | {
+      id: string;
+      label: string;
+      icon?: React.ReactNode;
+      shortcut?: string;
+      /** Defined = a checkable item; shows a checkmark (or a dot with `radio`) when true. */
+      checked?: boolean;
+      radio?: boolean;
+      disabled?: boolean;
+      onClick?: () => void;
+      separator?: false;
+    };
 
 export interface ContextMenuProps {
   items: ContextMenuItem[];
-  position: { x: number; y: number };
+  /** A point (pointer position) or the trigger element to anchor below. */
+  position: PopoverAnchor;
   onClose: () => void;
   returnFocus?: HTMLElement | null;
   ariaLabel?: string;
+  /** ArrowLeft / ArrowRight, used by the menu bar to move between menus. */
+  onSwitchMenu?: (direction: -1 | 1) => void;
 }
 
-const Menu = styled.div`
-  position: fixed;
-  z-index: 2000;
-  min-width: min(180px, calc(100vw - 16px));
-  max-width: calc(100vw - 16px);
-  max-height: calc(100dvh - 16px);
-  overflow: auto;
-  box-sizing: border-box;
-  padding: 3px 0;
-  background: ${({ theme }) => theme.colors.background.secondary};
-  border: 1px solid ${({ theme }) => theme.colors.border.medium};
-  box-shadow: ${({ theme }) => theme.shadows.elevation};
-  color: ${({ theme }) => theme.colors.text.primary};
+const List = styled.div`
+  min-width: 160px;
+  max-width: 420px;
+  outline: none;
 `;
 
 const Item = styled.button`
   display: flex;
   align-items: center;
+  gap: 8px;
   width: 100%;
   min-height: 28px;
-  gap: 8px;
-  padding: 4px 16px 4px 8px;
+  padding: 6px 12px 6px 8px;
   border: 0;
+  border-radius: ${({ theme }) => theme.radius.control};
   background: transparent;
   color: inherit;
-  font: inherit;
   text-align: left;
   cursor: default;
-  white-space: normal;
   overflow-wrap: anywhere;
+  &:focus {
+    outline: none;
+  }
+  /* The pointer moves focus too (see onPointerMove), so mouse and keyboard share one fill. */
   &:hover:not(:disabled),
   &:focus-visible {
-    background: ${({ theme }) => theme.colors.selection.background};
-    outline: 1px solid ${({ theme }) => theme.colors.accent.primary};
-    outline-offset: -1px;
+    background: ${({ theme }) => theme.colors.fill.hover};
+  }
+  &:active:not(:disabled) {
+    background: ${({ theme }) => theme.colors.fill.pressed};
   }
   &:disabled {
     color: ${({ theme }) => theme.colors.text.tertiary};
   }
+  @media (forced-colors: active) {
+    &:focus-visible {
+      outline: 2px solid Highlight;
+      outline-offset: -2px;
+    }
+  }
 `;
 
-const Icon = styled.span`
+const Glyph = styled.span`
   display: inline-flex;
   flex: 0 0 16px;
-  width: 16px;
   align-items: center;
   justify-content: center;
+  height: 16px;
+`;
+
+const Dot = styled.span`
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+`;
+
+const Shortcut = styled.span`
+  margin-left: auto;
+  padding-left: 24px;
+  color: ${({ theme }) => theme.colors.text.tertiary};
+  white-space: nowrap;
+`;
+
+const Separator = styled.hr`
+  height: 1px;
+  border: 0;
+  margin: 4px -4px;
+  background: ${({ theme }) => theme.colors.stroke.divider};
 `;
 
 export function ContextMenu({
@@ -76,126 +106,111 @@ export function ContextMenu({
   onClose,
   returnFocus,
   ariaLabel = "Actions",
+  onSwitchMenu,
 }: ContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(onClose);
-  const [location, setLocation] = useState(position);
-  useEffect(() => {
-    closeRef.current = onClose;
-  }, [onClose]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const enabled = () =>
+    Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
 
+  // Runs after Popover has opened (child effects first). Also refocuses when items arrive
+  // asynchronously (the column filter menu loads its values after opening).
   useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const place = () => {
-      const bounds = menu.getBoundingClientRect();
-      setLocation({
-        x: Math.max(8, Math.min(position.x, window.innerWidth - bounds.width - 8)),
-        y: Math.max(8, Math.min(position.y, window.innerHeight - bounds.height - 8)),
-      });
-    };
-    place();
-    const observer = new ResizeObserver(place);
-    observer.observe(menu);
-    return () => observer.disconnect();
-  }, [position.x, position.y]);
-
-  useLayoutEffect(() => {
-    const invoker =
-      returnFocus ??
-      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    const menu = menuRef.current;
-    const first = menu?.querySelector<HTMLButtonElement>("button:not(:disabled)");
-    (first ?? menu)?.focus({ preventScroll: true });
-    const dismissOutside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menu?.contains(event.target)) closeRef.current();
-    };
-    const dismissOnResize = () => closeRef.current();
-    document.addEventListener("pointerdown", dismissOutside);
-    window.addEventListener("resize", dismissOnResize);
-    return () => {
-      document.removeEventListener("pointerdown", dismissOutside);
-      window.removeEventListener("resize", dismissOnResize);
-      if (invoker?.isConnected) invoker.focus({ preventScroll: true });
-    };
-  }, [returnFocus]);
-
-  useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (
-      items.some((item) => !item.disabled) &&
-      menu &&
-      (document.activeElement === menu || !menu.contains(document.activeElement))
-    ) {
-      menu
+    const list = listRef.current;
+    const focused = document.activeElement;
+    if (!list || (focused !== list && list.contains(focused))) return;
+    list.focus({ preventScroll: true });
+    if (items.some((item) => !item.separator && !item.disabled))
+      list
         .querySelector<HTMLButtonElement>("button:not(:disabled)")
         ?.focus({ preventScroll: true });
-    }
   }, [items]);
 
   const navigate = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape" || event.key === "Tab") {
+    if (event.key === "Tab") {
       event.preventDefault();
-      event.stopPropagation();
       onClose();
       return;
     }
-    const buttons = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [],
-    );
+    if (onSwitchMenu && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      event.preventDefault();
+      onSwitchMenu(event.key === "ArrowRight" ? 1 : -1);
+      return;
+    }
+    const buttons = enabled();
     if (!buttons.length) return;
     const current = buttons.findIndex((button) => button === document.activeElement);
     let next: number;
-    switch (event.key) {
-      case "ArrowDown":
-        next = (current + 1) % buttons.length;
-        break;
-      case "ArrowUp":
-        next = (current + buttons.length - 1) % buttons.length;
-        break;
-      case "Home":
-        next = 0;
-        break;
-      case "End":
-        next = buttons.length - 1;
-        break;
-      default:
-        return;
-    }
+    if (event.key === "ArrowDown") next = (current + 1) % buttons.length;
+    else if (event.key === "ArrowUp") next = (current + buttons.length - 1) % buttons.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = buttons.length - 1;
+    else if (event.key.length === 1 && event.key !== " " && !event.ctrlKey && !event.metaKey) {
+      // Type-ahead: next item whose label starts with the typed character.
+      const key = event.key.toLowerCase();
+      const order = [...buttons.slice(current + 1), ...buttons.slice(0, current + 1)];
+      const match = order.find((button) =>
+        button.textContent?.trim().toLowerCase().startsWith(key),
+      );
+      if (!match) return;
+      next = buttons.indexOf(match);
+    } else return;
     event.preventDefault();
     event.stopPropagation();
     buttons[next]?.focus();
   };
 
-  return createPortal(
-    <Menu
-      ref={menuRef}
-      role="menu"
-      tabIndex={-1}
-      aria-label={ariaLabel}
-      style={{ left: location.x, top: location.y }}
-      onKeyDown={navigate}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      {items.map((item) => (
-        <Item
-          key={item.id}
-          type="button"
-          role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
-          aria-checked={item.checked}
-          disabled={item.disabled}
-          tabIndex={-1}
-          onClick={() => {
-            onClose();
-            item.onClick?.();
-          }}
-        >
-          <Icon aria-hidden="true">{item.checked ? <Checkmark16Regular /> : item.icon}</Icon>
-          <span style={{ flex: 1 }}>{item.label}</span>
-          {item.shortcut && <span style={{ marginLeft: 20, opacity: 0.7 }}>{item.shortcut}</span>}
-        </Item>
-      ))}
-    </Menu>,
-    document.body,
+  const hasCheck = items.some((item) => !item.separator && item.checked !== undefined);
+  const hasIcon = items.some((item) => !item.separator && item.icon);
+
+  return (
+    <Popover anchor={position} onClose={onClose} returnFocus={returnFocus}>
+      <List
+        ref={listRef}
+        role="menu"
+        tabIndex={-1}
+        aria-label={ariaLabel}
+        onKeyDown={navigate}
+        onContextMenu={(event) => event.preventDefault()}
+        onPointerLeave={() => listRef.current?.focus({ preventScroll: true })}
+      >
+        {items.map((item) =>
+          item.separator ? (
+            <Separator key={item.id} />
+          ) : (
+            <Item
+              key={item.id}
+              type="button"
+              role={
+                item.checked === undefined
+                  ? "menuitem"
+                  : item.radio
+                    ? "menuitemradio"
+                    : "menuitemcheckbox"
+              }
+              aria-checked={item.checked}
+              disabled={item.disabled}
+              tabIndex={-1}
+              onPointerMove={(event) => {
+                if (document.activeElement !== event.currentTarget)
+                  event.currentTarget.focus({ preventScroll: true });
+              }}
+              onClick={() => {
+                onClose();
+                item.onClick?.();
+              }}
+            >
+              {hasCheck && (
+                <Glyph aria-hidden="true">
+                  {item.checked && (item.radio ? <Dot /> : <Checkmark16Regular />)}
+                </Glyph>
+              )}
+              {hasIcon && <Glyph aria-hidden="true">{item.icon}</Glyph>}
+              <span>{item.label}</span>
+              {item.shortcut && <Shortcut>{item.shortcut}</Shortcut>}
+            </Item>
+          ),
+        )}
+      </List>
+    </Popover>
   );
 }

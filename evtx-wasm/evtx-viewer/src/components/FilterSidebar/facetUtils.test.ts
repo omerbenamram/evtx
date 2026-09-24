@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
-import { formatDateTime } from "../../lib/columns";
+import { formatEventTime } from "../../lib/timeZone";
+import { levelName } from "../../lib/types";
 import {
   buildFacetConfigs,
   clearFacet,
@@ -46,15 +47,15 @@ it("labels unset options consistently and keeps millisecond timestamps distinct"
   const [level, time] = buildFacetConfigs([]);
   const user = { id: "user", label: "User" };
   expect(formatFacetValue(level, "")).toBe("(Not set)");
-  expect(formatFacetValue(level, "0")).toBe("LogAlways");
+  expect(formatFacetValue(level, "0")).toBe(levelName(0));
   expect(formatFacetValue(user, "")).toBe("(Not set)");
   expect(formatFacetValue(time, "2026-09-24T12:34:56.123000Z")).toBe(
-    formatDateTime("2026-09-24T12:34:56.123Z"),
+    formatEventTime("2026-09-24T12:34:56.123Z"),
   );
-  expect(formatDateTime("2026-09-24T12:34:56.123Z")).not.toBe(
-    formatDateTime("2026-09-24T12:34:56.124Z"),
+  expect(formatEventTime("2026-09-24T12:34:56.123Z")).not.toBe(
+    formatEventTime("2026-09-24T12:34:56.124Z"),
   );
-  expect(formatDateTime("2026-09-24T12:34:56.123Z")).not.toBe(
-    formatDateTime("2026-09-24T12:34:57.123Z"),
+  expect(formatEventTime("2026-09-24T12:34:56.123Z")).not.toBe(
+    formatEventTime("2026-09-24T12:34:57.123Z"),
   );
 });

@@ -21,13 +21,15 @@ const SYSTEM_COLUMNS = new Map<string, ColumnSql>([
   ],
   ["provider", { sql: "Provider" }],
   ["channel", { sql: "Channel" }],
-  ["eventId", { sql: "EventID", values: INTEGER }],
+  ["eventId", { sql: "EventID", values: /^\d{1,5}$/ }],
   ["task", { sql: "Task", values: INTEGER }],
   ["user", { sql: "UserID" }],
   ["computer", { sql: "Computer" }],
   ["opcode", { sql: "Opcode", values: INTEGER }],
   ["keywords", { sql: "Keywords" }],
 ]);
+
+export const SYSTEM_COLUMN_IDS = [...SYSTEM_COLUMNS.keys()];
 
 /** JSON Pointer treats dots and brackets in EventData names as literal text. */
 export function eventDataExpression(field: string): string {

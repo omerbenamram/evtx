@@ -1,100 +1,134 @@
-import { styled, css } from "styled-components";
+import { styled } from "styled-components";
 
+// Header stays put; only the facet list below it scrolls, so nothing slides under it.
 export const SidebarContainer = styled.div`
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   min-width: 0;
-  background: ${({ theme }) => theme.colors.background.secondary};
-  padding-left: 3px; /* Account for the resize divider */
+  background: ${({ theme }) => theme.colors.surface.pane};
+`;
+
+export const SidebarBody = styled.div`
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 `;
 
-export const ActiveFiltersBar = styled.div`
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.md};
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
-  background: ${({ theme }) => theme.colors.background.tertiary};
+export const Notice = styled.p`
+  padding: ${({ theme }) => theme.spacing.md};
+  color: ${({ theme }) => theme.colors.text.secondary};
 `;
 
-export const FilterChip = styled.span`
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 0 0 6px;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  background: ${({ theme }) => theme.colors.background.secondary};
-  border: 1px solid ${({ theme }) => theme.colors.border.medium};
-  border-radius: ${({ theme }) => theme.borderRadius.sm};
-  font-size: ${({ theme }) => theme.fontSize.caption};
-  color: ${({ theme }) => theme.colors.text.primary};
+export const Section = styled.section`
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
 `;
 
-export const SectionHeader = styled.button<{ $isOpen: boolean }>`
+export const SectionHeader = styled.div`
   display: flex;
   align-items: center;
-  width: 100%;
-  background: ${({ theme }) => theme.colors.background.secondary};
-  border: none;
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
-  padding: ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.md};
-  min-height: 32px;
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-  color: ${({ theme }) => theme.colors.text.primary};
-  user-select: none;
-  transition: background-color ${({ theme }) => theme.transitions.fast};
-
+  height: ${({ theme }) => theme.size.header};
+  padding-right: ${({ theme }) => theme.spacing.xs};
   &:hover {
-    background-color: ${({ theme }) => theme.colors.background.hover};
+    background: ${({ theme }) => theme.colors.fill.hover};
   }
-
-  ${({ $isOpen, theme }) =>
-    $isOpen &&
-    css`
-      background-color: ${theme.colors.background.hover};
-    `}
+  /* Per-section Clear shows on hover or keyboard focus only. */
+  > button:last-child:not(:first-child) {
+    visibility: hidden;
+  }
+  &:hover > button:last-child,
+  &:focus-within > button:last-child {
+    visibility: visible;
+  }
 `;
 
-export const SectionIcon = styled.span`
-  display: inline-flex;
+export const SectionToggle = styled.button`
+  display: flex;
+  flex: 1;
   align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  margin-right: ${({ theme }) => theme.spacing.sm};
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 ${({ theme }) => theme.spacing.sm};
+  border: 0;
+  background: none;
+  font-weight: 600;
+  text-align: left;
+  cursor: default;
+  svg {
+    flex-shrink: 0;
+    color: ${({ theme }) => theme.colors.text.secondary};
+  }
+  > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  &:focus-visible {
+    outline-offset: -2px;
+  }
+`;
+
+export const SelectedCount = styled.span`
+  flex-shrink: 0;
+  font-weight: 400;
+  font-size: ${({ theme }) => theme.fontSize.secondary};
+  color: ${({ theme }) => theme.colors.text.secondary};
+  font-variant-numeric: tabular-nums;
+`;
+
+export const FacetSearch = styled.div`
+  padding: 2px ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.xs};
 `;
 
 export const OptionsContainer = styled.div`
-  max-height: 240px;
-  overflow: auto;
-  padding: ${({ theme }) => theme.spacing.xs} ${({ theme }) => theme.spacing.md}
-    ${({ theme }) => theme.spacing.md};
+  max-height: 242px; /* 11 rows */
+  overflow-y: auto;
+  padding-bottom: ${({ theme }) => theme.spacing.xs};
+`;
 
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
+/** `--share` (0-100%) draws the value's share of the facet total behind the row. */
+export const FacetRow = styled.label`
+  display: flex;
+  align-items: center;
+  gap: ${({ theme }) => theme.spacing.sm};
+  height: ${({ theme }) => theme.size.row};
+  padding: 0 ${({ theme }) => theme.spacing.sm} 0 30px; /* checkbox under the section label */
+  --bar: linear-gradient(
+    90deg,
+    color-mix(in srgb, ${({ theme }) => theme.colors.accent.rest} 8%, transparent) var(--share),
+    transparent var(--share)
+  );
+  background: var(--bar);
+  &:hover {
+    background:
+      linear-gradient(
+        ${({ theme }) => theme.colors.fill.hover},
+        ${({ theme }) => theme.colors.fill.hover}
+      ),
+      var(--bar);
+  }
 `;
 
 export const Counts = styled.span`
-  color: ${({ theme }) => theme.colors.text.secondary};
+  flex-shrink: 0;
+  font-size: ${({ theme }) => theme.fontSize.secondary};
+  color: ${({ theme }) => theme.colors.text.tertiary};
   font-variant-numeric: tabular-nums;
-  padding-left: 4px;
 `;
 
 export const Checkbox = styled.input.attrs({ type: "checkbox" })`
+  flex-shrink: 0;
   width: 14px;
   height: 14px;
   margin: 0;
-  cursor: pointer;
-  accent-color: ${({ theme }) => theme.colors.accent.primary};
+  accent-color: ${({ theme }) => theme.colors.accent.rest};
 `;
 
 export const OptionLabel = styled.span`
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

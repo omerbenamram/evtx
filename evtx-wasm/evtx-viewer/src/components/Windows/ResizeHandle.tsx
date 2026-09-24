@@ -14,24 +14,45 @@ interface ResizeHandleProps {
   style?: CSSProperties;
 }
 
+// A 1px divider line with a 7px hit area: the -3px margins overlap the neighbouring panes,
+// so docked panes meet edge to edge. The line turns accent on hover, drag and focus.
 const Handle = styled.hr<{ $vertical: boolean }>`
+  position: relative;
+  z-index: 2;
   align-self: stretch;
-  flex: 0 0 6px;
-  width: ${({ $vertical }) => ($vertical ? "6px" : "auto")};
-  height: ${({ $vertical }) => ($vertical ? "auto" : "6px")};
-  margin: 0;
+  flex: 0 0 7px;
+  width: ${({ $vertical }) => ($vertical ? "7px" : "auto")};
+  height: ${({ $vertical }) => ($vertical ? "auto" : "7px")};
+  margin: ${({ $vertical }) => ($vertical ? "0 -3px" : "-3px 0")};
   padding: 0;
   border: 0;
   cursor: ${({ $vertical }) => ($vertical ? "col-resize" : "row-resize")};
   touch-action: none;
   background: transparent;
-  &:hover,
-  &:focus-visible {
-    background: ${({ theme }) => theme.colors.selection.background};
+  &::after {
+    content: "";
+    position: absolute;
+    ${({ $vertical }) => ($vertical ? "inset: 0 3px;" : "inset: 3px 0;")}
+    background: ${({ theme }) => theme.colors.stroke.divider};
+  }
+  &:hover::after,
+  &:active::after,
+  &:focus-visible::after {
+    background: ${({ theme }) => theme.colors.accent.rest};
   }
   &:focus-visible {
-    outline: 1px solid ${({ theme }) => theme.colors.accent.primary};
-    outline-offset: -1px;
+    outline: none;
+    &::after {
+      ${({ $vertical }) => ($vertical ? "inset: 0 2px;" : "inset: 2px 0;")}
+    }
+  }
+  @media (forced-colors: active) {
+    &::after {
+      background: CanvasText;
+    }
+    &:focus-visible::after {
+      background: Highlight;
+    }
   }
 `;
 
