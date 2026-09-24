@@ -1,363 +1,360 @@
-import React from "react";
-import styled, { css } from "styled-components";
-import type { EvtxRecord, EvtxEventData, EvtxSystemData } from "../lib/types";
-import { Table20Regular as ColumnIcon } from "@fluentui/react-icons";
+import { useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { styled } from "styled-components";
+import { z } from "zod";
+import {
+  Copy16Regular,
+  TableAdd16Regular,
+  ZoomIn16Regular,
+  ZoomOut16Regular,
+} from "@fluentui/react-icons";
+import { formatEventValue, getEventDataFields, levelName, type EvtxRecord } from "../lib/types";
+import { buildEventDataColumn, getDefaultColumns } from "../lib/columns";
+import { EVENT_DATA_PREFIX } from "../lib/columnSql";
+import { formatEventTime, timeZoneLabel, useTimeZone } from "../lib/timeZone";
+import { toggleFacet } from "./FilterSidebar/facetUtils";
+import { searchWords } from "../lib/searchQuery";
+import { highlight } from "./Highlight";
 import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
+import { Button, ContextMenu, Tooltip } from "./Windows";
 
-const DetailsPane = styled.div<{ $height: number }>`
-  height: ${({ $height }) => `${$height}px`};
-  border-top: 1px solid ${({ theme }) => theme.colors.border.medium};
-  background: ${({ theme }) => theme.colors.background.secondary};
-  padding: ${({ theme }) => theme.spacing.md};
-  overflow-y: auto;
+const Pane = styled.section<{ $height: number }>`
+  display: flex;
+  flex-direction: column;
+  height: ${({ $height }) => $height}px;
+  flex-shrink: 0;
+  min-height: 0;
+  background: ${({ theme }) => theme.colors.surface.pane};
+  color: ${({ theme }) => theme.colors.text.primary};
 `;
-
-const DetailSection = styled.div`
-  margin-bottom: ${({ theme }) => theme.spacing.lg};
-`;
-
-const DetailTitle = styled.h3`
+export const TitleBand = styled.h2`
+  flex: 0 0 ${({ theme }) => theme.size.header};
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: ${({ theme }) => theme.size.header};
+  margin: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  background: ${({ theme }) => theme.colors.band.background};
+  color: ${({ theme }) => theme.colors.band.text};
   font-size: ${({ theme }) => theme.fontSize.body};
   font-weight: 600;
-  margin: 0 0 ${({ theme }) => theme.spacing.sm} 0;
-  color: ${({ theme }) => theme.colors.text.primary};
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  @media (forced-colors: active) {
+    border-bottom: 1px solid CanvasText;
+  }
 `;
-
-const DetailRow = styled.div`
+const Tabs = styled.div`
+  flex: 0 0 auto;
   display: flex;
-  margin-bottom: 4px;
+  gap: 4px;
+  padding: 0 4px;
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
 `;
-
-const DetailLabel = styled.span`
-  font-weight: 600;
-  min-width: 120px;
+const Tab = styled.button`
+  position: relative;
+  height: ${({ theme }) => theme.size.control};
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
   color: ${({ theme }) => theme.colors.text.secondary};
-`;
-
-const DetailValue = styled.span`
-  color: ${({ theme }) => theme.colors.text.primary};
-`;
-
-const DetailContent = styled.div`
-  font-family: ${({ theme }) => theme.fonts.mono};
-  font-size: ${({ theme }) => theme.fontSize.caption};
-  color: ${({ theme }) => theme.colors.text.secondary};
-  white-space: pre-wrap;
-  word-break: break-word;
-`;
-
-const IconBtn = styled.button<{ $variant: "include" | "exclude" }>`
-  width: 18px;
-  height: 18px;
-  margin-left: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid ${({ theme }) => theme.colors.border.light};
-  border-radius: 3px;
-  background: ${({ theme }) => theme.colors.background.secondary};
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-  color: ${({ theme }) => theme.colors.text.secondary};
-  position: relative; /* needed for tooltip positioning */
+  cursor: default;
   &:hover {
-    background: ${({ theme }) => theme.colors.background.hover};
-  }
-  &:active {
-    background: ${({ theme }) => theme.colors.background.active};
-  }
-  ${(props) =>
-    props.$variant === "include" &&
-    css`
-      /* could style differently if needed */
-    `}
-  ${(props) =>
-    props.$variant === "exclude" &&
-    css`
-      /* maybe color accent */
-    `}
-
-  /* Instant tooltip using ::after */
-  &[data-tooltip]:hover::after {
-    content: attr(data-tooltip);
-    position: absolute;
-    top: -28px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: ${({ theme }) => theme.colors.background.secondary};
     color: ${({ theme }) => theme.colors.text.primary};
-    border: 1px solid ${({ theme }) => theme.colors.border.medium};
-    border-radius: 4px;
-    padding: 2px 6px;
-    font-size: ${({ theme }) => theme.fontSize.caption};
-    white-space: nowrap;
-    z-index: 100;
-    pointer-events: none;
+  }
+  &[aria-selected="true"] {
+    color: ${({ theme }) => theme.colors.text.primary};
+    font-weight: 600;
+    &::after {
+      content: "";
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 0;
+      height: 2px;
+      border-radius: 1px;
+      background: ${({ theme }) => theme.colors.accent.rest};
+    }
+  }
+  &:focus-visible {
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -3px;
   }
 `;
+const Panel = styled.div`
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+  scrollbar-width: thin;
+`;
+const List = styled.dl`
+  margin: 0;
+`;
+const Field = styled.div`
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  column-gap: 12px;
+  min-height: ${({ theme }) => theme.size.row};
+  padding: 3px 8px;
+  box-sizing: border-box;
+  line-height: 16px;
+  &:hover {
+    background: ${({ theme }) => theme.colors.fill.hover};
+  }
+  dt {
+    color: ${({ theme }) => theme.colors.text.secondary};
+    overflow-wrap: anywhere;
+  }
+  dd {
+    margin: 0;
+    min-width: 0;
+  }
+`;
+const Value = styled.span<{ $mono: boolean }>`
+  font-family: ${({ theme, $mono }) => ($mono ? theme.fonts.mono : "inherit")};
+  overflow-wrap: anywhere;
+  user-select: text;
+  font-variant-numeric: tabular-nums;
+`;
+const Group = styled.div`
+  padding: 8px 8px 2px;
+  color: ${({ theme }) => theme.colors.text.secondary};
+  font-weight: 600;
+`;
+const Actions = styled.span`
+  display: inline-flex;
+  gap: 0;
+  margin-left: 6px;
+  vertical-align: top;
+  opacity: 0;
+  ${Field}:hover &,
+  ${Field}:focus-within & {
+    opacity: 1;
+  }
+`;
+const ActionButton = styled(Button).attrs({ variant: "subtle" })`
+  height: 16px;
+  min-width: 20px;
+  padding: 0 2px;
+  color: ${({ theme }) => theme.colors.text.secondary};
+`;
+const Raw = styled.pre`
+  margin: 0;
+  padding: 4px 8px;
+  font-family: ${({ theme }) => theme.fonts.mono};
+  font-size: ${({ theme }) => theme.fontSize.body};
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+`;
+
+interface Row {
+  name: string;
+  value: string;
+  mono?: boolean;
+  /** Column the value filters; absent = copy only. */
+  column?: string;
+  /** null = the value is not set: include matches "not set", exclude is unavailable. */
+  filterValue?: string | null;
+}
+
+// SIDs, hex and GUIDs read as raw values.
+const RAW_VALUE = /^(S-\d-|0x[\da-f]+$|\{[\da-f-]{36}\}$)/i;
+
+const optional = (value: string | null | undefined) => ({
+  value: value ?? "-",
+  filterValue: value ?? null,
+});
+// An unnamed <Data> item with no text renders as {"#text": null}.
+const unsetData = z.object({ "#text": z.null() });
+
+interface Action {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  disabled: boolean;
+  onClick: () => void;
+}
 
 interface Props {
   record: EvtxRecord;
   height: number;
 }
 
-// Utility helpers copied from the original table
-const LEVEL_NAMES: Record<number, string> = {
-  0: "Information",
-  1: "Critical",
-  2: "Error",
-  3: "Warning",
-  4: "Information",
-  5: "Verbose",
-};
-
-const formatDateTime = (systemTime?: string): string => {
-  if (!systemTime) return "-";
-  try {
-    const date = new Date(systemTime);
-    return date.toLocaleString("en-US", {
-      month: "2-digit",
-      day: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
-  } catch {
-    return systemTime;
-  }
-};
-
-const getSystemData = (record: EvtxRecord): EvtxSystemData =>
-  record.Event?.System || {};
-
-const getEventId = (sys: EvtxSystemData): string => {
-  const eid = sys.EventID;
-  if (typeof eid === "object" && eid !== null) {
-    return String((eid as Record<string, unknown>)["#text"] ?? "-");
-  }
-  return String(eid ?? "-");
-};
-
-const getProvider = (sys: EvtxSystemData): string =>
-  sys.Provider?.Name || sys.Provider_attributes?.Name || "-";
-
-const getTimeCreated = (sys: EvtxSystemData): string =>
-  sys.TimeCreated?.SystemTime || sys.TimeCreated_attributes?.SystemTime || "";
-
-const getUserId = (sys: EvtxSystemData): string =>
-  sys.Security?.UserID || sys.Security_attributes?.UserID || "-";
-
-const renderEventData = (
-  eventData: unknown,
-  onAdd: (k: string, v: string) => void,
-  onExclude: (k: string, v: string) => void,
-  onColumn: (k: string) => void
-): React.ReactNode => {
-  if (!eventData) return "No event data";
-  const eventObj = eventData as Record<string, unknown>;
-
-  // Handle EventData/Data array style
-  if (eventObj["Data"]) {
-    const rawData = eventObj["Data"] as unknown;
-    const dataArray = Array.isArray(rawData) ? rawData : [rawData];
-    return dataArray.map((rawItem, idx) => {
-      const item = rawItem as Record<string, unknown>;
-      const name =
-        (item["#attributes"] as Record<string, unknown> | undefined)?.Name ??
-        `Data${idx}`;
-      const value = item["#text"] ?? "-";
-      const valueStr = String(value);
-      return (
-        <DetailRow key={idx}>
-          <DetailLabel>{String(name)}:</DetailLabel>
-          <DetailValue style={{ marginRight: 4 }}>{valueStr}</DetailValue>
-          {
-            <>
-              <IconBtn
-                $variant="include"
-                data-tooltip="Include value"
-                onClick={() => onAdd(String(name), valueStr)}
-              >
-                +
-              </IconBtn>
-              {
-                <IconBtn
-                  $variant="exclude"
-                  data-tooltip="Exclude value"
-                  onClick={() => onExclude(String(name), valueStr)}
-                >
-                  –
-                </IconBtn>
-              }
-              {
-                <IconBtn
-                  $variant="include"
-                  data-tooltip="Add as column"
-                  onClick={() => onColumn(String(name))}
-                >
-                  <ColumnIcon style={{ width: 14, height: 14 }} />
-                </IconBtn>
-              }
-            </>
-          }
-        </DetailRow>
-      );
-    });
-  }
-
-  // Generic key/value pairs
-  const kvRows = Object.entries(eventObj).map(([k, v]) => {
-    const valStr = typeof v === "object" ? JSON.stringify(v) : String(v);
-    return (
-      <DetailRow key={k}>
-        <DetailLabel>{k}:</DetailLabel>
-        <DetailValue style={{ marginRight: 8 }}>{valStr}</DetailValue>
-        {
-          <IconBtn
-            $variant="include"
-            data-tooltip="Include value"
-            onClick={() => onAdd(k, valStr)}
-          >
-            +
-          </IconBtn>
-        }
-        {
-          <IconBtn
-            $variant="exclude"
-            data-tooltip="Exclude value"
-            onClick={() => onExclude(k, valStr)}
-          >
-            –
-          </IconBtn>
-        }
-        {
-          <IconBtn
-            $variant="include"
-            data-tooltip="Add as column"
-            onClick={() => onColumn(k)}
-          >
-            <ColumnIcon style={{ width: 14, height: 14 }} />
-          </IconBtn>
-        }
-      </DetailRow>
-    );
+export function EventDetailsPane({ record, height }: Props) {
+  const { filters, updateFilters } = useFilters();
+  const words = searchWords(filters.searchQuery);
+  const { columns, addColumn } = useColumns();
+  const zone = useTimeZone();
+  const [tab, setTab] = useState<"general" | "details">("general");
+  const [menu, setMenu] = useState<{ items: Action[]; x: number; y: number } | null>(null);
+  const system = record.Event.System;
+  const data = record.Event.EventData;
+  const provider = system.Provider_attributes?.Name;
+  const eventId = formatEventValue(system.EventID);
+  const general: Row[] = [
+    { name: "Log Name", column: "channel", ...optional(system.Channel) },
+    { name: "Source", column: "provider", ...optional(provider) },
+    { name: "Event ID", column: "eventId", value: eventId, filterValue: eventId },
+    {
+      name: "Level",
+      column: "level",
+      value: levelName(system.Level),
+      filterValue:
+        system.Level === null || system.Level === undefined ? null : String(system.Level),
+    },
+    { name: "User", column: "user", mono: true, ...optional(system.Security_attributes?.UserID) },
+    {
+      name: `Logged (${timeZoneLabel(zone)})`,
+      value: formatEventTime(system.TimeCreated_attributes?.SystemTime, zone),
+    },
+    { name: "Computer", column: "computer", ...optional(system.Computer) },
+  ];
+  const eventData: Row[] = (data ? getEventDataFields(data) : []).map(({ name, value }) => {
+    const raw = data?.[name];
+    const unset = raw === null || raw === undefined || unsetData.safeParse(raw).success;
+    return {
+      name,
+      value,
+      mono: true,
+      column: `${EVENT_DATA_PREFIX}${name}`,
+      filterValue: unset ? null : value,
+    };
   });
 
-  return kvRows.length > 0 ? kvRows : JSON.stringify(eventData, null, 2);
-};
+  function actions(row: Row): Action[] {
+    const column = row.column;
+    const shown = columns.some((item) => item.id === column);
+    const definition = column?.startsWith(EVENT_DATA_PREFIX)
+      ? buildEventDataColumn(row.name)
+      : getDefaultColumns().find((item) => item.id === column);
+    const filter = (map: "include" | "exclude") => () =>
+      column &&
+      updateFilters((current) => toggleFacet(current, column, row.filterValue ?? "", map, true));
+    return [
+      {
+        id: "include",
+        label: "Filter in",
+        icon: <ZoomIn16Regular />,
+        disabled: !column,
+        onClick: filter("include"),
+      },
+      {
+        id: "exclude",
+        label: "Filter out",
+        icon: <ZoomOut16Regular />,
+        // Excluding a value keeps rows where it is not set, so "not set" cannot be filtered out.
+        disabled: !column || row.filterValue === null,
+        onClick: filter("exclude"),
+      },
+      {
+        id: "column",
+        label: "Add as column",
+        icon: <TableAdd16Regular />,
+        disabled: !definition || shown,
+        onClick: () => definition && addColumn(definition),
+      },
+      {
+        id: "copy",
+        label: "Copy value",
+        icon: <Copy16Regular />,
+        disabled: false,
+        onClick: () => void navigator.clipboard.writeText(row.value).catch(() => undefined),
+      },
+    ];
+  }
 
-export const EventDetailsPane: React.FC<Props> = ({ record, height }) => {
-  const { setFilters } = useFilters();
-  const { addColumn } = useColumns();
+  const renderRow = (row: Row, key: string) => {
+    const items = actions(row);
+    return (
+      <Field
+        key={key}
+        onContextMenu={(event: MouseEvent) => {
+          event.preventDefault();
+          setMenu({ items, x: event.clientX, y: event.clientY });
+        }}
+      >
+        <dt>{row.name}</dt>
+        <dd>
+          <Value $mono={Boolean(row.mono) || RAW_VALUE.test(row.value)}>
+            {highlight(row.value, words)}
+          </Value>
+          <Actions>
+            {items
+              .filter((item) => !item.disabled)
+              .map((item) => (
+                <Tooltip key={item.id} label={`${item.label}: ${row.name}`}>
+                  <ActionButton
+                    icon={item.icon}
+                    aria-label={`${item.label}: ${row.name}`}
+                    onClick={item.onClick}
+                  />
+                </Tooltip>
+              ))}
+          </Actions>
+        </dd>
+      </Field>
+    );
+  };
 
-  const handleInclude = React.useCallback(
-    (field: string, value: string) => {
-      setFilters((prev) => {
-        const prevField = prev.eventData?.[field] ?? [];
-        if (prevField.includes(value)) return prev;
-        return {
-          ...prev,
-          eventData: {
-            ...(prev.eventData ?? {}),
-            [field]: [...prevField, value],
-          },
-        };
-      });
-    },
-    [setFilters]
-  );
+  const switchTab = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = tab === "general" ? "details" : "general";
+    setTab(next);
+    document.getElementById(`event-tab-${next}`)?.focus();
+  };
 
-  const handleExclude = React.useCallback(
-    (field: string, value: string) => {
-      setFilters((prev) => {
-        const prevField = prev.eventDataExclude?.[field] ?? [];
-        if (prevField.includes(value)) return prev;
-        return {
-          ...prev,
-          eventDataExclude: {
-            ...(prev.eventDataExclude ?? {}),
-            [field]: [...prevField, value],
-          },
-        };
-      });
-    },
-    [setFilters]
-  );
-
-  const handleAddColumn = React.useCallback(
-    (field: string) => {
-      addColumn({
-        id: `eventData.${field}`,
-        header: field,
-        sqlExpr: `json_extract_string(Raw, '$.Event.EventData.${field}')`,
-        accessor: (row) => String(row[`eventData.${field}`] ?? "-"),
-        width: 200,
-      });
-    },
-    [addColumn]
-  );
-
-  const sys = getSystemData(record);
   return (
-    <DetailsPane $height={height}>
-      <DetailSection>
-        <DetailTitle>General</DetailTitle>
-        <DetailRow>
-          <DetailLabel>Log Name:</DetailLabel>
-          <DetailValue>{sys.Channel || "-"}</DetailValue>
-        </DetailRow>
-        <DetailRow>
-          <DetailLabel>Source:</DetailLabel>
-          <DetailValue>{getProvider(sys)}</DetailValue>
-        </DetailRow>
-        <DetailRow>
-          <DetailLabel>Event ID:</DetailLabel>
-          <DetailValue>{getEventId(sys)}</DetailValue>
-        </DetailRow>
-        <DetailRow>
-          <DetailLabel>Level:</DetailLabel>
-          <DetailValue>{LEVEL_NAMES[sys.Level || 4]}</DetailValue>
-        </DetailRow>
-        <DetailRow>
-          <DetailLabel>User:</DetailLabel>
-          <DetailValue>{getUserId(sys)}</DetailValue>
-        </DetailRow>
-        <DetailRow>
-          <DetailLabel>Logged:</DetailLabel>
-          <DetailValue>{formatDateTime(getTimeCreated(sys))}</DetailValue>
-        </DetailRow>
-        <DetailRow>
-          <DetailLabel>Computer:</DetailLabel>
-          <DetailValue>{sys.Computer || "-"}</DetailValue>
-        </DetailRow>
-      </DetailSection>
-
-      {!!record.Event?.EventData && (
-        <DetailSection>
-          <DetailTitle>Event Data</DetailTitle>
-          <DetailContent>
-            {renderEventData(
-              record.Event.EventData as EvtxEventData,
-              handleInclude,
-              handleExclude,
-              handleAddColumn
+    <Pane $height={height} aria-label="Selected event details">
+      <TitleBand title={`Event ${eventId}, ${provider ?? "-"}`}>
+        Event {eventId}, {provider ?? "-"}
+      </TitleBand>
+      <Tabs role="tablist" aria-label="Event details view" onKeyDown={switchTab}>
+        {(["general", "details"] as const).map((id) => (
+          <Tab
+            key={id}
+            id={`event-tab-${id}`}
+            role="tab"
+            type="button"
+            aria-selected={tab === id}
+            aria-controls="event-tab-panel"
+            tabIndex={tab === id ? 0 : -1}
+            onClick={() => setTab(id)}
+          >
+            {id === "general" ? "General" : "Details"}
+          </Tab>
+        ))}
+      </Tabs>
+      <Panel id="event-tab-panel" role="tabpanel" aria-labelledby={`event-tab-${tab}`} tabIndex={0}>
+        {tab === "general" ? (
+          <>
+            <List>{general.map((row) => renderRow(row, row.name))}</List>
+            <Group>Event data</Group>
+            {eventData.length ? (
+              <List>{eventData.map((row, index) => renderRow(row, `${index}:${row.name}`))}</List>
+            ) : (
+              <Raw>
+                {record.Event.UserData ? formatEventValue(record.Event.UserData) : "No event data"}
+              </Raw>
             )}
-          </DetailContent>
-        </DetailSection>
+          </>
+        ) : (
+          <Raw>{JSON.stringify(record, null, 2)}</Raw>
+        )}
+      </Panel>
+      {menu && (
+        <ContextMenu
+          items={menu.items}
+          position={{ x: menu.x, y: menu.y }}
+          onClose={() => setMenu(null)}
+          ariaLabel="Value actions"
+        />
       )}
-
-      {!!record.Event?.UserData && (
-        <DetailSection>
-          <DetailTitle>User Data</DetailTitle>
-          <pre style={{ whiteSpace: "pre-wrap" }}>
-            {JSON.stringify(record.Event.UserData, null, 2)}
-          </pre>
-        </DetailSection>
-      )}
-    </DetailsPane>
+    </Pane>
   );
-};
+}

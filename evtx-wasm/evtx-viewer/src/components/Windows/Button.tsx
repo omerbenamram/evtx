@@ -1,143 +1,101 @@
-import React from 'react';
-import styled, { css } from 'styled-components';
+import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { css, styled } from "styled-components";
 
-export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'subtle';
-  size?: 'small' | 'medium' | 'large';
-  fullWidth?: boolean;
-  icon?: React.ReactNode;
+type ButtonVariant = "subtle" | "standard" | "accent";
+
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  /** subtle: 24px, no border until hover (toolbars, inline actions). standard, accent: 28px. */
+  variant?: ButtonVariant;
+  /** Pressed state of a toggle button. */
+  active?: boolean;
+  icon?: ReactNode;
 }
 
-const sizeStyles = {
-  small: css`
-    padding: 4px 12px;
-    font-size: ${({ theme }) => theme.fontSize.caption};
-    min-height: 24px;
+const variants = {
+  subtle: css<{ $active: boolean }>`
+    height: ${({ theme }) => theme.size.toolbarControl};
+    min-width: ${({ theme }) => theme.size.toolbarControl};
+    padding: 0 6px;
+    border-color: transparent;
+    background: ${({ theme, $active }) => ($active ? theme.colors.fill.selected : "transparent")};
+    &:hover:not(:disabled) {
+      background: ${({ theme, $active }) =>
+        $active ? theme.colors.fill.selected : theme.colors.fill.hover};
+    }
+    &:active:not(:disabled) {
+      background: ${({ theme }) => theme.colors.fill.pressed};
+    }
   `,
-  medium: css`
-    padding: 6px 16px;
-    font-size: ${({ theme }) => theme.fontSize.body};
-    min-height: 32px;
+  standard: css<{ $active: boolean }>`
+    height: ${({ theme }) => theme.size.control};
+    padding: 0 12px;
+    border-color: ${({ theme }) => theme.colors.stroke.control};
+    background: ${({ theme, $active }) =>
+      $active ? theme.colors.fill.selected : theme.colors.surface.pane};
+    &:hover:not(:disabled) {
+      background-image: linear-gradient(
+        ${({ theme }) => theme.colors.fill.hover},
+        ${({ theme }) => theme.colors.fill.hover}
+      );
+    }
+    &:active:not(:disabled) {
+      color: ${({ theme }) => theme.colors.text.secondary};
+    }
   `,
-  large: css`
-    padding: 8px 20px;
-    font-size: ${({ theme }) => theme.fontSize.subtitle};
-    min-height: 40px;
-  `
+  accent: css`
+    height: ${({ theme }) => theme.size.control};
+    padding: 0 12px;
+    border-color: transparent;
+    background: ${({ theme }) => theme.colors.accent.rest};
+    color: ${({ theme }) => theme.colors.accent.text};
+    &:hover:not(:disabled) {
+      background: ${({ theme }) => theme.colors.accent.hover};
+    }
+    &:active:not(:disabled) {
+      background: ${({ theme }) => theme.colors.accent.pressed};
+    }
+    &:disabled {
+      background: ${({ theme }) => theme.colors.stroke.control};
+      color: ${({ theme }) => theme.colors.surface.pane};
+    }
+  `,
 };
 
-const variantStyles = {
-  primary: css`
-    background-color: ${({ theme }) => theme.colors.accent.primary};
-    color: ${({ theme }) => theme.colors.text.white};
-    border: 1px solid ${({ theme }) => theme.colors.accent.primary};
-
-    &:hover:not(:disabled) {
-      background-color: ${({ theme }) => theme.colors.accent.hover};
-      border-color: ${({ theme }) => theme.colors.accent.hover};
-    }
-
-    &:active:not(:disabled) {
-      background-color: ${({ theme }) => theme.colors.accent.active};
-      border-color: ${({ theme }) => theme.colors.accent.active};
-    }
-  `,
-  secondary: css`
-    background-color: ${({ theme }) => theme.colors.background.secondary};
-    color: ${({ theme }) => theme.colors.text.primary};
-    border: 1px solid ${({ theme }) => theme.colors.border.medium};
-
-    &:hover:not(:disabled) {
-      background-color: ${({ theme }) => theme.colors.background.hover};
-      border-color: ${({ theme }) => theme.colors.border.dark};
-    }
-
-    &:active:not(:disabled) {
-      background-color: ${({ theme }) => theme.colors.background.active};
-      border-color: ${({ theme }) => theme.colors.accent.primary};
-    }
-  `,
-  subtle: css`
-    background-color: transparent;
-    color: ${({ theme }) => theme.colors.text.primary};
-    border: 1px solid transparent;
-
-    &:hover:not(:disabled) {
-      background-color: ${({ theme }) => theme.colors.background.hover};
-      border-color: ${({ theme }) => theme.colors.border.light};
-    }
-
-    &:active:not(:disabled) {
-      background-color: ${({ theme }) => theme.colors.background.active};
-      border-color: ${({ theme }) => theme.colors.border.medium};
-    }
-  `
-};
-
-const StyledButton = styled.button<ButtonProps>`
+const Control = styled.button<{ $variant: ButtonVariant; $active: boolean }>`
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: ${({ theme }) => theme.spacing.sm};
-  font-family: ${({ theme }) => theme.fonts.body};
-  font-weight: 400;
-  line-height: 1.5;
-  border-radius: ${({ theme }) => theme.borderRadius.sm};
-  cursor: pointer;
-  transition: all ${({ theme }) => theme.transitions.fast};
-  user-select: none;
-  outline: none;
-  position: relative;
+  flex-shrink: 0;
+  gap: 6px;
+  border: 1px solid;
+  border-radius: ${({ theme }) => theme.radius.control};
+  color: ${({ theme }) => theme.colors.text.primary};
   white-space: nowrap;
-
-  ${({ size = 'medium' }) => sizeStyles[size]}
-  ${({ variant = 'secondary' }) => variantStyles[variant]}
-  ${({ fullWidth }) => fullWidth && css`
-    width: 100%;
-  `}
-
-  &:focus-visible {
-    box-shadow: 0 0 0 2px ${({ theme }) => theme.colors.accent.primary};
-  }
-
+  cursor: default;
   &:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+    color: ${({ theme }) => theme.colors.text.tertiary};
   }
-
-  /* Ripple effect on click */
-  &::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 0;
-    height: 0;
-    border-radius: 50%;
-    background-color: rgba(0, 0, 0, 0.1);
-    transform: translate(-50%, -50%);
-    transition: width 0.3s, height 0.3s;
+  ${({ $variant }) => variants[$variant]}
+  &:focus-visible {
+    outline-offset: 1px;
   }
-
-  &:active::after {
-    width: 100%;
-    height: 100%;
+  > span {
+    display: inline-flex;
   }
 `;
 
-const IconWrapper = styled.span`
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-`;
-
-export const Button: React.FC<ButtonProps> = ({ children, icon, ...props }) => {
+export function Button({
+  children,
+  icon,
+  variant = "standard",
+  active = false,
+  type = "button",
+  ...props
+}: ButtonProps) {
   return (
-    <StyledButton {...props}>
-      {icon && <IconWrapper>{icon}</IconWrapper>}
+    <Control type={type} $variant={variant} $active={active} {...props}>
+      {icon && <span aria-hidden="true">{icon}</span>}
       {children}
-    </StyledButton>
+    </Control>
   );
-};
+}

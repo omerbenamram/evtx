@@ -1,94 +1,92 @@
-import type { ColumnSpec } from "../../lib/types";
+import { levelName, type TableColumn, type FilterOptions } from "../../lib/types";
+import {
+  formatEventTime,
+  formatTimeBucket,
+  parseTimeRangeKey,
+  timeRangeKey,
+  type TimeZone,
+} from "../../lib/timeZone";
 import type { FacetConfig } from "./FacetSection";
-
-// Reusable helper that converts epoch-ms or ISO strings into a readable
-// "YYYY-MM-DD HH:MM" 24-hour local string.
-export function formatTimeValue(raw: string | number): string {
-  let d: Date | null = null;
-  if (typeof raw === "number") d = new Date(raw);
-  else if (typeof raw === "string") {
-    const num = Number(raw);
-    if (!Number.isNaN(num)) d = new Date(num);
-    else {
-      const parsed = new Date(raw);
-      if (!Number.isNaN(parsed.getTime())) d = parsed;
-    }
-  }
-  if (!d || Number.isNaN(d.getTime())) return String(raw);
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-// Mapping of Windows Event Levels to descriptive labels
-const LEVEL_NAME_MAP: Record<number, string> = {
-  0: "LogAlways",
-  1: "Critical",
-  2: "Error",
-  3: "Warning",
-  4: "Information",
-  5: "Verbose",
-};
-
-// Columns that should not be shown as facet buckets.  Currently only the
-// Certain high-cardinality columns are excluded from equality-style faceting.
-// (The timestamp column is now supported via adaptive time-bucket grouping.)
-export const EXCLUDE_FROM_FACETS = new Set<string>([
-  /* add ids here as needed */
-]);
+import { parseSearchQuery, withoutField, withoutTerm, withTerm } from "../../lib/searchQuery";
 
 /**
- * Build the complete list of facet configurations given the current active
- * table columns.
- *
- * – Built-in facets are always present (level, provider, channel, eventId)
- * – Any additional column that is not one of the built-ins becomes a dynamic
- *   facet so users can filter on arbitrary extracted fields.
+ * Built-in facets (level, time, provider, channel, eventId) followed by every
+ * other active column, so users can filter on arbitrary extracted fields.
  */
-export function buildFacetConfigs(columns: ColumnSpec[]): FacetConfig[] {
+export function buildFacetConfigs(columns: TableColumn[]): FacetConfig[] {
   const builtins: FacetConfig[] = [
-    {
-      id: "level",
-      label: "Level",
-      filterKey: "level",
-      displayValue: (v) => LEVEL_NAME_MAP[v as number] || String(v),
-    },
+    { id: "level", label: "Level", displayValue: levelName },
     {
       id: "time",
       label: "Date / Time",
-      // Uses columnEquals on "time" so no simple filterKey
-      displayValue: (v) => formatTimeValue(v),
+      // Buckets are ranges; a cell's "Filter to this value" stays an exact timestamp.
+      displayValue: (value, zone) =>
+        parseTimeRangeKey(value) ? formatTimeBucket(value, zone) : formatEventTime(value, zone),
+      chronological: true,
     },
-    {
-      id: "provider",
-      label: "Provider",
-      filterKey: "provider",
-      searchable: true,
-    },
-    {
-      id: "channel",
-      label: "Channel",
-      filterKey: "channel",
-      searchable: true,
-    },
-    {
-      id: "eventId",
-      label: "Event ID",
-      filterKey: "eventId",
-    },
+    { id: "provider", label: "Provider" },
+    { id: "channel", label: "Channel" },
+    { id: "eventId", label: "Event ID" },
   ];
+  const dynamic = columns
+    .filter((column) => !builtins.some((facet) => facet.id === column.id))
+    .map((column) => ({ id: column.id, label: column.header }));
+  return [...builtins, ...dynamic];
+}
 
-  const dynamicCols: FacetConfig[] = columns
-    .filter(
-      (c) =>
-        !builtins.some((b) => b.id === c.id) && !EXCLUDE_FROM_FACETS.has(c.id)
-    )
-    .map((c) => ({ id: c.id, label: c.header }));
+/** `zone` defaults to View > Time zone. */
+export function formatFacetValue(facet: FacetConfig, value: string, zone?: TimeZone): string {
+  return value === "" ? "(Not set)" : (facet.displayValue?.(value, zone) ?? value);
+}
 
-  return [...builtins, ...dynamicCols];
+const parsed = (filters: FilterOptions) => {
+  try {
+    return parseSearchQuery(filters.searchQuery ?? "");
+  } catch {
+    return {};
+  }
+};
+
+/** Included values, which facet checkboxes show; excluded ones drop out of the counts. */
+export function facetValues(filters: FilterOptions, id: string): string[] {
+  const values = parsed(filters).include?.[id] ?? [];
+  return id === "time" && filters.timeRange ? [...values, timeRangeKey(filters.timeRange)] : values;
+}
+
+export const excludedValues = (filters: FilterOptions, id: string): string[] =>
+  parsed(filters).exclude?.[id] ?? [];
+
+export const isFiltered = (filters: FilterOptions, id: string): boolean =>
+  Boolean(facetValues(filters, id).length || excludedValues(filters, id).length);
+
+export function clearFacet(filters: FilterOptions, id: string): FilterOptions {
+  const searchQuery = withoutField(filters.searchQuery ?? "", id);
+  return { ...filters, searchQuery, timeRange: id === "time" ? undefined : filters.timeRange };
+}
+
+/**
+ * Like classList.toggle: `force` adds (true) or removes (false) instead of flipping. Edits the
+ * query text; adding a value replaces its opposite, so a column never both keeps and drops it.
+ */
+export function toggleFacet(
+  filters: FilterOptions,
+  id: string,
+  value: string,
+  map: "include" | "exclude" = "include",
+  force?: boolean,
+): FilterOptions {
+  // A time bucket sets the one time range, as the timeline does.
+  const range = id === "time" && map === "include" ? parseTimeRangeKey(value) : undefined;
+  if (range) {
+    const on = facetValues(filters, id).includes(value);
+    return on === (force ?? !on) ? filters : { ...filters, timeRange: on ? undefined : range };
+  }
+  const exclude = map === "exclude";
+  const selected = (exclude ? excludedValues : facetValues)(filters, id).includes(value);
+  if (selected === (force ?? !selected)) return filters;
+  const query = filters.searchQuery ?? "";
+  const searchQuery = selected
+    ? withoutTerm(query, id, value, exclude)
+    : withTerm(query, id, value, exclude);
+  return { ...filters, searchQuery };
 }

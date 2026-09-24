@@ -1,539 +1,842 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import React, { useCallback, useMemo, useState, useRef } from "react";
-import styled from "styled-components";
-
-import type { EvtxRecord, FilterOptions, TableColumn } from "../lib/types";
-import { DuckDbDataSource } from "../lib/duckDbDataSource";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { styled, useTheme } from "styled-components";
+import {
+  ArrowDown16Filled,
+  ArrowSort16Regular,
+  ArrowUp16Filled,
+  Filter16Filled,
+  Filter16Regular,
+} from "@fluentui/react-icons";
+import { errorMessage, type EvtxRecord, type TableColumn, type TabularRow } from "../lib/types";
+import { DuckDbDataSource, type RowSort } from "../lib/duckDbDataSource";
+import { autoColumnWidth, FALLBACK_COLUMN_WIDTH } from "../lib/columns";
+import { MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH } from "../state/columns/columnsSlice";
+import { ResizeHandle } from "./Windows/ResizeHandle";
 import { EventDetailsPane } from "./EventDetailsPane";
-import { computeSliceRows } from "../lib/computeSliceRows";
-import { useChunkVirtualizer } from "../lib/useChunkVirtualizer";
-import { LogRow } from "./LogRow";
-import { useRowNavigation } from "./useRowNavigation";
-import { logger } from "../lib/logger";
-import { ContextMenu, type ContextMenuItem } from "./Windows";
-import { getColumnFacetCounts } from "../lib/duckdb";
+import { useEventRows } from "../lib/useEventRows";
+import { ROW_HEIGHT, TABLE_HEADER_HEIGHT } from "../lib/rowWindow";
+import { useEvtxMetaState, useGlobalDispatch } from "../state/store";
+import { updateEvtxMeta } from "../state/evtx/evtxSlice";
+import { LogRow, TD } from "./LogRow";
+import { TitleBand } from "./EventDetailsPane";
+import { ColumnFilterMenu, type FilterValue } from "./ColumnFilterMenu";
+import { timeZoneLabel, useTimeZone } from "../lib/timeZone";
+import { Button, ContextMenu, type ContextMenuItem } from "./Windows";
+import { getColumnFacetCounts, MATCHED_COLUMN_ID } from "../lib/duckdb";
+import { searchWords, withoutField, withTerm } from "../lib/searchQuery";
 import { useFilters } from "../hooks/useFilters";
 import { useColumns } from "../hooks/useColumns";
-import type { VirtualItem } from "@tanstack/react-virtual";
-import { Filter20Regular } from "@fluentui/react-icons";
-import { formatTimeValue } from "./FilterSidebar/facetUtils";
-
-// ------------------------------------------------------------------
-// Helper to build the <tr/> list for the current viewport.  Extracted out of
-// JSX to keep the main component lean and readable.
-// ------------------------------------------------------------------
-
-interface GenerateRowsArgs {
-  vItems: VirtualItem[];
-  chunkRows: Map<number, any[]>; // generic rows
-  columnsCount: number;
-  tableContainerRef: React.MutableRefObject<HTMLDivElement | null>;
-  prefix: number[];
-  selectedRow: number | null;
-  handleRowClick: (idx: number) => void;
-  ROW_HEIGHT: number;
-  SLICE_BUFFER_ROWS: number;
-  MAX_ROWS_PER_SLICE: number;
-  virtualizerTotal: number;
-  columns: TableColumn[];
-}
-
-function generateRows({
-  vItems,
-  chunkRows,
-  columnsCount,
-  tableContainerRef,
-  prefix,
-  selectedRow,
-  handleRowClick,
-  ROW_HEIGHT,
-  SLICE_BUFFER_ROWS,
-  MAX_ROWS_PER_SLICE,
-  virtualizerTotal,
-  columns,
-}: GenerateRowsArgs): React.ReactNode[] {
-  const rows: React.ReactNode[] = [];
-  if (vItems.length === 0) return rows;
-
-  // Spacer before first visible chunk
-  if (vItems[0].start > 0) {
-    rows.push(
-      <tr key="spacer-top">
-        <td colSpan={columnsCount} style={{ height: vItems[0].start }} />
-      </tr>
-    );
-  }
-
-  vItems.forEach((vi, idx) => {
-    const chunkIdx = vi.index;
-    const records = chunkRows.get(chunkIdx);
-
-    if (!records) {
-      // Placeholder row while chunk loading
-      rows.push(
-        <tr key={`placeholder-${chunkIdx}`}>
-          <td colSpan={columnsCount} style={{ height: vi.size }}>
-            Loading chunk {chunkIdx}…
-          </td>
-        </tr>
-      );
-      return; // Continue to spacer between chunks
-    }
-
-    const startGlobal = prefix[chunkIdx] ?? 0;
-    const scrollEl = tableContainerRef.current;
-    const viewportStart = scrollEl?.scrollTop ?? 0;
-    const viewportHeight = scrollEl?.clientHeight ?? 0;
-    const viewportEnd = viewportStart + viewportHeight;
-
-    const bufferPx = SLICE_BUFFER_ROWS * ROW_HEIGHT;
-    const chunkTop = vi.start;
-    const chunkBottom = vi.start + vi.size;
-
-    // Skip if chunk outside buffered viewport
-    if (
-      viewportEnd + bufferPx <= chunkTop ||
-      viewportStart - bufferPx >= chunkBottom
-    ) {
-      rows.push(
-        <tr key={`skip-${chunkIdx}`}>
-          <td colSpan={columnsCount} style={{ height: vi.size }} />
-        </tr>
-      );
-      return;
-    }
-
-    const slice = computeSliceRows({
-      viewportStart,
-      viewportHeight,
-      chunkTop,
-      chunkHeight: vi.size,
-      rowHeight: ROW_HEIGHT,
-      bufferRows: SLICE_BUFFER_ROWS,
-      maxRows: MAX_ROWS_PER_SLICE,
-      recordCount: records.length,
-    });
-
-    if (!slice) {
-      rows.push(
-        <tr key={`skip-${chunkIdx}`}>
-          <td colSpan={columnsCount} style={{ height: vi.size }} />
-        </tr>
-      );
-      return;
-    }
-
-    const [sliceStartRow, sliceEndRow] = slice;
-
-    logger.debug("renderSlice", { chunkIdx, sliceStartRow, sliceEndRow });
-
-    // Top spacer inside chunk
-    const topSpacerHeight = sliceStartRow * ROW_HEIGHT;
-    if (topSpacerHeight > 0) {
-      rows.push(
-        <tr key={`top-pad-${chunkIdx}`}>
-          <td colSpan={columnsCount} style={{ height: topSpacerHeight }} />
-        </tr>
-      );
-    }
-
-    // Actual visible rows
-    records.slice(sliceStartRow, sliceEndRow + 1).forEach((rec, localIdx) => {
-      const rowI = sliceStartRow + localIdx;
-      const globalIdx = startGlobal + rowI;
-      const isEven = globalIdx % 2 === 0;
-      const isSelected = selectedRow === globalIdx;
-      rows.push(
-        <LogRow
-          key={`r-${globalIdx}`}
-          rowIndex={globalIdx}
-          record={rec}
-          isEven={isEven}
-          isSelected={isSelected}
-          onRowClick={handleRowClick}
-          columns={columns}
-        />
-      );
-    });
-
-    // Bottom spacer inside chunk
-    const bottomSpacerHeight = (records.length - sliceEndRow - 1) * ROW_HEIGHT;
-    if (bottomSpacerHeight > 0) {
-      rows.push(
-        <tr key={`bot-pad-${chunkIdx}`}>
-          <td colSpan={columnsCount} style={{ height: bottomSpacerHeight }} />
-        </tr>
-      );
-    }
-
-    // Spacer between this chunk and next
-    const next = vItems[idx + 1];
-    if (next) {
-      const gap = next.start - (vi.start + vi.size);
-      if (gap > 0) {
-        rows.push(
-          <tr key={`spacer-${chunkIdx}`}>
-            <td colSpan={columnsCount} style={{ height: gap }} />
-          </tr>
-        );
-      }
-    }
-  });
-
-  // Spacer after last visible chunk
-  const last = vItems[vItems.length - 1];
-  rows.push(
-    <tr key="spacer-bottom">
-      <td
-        colSpan={columnsCount}
-        style={{ height: virtualizerTotal - (last.start + last.size) }}
-      />
-    </tr>
-  );
-
-  return rows;
-}
-
-interface LogTableVirtualProps {
-  dataSource: DuckDbDataSource;
-  onRowSelect?: (rec: EvtxRecord) => void;
-}
-
-// ---------- styled basics (slimmed down from original LogTable) ----------
+import {
+  buildFacetConfigs,
+  clearFacet,
+  facetValues,
+  formatFacetValue,
+  isFiltered,
+  toggleFacet,
+} from "./FilterSidebar/facetUtils";
 
 const Container = styled.div`
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   overflow: hidden;
 `;
-
-const TableContainer = styled.div`
+const TableContainer = styled.section`
   flex: 1;
+  min-height: 0;
   overflow: auto;
   position: relative;
+  background: ${({ theme }) => theme.colors.surface.pane};
+  scrollbar-width: thin;
+  font-variant-numeric: tabular-nums;
+  &:focus-visible {
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -1px;
+  }
+  /* With a selection, keyboard focus is drawn on the selected row instead. */
+  &:focus-visible:has(tr[aria-selected="true"]) {
+    outline: none;
+  }
+  td[data-column-id="${MATCHED_COLUMN_ID}"] {
+    color: ${({ theme }) => theme.colors.text.secondary};
+  }
+  &:focus-visible tr[aria-selected="true"] {
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -1px;
+  }
 `;
-
 const Table = styled.table`
-  width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
 `;
-
+const Band = styled(TitleBand)`
+  gap: 24px;
+  span + span {
+    font-weight: 400;
+  }
+`;
 const THead = styled.thead`
   position: sticky;
   top: 0;
   z-index: 10;
-  background: ${({ theme }) => theme.colors.background.secondary};
+  background: ${({ theme }) => theme.colors.surface.pane};
 `;
-
-const TBody = styled.tbody``;
-
+// Column separators are the resize handles' 1px lines.
 const TH = styled.th`
-  text-align: left;
-  padding: 6px 8px;
-  border-right: 1px solid ${({ theme }) => theme.colors.border.light};
-  border-bottom: 2px solid ${({ theme }) => theme.colors.border.medium};
-  background: ${({ theme }) => theme.colors.background.secondary};
+  position: relative;
+  padding: 0;
+  height: ${TABLE_HEADER_HEIGHT}px;
+  box-sizing: border-box;
+  border-bottom: 1px solid ${({ theme }) => theme.colors.stroke.divider};
+  background: ${({ theme }) => theme.colors.surface.pane};
   font-weight: 600;
-  user-select: none;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-
-  &:last-child {
-    border-right: none;
-  }
 `;
-
-const THInner = styled.div<{ $filtered?: boolean }>`
+const HeaderControls = styled.div<{ $right: boolean }>`
   display: flex;
+  flex-direction: ${({ $right }) => ($right ? "row-reverse" : "row")};
+  align-items: center;
+  height: ${TABLE_HEADER_HEIGHT - 1}px;
+`;
+const SortButton = styled.button<{ $right: boolean }>`
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: ${({ $right }) => ($right ? "row-reverse" : "row")};
   align-items: center;
   gap: 4px;
-  cursor: pointer;
-  ::after {
-    content: "";
-  }
-  svg {
-    opacity: ${({ $filtered }) => ($filtered ? 1 : 0.4)};
-    color: ${({ theme, $filtered }) =>
-      $filtered ? theme.colors.accent.primary : theme.colors.text.secondary};
-  }
-`;
-
-// Add styled divider for resizing like original
-const Divider = styled.div`
-  height: 2px;
-  cursor: row-resize;
-  background: ${({ theme }) => theme.colors.border.light};
-  flex-shrink: 0;
-  transition: background 0.2s ease;
+  height: 100%;
+  padding: 0 ${({ $right }) => ($right ? "8px 0 4px" : "4px 0 8px")};
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
   &:hover {
-    background: ${({ theme }) => theme.colors.accent.primary};
+    background: ${({ theme }) => theme.colors.fill.hover};
+  }
+  &:focus-visible {
+    outline: 1px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: -1px;
+  }
+  > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  small {
+    color: ${({ theme }) => theme.colors.text.tertiary};
+    font-size: ${({ theme }) => theme.fontSize.secondary};
+    font-weight: 400;
   }
 `;
+// Glyphs show on header hover/focus; an active sort or filter keeps a filled glyph.
+const Glyph = styled.span<{ $active: boolean }>`
+  display: inline-flex;
+  flex: 0 0 16px;
+  color: ${({ theme, $active }) => ($active ? theme.colors.text.primary : theme.colors.text.tertiary)};
+  visibility: ${({ $active }) => ($active ? "visible" : "hidden")};
+  ${TH}:hover &,
+  ${TH}:focus-within & {
+    visibility: visible;
+  }
+`;
+const FilterButton = styled(Button).attrs({ variant: "subtle" })<{ $active: boolean }>`
+  flex: 0 0 20px;
+  min-width: 20px;
+  height: 20px;
+  margin: 0 2px;
+  padding: 0;
+  color: ${({ theme, $active }) => ($active ? theme.colors.accent.rest : theme.colors.text.secondary)};
+  visibility: ${({ $active }) => ($active ? "visible" : "hidden")};
+  ${TH}:hover &,
+  ${TH}:focus-within &,
+  &[aria-expanded="true"] {
+    visibility: visible;
+  }
+`;
+/** Grid-only columns: no sort, filter or header menu, not saved or listed in Choose columns. */
+const NON_FILTERABLE = new Set([MATCHED_COLUMN_ID]);
+const Notice = styled.div`
+  padding: 12px;
+  color: ${({ theme }) => theme.colors.text.primary};
+  background: ${({ theme }) => theme.colors.surface.pane};
+  button {
+    margin-left: 8px;
+  }
+`;
+interface Selection {
+  source: DuckDbDataSource;
+  index: number;
+  key: string | null;
+  record: EvtxRecord | null;
+}
+interface Props {
+  dataSource: DuckDbDataSource;
+  onManageColumns: () => void;
+}
 
-// ------------------------------------------------------------------------
+/** Event Viewer's order when the user has not chosen a sort. */
+const DEFAULT_SORT: RowSort = { id: "time", desc: true };
+/** Header click: ascending, descending, back to the default (time toggles newest/oldest). */
+export function nextSort(current: RowSort | null, id: string): RowSort | null {
+  const shown = current ?? DEFAULT_SORT;
+  if (shown.id !== id) return { id, desc: false };
+  if (!shown.desc) return id === DEFAULT_SORT.id ? null : { id, desc: true };
+  return current ? null : { id, desc: false };
+}
+const AUTOSIZE_SAMPLE = 200;
+/** Widest text as the grid lays it out (canvas ignores tabular-nums), in one layout pass. */
+function measureTexts(font: string, texts: string[], header: boolean): number {
+  const probe = document.createElement("div");
+  probe.style.cssText = "position:absolute;visibility:hidden;width:max-content;white-space:pre;";
+  // After cssText: the font shorthand would reset font-variant-numeric.
+  probe.style.font = `${header ? 600 : 400} 12px ${font}`;
+  probe.style.fontVariantNumeric = "tabular-nums";
+  for (const text of new Set(texts))
+    probe.append(Object.assign(document.createElement("div"), { textContent: text }));
+  document.body.append(probe);
+  const width = probe.getBoundingClientRect().width;
+  probe.remove();
+  return width;
+}
 
-export const LogTableVirtual: React.FC<LogTableVirtualProps> = ({
-  dataSource,
-  onRowSelect,
-}) => {
-  const { filters: currentFilters, setFilters } = useFilters();
-  const { columns } = useColumns();
+export const LogTableVirtual: React.FC<Props> = ({ dataSource, onManageColumns }) => {
+  const { filters, updateFilters } = useFilters();
+  const { isLoading, fileInfo, totalRecords } = useEvtxMetaState();
+  const timeZone = useTimeZone();
+  const theme = useTheme();
+  const dispatch = useGlobalDispatch();
+  const { columns: dataColumns, resizeColumn, removeColumn } = useColumns();
+  const words = useMemo(() => searchWords(filters.searchQuery), [filters.searchQuery]);
+  // While the query has words, a leading "Matched in" column says where each row matched.
+  const columns = useMemo<TableColumn[]>(
+    () =>
+      words.length
+        ? [{ id: MATCHED_COLUMN_ID, header: "Matched in" }, ...dataColumns]
+        : dataColumns,
+    [words, dataColumns],
+  );
+  const [draftWidth, setDraftWidth] = useState<{ id: string; width: number } | null>(null);
+  const [activeColumn, setActiveColumn] = useState<string | null>(null);
+  // Content widths fill in columns the user has not sized; a resize commits to column state.
+  const [autoWidths, setAutoWidths] = useState<Record<string, number>>({});
+  const columnWidth = (column: TableColumn) =>
+    draftWidth?.id === column.id
+      ? draftWidth.width
+      : (column.width ?? autoWidths[column.id] ?? FALLBACK_COLUMN_WIDTH);
+  // null = the default sort (time, newest first).
+  const [sort, setSort] = useState<RowSort | null>(null);
+  const effectiveSort = sort ?? DEFAULT_SORT;
+  const next = useMemo(() => dataSource.withSort(sort ?? DEFAULT_SORT), [dataSource, sort]);
+  const [source, setSource] = useState(next);
+  if (source !== next && next.replaces(source, isLoading)) {
+    // Reusing before this render keeps shown rows mounted instead of flashing placeholders.
+    next.reusePages(source);
+    setSource(next);
+  }
+  // Handlers read the shown source here so import refreshes keep their identity.
+  const shown = useRef(source);
+  const selectionRequest = useRef(0);
+  const filterRequest = useRef(0);
+  useEffect(() => {
+    // A new query invalidates in-flight selection and filter-menu requests.
+    if (shown.current.queryKey !== source.queryKey) {
+      selectionRequest.current++;
+      filterRequest.current++;
+    }
+    shown.current = source;
+  }, [source]);
+  const publishCount = useCallback(
+    (matchedCount: number) => dispatch(updateEvtxMeta({ matchedCount })),
+    [dispatch],
+  );
+  const { containerRef, items, totalHeight, scrollToIndex, totalRows, error, retry } = useEventRows(
+    {
+      dataSource: source,
+      rowHeight: ROW_HEIGHT,
+      onCount: publishCount,
+    },
+  );
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [detailError, setDetailError] = useState<{ queryKey: string; message: string } | null>(
+    null,
+  );
+  const currentError = detailError?.queryKey === source.queryKey ? detailError.message : null;
+  const showError = useCallback(
+    (message: string) => setDetailError({ queryKey: source.queryKey, message }),
+    [source.queryKey],
+  );
+  const selected = selection?.source.queryKey === source.queryKey ? selection : null;
+  const [detailsHeight, setDetailsHeight] = useState(220);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const [detailsMax, setDetailsMax] = useState(500);
 
-  const ROW_HEIGHT = 30; // single source of truth for row height
-  const MAX_ROWS_PER_SLICE = 5000; // increased to load a few thousand rows at once
-  const SLICE_BUFFER_ROWS = 2000; // expanded buffer size so more rows stay mounted
+  useEffect(
+    () => () => {
+      selectionRequest.current++;
+    },
+    [],
+  );
+  useEffect(() => {
+    const container = outerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() =>
+      setDetailsMax(Math.max(100, container.clientHeight - 100)),
+    );
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+  const selectRow = useCallback(
+    (index: number) => {
+      const shownSource = shown.current;
+      const request = ++selectionRequest.current;
+      setDetailError(null);
+      // Keep the previous record while the next one loads: dropping it unmounts the details
+      // pane for a frame, the table grows into its space and renders extra rows there.
+      setSelection((previous) => ({
+        source: shownSource,
+        index,
+        key: null,
+        record: previous?.record ?? null,
+      }));
+      void (async () => {
+        try {
+          const row = await shownSource.getRow(index);
+          if (!row) throw new Error("This event is no longer available.");
+          const record = await shownSource.getRecord(row.rowKey);
+          if (!record) throw new Error("This event is no longer available.");
+          if (request !== selectionRequest.current) return;
+          setSelection({ source: shownSource, index, key: row.rowKey, record });
+        } catch (cause) {
+          if (request !== selectionRequest.current) return;
+          setSelection(null);
+          showError(errorMessage(cause, "Unable to load event details."));
+        }
+      })();
+    },
+    [showError],
+  );
 
-  const {
-    containerRef: tableContainerRef,
-    virtualizer,
-    chunkRows,
-    prefix,
-    totalRows,
-  } = useChunkVirtualizer({
-    dataSource,
-    rowHeight: ROW_HEIGHT,
-  });
+  // Appended rows can move a selected event in a sorted result. Its stable key keeps
+  // details attached; the navigation index is re-ranked once per shown snapshot, which
+  // a sorted view refreshes at most every IMPORT_REFRESH_MS while importing.
+  const selectedKey = selected?.key;
+  const selectionSource = selected?.source;
+  useEffect(() => {
+    if (!selectedKey || selectionSource === source) return;
+    let current = true;
+    void source
+      .indexOf(selectedKey)
+      .then((index) => {
+        if (current && index !== null)
+          setSelection((value) =>
+            value?.key === selectedKey ? { ...value, source, index } : value,
+          );
+      })
+      .catch((cause) => {
+        if (current) showError(errorMessage(cause, "Unable to locate the selected event."));
+      });
+    return () => {
+      current = false;
+    };
+  }, [source, selectedKey, selectionSource, showError]);
 
-  const getRowRecord = useCallback(
-    (globalIdx: number): EvtxRecord | null => {
-      let c = 0;
-      while (c + 1 < prefix.length && prefix[c + 1] <= globalIdx) c++;
-      const rows = chunkRows.get(c);
-      if (!rows) return null;
-      const row: any = rows[globalIdx - prefix[c]];
-      if (!row) return null;
-      const raw = row["Raw"] as string | undefined;
-      if (!raw) return null;
+  const handleRowClick = useCallback(
+    (index: number, columnId: string) => {
+      setActiveColumn(columnId);
+      containerRef.current?.focus({ preventScroll: true });
+      selectRow(index);
+    },
+    [containerRef, selectRow],
+  );
+  const [menu, setMenu] = useState<{
+    queryKey: string;
+    items: ContextMenuItem[];
+    position: { x: number; y: number };
+    returnFocus: HTMLElement | null;
+    label: string;
+  } | null>(null);
+  const currentMenu = menu?.queryKey === source.queryKey ? menu : null;
+  const closeMenu = useCallback(() => {
+    filterRequest.current++;
+    setMenu(null);
+  }, []);
+
+  const [filterMenu, setFilterMenu] = useState<{
+    queryKey: string;
+    column: TableColumn;
+    anchor: HTMLElement;
+    values: FilterValue[] | null;
+  } | null>(null);
+  const currentFilterMenu = filterMenu?.queryKey === source.queryKey ? filterMenu : null;
+  const closeFilterMenu = useCallback(() => {
+    filterRequest.current++;
+    setFilterMenu(null);
+  }, []);
+  const openFilterMenu = async (column: TableColumn, anchor: HTMLElement) => {
+    const request = ++filterRequest.current;
+    setMenu(null);
+    setFilterMenu({ queryKey: source.queryKey, column, anchor, values: null });
+    try {
+      const counts = await getColumnFacetCounts(column.id, filters);
+      if (request !== filterRequest.current) return;
+      const facet = buildFacetConfigs(dataColumns).find((item) => item.id === column.id) ?? {
+        id: column.id,
+        label: column.header,
+      };
+      const values = counts.map(({ v, c }) => ({
+        value: v,
+        label: formatFacetValue(facet, v),
+        count: Number(c),
+      }));
+      setFilterMenu((current) =>
+        current?.column.id === column.id ? { ...current, values } : current,
+      );
+    } catch (cause) {
+      if (request !== filterRequest.current) return;
+      setFilterMenu(null);
+      showError(errorMessage(cause, "Unable to load filter values."));
+    }
+  };
+
+  const openHeaderMenu = (
+    column: TableColumn,
+    position: { x: number; y: number },
+    returnFocus: HTMLElement | null,
+  ) => {
+    filterRequest.current++;
+    const sorted = effectiveSort.id === column.id;
+    const sortTo = (desc: boolean) => () =>
+      setSort(
+        column.id === DEFAULT_SORT.id && desc === DEFAULT_SORT.desc
+          ? null
+          : { id: column.id, desc },
+      );
+    const actions: ContextMenuItem[] = [
+      {
+        id: "sort-ascending",
+        label: "Sort ascending",
+        checked: sorted && !effectiveSort.desc,
+        radio: true,
+        onClick: sortTo(false),
+      },
+      {
+        id: "sort-descending",
+        label: "Sort descending",
+        checked: sorted && effectiveSort.desc,
+        radio: true,
+        onClick: sortTo(true),
+      },
+      { id: "sort-separator", separator: true },
+      {
+        id: "filter",
+        label: "Filter values…",
+        disabled: !returnFocus,
+        onClick: () => {
+          if (returnFocus) void openFilterMenu(column, returnFocus);
+        },
+      },
+      {
+        id: "clear-filter",
+        label: "Clear column filter",
+        disabled: !isFiltered(filters, column.id),
+        onClick: () => updateFilters((previous) => clearFacet(previous, column.id)),
+      },
+      { id: "column-separator", separator: true },
+      {
+        id: "reset-width",
+        label: "Reset column width",
+        onClick: () => resizeColumn(column.id, autoWidths[column.id] ?? FALLBACK_COLUMN_WIDTH),
+      },
+      {
+        id: "hide-column",
+        label: "Hide column",
+        disabled: dataColumns.length < 2,
+        onClick: () => removeColumn(column.id),
+      },
+      { id: "choose-columns", label: "Choose columns…", onClick: onManageColumns },
+    ];
+    setMenu({
+      queryKey: source.queryKey,
+      items: actions,
+      position,
+      returnFocus,
+      label: `${column.header} column`,
+    });
+  };
+
+  const copyValue = useCallback(
+    async (value: string) => {
       try {
-        return JSON.parse(raw);
-      } catch {
-        return null;
+        await navigator.clipboard.writeText(value);
+      } catch (cause) {
+        showError(errorMessage(cause, "Unable to copy. Check clipboard permission."));
       }
     },
-    [chunkRows, prefix]
+    [showError],
   );
-
-  const columnsMemo = useMemo(() => columns, [columns]);
-
-  // Optional: expose scroll position for debugging / analytics
-  const handleScroll = useCallback(() => {
-    if (tableContainerRef.current) {
-      logger.debug("scroll", {
-        scrollTop: tableContainerRef.current.scrollTop,
+  const copyEvent = useCallback(
+    async (key: string) => {
+      try {
+        const record = await shown.current.getRecord(key);
+        if (!record) throw new Error("This event is no longer available.");
+        await navigator.clipboard.writeText(JSON.stringify(record, null, 2));
+      } catch (cause) {
+        showError(errorMessage(cause, "Unable to copy event details."));
+      }
+    },
+    [showError],
+  );
+  const openRowMenu = useCallback(
+    (row: TabularRow, column: TableColumn, position: { x: number; y: number }) => {
+      filterRequest.current++;
+      const value = String(row[column.id] ?? "");
+      setMenu({
+        queryKey: source.queryKey,
+        position,
+        returnFocus: containerRef.current,
+        label: "Event actions",
+        items: [
+          {
+            id: "copy-value",
+            label: `Copy ${column.header} value`,
+            onClick: () => {
+              void copyValue(value);
+            },
+          },
+          {
+            id: "copy-event",
+            label: "Copy event JSON",
+            onClick: () => {
+              void copyEvent(row.rowKey);
+            },
+          },
+          {
+            id: "filter-value",
+            label: `Filter ${column.header} to this value`,
+            disabled: NON_FILTERABLE.has(column.id),
+            onClick: () =>
+              updateFilters((previous) => ({
+                ...previous,
+                searchQuery: withTerm(
+                  withoutField(previous.searchQuery ?? "", column.id),
+                  column.id,
+                  value,
+                  false,
+                ),
+              })),
+          },
+        ],
       });
+    },
+    [source.queryKey, containerRef, copyValue, copyEvent, updateFilters],
+  );
+  const handleCellContextMenu = useCallback(
+    (
+      index: number,
+      column: TableColumn,
+      row: TabularRow,
+      event: React.MouseEvent<HTMLTableCellElement>,
+    ) => {
+      event.preventDefault();
+      handleRowClick(index, column.id);
+      openRowMenu(row, column, { x: event.clientX, y: event.clientY });
+    },
+    [handleRowClick, openRowMenu],
+  );
+  const handleTableKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    // Until a sorted refresh re-ranks the selection, its index points into the old order.
+    if (selected && selected.source !== source) return;
+    if (event.target !== event.currentTarget) return;
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      event.preventDefault();
+      const index = selected?.index;
+      const column = columns.find((item) => item.id === activeColumn) ?? columns[0];
+      if (index === undefined || !column) return;
+      const row = source.peekRow(index);
+      if (!row) return;
+      const cell = containerRef.current?.querySelector<HTMLTableCellElement>(
+        `[data-row-idx="${index}"] [data-column-id="${CSS.escape(column.id)}"]`,
+      );
+      const bounds = (cell ?? event.currentTarget).getBoundingClientRect();
+      openRowMenu(row, column, { x: Math.max(8, bounds.left + 8), y: bounds.bottom });
+      return;
     }
-  }, [tableContainerRef]);
-
-  /* ------------------------------------------------------------------
-   * Row selection handling
-   * ------------------------------------------------------------------
-   * Besides tracking the numeric row index for highlighting / keyboard
-   * navigation, we also keep a reference to the *actual* EvtxRecord that
-   * was selected.  This guarantees the EventDetailsPane can stay mounted
-   * across filter changes because the record object itself does not change
-   * when our virtualisation layers re-compute indices or re-order rows.
-   */
-
-  const [selectedRecord, setSelectedRecord] = useState<EvtxRecord | null>(null);
-
-  // Wrap the optional onRowSelect prop so we can update our own state first
-  const handleRowSelect = useCallback(
-    (rec: EvtxRecord) => {
-      setSelectedRecord(rec);
-      if (onRowSelect) onRowSelect(rec);
-    },
-    [onRowSelect]
-  );
-
-  const { selectedRow, handleKeyDown, handleRowClick } = useRowNavigation({
-    totalRows,
-    getRowRecord,
-    onRowSelect: handleRowSelect,
-    scrollContainerRef: tableContainerRef,
-    rowHeight: ROW_HEIGHT,
-  });
-
-  // We intentionally keep the selected record even if it no longer appears
-  // in the filtered result set so the details pane remains visible while the
-  // user tweaks filters.  It will be cleared automatically once the user
-  // selects a different row or when a new file is loaded.
-
-  // Height of the details pane (resizable via divider)
-  const [detailsHeight, setDetailsHeight] = useState<number>(200);
-
-  // outer container ref (for mouse move calculations during resize)
-  const outerRef = useRef<HTMLDivElement>(null);
-
-  // adjust divider
-  const handleDividerMouseDown = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      const startY = e.clientY;
-      const startHeight = detailsHeight;
-
-      const onMouseMove = (me: MouseEvent) => {
-        if (!outerRef.current) return;
-        const deltaY = me.clientY - startY;
-        const newH = Math.max(100, startHeight - deltaY);
-        setDetailsHeight(newH);
-      };
-
-      const onMouseUp = () => {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-      };
-
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup", onMouseUp);
-    },
-    [detailsHeight]
-  );
-
-  // ---------------------------------------------
-  // Header filter pop-over state
-  // ---------------------------------------------
-  const [filterMenu, setFilterMenu] = useState<{
-    col: TableColumn;
-    pos: { x: number; y: number };
-    items: { v: string; c: number }[];
-  } | null>(null);
-
-  const openFilterMenu = async (col: TableColumn, e: React.MouseEvent) => {
-    e.preventDefault();
-    const counts = await getColumnFacetCounts(col, currentFilters);
-    setFilterMenu({
-      col,
-      pos: { x: e.clientX, y: e.clientY },
-      items: counts.map(({ v, c }) => ({ v: v as any, c })),
-    });
+    if (event.altKey || event.ctrlKey || event.metaKey || !totalRows) return;
+    let index: number;
+    switch (event.key) {
+      case "ArrowDown":
+        index = Math.min(totalRows - 1, (selected?.index ?? -1) + 1);
+        break;
+      case "ArrowUp":
+        index = Math.max(0, (selected?.index ?? 1) - 1);
+        break;
+      case "Home":
+        index = 0;
+        break;
+      case "End":
+        index = totalRows - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    selectRow(index);
+    scrollToIndex(index);
   };
+  // Size unsized columns once from the first loaded rows (later-added columns likewise).
+  // Set during render, like `source` above, so the grid never paints the fallback widths twice.
+  const unsized = columns.filter(
+    (column) => column.width === undefined && autoWidths[column.id] === undefined,
+  );
+  const sample: TabularRow[] = [];
+  for (let index = 0; unsized.length && index < Math.min(totalRows, AUTOSIZE_SAMPLE); index++) {
+    const row = source.peekRow(index);
+    if (row) sample.push(row);
+  }
+  if (sample.length) {
+    const measure = (texts: string[], header: boolean) =>
+      measureTexts(theme.fonts.body, texts, header);
+    setAutoWidths((previous) => ({
+      ...previous,
+      ...Object.fromEntries(
+        unsized.map((column) => [column.id, autoColumnWidth(column, sample, measure)]),
+      ),
+    }));
+  }
 
-  const toggleValue = (val: string) => {
-    setFilters((prev) => {
-      const cur = prev.columnEquals?.[filterMenu!.col.id] ?? [];
-      const exists = cur.includes(val);
-      const nextVals = exists
-        ? cur.filter((x: string) => x !== val)
-        : [...cur, val];
-      return {
-        ...prev,
-        columnEquals: {
-          ...(prev.columnEquals ?? {}),
-          [filterMenu!.col.id]: nextVals,
-        },
-      } as FilterOptions;
-    });
-  };
+  // The band names the log's channel ("Security"), as Event Viewer does; the file name until known.
+  const [channel, setChannel] = useState<string | null>(null);
+  const hasRows = totalRows > 0;
+  useEffect(() => {
+    if (!hasRows) return;
+    let current = true;
+    getColumnFacetCounts("channel", {}, 1)
+      .then(([top]) => {
+        if (current && top?.v) setChannel(top.v);
+      })
+      .catch(() => undefined); // ponytail: the file name stays as the fallback title.
+    return () => {
+      current = false;
+    };
+  }, [hasRows]);
 
+  const spacer = (height: number) =>
+    height > 0 && (
+      <tr aria-hidden="true">
+        <td aria-hidden="true" colSpan={columns.length + 1} style={{ height, padding: 0 }} />
+      </tr>
+    );
+  const top = Math.max(0, (items[0]?.start ?? TABLE_HEADER_HEIGHT) - TABLE_HEADER_HEIGHT);
+  const bottom = items.length ? Math.max(0, totalHeight - items[items.length - 1].end) : 0;
+  const tableWidth = columns.reduce((width, column) => width + columnWidth(column), 0);
+  const logName = channel ?? fileInfo?.fileName.replace(/\.evtx$/i, "");
   return (
-    <Container
-      ref={outerRef}
-      tabIndex={0}
-      onKeyDown={handleKeyDown}
-      style={{ outline: "none" }}
-    >
-      <TableContainer ref={tableContainerRef} onScroll={handleScroll}>
-        <div
-          style={{ height: virtualizer.getTotalSize(), position: "relative" }}
+    <Container ref={outerRef}>
+      {logName && (
+        <Band>
+          <span>{logName}</span>
+          <span>
+            Number of events: {totalRecords.toLocaleString()}
+            {totalRows !== totalRecords && ` · ${totalRows.toLocaleString()} shown`}
+          </span>
+        </Band>
+      )}
+      {(error || currentError) && (
+        <Notice role="alert">
+          {error || currentError}
+          {error && <Button onClick={retry}>Retry</Button>}
+        </Notice>
+      )}
+      <TableContainer
+        ref={containerRef}
+        tabIndex={0}
+        onKeyDown={handleTableKeyDown}
+        aria-label="Events. Use arrow keys to select an event, Home or End to jump."
+      >
+        <Table
+          aria-label="Event log"
+          aria-rowcount={totalRows + 1}
+          // The last, unsized column stretches so header and rows run edge to edge.
+          style={{ width: `max(${tableWidth}px, 100%)` }}
         >
-          <Table>
-            <THead>
-              <tr>
-                {columnsMemo.map((col) => (
+          <colgroup>
+            {columns.map((col) => (
+              <col key={col.id} style={{ width: columnWidth(col) }} />
+            ))}
+            <col />
+          </colgroup>
+          <THead>
+            <tr>
+              {columns.map((col) => {
+                const sorted = effectiveSort.id === col.id;
+                const filtered = isFiltered(filters, col.id);
+                const right = col.align === "right";
+                const upcoming = nextSort(sort, col.id) ?? DEFAULT_SORT;
+                const zone = col.id === "time" ? timeZoneLabel(timeZone) : null;
+                const shortZone = timeZone === "utc" ? "UTC" : "local";
+                const fixed = NON_FILTERABLE.has(col.id);
+                return (
                   <TH
                     key={col.id}
-                    style={{ width: col.width, position: "relative" }}
-                    onContextMenu={(e) => openFilterMenu(col, e)}
+                    scope="col"
+                    title={zone ? `${col.header} (${zone})` : undefined}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      if (fixed) return;
+                      const invoker =
+                        event.currentTarget.querySelector<HTMLButtonElement>("button");
+                      openHeaderMenu(col, { x: event.clientX, y: event.clientY }, invoker);
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        fixed ||
+                        (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))
+                      )
+                        return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const bounds = event.currentTarget.getBoundingClientRect();
+                      openHeaderMenu(
+                        col,
+                        { x: bounds.left, y: bounds.bottom },
+                        event.target instanceof HTMLElement ? event.target : null,
+                      );
+                    }}
+                    aria-sort={sorted ? (effectiveSort.desc ? "descending" : "ascending") : "none"}
                   >
-                    {(() => {
-                      const isFiltered = Boolean(
-                        currentFilters.columnEquals?.[col.id]?.length
-                      );
-                      return (
-                        <THInner
-                          $filtered={isFiltered}
-                          onClick={(ev) => openFilterMenu(col, ev as any)}
-                        >
+                    <HeaderControls $right={right}>
+                      <SortButton
+                        type="button"
+                        $right={right}
+                        aria-label={`Sort by ${col.header} ${upcoming.desc ? "descending" : "ascending"}`}
+                        disabled={fixed}
+                        onClick={() => setSort((current) => nextSort(current, col.id))}
+                      >
+                        <span>
                           {col.header}
-                          <Filter20Regular />
-                        </THInner>
-                      );
-                    })()}
+                          {zone && <small> ({shortZone})</small>}
+                        </span>
+                        {!fixed && (
+                          <Glyph $active={sorted} aria-hidden="true">
+                            {!sorted ? (
+                              <ArrowSort16Regular />
+                            ) : effectiveSort.desc ? (
+                              <ArrowDown16Filled />
+                            ) : (
+                              <ArrowUp16Filled />
+                            )}
+                          </Glyph>
+                        )}
+                      </SortButton>
+                      {!fixed && (
+                        <FilterButton
+                          $active={filtered}
+                          icon={filtered ? <Filter16Filled /> : <Filter16Regular />}
+                          aria-label={`Filter ${col.header}`}
+                          aria-haspopup="true"
+                          aria-expanded={currentFilterMenu?.column.id === col.id}
+                          onClick={(event) => {
+                            if (currentFilterMenu?.column.id === col.id) closeFilterMenu();
+                            else void openFilterMenu(col, event.currentTarget);
+                          }}
+                        />
+                      )}
+                    </HeaderControls>
+                    <ResizeHandle
+                      label={`Resize ${col.header} column`}
+                      orientation="vertical"
+                      value={columnWidth(col)}
+                      min={MIN_COLUMN_WIDTH}
+                      max={MAX_COLUMN_WIDTH}
+                      onResize={(width) => setDraftWidth({ id: col.id, width })}
+                      onCommit={(width) => {
+                        if (fixed) setAutoWidths((previous) => ({ ...previous, [col.id]: width }));
+                        else resizeColumn(col.id, width);
+                        setDraftWidth(null);
+                      }}
+                      style={{ position: "absolute", right: -3, top: 0, height: "100%", margin: 0 }}
+                    />
                   </TH>
-                ))}
-              </tr>
-            </THead>
-            <TBody>
-              {generateRows({
-                vItems: virtualizer.getVirtualItems(),
-                chunkRows,
-                columnsCount: columnsMemo.length,
-                tableContainerRef,
-                prefix,
-                selectedRow,
-                handleRowClick,
-                ROW_HEIGHT,
-                SLICE_BUFFER_ROWS,
-                MAX_ROWS_PER_SLICE,
-                virtualizerTotal: virtualizer.getTotalSize(),
-                columns: columnsMemo,
+                );
               })}
-            </TBody>
-          </Table>
-        </div>
+              <TH aria-hidden="true" />
+            </tr>
+          </THead>
+          <tbody>
+            {spacer(top)}
+            {items.map((item) => {
+              const row = source.peekRow(item.index);
+              return row ? (
+                <LogRow
+                  key={row.rowKey}
+                  record={row}
+                  rowIndex={item.index}
+                  isSelected={Boolean(selected?.key && selected.key === row.rowKey)}
+                  onRowClick={handleRowClick}
+                  onCellContextMenu={handleCellContextMenu}
+                  columns={columns}
+                  timeZone={timeZone}
+                  words={words}
+                />
+              ) : (
+                <tr
+                  key={`loading-${item.index}`}
+                  aria-rowindex={item.index + 2}
+                  style={{ height: ROW_HEIGHT }}
+                >
+                  <TD colSpan={columns.length + 1}>Loading event…</TD>
+                </tr>
+              );
+            })}
+            {spacer(bottom)}
+          </tbody>
+        </Table>
+        {!totalRows && !error && <Notice as="output">No events match the current filters.</Notice>}
       </TableContainer>
-
-      {selectedRecord && (
+      {selected && !selected.record && <Notice as="output">Loading event details…</Notice>}
+      {selected?.record && (
         <>
-          <Divider onMouseDown={handleDividerMouseDown} />
-          <EventDetailsPane record={selectedRecord} height={detailsHeight} />
+          <ResizeHandle
+            label="Resize event details"
+            orientation="horizontal"
+            value={Math.min(detailsHeight, detailsMax)}
+            min={100}
+            max={detailsMax}
+            reverse
+            onResize={setDetailsHeight}
+          />
+          <EventDetailsPane record={selected.record} height={Math.min(detailsHeight, detailsMax)} />
         </>
       )}
-      {filterMenu &&
-        (() => {
-          const current =
-            currentFilters.columnEquals?.[filterMenu.col.id] ?? [];
-          const menuItems: ContextMenuItem[] = [
-            {
-              id: "select-all",
-              label: "(Select All)",
-              onClick: () => {
-                setFilters(
-                  (prev) =>
-                    ({
-                      ...prev,
-                      columnEquals: {
-                        ...(prev.columnEquals ?? {}),
-                        [filterMenu.col.id]: [],
-                      },
-                    } as FilterOptions)
-                );
-              },
-            },
-          ];
-          const isTimeCol = filterMenu.col.id === "time";
-          filterMenu.items.forEach(({ v, c }) => {
-            const labelVal = isTimeCol ? formatTimeValue(v) : String(v ?? "-");
-            menuItems.push({
-              id: v,
-              label: `${labelVal} (${c})`,
-              icon: (
-                <input type="checkbox" readOnly checked={current.includes(v)} />
-              ),
-              onClick: () => toggleValue(v),
-            });
-          });
-          return (
-            <ContextMenu
-              items={menuItems}
-              position={filterMenu.pos}
-              onClose={() => setFilterMenu(null)}
-            />
-          );
-        })()}
+      {currentMenu && (
+        <ContextMenu
+          items={currentMenu.items}
+          position={currentMenu.position}
+          onClose={closeMenu}
+          returnFocus={currentMenu.returnFocus}
+          ariaLabel={currentMenu.label}
+        />
+      )}
+      {currentFilterMenu && (
+        <ColumnFilterMenu
+          key={currentFilterMenu.column.id}
+          anchor={currentFilterMenu.anchor}
+          label={`Filter ${currentFilterMenu.column.header}`}
+          values={currentFilterMenu.values}
+          included={facetValues(filters, currentFilterMenu.column.id)}
+          filtered={isFiltered(filters, currentFilterMenu.column.id)}
+          onToggle={(value) =>
+            updateFilters((previous) => toggleFacet(previous, currentFilterMenu.column.id, value))
+          }
+          onClear={() =>
+            updateFilters((previous) => clearFacet(previous, currentFilterMenu.column.id))
+          }
+          onClose={closeFilterMenu}
+        />
+      )}
     </Container>
   );
 };

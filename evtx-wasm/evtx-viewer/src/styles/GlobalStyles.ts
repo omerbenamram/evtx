@@ -7,6 +7,13 @@ export const GlobalStyles = createGlobalStyle`
     padding: 0;
   }
 
+  :root {
+    color-scheme: ${({ theme }) => theme.colorScheme};
+    accent-color: ${({ theme }) => theme.colors.accent.rest};
+    /* Inherited; scrollbar-width is not, so it is set on every element below. */
+    scrollbar-color: ${({ theme }) => theme.colors.stroke.strong} transparent;
+  }
+
   html, body {
     height: 100%;
     overflow: hidden;
@@ -15,11 +22,14 @@ export const GlobalStyles = createGlobalStyle`
   body {
     font-family: ${({ theme }) => theme.fonts.body};
     font-size: ${({ theme }) => theme.fontSize.body};
+    line-height: 16px;
     color: ${({ theme }) => theme.colors.text.primary};
-    background-color: ${({ theme }) => theme.colors.background.primary};
+    background-color: ${({ theme }) => theme.colors.surface.base};
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  button, input, select, textarea { font: inherit; color: inherit; }
 
   #root {
     height: 100%;
@@ -27,92 +37,44 @@ export const GlobalStyles = createGlobalStyle`
     flex-direction: column;
   }
 
-  /* Windows-style scrollbar */
-  ::-webkit-scrollbar {
-    width: 12px;
-    height: 12px;
+  * {
+    scrollbar-width: thin;
   }
 
-  ::-webkit-scrollbar-track {
-    background: ${({ theme }) => theme.colors.background.primary};
-    border: 1px solid ${({ theme }) => theme.colors.border.light};
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: ${({ theme }) => theme.colors.border.medium};
-    border-radius: ${({ theme }) => theme.borderRadius.sm};
-    border: 1px solid ${({ theme }) => theme.colors.border.light};
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: ${({ theme }) => theme.colors.border.dark};
-  }
-
-  /* Selection */
   ::selection {
-    background-color: ${({ theme }) => theme.colors.selection.background};
-    color: ${({ theme }) => theme.colors.text.primary};
+    background-color: ${({ theme }) => theme.colors.accent.rest};
+    color: ${({ theme }) => theme.colors.accent.text};
   }
 
-  /* Focus styles */
   :focus-visible {
-    outline: 2px solid ${({ theme }) => theme.colors.accent.primary};
-    outline-offset: 2px;
+    outline: 2px solid ${({ theme }) => theme.colors.focus};
+    outline-offset: 1px;
   }
 
-  /* Disable focus outline for mouse users */
   :focus:not(:focus-visible) {
     outline: none;
   }
 
-  /* Tables */
-  table {
-    border-collapse: collapse;
-    width: 100%;
-  }
-
-  /* Links */
-  a {
-    color: ${({ theme }) => theme.colors.text.link};
-    text-decoration: none;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-
-  /* Code */
-  code, pre {
+  code, pre, kbd, samp {
     font-family: ${({ theme }) => theme.fonts.mono};
-    font-size: ${({ theme }) => theme.fontSize.caption};
+    font-size: ${({ theme }) => theme.fontSize.body};
   }
 
-  /* Tooltips */
-  [data-tooltip] {
-    position: relative;
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
 
-    &::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      background-color: ${({ theme }) => theme.colors.text.primary};
-      color: ${({ theme }) => theme.colors.text.white};
-      padding: ${({ theme }) => theme.spacing.xs} ${({ theme }) =>
-  theme.spacing.sm};
-      border-radius: ${({ theme }) => theme.borderRadius.sm};
-      font-size: ${({ theme }) => theme.fontSize.caption};
-      white-space: nowrap;
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity ${({ theme }) => theme.transitions.fast};
-      margin-bottom: ${({ theme }) => theme.spacing.xs};
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0s !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0s !important;
+      scroll-behavior: auto !important;
     }
+  }
 
-    &:hover::after {
-      opacity: 1;
-      visibility: visible;
-    }
+  @media (forced-colors: active) {
+    :root { scrollbar-color: auto; }
+    :focus-visible { outline-color: Highlight; }
   }
 `;

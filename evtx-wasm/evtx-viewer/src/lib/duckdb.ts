@@ -1,485 +1,302 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-import * as duckdb from "@duckdb/duckdb-wasm";
-import type { EvtxRecord, FilterOptions, BucketCounts } from "./types";
+import type { AsyncDuckDBConnection } from "@duckdb/duckdb-wasm";
+import { z } from "zod";
+import {
+  parseEvtxRecord,
+  tabularRowSchema,
+  type TableColumn,
+  type TabularRow,
+  type EvtxRecord,
+  type FilterOptions,
+  type ParsedQuery,
+} from "./types";
+import { parseSearchQuery, searchWords } from "./searchQuery";
+import { columnSql } from "./columnSql";
+import type { RowSort } from "./duckDbDataSource";
+import { getTimeZone, timeBuckets, type TimeZone } from "./timeZone";
 
-// ------------- File-session tracking -------------
-// Each time we load a new log file we bump this counter.  Background inserts
-// from previous sessions check the value and bail out early to avoid mixing
-// data from multiple files.
+/** Bumped per cleared table so readers of an older log can tell their rows are gone. */
 let activeSessionId = 0;
 
 export function beginNewSession(): number {
   return ++activeSessionId;
 }
 
-function isStale(sessionAtCall: number): boolean {
-  return sessionAtCall !== activeSessionId;
+export function getSessionId(): number {
+  return activeSessionId;
 }
 
-// Keep a singleton instance so multiple components share the same DB
-let db: duckdb.AsyncDuckDB | null = null;
-let initPromise: Promise<any> | null = null;
-let conn: any = null;
+/** Arrow IPC inserts are positional: keep in step with the wasm record batch. */
+export const LOGS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS logs (
+  EventID INTEGER, Level INTEGER, Provider TEXT, Channel TEXT, TimeCreated TIMESTAMP,
+  Computer TEXT, UserID TEXT, Task INTEGER, Opcode INTEGER, Keywords TEXT, Raw TEXT
+)`;
 
-/**
- * Initialise DuckDB-WASM.  Call once on application startup.
- */
-export async function initDuckDB(): Promise<any> {
-  if (conn) return conn;
-  if (initPromise) return initPromise;
+let initPromise: Promise<AsyncDuckDBConnection> | undefined;
 
-  initPromise = (async () => {
-    // Select the best JSDelivr bundle for the current browser
-    const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
-    const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
-
-    // Create a same-origin wrapper worker to bypass cross-origin script restrictions.
-    const workerBlobUrl = URL.createObjectURL(
-      new Blob([`importScripts("${bundle.mainWorker}");`], {
-        type: "text/javascript",
-      })
-    );
-
-    const worker = new Worker(workerBlobUrl); // classic worker
-
-    const logger = new duckdb.ConsoleLogger();
-    db = new duckdb.AsyncDuckDB(logger, worker);
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-
-    URL.revokeObjectURL(workerBlobUrl);
-
-    conn = await db.connect();
-
-    // Make sure a table exists – schema will be created automatically on first insert
-    await conn.query(
-      `CREATE TABLE IF NOT EXISTS logs (
-      EventID INTEGER,
-      Level   INTEGER,
-      Provider TEXT,
-      Channel  TEXT,
-      Raw      TEXT
-    );`
-    );
-    return conn;
-  })();
-
-  return initPromise;
+export function initDuckDB(): Promise<AsyncDuckDBConnection> {
+  return (initPromise ??= openDuckDB().catch((cause: unknown) => {
+    initPromise = undefined;
+    throw cause;
+  }));
 }
 
-// (Legacy ingestRecords and insertArrowBatch functions removed – Arrow IPC is now the sole ingestion path.)
+async function openDuckDB(): Promise<AsyncDuckDBConnection> {
+  const duckdb = await import("@duckdb/duckdb-wasm");
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  const workerUrl = URL.createObjectURL(
+    new Blob([`importScripts(${JSON.stringify(bundle.mainWorker)});`], {
+      type: "text/javascript",
+    }),
+  );
+  let worker: Worker | undefined;
+  try {
+    worker = new Worker(workerUrl);
+    const database = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+    await database.instantiate(bundle.mainModule, bundle.pthreadWorker);
+    const connection = await database.connect();
+    await connection.query(LOGS_TABLE_SQL);
+    return connection;
+  } catch (error) {
+    worker?.terminate();
+    throw error;
+  } finally {
+    URL.revokeObjectURL(workerUrl);
+  }
+}
 
-export async function insertArrowIPC(
-  buffer: Uint8Array | ArrayBuffer
-): Promise<void> {
-  const session = activeSessionId;
-  const conn = await initDuckDB();
-  if (isStale(session)) return;
+export const queryLogs = async (sql: string) => (await initDuckDB()).query(sql);
 
-  // Prefer new API name first (DuckDB ≥1.3 / wasm docs):
-  // The `create` flag must be disabled here because we already create the
-  // `logs` table (or ensure it exists) during `initDuckDB()`.  Leaving the
-  // default (`create: true`) causes DuckDB to try to issue another
-  //   CREATE TABLE logs (...)
-  // for every batch which fails after the first batch with
-  //   "Table with name \"logs\" already exists!".
-  // See ArrowInsertOptions in duckdb-wasm docs.
-  const insertOpts = { name: "logs", append: true, create: false } as const;
-  conn.insertArrowFromIPCStream(buffer, insertOpts);
+const countSchema = z
+  .union([z.number(), z.bigint()])
+  .transform(Number)
+  .pipe(z.number().int().min(0).max(Number.MAX_SAFE_INTEGER));
+const countRowSchema = z.object({ cnt: countSchema });
+const rawRowSchema = z.object({ Raw: z.string() });
+const keyedRawRowSchema = rawRowSchema.extend({ key: countSchema });
+const positionRowSchema = z.object({ position: countSchema });
+const facetRowSchema = z.object({ v: z.string(), c: countSchema });
+const epochMs = z.union([z.number(), z.bigint()]).transform(Number).nullable();
+const timeBoundsSchema = z.object({ lo: epochMs, hi: epochMs });
+
+/** No stale-session check: loadFile awaits the previous import before the next clearLogs. */
+export async function insertArrowIPC(buffer: Uint8Array): Promise<void> {
+  await (await initDuckDB()).insertArrowFromIPCStream(buffer, { name: "logs", create: false });
 }
 
 function escapeSqlString(str: string): string {
   return str.replace(/'/g, "''");
 }
 
-/** Build a SQL WHERE clause from current filters */
-export function buildWhere(filters: FilterOptions): string {
+function resolveColumn(id: string) {
+  const column = columnSql(id);
+  if (!column) throw new Error(`Unknown column: ${id}`);
+  return column;
+}
+
+// Raw is serialized JSON, so match the term as JSON would write it (C:\x is stored as C:\\x).
+const jsonText = (term: string) => JSON.stringify(term.toLowerCase()).slice(1, -1);
+const regexText = (text: string) => text.replace(/[\\^$.|?*+()[\]{}]/g, "\\$&");
+// Every event carries this namespace; its "…/events/event" must not match the word "event".
+const XMLNS =
+  '"Event_attributes":{"xmlns":"http://schemas.microsoft.com/win/2004/08/events/event"}';
+const STRING_BODY = String.raw`(?:[^"\\]|\\.)*`;
+
+/** A string value (a string not followed by ":") or a number that contains the word. */
+function valuePattern(term: string): string {
+  const word = regexText(jsonText(term));
+  const text = String.raw`"[^"]*${word}${STRING_BODY}"[,}\]]`;
+  return /^[\d.]+$/.test(term) ? String.raw`${text}|[:,\[]-?[\d.]*${word}` : text;
+}
+
+/** Words match values, not key names; `contains` first skips most rows cheaply. */
+function rawText(term: string): string {
+  const lower = `replace(lower(Raw), '${escapeSqlString(XMLNS.toLowerCase())}', '')`;
+  return `(contains(lower(Raw), '${escapeSqlString(jsonText(term))}') AND regexp_matches(${lower}, '${escapeSqlString(valuePattern(term))}'))`;
+}
+
+/** "Field: value" of the first value that contains `term`; an array item has no field name. */
+export function matchedInSql(term: string): string {
+  const word = regexText(jsonText(term));
+  const pattern = String.raw`"([^"\\]*)":(?:"(${STRING_BODY}${word}${STRING_BODY})"|(-?[\d.]*${word}[\d.e+-]*))`;
+  const raw = `replace(Raw, '${escapeSqlString(XMLNS)}', '')`;
+  const group = (n: number) => `regexp_extract(${raw}, '${escapeSqlString(pattern)}', ${n}, 'i')`;
+  // ponytail: only \\ is unescaped; decode other JSON escapes if they show up in practice.
+  return `nullif(concat_ws(': ', nullif(${group(1)}, ''), replace(${group(2)} || ${group(3)}, '\\\\', '\\')), '')`;
+}
+
+/** Included "" also selects NULL, like the facets' "(Not set)"; exclude keeps NULL rows. */
+function valuesPredicate(id: string, values: string[], exclude: boolean): string {
+  const { sql, typed = sql } = resolveColumn(id);
+  const list = values.map((value) => `'${escapeSqlString(value)}'`).join(",");
+  // Text literals convert to the column's type; '' cannot, so a list with it compares text.
+  const unset = values.includes("");
+  const key = unset ? `CAST(${sql} AS VARCHAR)` : typed;
+  if (exclude) return `(${typed} IS NULL OR ${key} NOT IN (${list}))`;
+  return `${unset ? `coalesce(${key}, '')` : key} IN (${list})`;
+}
+
+export type QueryFilters = FilterOptions & ParsedQuery;
+
+export function buildWhere(filters: QueryFilters): string {
   const clauses: string[] = [];
-
-  if (filters.provider && filters.provider.length) {
-    const list = filters.provider
-      .map((p) => `'${escapeSqlString(p)}'`)
-      .join(",");
-    clauses.push(`Provider IN (${list})`);
+  if (filters.searchQuery?.trim()) {
+    const queryWhere = buildWhere(parseSearchQuery(filters.searchQuery));
+    if (queryWhere) clauses.push(`(${queryWhere})`);
   }
 
-  if (filters.channel && filters.channel.length) {
-    const list = filters.channel
-      .map((c) => `'${escapeSqlString(c)}'`)
-      .join(",");
-    clauses.push(`Channel IN (${list})`);
-  }
+  for (const [id, values] of Object.entries(filters.include ?? {}))
+    if (values.length) clauses.push(valuesPredicate(id, values, false));
+  for (const [id, values] of Object.entries(filters.exclude ?? {}))
+    if (values.length) clauses.push(valuesPredicate(id, values, true));
 
-  if (filters.level && filters.level.length) {
-    const list = filters.level.join(",");
-    clauses.push(`Level IN (${list})`);
-  }
+  for (const term of filters.contains ?? []) clauses.push(rawText(term));
+  for (const term of filters.notContains ?? []) clauses.push(`NOT ${rawText(term)}`);
 
-  if (filters.eventId && filters.eventId.length) {
-    const list = filters.eventId.join(",");
-    clauses.push(`EventID IN (${list})`);
-  }
-
-  // New: EventData JSON field filters.  Each entry is AND-ed with the rest of
-  // the WHERE clauses.  For a field “SubjectUserSid” with values ["S-1-5-18"],
-  // we emit:
-  //   json_extract_string(Raw, '$.Event.EventData.SubjectUserSid') IN ('S-1-5-18')
-  if (filters.eventData) {
-    for (const [field, values] of Object.entries(filters.eventData)) {
-      if (!values || values.length === 0) continue;
-      const valueList = values
-        .map((v) => `'${escapeSqlString(String(v))}'`)
-        .join(",");
-      // Use DuckDB’s json_extract_string to pull the scalar value.
-      const path = `$.Event.EventData.${field}`;
-      clauses.push(`json_extract_string(Raw, '${path}') IN (${valueList})`);
+  if (filters.timeRange) {
+    const { start, end } = filters.timeRange;
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) {
+      throw new Error("Choose a valid start and end time.");
     }
+    clauses.push(`TimeCreated >= epoch_ms(${start.getTime()})`);
+    clauses.push(`TimeCreated < epoch_ms(${end.getTime()})`);
   }
 
-  // EventData exclusion
-  if (filters.eventDataExclude) {
-    for (const [field, values] of Object.entries(filters.eventDataExclude)) {
-      if (!values || values.length === 0) continue;
-      const valueList = values
-        .map((v) => `'${escapeSqlString(String(v))}'`)
-        .join(",");
-      const path = `$.Event.EventData.${field}`;
-      clauses.push(`json_extract_string(Raw, '${path}') NOT IN (${valueList})`);
-    }
-  }
-
-  if (filters.searchTerm && filters.searchTerm.trim() !== "") {
-    const pattern = `%${escapeSqlString(filters.searchTerm.toLowerCase())}%`;
-    clauses.push(
-      `(lower(Provider) LIKE '${pattern}' OR lower(Channel) LIKE '${pattern}' OR cast(EventID as TEXT) LIKE '${pattern}')`
-    );
-  }
-
-  // TODO: timeRange filter if needed
-
-  // Generic column equality filters
-  if (filters.columnEquals) {
-    for (const [colId, values] of Object.entries(filters.columnEquals)) {
-      if (!values || values.length === 0) continue;
-      const colSpec = activeColumns.find((c) => c.id === colId);
-      if (!colSpec) continue;
-      // Special case – time column equality matches on truncated timestamp
-      if (colId === "time" && lastTimeFacetUnit) {
-        const intervalLitMap: Record<string, string> = {
-          minute: "INTERVAL '1 minute'",
-          hour: "INTERVAL '1 hour'",
-          day: "INTERVAL '1 day'",
-          week: "INTERVAL '1 week'",
-          month: "INTERVAL '1 month'",
-        } as const;
-
-        const intervalLit =
-          intervalLitMap[lastTimeFacetUnit] ?? "INTERVAL '1 hour'";
-
-        const valueList = values
-          .map((v) => `'${escapeSqlString(String(v))}'`)
-          .join(",");
-        clauses.push(
-          `time_bucket(${intervalLit}, CAST(${colSpec.sqlExpr} AS TIMESTAMPTZ)) IN (TIMESTAMP ${valueList})`
-        );
-        continue;
-      }
-      const valueList = values
-        .map((v) => `'${escapeSqlString(String(v))}'`)
-        .join(",");
-      clauses.push(`${colSpec.sqlExpr} IN (${valueList})`);
-    }
-  }
-
-  return clauses.length ? clauses.join(" AND ") : "";
+  return clauses.join(" AND ");
 }
 
-/**
- * Fetch aggregated facet counts given current filters.
- * Returns the counts for all Level/Provider/Channel/EventID values that still match.
- */
-export async function getFacetCounts(
-  filters: FilterOptions
-): Promise<BucketCounts> {
-  const c = await initDuckDB();
-
-  const facetQueries: Record<keyof BucketCounts, string> = {
-    level: "Level",
-    provider: "Provider",
-    channel: "Channel",
-    event_id: "EventID",
-  } as const;
-
-  const result: BucketCounts = {
-    level: {},
-    provider: {},
-    channel: {},
-    event_id: {},
-  };
-
-  // Run queries sequentially – could be parallelised but fine for <100 facets
-  for (const [bucketKey, col] of Object.entries(facetQueries) as [
-    keyof BucketCounts,
-    string
-  ][]) {
-    // For the EventID facet we want to ignore the current EventID filter so
-    // that all IDs remain visible for multi-selection.
-    let filtersForFacet: FilterOptions = filters;
-    if (bucketKey === "event_id") {
-      filtersForFacet = { ...filters, eventId: [] };
-    }
-
-    const whereFacet = buildWhere(filtersForFacet);
-    const whereFacetSql = whereFacet ? `WHERE ${whereFacet}` : "";
-
-    const res = await c.query(
-      `SELECT ${col} as key, count(*) as cnt FROM logs ${whereFacetSql} GROUP BY ${col}`
-    );
-
-    // DuckDB may return bigint values for both the grouping key and the count
-    // column.  Convert them to primitive JS numbers/strings so downstream code
-    // can safely do arithmetic like `value + 1` without hitting the
-    // "Cannot mix BigInt and other types" TypeError.
-    for (const row of res.toArray() as { key: unknown; cnt: unknown }[]) {
-      // Normalise the group key.  For numeric columns DuckDB can return a
-      // BigInt – stringify first and then cast where appropriate so we keep
-      // leading zeros etc. for text columns unchanged.
-      const k = row.key === null ? "" : String(row.key);
-
-      // The aggregate count is always numeric.  Convert BigInt → number; leave
-      // plain numbers untouched.  Values here are expected to be < 2^53 which
-      // is safe for JS Number.
-      const cntNum: number =
-        typeof row.cnt === "bigint" ? Number(row.cnt) : (row.cnt as number);
-
-      (result[bucketKey] as Record<string, number>)[k] = cntNum;
-    }
-  }
-
-  return result;
+export function whereClause(filters: QueryFilters): string {
+  const where = buildWhere(filters);
+  return where ? `WHERE ${where}` : "";
 }
 
-/**
- * Fetch paginated records matching the filters.
- */
+/** Matching records in file order after row key `afterKey`; keyset pages stay stable and linear. */
 export async function fetchRecords(
-  filters: FilterOptions,
+  filters: QueryFilters,
   limit = 100,
-  offset = 0
-): Promise<EvtxRecord[]> {
-  const c = await initDuckDB();
-
+  afterKey = -1,
+  query = queryLogs,
+): Promise<{ key: number; record: EvtxRecord }[]> {
   const where = buildWhere(filters);
-  const whereSql = where ? `WHERE ${where}` : "";
-
-  const res = await c.query(
-    `SELECT Raw FROM logs ${whereSql} LIMIT ${limit} OFFSET ${offset}`
-  );
-
-  const out: EvtxRecord[] = [];
-  for (const row of res.toArray() as { Raw: string }[]) {
-    try {
-      out.push(JSON.parse(row.Raw));
-    } catch {
-      /* ignore malformed */
-    }
-  }
-  return out;
-}
-
-/** Remove all rows from the logs table – used when loading a new file. */
-export async function clearLogs(): Promise<void> {
-  const c = await initDuckDB();
-  try {
-    beginNewSession();
-    await c.query("DELETE FROM logs");
-  } catch (err) {
-    // If the table somehow doesn’t exist yet just ignore.
-    console.warn("DuckDB clearLogs failed", err);
-  }
-}
-
-/** Count records matching current filters (fast aggregate). */
-export async function countRecords(filters: FilterOptions): Promise<number> {
-  const c = await initDuckDB();
-  const where = buildWhere(filters);
-  const whereSql = where ? `WHERE ${where}` : "";
-  const res = await c.query(`SELECT count(*) as cnt FROM logs ${whereSql}`);
-  const row = res.toArray()[0] as { cnt: number | bigint } | undefined;
-  if (!row) return 0;
-  return typeof row.cnt === "bigint" ? Number(row.cnt) : (row.cnt as number);
-}
-
-// ---------------------------------------------------------------------------
-// Generic tabular fetch based on dynamic column specs
-// ---------------------------------------------------------------------------
-
-import type { ColumnSpec } from "./types";
-
-// -----------------------------------------------------------
-// Active column registry – set by UI layer so buildWhere can
-// translate column IDs to SQL expressions without threading
-// `columns` param everywhere.
-// -----------------------------------------------------------
-
-let activeColumns: ColumnSpec[] = [];
-
-export function setActiveColumns(cols: ColumnSpec[]): void {
-  activeColumns = cols;
-}
-
-/**
- * Fetch rows as plain objects according to the provided columns list.
- * Each ColumnSpec.sqlExpr MUST already alias to its id (for example
- *   `Level AS level`).  For convenience we still add the alias automatically
- * if not present.
- */
-export async function fetchTabular(
-  columns: ColumnSpec[],
-  filters: FilterOptions,
-  limit = 100,
-  offset = 0
-): Promise<Record<string, unknown>[]> {
-  const c = await initDuckDB();
-
-  const selectFragments = columns.map((col) => {
-    // Simple heuristic – if the sqlExpr already contains an " AS " use as-is
-    if (/\sas\s/i.test(col.sqlExpr)) return col.sqlExpr;
-    return `${col.sqlExpr} AS "${col.id}"`;
+  const res = await query(`SELECT rowid AS key, Raw FROM logs
+    WHERE rowid > ${afterKey} ${where ? `AND (${where})` : ""} ORDER BY rowid LIMIT ${limit}`);
+  return res.toArray().map((row) => {
+    const { key, Raw } = keyedRawRowSchema.parse(row);
+    return { key, record: parseEvtxRecord(Raw) };
   });
-
-  // Always include Raw so we can reconstruct full event if needed
-  if (!columns.some((c) => c.id === "Raw")) {
-    selectFragments.push("Raw");
-  }
-
-  const where = buildWhere(filters);
-  const whereSql = where ? `WHERE ${where}` : "";
-
-  const query = `SELECT ${selectFragments.join(
-    ", "
-  )} FROM logs ${whereSql} LIMIT ${limit} OFFSET ${offset}`;
-  const res = await c.query(query);
-  return res.toArray() as Record<string, unknown>[];
 }
 
-// ---------------------------------------------------------------------------
-// Facet counts for arbitrary column (for header filter popover)
-// ---------------------------------------------------------------------------
+export async function clearLogs(): Promise<void> {
+  beginNewSession();
+  await queryLogs("DELETE FROM logs");
+}
 
-let lastTimeFacetUnit: "minute" | "hour" | "day" | "week" | "month" | null =
-  null;
+export async function countRecords(filters: QueryFilters, query = queryLogs): Promise<number> {
+  const res = await query(`SELECT count(*) as cnt FROM logs ${whereClause(filters)}`);
+  return countRowSchema.parse(res.toArray()[0]).cnt;
+}
 
-/**
- * Adaptive time-bucket facet helper.
- *
- * Groups the timestamp column into a sensible resolution (minute/hour/day…)
- * based on the span of the data *after* filters are applied.  The heavy
- * lifting happens entirely in DuckDB via a CTE chain using `date_bin`.
- */
-async function getTimeFacetBuckets(
-  col: ColumnSpec,
-  filters: FilterOptions,
-  limit = 250
-): Promise<{ v: unknown; c: number }[]> {
-  const c = await initDuckDB();
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
 
-  // Ensure timestamps are typed (timezone-aware).
-  const tsExpr = `CAST(${col.sqlExpr} AS TIMESTAMPTZ)`;
+export function buildOrderBy(
+  columns: TableColumn[],
+  sort: RowSort | null,
+  rowid = "rowid",
+): string {
+  if (!sort || !columns.some((col) => col.id === sort.id)) return `${rowid} ASC`;
+  const { sql, typed = sql } = resolveColumn(sort.id);
+  return `${typed} ${sort.desc ? "DESC" : "ASC"} NULLS LAST, ${rowid} ASC`;
+}
 
-  // Remove equality filter on this column if present.
-  const adjusted: FilterOptions = {
-    ...filters,
-    columnEquals: { ...filters.columnEquals, [col.id]: [] },
-  };
+/** The grid's "Matched in" column while the query has words; it is not a real column. */
+export const MATCHED_COLUMN_ID = "matchedIn";
 
-  const where = buildWhere(adjusted);
-  const whereSql = where ? `WHERE ${where}` : "";
+export async function fetchTabular(
+  columns: TableColumn[],
+  filters: QueryFilters,
+  limit = 512,
+  offset = 0,
+  sort: RowSort | null = null,
+  query = queryLogs,
+): Promise<TabularRow[]> {
+  const fields = columns.map((col) => `${resolveColumn(col.id).sql} AS ${quoteIdentifier(col.id)}`);
+  fields.push('CAST(rid AS VARCHAR) AS "rowKey"');
+  const [word] = searchWords(filters.searchQuery);
+  if (word) fields.push(`${matchedInSql(word)} AS "${MATCHED_COLUMN_ID}"`);
+  // Slice the page first so display expressions run on its rows only, not every match.
+  const order = buildOrderBy(columns, sort, "rid");
+  const res = await query(`SELECT ${fields.join(", ")} FROM (
+    SELECT *, rowid AS rid FROM logs ${whereClause(filters)}
+    ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}
+  ) ORDER BY ${order}`);
+  return res.toArray().map((row) => tabularRowSchema.parse({ ...row }));
+}
 
-  // Single-shot query: decide bucket width and aggregate in one SQL call.
-  const singleSql = `
-WITH stats AS (
-  SELECT
-    min(${tsExpr}) AS min_t,
-    max(${tsExpr}) AS max_t,
-    datediff('millisecond', min(${tsExpr}), max(${tsExpr})) AS span_ms
-  FROM logs
-  ${whereSql}
-),
-params AS (
-  SELECT
-    CASE
-      WHEN span_ms <= 7200000                    THEN INTERVAL '1 minute'
-      WHEN span_ms <= 172800000                  THEN INTERVAL '1 hour'
-      WHEN span_ms <= 7776000000                 THEN INTERVAL '1 day'
-      WHEN span_ms <= 31536000000                THEN INTERVAL '1 week'
-      ELSE                                           INTERVAL '1 month'
-    END AS bucket_width,
-    CASE
-      WHEN span_ms <= 7200000                    THEN 'minute'
-      WHEN span_ms <= 172800000                  THEN 'hour'
-      WHEN span_ms <= 7776000000                 THEN 'day'
-      WHEN span_ms <= 31536000000                THEN 'week'
-      ELSE                                           'month'
-    END AS bucket_unit
-  FROM stats
-),
-buckets AS (
-  SELECT
-    strftime(time_bucket(p.bucket_width, ${tsExpr}), '%Y-%m-%d %H:%M') AS v,
-    count(*)                                                           AS c,
-    p.bucket_unit                                                      AS bucket_unit
-  FROM logs
-  CROSS JOIN params p
-  ${whereSql}
-  GROUP BY v, p.bucket_unit
-  ORDER BY v
-  LIMIT ${limit}
-)
-SELECT v, c, bucket_unit FROM buckets;`;
+export async function fetchRecordByKey(key: string, query = queryLogs): Promise<EvtxRecord | null> {
+  if (!/^\d+$/.test(key)) throw new Error("Invalid event key");
+  const result = await query(`SELECT Raw FROM logs WHERE rowid = ${key}`);
+  const row = result.toArray()[0];
+  return row ? parseEvtxRecord(rawRowSchema.parse(row).Raw) : null;
+}
 
-  const res = await c.query(singleSql);
-  const rows = res.toArray() as {
-    v: unknown;
-    c: number;
-    bucket_unit: string;
-  }[];
+export async function findRowIndex(
+  key: string,
+  filters: QueryFilters,
+  columns: TableColumn[],
+  sort: RowSort | null,
+  query = queryLogs,
+): Promise<number | null> {
+  if (!/^\d+$/.test(key)) throw new Error("Invalid event key");
+  const result = await query(`SELECT position FROM (
+    SELECT rowid AS event_key, row_number() OVER (ORDER BY ${buildOrderBy(columns, sort)}) - 1 AS position
+    FROM logs ${whereClause(filters)}
+  ) WHERE event_key = ${key}`);
+  const row = result.toArray()[0];
+  return row ? positionRowSchema.parse(row).position : null;
+}
 
-  if (rows.length > 0) {
-    const unitStr = rows[0].bucket_unit as
-      | "minute"
-      | "hour"
-      | "day"
-      | "week"
-      | "month";
-    lastTimeFacetUnit = unitStr;
-  }
-
-  // Strip bucket_unit before returning.
-  return rows.map(({ v, c }) => ({ v, c }));
+/** Time counts by calendar bucket in `zone`, oldest first; each value is a `timeRangeKey`. */
+async function getTimeFacetCounts(whereSql: string, zone: TimeZone, query: typeof queryLogs) {
+  const bounds =
+    await query(`SELECT epoch_ms(min(TimeCreated)) AS lo, epoch_ms(max(TimeCreated)) AS hi
+    FROM logs ${whereSql}`);
+  const { lo, hi } = timeBoundsSchema.parse(bounds.toArray()[0]);
+  if (lo === null || hi === null) return [];
+  // ponytail: events without a time get no bucket; they are rare in real logs.
+  const buckets = timeBuckets(lo, hi, zone).map(([start, end]) => `(${start}, ${end})`);
+  const res = await query(`SELECT concat(bucket_start, '/', bucket_end) AS v, count(*) AS c
+    FROM logs JOIN (VALUES ${buckets.join(",")}) AS b(bucket_start, bucket_end)
+      ON TimeCreated >= epoch_ms(bucket_start) AND TimeCreated < epoch_ms(bucket_end)
+    ${whereSql} GROUP BY bucket_start, bucket_end ORDER BY bucket_start`);
+  return res.toArray().map((row) => facetRowSchema.parse(row));
 }
 
 export async function getColumnFacetCounts(
-  col: ColumnSpec,
-  filters: FilterOptions,
-  limit = 250
-): Promise<{ v: unknown; c: number }[]> {
-  if (col.id === "time") {
-    return getTimeFacetBuckets(col, filters, limit);
-  }
-
-  const c = await initDuckDB();
-  // Exclude current equality filter on this column when computing counts so
-  // user can multi-select.
-  const adjusted: FilterOptions = {
-    ...filters,
-    columnEquals: { ...filters.columnEquals, [col.id]: [] },
-  };
-
-  const where = buildWhere(adjusted);
-  const whereSql = where ? `WHERE ${where}` : "";
-  const sql = `SELECT ${col.sqlExpr} AS v, count(*) c FROM logs ${whereSql} GROUP BY v ORDER BY c DESC LIMIT ${limit}`;
-  const res = await c.query(sql);
-  return res.toArray() as { v: unknown; c: number }[];
+  id: string,
+  filters: QueryFilters,
+  limit = 250,
+  query = queryLogs,
+  zone = getTimeZone(),
+) {
+  const { sql, typed } = resolveColumn(id);
+  // Leave out this column's own selections so users can multi-select; excluded values stay hidden.
+  const { searchQuery, ...rest } = filters;
+  const parsed = { ...rest, ...parseSearchQuery(searchQuery ?? "") };
+  const own = { ...parsed, include: { ...parsed.include, [id]: [] } };
+  // Time's own selection also covers the time range, which its buckets set.
+  if (id === "time")
+    return getTimeFacetCounts(whereClause({ ...own, timeRange: undefined }), zone, query);
+  const whereSql = whereClause(own);
+  const value = `coalesce(CAST(${sql} AS VARCHAR), '')`;
+  // A typed column groups and ranks before formatting; its ISO text sorts like the timestamp.
+  const res = await query(
+    typed
+      ? `SELECT ${value} AS v, c FROM (
+          SELECT ${typed}, count(*) AS c FROM logs ${whereSql}
+          GROUP BY ${typed} ORDER BY c DESC, ${typed} NULLS FIRST LIMIT ${limit}
+        ) ORDER BY c DESC, v`
+      : `SELECT ${value} AS v, count(*) c FROM logs ${whereSql} GROUP BY v ORDER BY c DESC, v ASC LIMIT ${limit}`,
+  );
+  return res.toArray().map((row) => facetRowSchema.parse(row));
 }
-
-// (end of duckdb helpers)

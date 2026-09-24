@@ -1,55 +1,35 @@
 import { useEffect, useState } from "react";
 import { getColumnFacetCounts } from "../../lib/duckdb";
-import { EXCLUDE_FROM_FACETS } from "./facetUtils";
-import {
-  useColumnsState,
-  useFiltersState,
-  useIngestState,
-} from "../../state/store";
-import type { ColumnSpec } from "../../lib/types";
+import { useColumnsState, useFiltersState, useEvtxMetaState } from "../../state/store";
+import { buildFacetConfigs } from "./facetUtils";
+import { useTimeZone } from "../../lib/timeZone";
 
-/**
- * Hook that derives facet value → count maps for the active columns
- * using DuckDB.  Counts recompute automatically whenever filters, columns or
- * ingest progress change (sourced from the global store).
- */
 export function useFacetCounts(): Record<string, Map<string, number>> {
   const columns = useColumnsState();
   const filters = useFiltersState();
-  const { progress: ingestProgress } = useIngestState();
+  const { isLoading, fileInfo } = useEvtxMetaState();
+  const zone = useTimeZone();
   const [counts, setCounts] = useState<Record<string, Map<string, number>>>({});
-
-  // Exclusion list comes from facetUtils so the set stays centralised.
+  // Keyed on ids (XML names hold no newlines): a column resize must not re-run every scan.
+  const facetIds = buildFacetConfigs(columns)
+    .map(({ id }) => id)
+    .join("\n");
 
   useEffect(() => {
-    if (ingestProgress < 1) return;
-
+    if (isLoading || !fileInfo) return;
     let cancelled = false;
 
     (async () => {
       const out: Record<string, Map<string, number>> = {};
-
-      // Ensure Channel column spec exists for facet counts even if not visible.
-      const specs: ColumnSpec[] = [...columns];
-      if (!specs.some((c) => c.id === "channel")) {
-        specs.push({ id: "channel", header: "Channel", sqlExpr: "Channel" });
-      }
-
-      const facetableSpecs = specs.filter(
-        (spec) => !EXCLUDE_FROM_FACETS.has(spec.id)
-      );
-
       await Promise.all(
-        facetableSpecs.map(async (spec) => {
+        facetIds.split("\n").map(async (id) => {
           try {
-            const res = await getColumnFacetCounts(spec, filters, 200);
-            const m = new Map<string, number>();
-            res.forEach(({ v, c }) => m.set(String(v), Number(c)));
-            out[spec.id] = m;
+            const res = await getColumnFacetCounts(id, filters, 200, undefined, zone);
+            out[id] = new Map(res.map(({ v, c }) => [v, c]));
           } catch (err) {
-            console.warn(`facet counts failed for ${spec.id}`, err);
+            console.warn(`facet counts failed for ${id}`, err);
           }
-        })
+        }),
       );
 
       if (!cancelled) setCounts(out);
@@ -58,7 +38,7 @@ export function useFacetCounts(): Record<string, Map<string, number>> {
     return () => {
       cancelled = true;
     };
-  }, [columns, filters, ingestProgress]);
+  }, [facetIds, filters, isLoading, fileInfo, zone]);
 
-  return counts;
+  return isLoading || !fileInfo ? {} : counts;
 }

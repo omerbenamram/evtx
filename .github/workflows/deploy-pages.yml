@@ -3,7 +3,6 @@ name: Deploy EVTX Viewer to GitHub Pages
 on:
   push:
     branches: [ wasm-viewer ]
-  # Allow manual trigger
   workflow_dispatch:
 
 permissions:
@@ -18,13 +17,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      # ----------------------
-      # Install build tooling
-      # ----------------------
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: evtx-wasm/evtx-viewer/package.json
 
       - name: Set up Rust toolchain (stable) with wasm target
         uses: dtolnay/rust-toolchain@stable
@@ -36,9 +32,6 @@ jobs:
           curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
             | sudo tar xz --strip-components=1 -C /usr/local/bin --wildcards '*/wasm-pack'
 
-      # ----------------------
-      # Build the WASM crate
-      # ----------------------
       - name: Build evtx-wasm crate (release)
         run: |
           wasm-pack build evtx-wasm \
@@ -47,26 +40,27 @@ jobs:
             --out-name evtx_wasm \
             --release
 
-      # ----------------------
-      # Build the React viewer
-      # ----------------------
       - name: Install JS/TS dependencies
         working-directory: evtx-wasm/evtx-viewer
         run: bun install --frozen-lockfile
 
-      # Copy built-in sample to public folder before build
       - name: Add sample EVTX to viewer public folder
         run: |
           mkdir -p evtx-wasm/evtx-viewer/public/samples
           cp samples/security.evtx evtx-wasm/evtx-viewer/public/samples/
 
+      - name: Check viewer
+        working-directory: evtx-wasm/evtx-viewer
+        run: bun run check
+
+      - name: Check WASM parser regression
+        run: cargo test --manifest-path evtx-wasm/Cargo.toml --lib
+
+      # `bun run check` already ran tsc.
       - name: Build viewer
         working-directory: evtx-wasm/evtx-viewer
-        run: bun run build
+        run: bunx vite build
 
-      # ----------------------
-      # Upload artifact for Pages
-      # ----------------------
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:

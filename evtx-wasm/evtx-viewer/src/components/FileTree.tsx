@@ -1,26 +1,28 @@
 import React, { useState, useEffect, useCallback } from "react";
 import EvtxStorage from "../lib/storage";
-import styled from "styled-components";
+import { styled } from "styled-components";
 import { TreeView, type TreeNode, ContextMenu } from "./Windows";
+import { errorMessage } from "../lib/types";
 import {
-  Folder20Regular,
-  FolderOpen20Filled,
-  Document20Regular,
-  Delete20Regular,
+  Folder16Regular,
+  FolderOpen16Regular,
+  DocumentBulletList16Regular,
+  Delete16Regular,
+  Desktop16Regular,
 } from "@fluentui/react-icons";
 
 const TreeContainer = styled.div`
   height: 100%;
+  min-height: 0;
+  min-width: 0;
   overflow-y: auto;
-  background: ${({ theme }) => theme.colors.background.secondary};
+  padding-top: 2px;
+  background: ${({ theme }) => theme.colors.surface.pane};
   user-select: none;
 `;
-
-const TreeHeader = styled.div`
-  padding: ${({ theme }) => theme.spacing.sm} ${({ theme }) => theme.spacing.md};
-  font-weight: 600;
-  border-bottom: 1px solid ${({ theme }) => theme.colors.border.light};
-  background: ${({ theme }) => theme.colors.background.tertiary};
+const ErrorText = styled.p`
+  padding: 4px 8px;
+  color: ${({ theme }) => theme.colors.severity.error};
 `;
 
 interface EventLogNode {
@@ -30,26 +32,22 @@ interface EventLogNode {
   expandedIcon?: React.ReactNode;
   children?: EventLogNode[];
   logPath?: string;
-  description?: string;
-  fileId?: string; // For cached recent logs
+  fileId?: string;
 }
 
-// Built-in sample log(s) shipped with the viewer. They are served from the
-// /samples/ path and are *not* downloaded until the user explicitly selects
-// them.
+// Fetched from /samples/ only when selected.
 const baseStructure: EventLogNode[] = [
   {
     id: "examples",
     label: "Example Logs",
-    icon: <Folder20Regular />,
-    expandedIcon: <FolderOpen20Filled />,
+    icon: <Folder16Regular />,
+    expandedIcon: <FolderOpen16Regular />,
     children: [
       {
         id: "sample-security",
         label: "security.evtx (sample)",
-        icon: <Document20Regular />,
+        icon: <DocumentBulletList16Regular />,
         logPath: "samples/security.evtx",
-        description: "Built-in Windows Security log sample",
       },
     ],
   },
@@ -57,181 +55,151 @@ const baseStructure: EventLogNode[] = [
 
 async function fetchRecentNodes(): Promise<EventLogNode[]> {
   const storage = await EvtxStorage.getInstance();
-  const files = await storage.listFiles();
-
-  // sort by pinned then lastOpened desc
-  files.sort((a, b) => {
-    if (a.pinned && !b.pinned) return -1;
-    if (!a.pinned && b.pinned) return 1;
-    return b.lastOpened - a.lastOpened;
-  });
-
-  const pinnedChildren: EventLogNode[] = [];
-  const recentChildren: EventLogNode[] = [];
-
-  files.forEach((f) => {
-    const node: EventLogNode = {
-      id: `recent-${f.fileId}`,
-      label: f.fileName,
-      icon: <Document20Regular />,
-      fileId: f.fileId,
-      description: `${(f.fileSize / 1024 / 1024).toFixed(1)} MB`,
-    };
-    if (f.pinned) pinnedChildren.push(node);
-    else recentChildren.push(node);
-  });
-
-  const nodes: EventLogNode[] = [];
-  if (pinnedChildren.length) {
-    nodes.push({
-      id: "pinned",
-      label: "Pinned Logs",
-      icon: <Folder20Regular />,
-      expandedIcon: <FolderOpen20Filled />,
-      children: pinnedChildren,
-    });
-  }
-  if (recentChildren.length) {
-    nodes.push({
+  const files = (await storage.listFiles()).toSorted((a, b) => b.lastOpened - a.lastOpened);
+  if (!files.length) return [];
+  return [
+    {
       id: "recent",
       label: "Recent Logs",
-      icon: <Folder20Regular />,
-      expandedIcon: <FolderOpen20Filled />,
-      children: recentChildren,
-    });
-  }
-  return nodes;
+      icon: <Folder16Regular />,
+      expandedIcon: <FolderOpen16Regular />,
+      children: files.map((f) => ({
+        id: `recent-${f.fileId}`,
+        label: f.fileName,
+        icon: <DocumentBulletList16Regular />,
+        fileId: f.fileId,
+      })),
+    },
+  ];
 }
 
 interface FileTreeProps {
-  onNodeSelect?: (node: EventLogNode) => void;
-  selectedNodeId?: string;
-  activeFileId?: string | null; // file currently ingesting
-  ingestProgress?: number; // 0..1
-  refreshVersion?: number; // internal, bump to force recent list update
+  onNodeSelect: (node: EventLogNode) => void;
+  selectedNodeId: string;
+  activeFileId: string | null;
+  ingestProgress: number;
+  /** Bump to re-read Recent Logs. */
+  refreshVersion: number;
 }
 
 export const FileTree: React.FC<FileTreeProps> = ({
   onNodeSelect,
   selectedNodeId,
   activeFileId,
-  ingestProgress = 1,
-  refreshVersion = 0,
+  ingestProgress,
+  refreshVersion,
 }) => {
   const [treeData, setTreeData] = useState<EventLogNode[]>(baseStructure);
+  const [error, setError] = useState("");
+
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
-    // Load recent logs once component mounts
-    (async () => {
-      const recent = await fetchRecentNodes();
-      setTreeData([...recent, ...baseStructure]);
-    })();
-  }, [refreshVersion]);
-
-  // refresh helper (e.g., after load) – exposed via context could be nicer
-  const refreshRecent = useCallback(async () => {
-    const recent = await fetchRecentNodes();
-    setTreeData([...recent, ...baseStructure]);
-  }, []);
-
-  const convertToTreeNodes = (nodes: EventLogNode[]): TreeNode[] => {
-    return nodes.map((node) => {
-      const showPct =
-        node.fileId &&
-        activeFileId &&
-        node.fileId === activeFileId &&
-        ingestProgress < 1;
-      const pctRaw = ingestProgress * 100;
-      const pctDisplay = pctRaw < 0.01 ? 0.01 : Math.round(pctRaw * 100) / 100; // two decimals
-      const labelWithPct = showPct
-        ? `${node.label} (${pctDisplay.toFixed(2)}%)`
-        : node.label;
-
-      return {
-        id: node.id,
-        label: labelWithPct,
-        icon: node.icon,
-        expandedIcon: node.expandedIcon,
-        children: node.children ? convertToTreeNodes(node.children) : undefined,
-        data: node,
-      };
-    });
-  };
-
-  const handleSelect = (treeNode: TreeNode) => {
-    const nodeId = treeNode.id;
-
-    const findNode = (nodes: EventLogNode[]): EventLogNode | null => {
-      for (const node of nodes) {
-        if (node.id === nodeId) return node;
-        if (node.children) {
-          const found = findNode(node.children);
-          if (found) return found;
+    let cancelled = false;
+    fetchRecentNodes()
+      .then((recent) => {
+        if (!cancelled) {
+          setTreeData([...recent, ...baseStructure]);
+          setError("");
         }
-      }
-      return null;
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(`Could not read recent logs: ${errorMessage(cause)}`);
+      });
+    return () => {
+      cancelled = true;
     };
+  }, [refreshVersion, refresh]);
 
-    const selectedNode = findNode(treeData);
-    if (selectedNode) {
-      if (onNodeSelect) onNodeSelect(selectedNode);
-      // If a recent log was opened, bump lastOpened and refresh tree
-      if (selectedNode.fileId) {
-        refreshRecent();
-      }
-    }
+  const root: EventLogNode = {
+    id: "root",
+    label: "Event Viewer (Local)",
+    icon: <Desktop16Regular />,
+    children: treeData,
   };
 
-  // -----------------------------
-  // Context menu (right-click)
-  // -----------------------------
+  const convertToTreeNodes = (nodes: EventLogNode[]): TreeNode[] =>
+    nodes.map((node) => ({
+      id: node.id,
+      label:
+        node.fileId && node.fileId === activeFileId && ingestProgress < 1
+          ? `${node.label} (${Math.floor(ingestProgress * 100)}%)`
+          : node.label,
+      icon: node.icon,
+      expandedIcon: node.expandedIcon,
+      children: node.children ? convertToTreeNodes(node.children) : undefined,
+    }));
+
+  function findNode(id: string, nodes = treeData): EventLogNode | undefined {
+    for (const node of nodes) {
+      if (node.id === id) return node;
+      const child = node.children && findNode(id, node.children);
+      if (child) return child;
+    }
+    return undefined;
+  }
+
+  function handleSelect(treeNode: TreeNode) {
+    const node = findNode(treeNode.id);
+    if (node) onNodeSelect(node);
+  }
 
   const [menuState, setMenuState] = useState<{
     x: number;
     y: number;
-    target: EventLogNode;
+    fileId: string;
+    returnFocus: HTMLElement;
   } | null>(null);
 
-  const handleContextMenu = (treeNode: TreeNode, e: React.MouseEvent) => {
-    const dataNode = treeNode.data as EventLogNode | undefined;
-    if (!dataNode?.fileId) return; // Only for cached files
-
-    e.preventDefault();
-    setMenuState({ x: e.clientX, y: e.clientY, target: dataNode });
-  };
+  function handleContextMenu(treeNode: TreeNode, event: React.MouseEvent<HTMLElement>) {
+    const node = findNode(treeNode.id);
+    if (node?.fileId) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      setMenuState({
+        x: event.clientX || bounds.left,
+        y: event.clientY || bounds.bottom,
+        fileId: node.fileId,
+        returnFocus: event.currentTarget,
+      });
+    }
+  }
 
   const closeMenu = useCallback(() => setMenuState(null), []);
 
   const handleDelete = useCallback(async () => {
     if (!menuState) return;
-    const storage = await EvtxStorage.getInstance();
-    await storage.deleteFile(menuState.target.fileId!);
-    await refreshRecent();
-    closeMenu();
-  }, [menuState, refreshRecent, closeMenu]);
+    try {
+      const storage = await EvtxStorage.getInstance();
+      await storage.deleteFile(menuState.fileId);
+      setRefresh((value) => value + 1);
+    } catch (cause) {
+      setError(`Could not remove the cached log: ${errorMessage(cause)}`);
+    }
+  }, [menuState]);
 
   return (
     <TreeContainer>
-      <TreeHeader>Event Logs</TreeHeader>
+      {error && <ErrorText role="alert">{error}</ErrorText>}
       <TreeView
-        nodes={convertToTreeNodes(treeData)}
+        nodes={convertToTreeNodes([root])}
         selectedNodeId={selectedNodeId}
         onNodeClick={handleSelect}
         onNodeContextMenu={handleContextMenu}
-        showLines={false}
-        defaultExpanded={[]}
+        defaultExpanded={["root", "examples", "recent"]}
       />
 
       {menuState && (
         <ContextMenu
           position={{ x: menuState.x, y: menuState.y }}
           onClose={closeMenu}
+          returnFocus={menuState.returnFocus}
+          ariaLabel="Cached log actions"
           items={[
             {
               id: "delete",
-              label: "Delete",
-              icon: <Delete20Regular />,
-              onClick: handleDelete,
+              label: "Remove from recent logs",
+              icon: <Delete16Regular />,
+              onClick: () => void handleDelete(),
             },
           ]}
         />
