@@ -297,6 +297,22 @@ struct XmlCompiler<'t, 'a> {
     materialized: bool,
 }
 
+impl<'t, 'a> XmlCompiler<'t, 'a> {
+    fn new(arena: &'t IrArena<'a>, lits: Vec<u8>, indent_on: bool, materialized: bool) -> Self {
+        XmlCompiler {
+            arena,
+            lits,
+            ops: Vec::new(),
+            run_start: 0,
+            elem_slots: Vec::new(),
+            expand_slots: Vec::new(),
+            indent_on,
+            vr: ValueRenderer::new(),
+            materialized,
+        }
+    }
+}
+
 /// Compile-lane bail sentinel (mapped to `None` by `compile_xml_template`).
 fn bail_err() -> crate::err::EvtxError {
     crate::err::EvtxError::FailedToCreateRecordModel("compiled-template bail")
@@ -318,17 +334,12 @@ fn compile_xml_template(
     if has_literal_array {
         return None;
     }
-    let mut c = XmlCompiler {
-        arena: tree.arena(),
-        lits: Vec::with_capacity(512),
-        ops: Vec::with_capacity(32),
-        run_start: 0,
-        elem_slots: Vec::new(),
-        expand_slots: Vec::new(),
-        indent_on: settings.should_indent(),
-        vr: ValueRenderer::new(),
-        materialized: false,
-    };
+    let mut c = XmlCompiler::new(
+        tree.arena(),
+        Vec::with_capacity(512),
+        settings.should_indent(),
+        false,
+    );
     if is_root {
         c.lits.extend_from_slice(XML_DECL);
     }
@@ -356,22 +367,8 @@ pub(crate) fn render_tree_xml(
     settings: &ParserSettings,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    let mut c = XmlCompiler {
-        arena: tree.arena(),
-        lits: std::mem::take(out),
-        ops: Vec::new(),
-        run_start: 0,
-        elem_slots: Vec::new(),
-        expand_slots: Vec::new(),
-        indent_on: settings.should_indent(),
-        vr: ValueRenderer::new(),
-        materialized: true,
-    };
-    c.lits.extend_from_slice(XML_DECL);
-    let res = c.compile_element(tree.root(), 0);
-    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
-    *out = c.lits;
-    res
+    out.extend_from_slice(XML_DECL);
+    render_fragment_xml(tree.arena(), tree.root(), 0, settings.should_indent(), out)
 }
 
 /// Render a materialized fragment subtree at `indent` (executor cold path).
@@ -382,17 +379,7 @@ fn render_fragment_xml(
     indent_on: bool,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    let mut c = XmlCompiler {
-        arena,
-        lits: std::mem::take(out),
-        ops: Vec::new(),
-        run_start: 0,
-        elem_slots: Vec::new(),
-        expand_slots: Vec::new(),
-        indent_on,
-        vr: ValueRenderer::new(),
-        materialized: true,
-    };
+    let mut c = XmlCompiler::new(arena, std::mem::take(out), indent_on, true);
     let res = c.compile_element(root, indent);
     debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
     *out = c.lits;
@@ -1822,6 +1809,23 @@ struct JsonCompiler<'t, 'a> {
     separate: bool,
 }
 
+impl<'t, 'a> JsonCompiler<'t, 'a> {
+    fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool) -> Self {
+        JsonCompiler {
+            tree,
+            lits,
+            ops: Vec::new(),
+            run_start: 0,
+            elem_slots: Vec::new(),
+            constraints: Vec::new(),
+            expand_slots: Vec::new(),
+            vr: ValueRenderer::new(),
+            formatter: sonic_rs::format::CompactFormatter,
+            separate,
+        }
+    }
+}
+
 fn compile_json_template(
     tree: &IrTree<'_>,
     has_literal_array: bool,
@@ -1833,18 +1837,7 @@ fn compile_json_template(
     }
     let root = tree.root_element();
     let root_container = is_data_container_name(root.name.as_str());
-    let mut c = JsonCompiler {
-        tree: Some(tree),
-        lits: Vec::with_capacity(512),
-        ops: Vec::with_capacity(32),
-        run_start: 0,
-        elem_slots: Vec::new(),
-        constraints: Vec::new(),
-        expand_slots: Vec::new(),
-        vr: ValueRenderer::new(),
-        formatter: sonic_rs::format::CompactFormatter,
-        separate: false,
-    };
+    let mut c = JsonCompiler::new(Some(tree), Vec::with_capacity(512), false);
     if is_root {
         c.lits.push(b'{');
         c.lits.push(b'"');
@@ -2777,18 +2770,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
 /// Benchmark-only entry to the JSON text-content path.
 #[cfg(feature = "bench")]
 pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> Result<()> {
-    let mut c = JsonCompiler {
-        tree: None,
-        lits: std::mem::take(out),
-        ops: Vec::new(),
-        run_start: 0,
-        elem_slots: Vec::new(),
-        constraints: Vec::new(),
-        expand_slots: Vec::new(),
-        vr: ValueRenderer::new(),
-        formatter: sonic_rs::format::CompactFormatter,
-        separate: false,
-    };
+    let mut c = JsonCompiler::new(None, std::mem::take(out), false);
     let res = c.text_content_plain(nodes, false);
     *out = c.lits;
     res
@@ -2815,18 +2797,11 @@ pub(crate) fn render_tree_json(
     settings: &ParserSettings,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    let mut c = JsonCompiler {
-        tree: Some(tree),
-        lits: std::mem::take(out),
-        ops: Vec::new(),
-        run_start: 0,
-        elem_slots: Vec::new(),
-        constraints: Vec::new(),
-        expand_slots: Vec::new(),
-        vr: ValueRenderer::new(),
-        formatter: sonic_rs::format::CompactFormatter,
-        separate: settings.should_separate_json_attributes(),
-    };
+    let mut c = JsonCompiler::new(
+        Some(tree),
+        std::mem::take(out),
+        settings.should_separate_json_attributes(),
+    );
     let res = c.render_root_plain();
     debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
     *out = c.lits;

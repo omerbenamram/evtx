@@ -270,7 +270,6 @@ impl<'a> IrTemplateCache<'a> {
                     bump,
                     arena: &mut arena,
                     mode: BuildMode::TemplateDefinition,
-                    has_dep_id: true,
                     name_encoding: BinXmlNameEncoding::Offset,
                     depth,
                 },
@@ -321,7 +320,6 @@ impl<'a> IrTemplateCache<'a> {
                                 bump,
                                 arena: &mut arena,
                                 mode: BuildMode::TemplateDefinition,
-                                has_dep_id: true,
                                 name_encoding: BinXmlNameEncoding::WevtInline,
                                 depth,
                             },
@@ -397,36 +395,7 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     root: Option<ElementId>,
 }
 
-struct TreeBuilderInit<'a, 'cache, 'arena> {
-    chunk: Option<&'a EvtxChunk<'a>>,
-    data: &'a [u8],
-    cache: &'cache mut IrTemplateCache<'a>,
-    mode: BuildMode,
-    ansi_codec: AnsiCodec,
-    name_encoding: BinXmlNameEncoding,
-    bump: &'a Bump,
-    arena: &'arena mut IrArena<'a>,
-    depth: usize,
-}
-
 impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
-    fn new(init: TreeBuilderInit<'a, 'cache, 'arena>) -> Self {
-        TreeBuilder {
-            chunk: init.chunk,
-            data: init.data,
-            cache: init.cache,
-            mode: init.mode,
-            bump: init.bump,
-            arena: init.arena,
-            ansi_codec: init.ansi_codec,
-            name_encoding: init.name_encoding,
-            depth: init.depth,
-            stack: IrVec::new_in(init.bump),
-            current_element: None,
-            root: None,
-        }
-    }
-
     fn process_open_start_element(&mut self, elem: BinXMLOpenStartElement) -> Result<()> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
@@ -555,7 +524,6 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                         bump: self.bump,
                         arena: &mut *self.arena,
                         mode: BuildMode::Record,
-                        has_dep_id: false,
                         name_encoding: self.name_encoding,
                         depth: self.depth + 1,
                     },
@@ -689,8 +657,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
 ///   nested IR subtree and attaches it as child elements.
 ///
 /// `mode` controls whether substitutions become placeholders (template definitions) or are
-/// rejected (records). `has_dep_id` controls parsing of element start tokens for streams that
-/// include dependency IDs.
+/// rejected (records); template definitions also carry dependency IDs on element start tokens.
 struct BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena> {
     bytes: &'a [u8],
     data: &'a [u8],
@@ -700,7 +667,6 @@ struct BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena> {
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
     mode: BuildMode,
-    has_dep_id: bool,
     name_encoding: BinXmlNameEncoding,
     /// Fragment/instance nesting depth of this stream; recursion guard.
     depth: usize,
@@ -718,10 +684,11 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
         bump,
         arena,
         mode,
-        has_dep_id,
         name_encoding,
         depth,
     } = args;
+    // Only template definitions carry dependency IDs on element start tokens.
+    let has_dep_id = mode == BuildMode::TemplateDefinition;
     if depth > MAX_BINXML_NESTING {
         return Err(EvtxError::FailedToCreateRecordModel(
             "BinXML fragments nested too deeply",
@@ -733,17 +700,20 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
     let data_size = bytes.len() as u32;
     let mut eof = false;
 
-    let mut builder = TreeBuilder::new(TreeBuilderInit {
+    let mut builder = TreeBuilder {
         chunk,
         data,
         cache,
         mode,
-        ansi_codec,
-        name_encoding,
         bump,
         arena,
+        ansi_codec,
+        name_encoding,
         depth,
-    });
+        stack: IrVec::new_in(bump),
+        current_element: None,
+        root: None,
+    };
 
     while !eof && data_read < data_size {
         let start = cursor.position();
@@ -855,7 +825,6 @@ fn build_tree_from_binxml_bytes_direct_root<'a>(
         bump,
         arena,
         mode: BuildMode::Record,
-        has_dep_id: false,
         name_encoding: BinXmlNameEncoding::Offset,
         depth: 0,
     })
@@ -878,7 +847,6 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
         bump: &chunk.arena,
         arena: &mut arena,
         mode: BuildMode::Record,
-        has_dep_id: false,
         name_encoding: BinXmlNameEncoding::Offset,
         depth: 0,
     })?;
@@ -1046,7 +1014,6 @@ fn parse_record_fragment<'a>(
         bump,
         arena,
         mode: BuildMode::Record,
-        has_dep_id: false,
         name_encoding: BinXmlNameEncoding::Offset,
         depth: depth + 1,
     })
@@ -1101,7 +1068,6 @@ pub(crate) fn build_wevt_template_definition_ir<'a>(
         bump,
         arena: &mut arena,
         mode: BuildMode::TemplateDefinition,
-        has_dep_id: true,
         name_encoding: BinXmlNameEncoding::WevtInline,
         depth: 0,
     })?;

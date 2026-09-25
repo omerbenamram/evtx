@@ -29,58 +29,38 @@ pub(super) fn decode_utf16_z(bytes: &[u8], what: &'static str, offset: u32) -> R
         .map_err(|_| WevtManifestError::InvalidUtf16String { what, offset })
 }
 
-pub(super) fn read_sig_named(buf: &[u8], offset: usize, what: &'static str) -> Result<[u8; 4]> {
-    bytes::read_sig(buf, offset).ok_or(WevtManifestError::Truncated {
+fn truncated(buf: &[u8], offset: usize, need: usize, what: &'static str) -> WevtManifestError {
+    WevtManifestError::Truncated {
         what,
         offset: usize_to_u32(offset),
-        need: 4,
+        need,
         have: buf.len().saturating_sub(offset),
-    })
+    }
+}
+
+pub(super) fn read_sig_named(buf: &[u8], offset: usize, what: &'static str) -> Result<[u8; 4]> {
+    bytes::read_sig(buf, offset).ok_or_else(|| truncated(buf, offset, 4, what))
 }
 
 pub(super) fn read_u8_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u8> {
-    bytes::read_u8(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 1,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u8(buf, offset).ok_or_else(|| truncated(buf, offset, 1, what))
 }
 
 pub(super) fn read_u16_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u16> {
-    bytes::read_u16_le(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 2,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u16_le(buf, offset).ok_or_else(|| truncated(buf, offset, 2, what))
 }
 
 pub(super) fn read_u32_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u32> {
-    bytes::read_u32_le(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 4,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u32_le(buf, offset).ok_or_else(|| truncated(buf, offset, 4, what))
 }
 
 pub(super) fn read_u64_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u64> {
-    bytes::read_u64_le(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 8,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u64_le(buf, offset).ok_or_else(|| truncated(buf, offset, 8, what))
 }
 
 pub(super) fn read_guid_named(buf: &[u8], offset: usize, what: &'static str) -> Result<Guid> {
-    let bytes = bytes::read_array::<16>(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 16,
-        have: buf.len().saturating_sub(offset),
-    })?;
+    let bytes =
+        bytes::read_array::<16>(buf, offset).ok_or_else(|| truncated(buf, offset, 16, what))?;
     Guid::from_buffer(&bytes).map_err(|_| WevtManifestError::InvalidGuid {
         what,
         offset: usize_to_u32(offset),
@@ -105,12 +85,7 @@ pub(super) fn usize_to_u32(v: usize) -> u32 {
 
 pub(super) fn require_len(buf: &[u8], off: usize, need: usize, what: &'static str) -> Result<()> {
     if off > buf.len() || buf.len().saturating_sub(off) < need {
-        return Err(WevtManifestError::Truncated {
-            what,
-            offset: usize_to_u32(off),
-            need,
-            have: buf.len().saturating_sub(off),
-        });
+        return Err(truncated(buf, off, need, what));
     }
     Ok(())
 }
