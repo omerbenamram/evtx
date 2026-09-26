@@ -27,6 +27,13 @@
 
 use crate::err::DeserializationError;
 
+/// The first `N` bytes of `b` as an array, for slices already bounds-checked.
+///
+/// Panics if `b` is shorter than `N`.
+pub(crate) fn le<const N: usize>(b: &[u8]) -> [u8; N] {
+    b[..N].try_into().expect("caller bounds-checked")
+}
+
 /// Read `N` raw bytes at `offset`.
 ///
 /// Returns `None` if the range is out of bounds.

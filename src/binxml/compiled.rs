@@ -778,23 +778,10 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     }
 
     fn compile_literal_text(&mut self, text: &Text<'a>, in_attribute: bool) -> Result<()> {
+        let mode = StringEscapeMode::Xml { in_attribute };
         match text {
-            Text::Utf16(value) => {
-                let bytes = value.as_bytes();
-                let units = bytes.len() / 2;
-                if units == 0 {
-                    return Ok(());
-                }
-                let mut sink = std::mem::take(&mut self.lits);
-                let res = utf16_simd::write_xml_utf16le(&mut sink, bytes, units, in_attribute);
-                self.lits = sink;
-                res.map_err(crate::err::EvtxError::from)?;
-                Ok(())
-            }
-            Text::Utf8(value) => {
-                xml_escape_str_into(&mut self.lits, value, in_attribute);
-                Ok(())
-            }
+            Text::Utf16(value) => self.vr.write_utf16_escaped(&mut self.lits, *value, mode),
+            Text::Utf8(value) => self.vr.write_str_escaped(&mut self.lits, value, mode),
         }
     }
 
@@ -810,23 +797,6 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 }
             }
             Text::Utf8(value) => self.lits.extend_from_slice(value.as_bytes()),
-        }
-    }
-}
-
-/// Mirrors `XmlEmitter::write_escaped_str` for compile-time UTF-8 literals.
-fn xml_escape_str_into(out: &mut Vec<u8>, text: &str, in_attribute: bool) {
-    for ch in text.chars() {
-        match ch {
-            '&' => out.extend_from_slice(b"&amp;"),
-            '<' => out.extend_from_slice(b"&lt;"),
-            '>' => out.extend_from_slice(b"&gt;"),
-            '"' if in_attribute => out.extend_from_slice(b"&quot;"),
-            '\'' if in_attribute => out.extend_from_slice(b"&apos;"),
-            _ => {
-                let mut buf = [0_u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-            }
         }
     }
 }
@@ -1804,7 +1774,6 @@ struct JsonCompiler<'t, 'a> {
     constraints: Vec<SlotConstraint>,
     expand_slots: Vec<u16>,
     vr: ValueRenderer,
-    formatter: sonic_rs::format::CompactFormatter,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
     separate: bool,
 }
@@ -1820,8 +1789,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             constraints: Vec::new(),
             expand_slots: Vec::new(),
             vr: ValueRenderer::new(),
-            formatter: sonic_rs::format::CompactFormatter,
-            separate,
+                    separate,
         }
     }
 }
@@ -2846,11 +2814,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     fn json_escaped_str_plain(&mut self, s: &str) -> Result<()> {
-        use sonic_rs::format::Formatter;
-        self.formatter
-            .write_string_fast(&mut self.lits, s, false)
-            .map_err(crate::err::EvtxError::from)?;
-        Ok(())
+        self.vr
+            .write_str_escaped(&mut self.lits, s, StringEscapeMode::Json)
     }
 
     fn json_text_plain(&mut self, text: &Text<'_>) -> Result<()> {
@@ -2859,24 +2824,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
         match text {
             Text::Utf16(value) => {
-                let bytes = value.as_bytes();
-                let units = bytes.len() / 2;
-                if units > 0 {
-                    utf16_simd::write_json_utf16le(&mut self.lits, bytes, units, false)
-                        .map_err(crate::err::EvtxError::from)?;
-                }
-                Ok(())
+                self.vr
+                    .write_utf16_escaped(&mut self.lits, *value, StringEscapeMode::Json)
             }
             Text::Utf8(value) => self.json_escaped_str_plain(value),
         }
-    }
-
-    fn write_u64_plain(&mut self, v: u64) -> Result<()> {
-        use sonic_rs::format::Formatter;
-        self.formatter
-            .write_u64(&mut self.lits, v)
-            .map_err(crate::err::EvtxError::from)?;
-        Ok(())
     }
 
     /// Pre-render a bare JSON number/bool (see `json_bare_value`).
@@ -2959,7 +2911,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         self.json_escaped_str_plain(s)?;
                     } else {
                         self.lits.extend_from_slice(b"&#");
-                        self.write_u64_plain(u64::from(*ch))?;
+                        self.vr.write_u64(&mut self.lits, u64::from(*ch))?;
                         self.lits.push(b';');
                     }
                 }
@@ -3121,7 +3073,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             .extend_from_slice(element.name.as_str().as_bytes());
         if suffix > 0 {
             self.lits.push(b'_');
-            self.write_u64_plain(u64::from(suffix))?;
+            self.vr.write_u64(&mut self.lits, u64::from(suffix))?;
         }
         self.lits.extend_from_slice(b"_attributes\":{");
         let wrote_any = self.attrs_object_body_plain(&element.attrs)?;

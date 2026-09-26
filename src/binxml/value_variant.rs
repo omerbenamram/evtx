@@ -43,32 +43,12 @@ impl<'a> SidRef<'a> {
 
 impl fmt::Display for SidRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = self.bytes;
-        if bytes.len() < 8 {
-            return write!(f, "S-?");
-        }
-        let revision = bytes[0];
-        let sub_count = bytes[1] as usize;
-
-        // IdentifierAuthority is a 48-bit big-endian integer.
-        let mut authority: u64 = 0;
-        for &b in &bytes[2..8] {
-            authority = (authority << 8) | u64::from(b);
-        }
-
-        write!(f, "S-{}-{}", revision, authority)?;
-
-        let mut off = 8usize;
-        for _ in 0..sub_count {
-            if off + 4 > bytes.len() {
-                break;
-            }
-            let sub =
-                u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
-            write!(f, "-{}", sub)?;
-            off += 4;
-        }
-        Ok(())
+        // "S-R-AUTH" plus "-N" (at most 11 bytes) per 4-byte sub-authority.
+        let mut buf = Vec::with_capacity(32 + 11 * (self.bytes.len().saturating_sub(8) / 4));
+        crate::binxml::value_render::ValueRenderer::default()
+            .write_sid(&mut buf, self)
+            .map_err(|_| fmt::Error)?;
+        f.write_str(std::str::from_utf8(&buf).map_err(|_| fmt::Error)?)
     }
 }
 
