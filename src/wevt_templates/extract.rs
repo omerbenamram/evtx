@@ -28,90 +28,48 @@ fn rva_to_file_offset(
     goblin::pe::utils::find_offset(rva as usize, sections, file_alignment, opts)
 }
 
+const fn malformed(message: &'static str) -> WevtTemplateExtractError {
+    WevtTemplateExtractError::MalformedResource { message }
+}
+
+fn u16_at(b: &[u8], o: usize) -> u16 {
+    u16::from_le_bytes(bytes::le(&b[o..]))
+}
+
+fn u32_at(b: &[u8], o: usize) -> u32 {
+    u32::from_le_bytes(bytes::le(&b[o..]))
+}
+
 fn parse_image_resource_directory(
     rsrc: &[u8],
     offset: usize,
 ) -> Result<ImageResourceDirectory, WevtTemplateExtractError> {
-    if offset + IMAGE_RESOURCE_DIRECTORY_HEADER_SIZE > rsrc.len() {
-        return Err(WevtTemplateExtractError::MalformedResource {
-            message: "resource directory header out of bounds",
-        });
-    }
-
+    let b = bytes::read_array::<IMAGE_RESOURCE_DIRECTORY_HEADER_SIZE>(rsrc, offset)
+        .ok_or(malformed("resource directory header out of bounds"))?;
     Ok(ImageResourceDirectory {
-        characteristics: bytes::read_u32_le(rsrc, offset).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource directory characteristics out of bounds",
-            },
-        )?,
-        time_date_stamp: bytes::read_u32_le(rsrc, offset + 4).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource directory time_date_stamp out of bounds",
-            },
-        )?,
-        major_version: bytes::read_u16_le(rsrc, offset + 8).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource directory major_version out of bounds",
-            },
-        )?,
-        minor_version: bytes::read_u16_le(rsrc, offset + 10).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource directory minor_version out of bounds",
-            },
-        )?,
-        number_of_named_entries: bytes::read_u16_le(rsrc, offset + 12).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource directory number_of_named_entries out of bounds",
-            },
-        )?,
-        number_of_id_entries: bytes::read_u16_le(rsrc, offset + 14).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource directory number_of_id_entries out of bounds",
-            },
-        )?,
+        characteristics: u32_at(&b, 0),
+        time_date_stamp: u32_at(&b, 4),
+        major_version: u16_at(&b, 8),
+        minor_version: u16_at(&b, 10),
+        number_of_named_entries: u16_at(&b, 12),
+        number_of_id_entries: u16_at(&b, 14),
     })
 }
 
 fn parse_resource_name(rsrc: &[u8], offset: usize) -> Result<String, WevtTemplateExtractError> {
-    let char_count =
-        bytes::read_u16_le(rsrc, offset).ok_or(WevtTemplateExtractError::MalformedResource {
-            message: "resource name length out of bounds",
-        })? as usize;
-
-    let bytes_off = offset
-        .checked_add(2)
-        .ok_or(WevtTemplateExtractError::MalformedResource {
-            message: "resource name offset overflow",
-        })?;
-    let bytes_len =
-        char_count
-            .checked_mul(2)
-            .ok_or(WevtTemplateExtractError::MalformedResource {
-                message: "resource name length overflow",
-            })?;
-    let bytes_end =
-        bytes_off
-            .checked_add(bytes_len)
-            .ok_or(WevtTemplateExtractError::MalformedResource {
-                message: "resource name end overflow",
-            })?;
-
-    let buf =
-        rsrc.get(bytes_off..bytes_end)
-            .ok_or(WevtTemplateExtractError::MalformedResource {
-                message: "resource name out of bounds",
-            })?;
-
-    let mut chars = Vec::with_capacity(char_count);
-    for i in 0..char_count {
-        let c =
-            bytes::read_u16_le(buf, i * 2).ok_or(WevtTemplateExtractError::MalformedResource {
-                message: "resource name read out of bounds",
-            })?;
-        chars.push(c);
-    }
-
-    String::from_utf16(&chars).map_err(|_| WevtTemplateExtractError::InvalidResourceName)
+    let char_count = bytes::read_u16_le(rsrc, offset)
+        .ok_or(malformed("resource name length out of bounds"))? as usize;
+    // `start <= rsrc.len()` and `char_count < 2^16`, so this cannot overflow.
+    let start = offset + 2;
+    let buf = rsrc
+        .get(start..start + char_count * 2)
+        .ok_or(malformed("resource name out of bounds"))?;
+    let chars = buf
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]));
+    char::decode_utf16(chars)
+        .collect::<Result<String, _>>()
+        .map_err(|_| WevtTemplateExtractError::InvalidResourceName)
 }
 
 fn entry_identifier(
@@ -134,55 +92,26 @@ fn directory_entries(
     dir_offset: usize,
 ) -> Result<Vec<ResourceEntry>, WevtTemplateExtractError> {
     let dir = parse_image_resource_directory(rsrc, dir_offset)?;
-    let entries_offset = dir_offset
-        .checked_add(IMAGE_RESOURCE_DIRECTORY_HEADER_SIZE)
-        .ok_or(WevtTemplateExtractError::MalformedResource {
-            message: "resource directory entries offset overflow",
-        })?;
+    // The header parse above already bounds `dir_offset + 16` by `rsrc.len()`.
+    let entries_offset = dir_offset + IMAGE_RESOURCE_DIRECTORY_HEADER_SIZE;
 
-    let it = dir.next_iter(entries_offset, rsrc).map_err(|_| {
-        WevtTemplateExtractError::MalformedResource {
-            message: "resource directory entries out of bounds",
-        }
-    })?;
-
-    it.collect::<Result<Vec<_>, _>>()
-        .map_err(|_| WevtTemplateExtractError::MalformedResource {
-            message: "failed to parse resource directory entries",
-        })
+    dir.next_iter(entries_offset, rsrc)
+        .map_err(|_| malformed("resource directory entries out of bounds"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| malformed("failed to parse resource directory entries"))
 }
 
 fn parse_resource_data_entry(
     rsrc: &[u8],
     offset: usize,
 ) -> Result<ResourceDataEntry, WevtTemplateExtractError> {
-    if offset + RESOURCE_DATA_ENTRY_SIZE > rsrc.len() {
-        return Err(WevtTemplateExtractError::MalformedResource {
-            message: "resource data entry out of bounds",
-        });
-    }
-
+    let b = bytes::read_array::<RESOURCE_DATA_ENTRY_SIZE>(rsrc, offset)
+        .ok_or(malformed("resource data entry out of bounds"))?;
     Ok(ResourceDataEntry {
-        offset_to_data: bytes::read_u32_le(rsrc, offset).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource data entry RVA out of bounds",
-            },
-        )?,
-        size: bytes::read_u32_le(rsrc, offset + 4).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource data entry size out of bounds",
-            },
-        )?,
-        code_page: bytes::read_u32_le(rsrc, offset + 8).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource data entry code_page out of bounds",
-            },
-        )?,
-        reserved: bytes::read_u32_le(rsrc, offset + 12).ok_or(
-            WevtTemplateExtractError::MalformedResource {
-                message: "resource data entry reserved out of bounds",
-            },
-        )?,
+        offset_to_data: u32_at(&b, 0),
+        size: u32_at(&b, 4),
+        code_page: u32_at(&b, 8),
+        reserved: u32_at(&b, 12),
     })
 }
 
