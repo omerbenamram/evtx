@@ -67,7 +67,6 @@
 //! The production builder parses BinXML bytes directly (cursor-based) to avoid iterator
 //! overhead and intermediate token allocations.
 
-use crate::AnsiCodec;
 use crate::ChunkOffset;
 use crate::EvtxChunk;
 use crate::binxml::array_expand::{
@@ -760,7 +759,7 @@ fn read_single_instance_stream<'a>(
 #[cfg(feature = "wevt_templates")]
 pub(crate) fn build_wevt_template_definition_ir<'a>(
     binxml: &'a [u8],
-    ansi_codec: AnsiCodec,
+    ansi_codec: crate::AnsiCodec,
     bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
     let mut cache = IrTemplateCache::with_capacity(0, bump);

@@ -36,6 +36,7 @@ impl<'a> Stream<'a> {
         }
     }
 
+    #[cfg(feature = "wevt_templates")]
     pub(crate) fn wevt(data: &'a [u8], ansi_codec: AnsiCodec, bump: &'a Bump) -> Self {
         Stream {
             data,
