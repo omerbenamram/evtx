@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use bumpalo::Bump;
 use thiserror::Error;
 
+use super::TEMP_HEADER_SIZE;
 use super::manifest::{CrimManifest, WevtManifestError};
 
 #[derive(Debug, Error)]
@@ -120,21 +121,18 @@ impl WevtCache {
         template_guid: &str,
         arena: &'a Bump,
     ) -> Result<&'a [u8], WevtCacheError> {
-        // TEMP layout: first 40 bytes are header, BinXML starts at offset 40.
-        const TEMP_BINXML_OFFSET: usize = 40;
-
         let guid = normalize_guid(template_guid);
         let temp = self.get_temp_bytes_for_guid(&guid)?;
 
-        if temp.len() < TEMP_BINXML_OFFSET {
+        if temp.len() < TEMP_HEADER_SIZE {
             return Err(WevtCacheError::TempTooSmall {
                 guid,
                 len: temp.len(),
-                need: TEMP_BINXML_OFFSET,
+                need: TEMP_HEADER_SIZE,
             });
         }
 
-        Ok(arena.alloc_slice_copy(&temp[TEMP_BINXML_OFFSET..]))
+        Ok(arena.alloc_slice_copy(&temp[TEMP_HEADER_SIZE..]))
     }
 
     fn get_temp_bytes_for_guid(&self, guid: &str) -> Result<&[u8], WevtCacheError> {

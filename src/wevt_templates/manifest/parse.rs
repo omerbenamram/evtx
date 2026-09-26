@@ -5,6 +5,7 @@ use winstructs::guid::Guid;
 use super::error::{Result, WevtManifestError};
 use super::types::*;
 use super::util::*;
+use crate::wevt_templates::TEMP_HEADER_SIZE;
 
 impl<'a> CrimManifest<'a> {
     /// Parse a CRIM manifest blob (the payload stored inside a `WEVT_TEMPLATE` resource).
@@ -649,11 +650,11 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
     let mut cur = off_usize + 12;
 
     for _ in 0..count_usize {
-        if cur + 40 > end {
+        if cur + TEMP_HEADER_SIZE > end {
             return Err(trunc_err(
                 "TEMP header",
                 usize_to_u32(cur),
-                40,
+                TEMP_HEADER_SIZE,
                 end.saturating_sub(cur),
             ));
         }
@@ -662,7 +663,7 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
             return Err(sig_err(usize_to_u32(cur), b"TEMP", temp_sig));
         }
         let temp_size = read_u32_named(crim, cur + 4, "TEMP.size")?;
-        if temp_size < 40 {
+        if (temp_size as usize) < TEMP_HEADER_SIZE {
             return Err(size_err("TEMP.size", usize_to_u32(cur), temp_size));
         }
         let temp_end = checked_end(end, usize_to_u32(cur), temp_size, "TEMP.size")?;
@@ -716,13 +717,10 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
             ));
         }
 
-        let binxml_start = 40usize;
         let binxml_end = items_rel_usize.min(template_slice.len());
-        let binxml = if binxml_end >= binxml_start {
-            &template_slice[binxml_start..binxml_end]
-        } else {
-            &template_slice[binxml_start..binxml_start]
-        };
+        let binxml = template_slice
+            .get(TEMP_HEADER_SIZE..binxml_end)
+            .unwrap_or_default();
 
         let items = parse_template_items(
             template_slice,
@@ -789,7 +787,7 @@ fn parse_template_items(
 
     let rel = template_items_offset_abs - template_off_abs;
     let rel_usize = u32_to_usize(rel, "TEMP.template_items_offset (relative)", template.len())?;
-    if rel_usize < 40 || rel_usize >= template.len() {
+    if rel_usize < TEMP_HEADER_SIZE || rel_usize >= template.len() {
         return Err(off_err(
             "TEMP.template_items_offset (relative)",
             template_items_offset_abs,
