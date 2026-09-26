@@ -54,6 +54,14 @@ impl<'a> CrimManifest<'a> {
         })
     }
 
+    /// All `TEMP` template definitions across every provider's `TTBL`.
+    pub(crate) fn templates(&self) -> impl Iterator<Item = &TemplateDefinition<'a>> {
+        self.providers
+            .iter()
+            .filter_map(|p| p.wevt.elements.templates.as_ref())
+            .flat_map(|ttbl| &ttbl.templates)
+    }
+
     /// Build lookup indices to support joining events/templates.
     ///
     /// This is primarily used by cache builders and tooling: it yields stable keys for mapping
@@ -62,16 +70,14 @@ impl<'a> CrimManifest<'a> {
         let mut templates_by_guid: HashMap<String, Vec<&TemplateDefinition<'a>>> = HashMap::new();
         let mut event_to_template_guids: HashMap<EventKey, Vec<Guid>> = HashMap::new();
 
-        for provider in &self.providers {
-            if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
-                for tpl in &ttbl.templates {
-                    templates_by_guid
-                        .entry(tpl.guid.to_string())
-                        .or_default()
-                        .push(tpl);
-                }
-            }
+        for tpl in self.templates() {
+            templates_by_guid
+                .entry(tpl.guid.to_string())
+                .or_default()
+                .push(tpl);
+        }
 
+        for provider in &self.providers {
             if let Some(evnt) = provider.wevt.elements.events.as_ref() {
                 for ev in &evnt.events {
                     let Some(template_offset) = ev.template_offset else {
