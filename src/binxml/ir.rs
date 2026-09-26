@@ -73,19 +73,18 @@ use crate::EvtxChunk;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
 };
-use crate::binxml::name::{NAME_LINK_SIZE, read_name_ref};
+use crate::binxml::name::NAME_LINK_SIZE;
 use crate::binxml::tokens::{
-    BinXmlTemplateValues, Stream, TemplateHeader, read_open_start_element_cursor,
-    read_processing_instruction_data_cursor, read_substitution_descriptor_cursor,
-    read_template_header, read_template_values_cursor,
+    BinXmlTemplateValues, Stream, TemplateHeader, TokenSink, read_template_header,
+    read_template_values_cursor, walk_tokens,
 };
 use crate::binxml::value_variant::BinXmlValue;
-use crate::err::{DeserializationError, EvtxError, Result};
+use crate::err::{EvtxError, Result};
 use crate::model::ir::{
     Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Placeholder, TemplateValue, Text,
     is_optional_empty_template_value,
 };
-use crate::utils::ByteCursor;
+use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use bumpalo::Bump;
 use std::rc::Rc;
@@ -319,8 +318,8 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     root: Option<ElementId>,
 }
 
-impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
-    fn process_open_start_element(&mut self, name: ChunkOffset) -> Result<()> {
+impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
+    fn open_start(&mut self, name: ChunkOffset) -> Result<()> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "open start - Bad parser state",
@@ -331,7 +330,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         Ok(())
     }
 
-    fn process_attribute(&mut self, name: ChunkOffset) -> Result<()> {
+    fn attribute(&mut self, name: ChunkOffset) -> Result<()> {
         // Compute name before borrowing `current_element` mutably (avoid borrow conflict).
         let name = self.name(name)?;
         let builder = self
@@ -342,7 +341,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         Ok(())
     }
 
-    fn process_close_start_element(&mut self) -> Result<()> {
+    fn close_start(&mut self) -> Result<()> {
         if self.stack.len() >= MAX_ELEMENT_DEPTH {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "BinXML elements nested too deeply",
@@ -358,7 +357,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         Ok(())
     }
 
-    fn process_close_empty_element(&mut self) -> Result<()> {
+    fn close_empty(&mut self) -> Result<()> {
         let element = self
             .current_element
             .take()
@@ -368,14 +367,14 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         self.attach(element_id)
     }
 
-    fn process_close_element(&mut self) -> Result<()> {
+    fn close_element(&mut self) -> Result<()> {
         let element_id = self.stack.pop().ok_or_else(|| {
             EvtxError::FailedToCreateRecordModel("close element - Bad parser state")
         })?;
         self.attach(element_id)
     }
 
-    fn process_substitution(&mut self, id: u16, optional: bool) -> Result<()> {
+    fn substitution(&mut self, id: u16, optional: bool) -> Result<()> {
         if self.mode != BuildMode::TemplateDefinition {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "substitution outside template definition",
@@ -389,7 +388,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         self.push_node(Node::Placeholder(Placeholder { id, optional }))
     }
 
-    fn process_value(&mut self, value: BinXmlValue<'a>) -> Result<()> {
+    fn value(&mut self, value: BinXmlValue<'a>) -> Result<()> {
         match value {
             BinXmlValue::BinXmlType(bytes) => {
                 if self.current_element.is_some() {
@@ -425,10 +424,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         }
     }
 
-    fn process_template_instance_values(
-        &mut self,
-        template: BinXmlTemplateValues<'a>,
-    ) -> Result<()> {
+    fn template_instance(&mut self, template: BinXmlTemplateValues<'a>) -> Result<()> {
         if self.mode != BuildMode::Record {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "template instance inside template definition",
@@ -454,6 +450,22 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         self.attach(element_id)
     }
 
+    fn entity_ref(&mut self, name: ChunkOffset) -> Result<()> {
+        let name = self.name(name)?;
+        self.push_node(Node::EntityRef(name))
+    }
+
+    fn pi_target(&mut self, name: ChunkOffset) -> Result<()> {
+        let name = self.name(name)?;
+        self.push_node(Node::PITarget(name))
+    }
+
+    fn pi_data(&mut self, data: Utf16LeSlice<'a>) -> Result<()> {
+        self.push_node(Node::PIData(Text::utf16(data)))
+    }
+}
+
+impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     /// Attach an element to the current parent (or set it as root).
     ///
     /// Used by element closure and by splicing (template instances, nested `BinXmlType`
@@ -566,104 +578,17 @@ fn build_in<'a>(
         ));
     }
     let offset = binxml_slice_offset_in(src.data, bytes)?;
-    let mut cursor = ByteCursor::with_pos(src.data, offset as usize)?;
-    let end = cursor.pos() + bytes.len();
-    let inline_names = src.chunk.is_none();
-    let (ansi_codec, bump) = (src.ansi_codec, src.bump);
-
     let mut builder = TreeBuilder {
         src,
         cache,
         mode,
         arena,
         depth,
-        stack: IrVec::new_in(bump),
+        stack: IrVec::new_in(src.bump),
         current_element: None,
         root: None,
     };
-
-    while cursor.pos() < end {
-        let token_byte = cursor.u8()?;
-
-        match token_byte {
-            0x00 => break,
-            0x0c => {
-                let template = read_template_values_cursor(&mut cursor, ansi_codec, bump)?;
-                builder.process_template_instance_values(template)?;
-            }
-            0x01 | 0x41 => {
-                let has_attributes = token_byte & 0x40 != 0;
-                let name = read_open_start_element_cursor(
-                    &mut cursor,
-                    has_attributes,
-                    has_dep_id,
-                    inline_names,
-                )?;
-                builder.process_open_start_element(name)?;
-            }
-            0x02 => {
-                builder.process_close_start_element()?;
-            }
-            0x03 => {
-                builder.process_close_empty_element()?;
-            }
-            0x04 => {
-                builder.process_close_element()?;
-            }
-            0x05 | 0x45 => {
-                let value =
-                    BinXmlValue::from_binxml_cursor_in(&mut cursor, None, ansi_codec, bump)?;
-                builder.process_value(value)?;
-            }
-            0x06 | 0x46 => {
-                let name = read_name_ref(&mut cursor, inline_names)?;
-                builder.process_attribute(name)?;
-            }
-            0x09 | 0x49 => {
-                let name = builder.name(read_name_ref(&mut cursor, inline_names)?)?;
-                builder.push_node(Node::EntityRef(name))?;
-            }
-            0x0a => {
-                let name = builder.name(read_name_ref(&mut cursor, inline_names)?)?;
-                builder.push_node(Node::PITarget(name))?;
-            }
-            0x0b => {
-                let data = read_processing_instruction_data_cursor(&mut cursor)?;
-                builder.push_node(Node::PIData(Text::utf16(data)))?;
-            }
-            0x0d | 0x0e => {
-                let id = read_substitution_descriptor_cursor(&mut cursor)?;
-                builder.process_substitution(id, token_byte == 0x0e)?;
-            }
-            0x0f => {
-                cursor.u8_named("fragment_header_major_version")?;
-                cursor.u8_named("fragment_header_minor_version")?;
-                cursor.u8_named("fragment_header_flags")?;
-            }
-            0x07 | 0x47 => {
-                return Err(DeserializationError::UnimplementedToken {
-                    name: "CDataSection",
-                    offset: cursor.position(),
-                }
-                .into());
-            }
-            0x08 | 0x48 => {
-                return Err(DeserializationError::UnimplementedToken {
-                    name: "CharReference",
-                    offset: cursor.position(),
-                }
-                .into());
-            }
-            _ => {
-                return Err(DeserializationError::InvalidToken {
-                    value: token_byte,
-                    offset: cursor.position(),
-                }
-                .into());
-            }
-        }
-    }
-
+    walk_tokens(src, offset as usize, bytes.len(), has_dep_id, &mut builder)?;
     builder.finish()
 }
 
