@@ -97,7 +97,9 @@ impl ValueRenderer {
                 self.write_datetime(writer, tm)
             }
             BinXmlValue::SidType(sid) => self.write_sid(writer, sid),
-            BinXmlValue::HexInt32Type(v) => self.write_hex_prefixed_u64_lower(writer, u64::from(*v)),
+            BinXmlValue::HexInt32Type(v) => {
+                self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
+            }
             BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
             BinXmlValue::StringArrayType(items) => self.write_list(writer, items, |s, w, item| {
                 s.write_utf16_escaped(w, *item, string_mode)
@@ -363,7 +365,11 @@ impl ValueRenderer {
     ///
     /// Wire layout: revision, sub-authority count, 48-bit big-endian
     /// `IdentifierAuthority`, then 4-byte little-endian sub-authorities.
-    pub(crate) fn write_sid<W: WriteExt>(&mut self, writer: &mut W, sid: &SidRef<'_>) -> Result<()> {
+    pub(crate) fn write_sid<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        sid: &SidRef<'_>,
+    ) -> Result<()> {
         let &[revision, sub_count, a0, a1, a2, a3, a4, a5, ref subs @ ..] = sid.as_bytes() else {
             return self.write_bytes(writer, b"S-?");
         };
