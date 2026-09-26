@@ -1,6 +1,12 @@
 use anyhow::{Context, Result, bail, format_err};
 use clap::{Arg, ArgMatches, Command};
+use evtx::wevt_templates::manifest::CrimManifest;
+use evtx::wevt_templates::{normalize_guid, render_template_definition_to_xml_with_values};
+use evtx::{EvtxParser, ParserSettings, binxml::value_variant::BinXmlValue};
 use indoc::indoc;
+use serde_json::Value as JsonValue;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub fn command() -> Command {
     Command::new("apply-wevt-cache")
@@ -89,188 +95,144 @@ pub fn command() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
-    #[cfg(feature = "wevt_templates")]
-    {
-        run_impl(matches)
-    }
-
-    #[cfg(not(feature = "wevt_templates"))]
-    {
-        let _ = matches;
-        bail!(
-            "This subcommand requires building `evtx_dump` with template support enabled.\n\
-             Example:\n\
-               cargo run --bin evtx_dump -- apply-wevt-cache ..."
-        );
-    }
+fn load_crim_blobs(path: &Path) -> Result<Vec<Vec<u8>>> {
+    let mut crim_blobs = Vec::new();
+    evtx::wevt_templates::wevtcache::for_each_crim_blob(path, |bytes| {
+        crim_blobs.push(bytes);
+        Ok(())
+    })?;
+    Ok(crim_blobs)
 }
 
-#[cfg(feature = "wevt_templates")]
-mod imp {
-    use super::*;
-    use evtx::EvtxParser;
-    use evtx::ParserSettings;
-    use evtx::binxml::value_variant::BinXmlValue;
-    use evtx::wevt_templates::manifest::CrimManifest;
-    use evtx::wevt_templates::render_template_definition_to_xml_with_values;
-    use serde_json::Value as JsonValue;
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    fn normalize_guid(s: &str) -> String {
-        evtx::wevt_templates::normalize_guid(s)
-    }
-
-    fn load_crim_blobs(path: &Path) -> Result<Vec<Vec<u8>>> {
-        let mut crim_blobs = Vec::new();
-        evtx::wevt_templates::wevtcache::for_each_crim_blob(path, |bytes| {
-            crim_blobs.push(bytes);
-            Ok(())
-        })?;
-        Ok(crim_blobs)
-    }
-
-    fn values_from_json_array<'a>(
-        v: &JsonValue,
-        bump: &'a bumpalo::Bump,
-    ) -> Result<Vec<BinXmlValue<'a>>> {
-        let Some(arr) = v.as_array() else {
-            bail!("substitutions JSON must be an array");
-        };
-        Ok(arr
-            .iter()
-            .map(|v| match v {
-                JsonValue::Null => BinXmlValue::NullType,
-                JsonValue::Bool(b) => BinXmlValue::BoolType(*b),
-                JsonValue::Number(n) => {
-                    if let Some(i) = n.as_i64() {
-                        BinXmlValue::Int64Type(i)
-                    } else if let Some(u) = n.as_u64() {
-                        BinXmlValue::UInt64Type(u)
-                    } else if let Some(f) = n.as_f64() {
-                        BinXmlValue::Real64Type(f)
-                    } else {
-                        BinXmlValue::NullType
-                    }
-                }
-                JsonValue::String(s) => BinXmlValue::AnsiStringType(bump.alloc_str(s)),
-                other => BinXmlValue::AnsiStringType(bump.alloc_str(&other.to_string())),
-            })
-            .collect::<Vec<_>>())
-    }
-
-    pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
-        let cache_path = PathBuf::from(matches.get_one::<String>("cache").expect("required"));
-        let crim_blobs = load_crim_blobs(&cache_path)?;
-        let manifests = crim_blobs
-            .iter()
-            .map(|bytes| CrimManifest::parse(bytes).context("failed to parse CRIM/WEVT blob"))
-            .collect::<Result<Vec<_>>>()?;
-
-        // Build (provider_guid,event_id,version) -> template_guid mapping.
-        let mut event_to_template_guid = std::collections::HashMap::new();
-        for provider in manifests.iter().flat_map(|m| &m.providers) {
-            let provider_guid = normalize_guid(&provider.guid.to_string());
-            if let Some(evnt) = provider.wevt.elements.events.as_ref() {
-                for ev in &evnt.events {
-                    let Some(off) = ev.template_offset else {
-                        continue;
-                    };
-                    let Some(tpl) = provider.template_by_offset(off) else {
-                        continue;
-                    };
-                    event_to_template_guid.insert(
-                        (provider_guid.clone(), ev.identifier, ev.version),
-                        normalize_guid(&tpl.guid.to_string()),
-                    );
+fn values_from_json_array<'a>(
+    v: &JsonValue,
+    bump: &'a bumpalo::Bump,
+) -> Result<Vec<BinXmlValue<'a>>> {
+    let Some(arr) = v.as_array() else {
+        bail!("substitutions JSON must be an array");
+    };
+    Ok(arr
+        .iter()
+        .map(|v| match v {
+            JsonValue::Null => BinXmlValue::NullType,
+            JsonValue::Bool(b) => BinXmlValue::BoolType(*b),
+            JsonValue::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    BinXmlValue::Int64Type(i)
+                } else if let Some(u) = n.as_u64() {
+                    BinXmlValue::UInt64Type(u)
+                } else if let Some(f) = n.as_f64() {
+                    BinXmlValue::Real64Type(f)
+                } else {
+                    BinXmlValue::NullType
                 }
             }
-        }
+            JsonValue::String(s) => BinXmlValue::AnsiStringType(bump.alloc_str(s)),
+            other => BinXmlValue::AnsiStringType(bump.alloc_str(&other.to_string())),
+        })
+        .collect::<Vec<_>>())
+}
 
-        // Resolve substitutions.
-        let template_instance_index: usize = *matches
-            .get_one::<usize>("template-instance-index")
-            .expect("has default");
+pub fn run(matches: &ArgMatches) -> Result<()> {
+    let cache_path = PathBuf::from(matches.get_one::<String>("cache").expect("required"));
+    let crim_blobs = load_crim_blobs(&cache_path)?;
+    let manifests = crim_blobs
+        .iter()
+        .map(|bytes| CrimManifest::parse(bytes).context("failed to parse CRIM/WEVT blob"))
+        .collect::<Result<Vec<_>>>()?;
 
-        let evtx_subs = if let (Some(evtx_path), Some(record_id)) = (
-            matches.get_one::<String>("evtx").map(PathBuf::from),
-            matches.get_one::<u64>("record-id").copied(),
-        ) {
-            Some((evtx_path, record_id))
-        } else {
-            None
-        };
-
-        let json_subs = if evtx_subs.is_none() {
-            if let Some(s) = matches.get_one::<String>("substitutions") {
-                Some(
-                    serde_json::from_str::<JsonValue>(s)
-                        .context("failed to parse --substitutions as JSON")?,
-                )
-            } else if let Some(p) = matches.get_one::<String>("substitutions-file") {
-                let text = fs::read_to_string(p)
-                    .with_context(|| format!("failed to read substitutions file `{p}`"))?;
-                Some(
-                    serde_json::from_str::<JsonValue>(&text)
-                        .context("failed to parse substitutions file as JSON")?,
-                )
-            } else {
-                None
+    // Build (provider_guid,event_id,version) -> template_guid mapping.
+    let mut event_to_template_guid = std::collections::HashMap::new();
+    for provider in manifests.iter().flat_map(|m| &m.providers) {
+        let provider_guid = normalize_guid(&provider.guid.to_string());
+        if let Some(evnt) = provider.wevt.elements.events.as_ref() {
+            for ev in &evnt.events {
+                let Some(off) = ev.template_offset else {
+                    continue;
+                };
+                let Some(tpl) = provider.template_by_offset(off) else {
+                    continue;
+                };
+                event_to_template_guid.insert(
+                    (provider_guid.clone(), ev.identifier, ev.version),
+                    normalize_guid(&tpl.guid.to_string()),
+                );
             }
-        } else {
-            None
-        };
-
-        if evtx_subs.is_none() && json_subs.is_none() {
-            bail!(
-                "Must provide substitutions via --evtx+--record-id or --substitutions/--substitutions-file"
-            );
         }
+    }
 
-        // Resolve template guid.
-        let template_guid = if let Some(g) = matches.get_one::<String>("template-guid") {
-            normalize_guid(g)
-        } else if let (Some(provider_guid), Some(event_id), Some(version)) = (
-            matches.get_one::<String>("provider-guid"),
-            matches.get_one::<u16>("event-id").copied(),
-            matches.get_one::<u8>("version").copied(),
-        ) {
-            let key = (normalize_guid(provider_guid), event_id, version);
-            event_to_template_guid
-                .get(&key)
-                .cloned()
-                .ok_or_else(|| {
-                    format_err!(
-                        "no template_guid found in cache index for provider_guid={provider_guid} event_id={event_id} version={version}"
-                    )
-                })?
-        } else {
-            bail!(
-                "Must provide either --template-guid or (--provider-guid, --event-id, --version)"
-            );
-        };
+    // Resolve substitutions.
+    let template_instance_index: usize = *matches
+        .get_one::<usize>("template-instance-index")
+        .expect("has default");
 
-        // Locate the template definition in one of the CRIM blobs.
-        let tpl = manifests
-            .iter()
-            .flat_map(|m| &m.providers)
-            .find_map(|provider| {
-                provider.wevt.elements.templates.as_ref().and_then(|ttbl| {
-                    ttbl.templates
-                        .iter()
-                        .find(|tpl| normalize_guid(&tpl.guid.to_string()) == template_guid)
-                })
-            })
+    let evtx_subs = matches
+        .get_one::<String>("evtx")
+        .map(PathBuf::from)
+        .zip(matches.get_one::<u64>("record-id").copied());
+
+    let json_subs = if evtx_subs.is_some() {
+        None
+    } else if let Some(s) = matches.get_one::<String>("substitutions") {
+        Some(
+            serde_json::from_str::<JsonValue>(s)
+                .context("failed to parse --substitutions as JSON")?,
+        )
+    } else if let Some(p) = matches.get_one::<String>("substitutions-file") {
+        let text = fs::read_to_string(p)
+            .with_context(|| format!("failed to read substitutions file `{p}`"))?;
+        Some(
+            serde_json::from_str::<JsonValue>(&text)
+                .context("failed to parse substitutions file as JSON")?,
+        )
+    } else {
+        None
+    };
+
+    if evtx_subs.is_none() && json_subs.is_none() {
+        bail!(
+            "Must provide substitutions via --evtx+--record-id or --substitutions/--substitutions-file"
+        );
+    }
+
+    // Resolve template guid.
+    let template_guid = if let Some(g) = matches.get_one::<String>("template-guid") {
+        normalize_guid(g)
+    } else if let (Some(provider_guid), Some(event_id), Some(version)) = (
+        matches.get_one::<String>("provider-guid"),
+        matches.get_one::<u16>("event-id").copied(),
+        matches.get_one::<u8>("version").copied(),
+    ) {
+        let key = (normalize_guid(provider_guid), event_id, version);
+        event_to_template_guid
+            .get(&key)
+            .cloned()
             .ok_or_else(|| {
                 format_err!(
-                    "template GUID `{}` not found in cache `{}`",
-                    template_guid,
-                    cache_path.display()
+                    "no template_guid found in cache index for provider_guid={provider_guid} event_id={event_id} version={version}"
                 )
-            })?;
+            })?
+    } else {
+        bail!("Must provide either --template-guid or (--provider-guid, --event-id, --version)");
+    };
 
-        let xml = if let Some((evtx_path, record_id)) = evtx_subs {
+    // Locate the template definition in one of the CRIM blobs.
+    let tpl = manifests
+        .iter()
+        .flat_map(|m| &m.providers)
+        .filter_map(|p| p.wevt.elements.templates.as_ref())
+        .flat_map(|ttbl| &ttbl.templates)
+        .find(|tpl| normalize_guid(&tpl.guid.to_string()) == template_guid)
+        .ok_or_else(|| {
+            format_err!(
+                "template GUID `{}` not found in cache `{}`",
+                template_guid,
+                cache_path.display()
+            )
+        })?;
+
+    let xml = if let Some((evtx_path, record_id)) = evtx_subs {
+        'found: {
             let settings = ParserSettings::default();
             let mut parser = EvtxParser::from_path(&evtx_path)
                 .with_context(|| format!("Failed to open evtx file at: {}", evtx_path.display()))?
@@ -293,60 +255,49 @@ mod imp {
                             template_instance_index
                         )
                     })?;
-                    let xml = render_template_definition_to_xml_with_values(
+                    break 'found render_template_definition_to_xml_with_values(
                         tpl,
                         &instance.values,
                         encoding_rs::WINDOWS_1252,
                         &record.chunk.arena,
                     )?;
-                    // Found and rendered; stop searching.
-                    if let Some(out_path) = matches.get_one::<String>("output") {
-                        fs::write(out_path, xml.as_bytes())
-                            .with_context(|| format!("failed to write output `{out_path}`"))?;
-                    } else {
-                        print!("{xml}");
-                    }
-                    return Ok(());
                 }
             }
 
             bail!("record_id {record_id} not found in {}", evtx_path.display());
-        } else {
-            let json = json_subs.expect("checked above");
-            let bump = bumpalo::Bump::new();
-            let values = values_from_json_array(&json, &bump)?;
-            render_template_definition_to_xml_with_values(
-                tpl,
-                &values,
-                encoding_rs::WINDOWS_1252,
-                &bump,
-            )?
-        };
-
-        if let Some(out_path) = matches.get_one::<String>("output") {
-            fs::write(out_path, xml.as_bytes())
-                .with_context(|| format!("failed to write output `{out_path}`"))?;
-        } else {
-            print!("{xml}");
         }
+    } else {
+        let json = json_subs.expect("checked above");
+        let bump = bumpalo::Bump::new();
+        let values = values_from_json_array(&json, &bump)?;
+        render_template_definition_to_xml_with_values(
+            tpl,
+            &values,
+            encoding_rs::WINDOWS_1252,
+            &bump,
+        )?
+    };
 
-        Ok(())
+    if let Some(out_path) = matches.get_one::<String>("output") {
+        fs::write(out_path, xml.as_bytes())
+            .with_context(|| format!("failed to write output `{out_path}`"))?;
+    } else {
+        print!("{xml}");
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn normalize_guid_strips_braces_and_is_case_insensitive() {
-            let braced = "{12345678-1234-1234-1234-123456789ABC}";
-            let unbraced = "12345678-1234-1234-1234-123456789abc";
-
-            assert_eq!(normalize_guid(braced), unbraced);
-            assert_eq!(normalize_guid(unbraced), unbraced);
-        }
-    }
+    Ok(())
 }
 
-#[cfg(feature = "wevt_templates")]
-use imp::run_impl;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_guid_strips_braces_and_is_case_insensitive() {
+        let braced = "{12345678-1234-1234-1234-123456789ABC}";
+        let unbraced = "12345678-1234-1234-1234-123456789abc";
+
+        assert_eq!(normalize_guid(braced), unbraced);
+        assert_eq!(normalize_guid(unbraced), unbraced);
+    }
+}

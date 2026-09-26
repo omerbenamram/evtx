@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Arg, ArgMatches, Command};
+use evtx::{EvtxParser, ParserSettings};
 use indoc::indoc;
+use serde::Serialize;
+use std::path::PathBuf;
 
 pub fn command() -> Command {
     Command::new("dump-template-instances")
@@ -38,126 +41,92 @@ pub fn command() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches) -> Result<()> {
-    #[cfg(feature = "wevt_templates")]
-    {
-        run_impl(matches)
-    }
-
-    #[cfg(not(feature = "wevt_templates"))]
-    {
-        let _ = matches;
-        anyhow::bail!(
-            "This subcommand requires building `evtx_dump` with template support enabled.\n\
-             Example:\n\
-              cargo run --bin evtx_dump -- dump-template-instances ..."
-        );
-    }
+#[derive(Debug, Serialize)]
+struct DumpTemplateInstanceOutputLine {
+    source: String,
+    record_id: u64,
+    timestamp: String,
+    template_instance_index: usize,
+    template_id: u32,
+    template_def_offset: u32,
+    template_guid: Option<String>,
+    substitutions: Vec<String>,
 }
 
-#[cfg(feature = "wevt_templates")]
-mod imp {
-    use super::*;
-    use evtx::{EvtxParser, ParserSettings};
-    use serde::Serialize;
-    use std::path::PathBuf;
+pub fn run(matches: &ArgMatches) -> Result<()> {
+    let input = PathBuf::from(matches.get_one::<String>("input").expect("required"));
+    let record_id_filter = matches.get_one::<u64>("record-id").copied();
+    let template_instance_index: usize = *matches
+        .get_one::<usize>("template-instance-index")
+        .expect("has default");
 
-    #[derive(Debug, Serialize)]
-    struct DumpTemplateInstanceOutputLine {
-        source: String,
-        record_id: u64,
-        timestamp: String,
-        template_instance_index: usize,
-        template_id: u32,
-        template_def_offset: u32,
-        template_guid: Option<String>,
-        substitutions: Vec<String>,
-    }
+    let settings = ParserSettings::default();
+    let mut parser = EvtxParser::from_path(&input)
+        .with_context(|| format!("Failed to open evtx file at: {}", input.display()))?
+        .with_configuration(settings.clone());
 
-    fn binxml_value_to_string_lossy(
-        value: &evtx::binxml::value_variant::BinXmlValue<'_>,
-    ) -> String {
-        value.to_string()
-    }
+    let source = input.to_string_lossy().to_string();
 
-    pub(super) fn run_impl(matches: &ArgMatches) -> Result<()> {
-        let input = PathBuf::from(matches.get_one::<String>("input").expect("required"));
-        let record_id_filter = matches.get_one::<u64>("record-id").copied();
-        let template_instance_index: usize = *matches
-            .get_one::<usize>("template-instance-index")
-            .expect("has default");
+    for chunk_res in parser.chunks() {
+        let mut chunk_data = match chunk_res {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{e}");
+                continue;
+            }
+        };
 
-        let settings = ParserSettings::default();
-        let mut parser = EvtxParser::from_path(&input)
-            .with_context(|| format!("Failed to open evtx file at: {}", input.display()))?
-            .with_configuration(settings.clone());
+        let mut chunk = match chunk_data.parse(std::sync::Arc::new(settings.clone())) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{e}");
+                continue;
+            }
+        };
 
-        let source = input.to_string_lossy().to_string();
-
-        for chunk_res in parser.chunks() {
-            let mut chunk_data = match chunk_res {
-                Ok(c) => c,
+        for record_res in chunk.iter() {
+            let record = match record_res {
+                Ok(r) => r,
                 Err(e) => {
                     eprintln!("{e}");
                     continue;
                 }
             };
 
-            let mut chunk = match chunk_data.parse(std::sync::Arc::new(settings.clone())) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{e}");
-                    continue;
-                }
+            if record_id_filter.is_some_and(|want| record.event_record_id != want) {
+                continue;
+            }
+
+            let instances = record.template_instances()?;
+            let Some(tpl) = instances.get(template_instance_index) else {
+                continue;
             };
 
-            for record_res in chunk.iter() {
-                let record = match record_res {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("{e}");
-                        continue;
-                    }
-                };
+            let substitutions = tpl
+                .values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
 
-                if record_id_filter.is_some_and(|want| record.event_record_id != want) {
-                    continue;
-                }
+            let line = DumpTemplateInstanceOutputLine {
+                source: source.clone(),
+                record_id: record.event_record_id,
+                timestamp: record.timestamp.to_string(),
+                template_instance_index,
+                template_id: tpl.template_id,
+                template_def_offset: tpl.template_def_offset,
+                template_guid: tpl.template_guid.as_ref().map(|g| g.to_string()),
+                substitutions,
+            };
 
-                let instances = record.template_instances()?;
-                let Some(tpl) = instances.get(template_instance_index) else {
-                    continue;
-                };
+            println!("{}", serde_json::to_string(&line)?);
 
-                let substitutions = tpl
-                    .values
-                    .iter()
-                    .map(binxml_value_to_string_lossy)
-                    .collect::<Vec<_>>();
-
-                let line = DumpTemplateInstanceOutputLine {
-                    source: source.clone(),
-                    record_id: record.event_record_id,
-                    timestamp: record.timestamp.to_string(),
-                    template_instance_index,
-                    template_id: tpl.template_id,
-                    template_def_offset: tpl.template_def_offset,
-                    template_guid: tpl.template_guid.as_ref().map(|g| g.to_string()),
-                    substitutions,
-                };
-
-                println!("{}", serde_json::to_string(&line)?);
-
-                if record_id_filter.is_some() {
-                    // Found the record we wanted; keep going anyway in case there are duplicates? No.
-                    return Ok(());
-                }
+            if record_id_filter.is_some() {
+                // Found the record we wanted; keep going anyway in case there are duplicates? No.
+                return Ok(());
             }
         }
-
-        Ok(())
     }
-}
 
-#[cfg(feature = "wevt_templates")]
-use imp::run_impl;
+    Ok(())
+}

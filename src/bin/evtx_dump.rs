@@ -21,7 +21,6 @@ mod dump_template_instances;
 #[path = "evtx_dump/extract_wevt_templates.rs"]
 mod extract_wevt_templates;
 
-#[cfg(feature = "wevt_templates")]
 fn load_wevt_cache_from_wevtcache_file(
     path: &str,
 ) -> Result<std::sync::Arc<evtx::wevt_templates::WevtCache>> {
@@ -87,41 +86,11 @@ impl EvtxDump {
             _ => EvtxOutputFormat::XML,
         };
 
-        let no_indent = match (
-            matches.get_flag("no-indent"),
-            matches.get_one::<String>("output-format"),
-        ) {
-            // "jsonl" --> --no-indent
-            (false, Some(fmt)) => fmt == "jsonl",
-            (true, Some(fmt)) => {
-                if fmt == "jsonl" {
-                    eprintln!("no need to pass both `--no-indent` and `-o jsonl`");
-                    true
-                } else {
-                    true
-                }
-            }
-            (v, None) => v,
-        };
+        let no_indent = flag_or_jsonl(matches, "no-indent");
 
         let separate_json_attrib_flag = matches.get_flag("separate-json-attributes");
 
-        let no_show_record_number = match (
-            matches.get_flag("no-show-record-number"),
-            matches.get_one::<String>("output-format"),
-        ) {
-            // "jsonl" --> --no-show-record-number
-            (false, Some(fmt)) => fmt == "jsonl",
-            (true, Some(fmt)) => {
-                if fmt == "jsonl" {
-                    eprintln!("no need to pass both `--no-show-record-number` and `-o jsonl`");
-                    true
-                } else {
-                    true
-                }
-            }
-            (v, None) => v,
-        };
+        let no_show_record_number = flag_or_jsonl(matches, "no-show-record-number");
 
         let num_threads: u32 = *matches.get_one("num-threads").expect("has default");
 
@@ -167,23 +136,18 @@ impl EvtxDump {
             Box::new(BufWriter::new(io::stdout()))
         };
 
-        #[cfg(feature = "wevt_templates")]
         let wevt_cache = matches
             .get_one::<String>("wevt-cache")
             .map(|p| load_wevt_cache_from_wevtcache_file(p))
             .transpose()?;
 
-        let mut parser_settings = ParserSettings::new()
+        let parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
-            .ansi_codec(ansi_codec);
-
-        #[cfg(feature = "wevt_templates")]
-        {
-            parser_settings = parser_settings.wevt_cache(wevt_cache);
-        }
+            .ansi_codec(ansi_codec)
+            .wevt_cache(wevt_cache);
 
         Ok(EvtxDump {
             parser_settings,
@@ -367,6 +331,18 @@ impl EvtxDump {
     }
 }
 
+/// `-o jsonl` implies `flag`; warn when both are passed.
+fn flag_or_jsonl(matches: &ArgMatches, flag: &str) -> bool {
+    let set = matches.get_flag(flag);
+    let jsonl = matches
+        .get_one::<String>("output-format")
+        .is_some_and(|fmt| fmt == "jsonl");
+    if set && jsonl {
+        eprintln!("no need to pass both `--{flag}` and `-o jsonl`");
+    }
+    set || jsonl
+}
+
 #[derive(Clone)]
 struct Ranges(Vec<RangeInclusive<usize>>);
 
@@ -527,17 +503,15 @@ fn main() -> Result<()> {
                 .help("Code page for ANSI strings. An Encoding Standard label such as windows-1252 (the default), windows-1251, or gbk."),
         );
 
-    // Optional: when provided, use an offline WEVT template cache as a fallback for records
-    // whose embedded EVTX templates are missing/corrupt (common in carved/dirty logs).
-    #[cfg(feature = "wevt_templates")]
-    let cmd = cmd.arg(
-        Arg::new("wevt-cache")
-            .long("wevt-cache")
-            .value_name("WEVTCACHE")
-            .help("Path to a WEVT template cache file (`.wevtcache`). When set, evtx_dump will try to render records using this cache if the embedded EVTX template expansion fails."),
-    );
-
     let matches = cmd
+        // Offline WEVT template cache: fallback for records whose embedded EVTX templates are
+        // missing/corrupt (common in carved/dirty logs).
+        .arg(
+            Arg::new("wevt-cache")
+                .long("wevt-cache")
+                .value_name("WEVTCACHE")
+                .help("Path to a WEVT template cache file (`.wevtcache`). When set, evtx_dump will try to render records using this cache if the embedded EVTX template expansion fails."),
+        )
         .arg(
             Arg::new("stop-after-one-error")
                 .long("stop-after-one-error")
@@ -559,16 +533,11 @@ fn main() -> Result<()> {
         .subcommand(apply_wevt_cache::command())
         .get_matches();
 
-    if let Some(("extract-wevt-templates", sub_matches)) = matches.subcommand() {
-        return extract_wevt_templates::run(sub_matches);
-    }
-
-    if let Some(("dump-template-instances", sub_matches)) = matches.subcommand() {
-        return dump_template_instances::run(sub_matches);
-    }
-
-    if let Some(("apply-wevt-cache", sub_matches)) = matches.subcommand() {
-        return apply_wevt_cache::run(sub_matches);
+    match matches.subcommand() {
+        Some(("extract-wevt-templates", m)) => return extract_wevt_templates::run(m),
+        Some(("dump-template-instances", m)) => return dump_template_instances::run(m),
+        Some(("apply-wevt-cache", m)) => return apply_wevt_cache::run(m),
+        _ => {}
     }
 
     if matches.get_one::<String>("INPUT").is_none() {
