@@ -199,12 +199,8 @@ impl<'a> EvtxRecord<'a> {
                     eof = true;
                 }
                 0x0c => {
-                    let template = read_template_values_cursor(
-                        &mut cursor,
-                        Some(self.chunk),
-                        ansi_codec,
-                        &self.chunk.arena,
-                    )?;
+                    let template =
+                        read_template_values_cursor(&mut cursor, ansi_codec, &self.chunk.arena)?;
                     out.push(template);
                 }
                 0x01 => {
@@ -219,7 +215,6 @@ impl<'a> EvtxRecord<'a> {
                 0x05 | 0x45 => {
                     let _ = crate::binxml::value_variant::BinXmlValue::from_binxml_cursor_in(
                         &mut cursor,
-                        Some(self.chunk),
                         None,
                         ansi_codec,
                         &self.chunk.arena,

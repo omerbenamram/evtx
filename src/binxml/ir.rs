@@ -677,7 +677,7 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
         match token_byte {
             0x00 => break,
             0x0c => {
-                let template = read_template_values_cursor(&mut cursor, chunk, ansi_codec, bump)?;
+                let template = read_template_values_cursor(&mut cursor, ansi_codec, bump)?;
                 builder.process_template_instance_values(template, bump)?;
             }
             0x01 | 0x41 => {
@@ -701,7 +701,7 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
             }
             0x05 | 0x45 => {
                 let value =
-                    BinXmlValue::from_binxml_cursor_in(&mut cursor, chunk, None, ansi_codec, bump)?;
+                    BinXmlValue::from_binxml_cursor_in(&mut cursor, None, ansi_codec, bump)?;
                 builder.process_value(value)?;
             }
             0x06 | 0x46 => {
@@ -976,12 +976,8 @@ fn read_single_instance_stream<'a>(
 
     let stream_offset = binxml_slice_offset_in(chunk.data, bytes)? as usize;
     let mut cursor = ByteCursor::with_pos(chunk.data, stream_offset + instance_offset)?;
-    let template_ref = read_template_values_cursor(
-        &mut cursor,
-        Some(chunk),
-        chunk.settings.get_ansi_codec(),
-        &chunk.arena,
-    )?;
+    let template_ref =
+        read_template_values_cursor(&mut cursor, chunk.settings.get_ansi_codec(), &chunk.arena)?;
 
     // Anything after the instance other than EOF (or end-of-stream) is a shape we
     // don't handle here.

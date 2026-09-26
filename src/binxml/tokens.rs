@@ -1,4 +1,4 @@
-use crate::err::{DeserializationError, DeserializationResult as Result};
+use crate::err::DeserializationResult as Result;
 
 use winstructs::guid::Guid;
 
@@ -10,7 +10,6 @@ use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use log::{error, trace, warn};
 
-use crate::evtx_chunk::EvtxChunk;
 use bumpalo::Bump;
 
 /// Template definition header stored in the chunk template table.
@@ -81,7 +80,6 @@ pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
 /// This is used by the direct IR builder path.
 pub(crate) fn read_template_values_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
-    chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: AnsiCodec,
     arena: &'a Bump,
 ) -> Result<BinXmlTemplateValues<'a>> {
@@ -108,13 +106,7 @@ pub(crate) fn read_template_values_cursor<'a>(
     // precedence and cursor positions for truncated/unknown descriptors.
     for _ in 0..number_of_substitutions {
         let _ = cursor.u16()?;
-        let value_type_token = cursor.u8()?;
-        BinXmlValueType::from_u8(value_type_token).ok_or(
-            DeserializationError::InvalidValueVariant {
-                value: value_type_token,
-                offset: cursor.position(),
-            },
-        )?;
+        BinXmlValueType::from_cursor(cursor)?;
         let _ = cursor.u8()?;
     }
     let descriptors = &cursor.buf()[descriptor_start..cursor.pos()];
@@ -134,7 +126,6 @@ pub(crate) fn read_template_values_cursor<'a>(
         let value = BinXmlValue::deserialize_value_type_cursor_in(
             &descriptor.value_type,
             cursor,
-            chunk,
             Some(descriptor.size),
             ansi_codec,
             arena,
@@ -202,13 +193,7 @@ pub(crate) fn read_substitution_descriptor_cursor(cursor: &mut ByteCursor<'_>) -
         cursor.position()
     );
     let substitution_index = cursor.u16()?;
-    let value_type_token = cursor.u8()?;
-    BinXmlValueType::from_u8(value_type_token).ok_or(
-        DeserializationError::InvalidValueVariant {
-            value: value_type_token,
-            offset: cursor.position(),
-        },
-    )?;
+    BinXmlValueType::from_cursor(cursor)?;
     Ok(substitution_index)
 }
 
@@ -248,6 +233,7 @@ pub(crate) fn read_open_start_element_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::err::DeserializationError;
     use encoding_rs::WINDOWS_1252;
 
     #[test]
@@ -259,8 +245,7 @@ mod tests {
             bytes.extend_from_slice(&[1, 0, ty]); // second descriptor lacks padding
             let bump = Bump::new();
             let mut cursor = ByteCursor::with_pos(&bytes, 0).unwrap();
-            let error =
-                read_template_values_cursor(&mut cursor, None, WINDOWS_1252, &bump).unwrap_err();
+            let error = read_template_values_cursor(&mut cursor, WINDOWS_1252, &bump).unwrap_err();
             assert_eq!(cursor.pos(), 20);
             if ty == 0xff {
                 assert!(matches!(
