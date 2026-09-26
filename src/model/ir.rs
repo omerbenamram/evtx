@@ -10,7 +10,7 @@
 //!   is resolved during template instantiation (IR build), before rendering.
 //! - `Element::has_element_child` is maintained to optimize rendering decisions.
 
-use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::binxml::value_variant::BinXmlValue;
 use crate::utils::Utf16LeSlice;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
@@ -99,13 +99,11 @@ const _: () =
 
 /// Template substitution placeholder captured during template parsing.
 ///
-/// `id` indexes into the template substitution array. `value_type` is the
-/// declared substitution type, and `optional` indicates the substitution may
-/// be omitted if empty.
+/// `id` indexes into the template substitution array; `optional` indicates
+/// the substitution may be omitted if empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placeholder {
     pub(crate) id: u16,
-    pub(crate) value_type: BinXmlValueType,
     pub(crate) optional: bool,
 }
 

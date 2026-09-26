@@ -4,7 +4,7 @@ use winstructs::guid::Guid;
 
 use crate::AnsiCodec;
 use crate::ChunkOffset;
-use crate::binxml::name::{BinXmlNameEncoding, read_name_ref};
+use crate::binxml::name::read_name_ref;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
@@ -46,16 +46,6 @@ pub struct BinXmlTemplateValues<'a> {
 struct TemplateValueDescriptor {
     size: u16,
     value_type: BinXmlValueType,
-}
-
-/// Placeholder descriptor within a template definition.
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct TemplateSubstitutionDescriptor {
-    /// Zero-based index of the substitution value.
-    pub(crate) substitution_index: u16,
-    pub(crate) value_type: BinXmlValueType,
-    /// True for conditional substitutions; optional values may be omitted when empty.
-    pub(crate) optional: bool,
 }
 
 /// BinXML stream token bytes (MS-EVEN6 §2.2.3.1).
@@ -205,30 +195,21 @@ pub(crate) fn read_processing_instruction_data_cursor<'a>(
     Ok(data)
 }
 
-pub(crate) fn read_substitution_descriptor_cursor(
-    cursor: &mut ByteCursor<'_>,
-    optional: bool,
-) -> Result<TemplateSubstitutionDescriptor> {
+/// Read a substitution descriptor (index + validated value type), returning the index.
+pub(crate) fn read_substitution_descriptor_cursor(cursor: &mut ByteCursor<'_>) -> Result<u16> {
     trace!(
-        "Offset `0x{:08x}` - SubstitutionDescriptor<optional={}>",
-        cursor.position(),
-        optional
+        "Offset `0x{:08x}` - SubstitutionDescriptor",
+        cursor.position()
     );
     let substitution_index = cursor.u16()?;
     let value_type_token = cursor.u8()?;
-
-    let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
+    BinXmlValueType::from_u8(value_type_token).ok_or(
         DeserializationError::InvalidValueVariant {
             value: value_type_token,
             offset: cursor.position(),
         },
     )?;
-
-    Ok(TemplateSubstitutionDescriptor {
-        substitution_index,
-        value_type,
-        optional,
-    })
+    Ok(substitution_index)
 }
 
 /// Read an element start header and return its name offset.
@@ -236,7 +217,7 @@ pub(crate) fn read_open_start_element_cursor(
     cursor: &mut ByteCursor<'_>,
     has_attributes: bool,
     has_dependency_identifier: bool,
-    name_encoding: BinXmlNameEncoding,
+    inline_names: bool,
 ) -> Result<ChunkOffset> {
     trace!(
         "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, has_dependency_identifier={}>",
@@ -249,11 +230,12 @@ pub(crate) fn read_open_start_element_cursor(
     // - Template definitions: include a dependency identifier (u16)
     // - Direct record elements / nested BinXML (substitution value type 0x21): omit it
     if has_dependency_identifier {
-        let _dependency_identifier = cursor.u16_named("open_start_element_dependency_identifier")?;
+        let _dependency_identifier =
+            cursor.u16_named("open_start_element_dependency_identifier")?;
     }
 
     let _data_size = cursor.u32_named("open_start_element_data_size")?;
-    let name = read_name_ref(cursor, name_encoding)?;
+    let name = read_name_ref(cursor, inline_names)?;
 
     if has_attributes {
         let _attribute_list_data_size =

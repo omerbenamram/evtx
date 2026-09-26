@@ -68,16 +68,16 @@
 //! overhead and intermediate token allocations.
 
 use crate::AnsiCodec;
+use crate::ChunkOffset;
 use crate::EvtxChunk;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
 };
-use crate::ChunkOffset;
-use crate::binxml::name::{BinXmlNameEncoding, NAME_LINK_SIZE, read_name_ref};
+use crate::binxml::name::{NAME_LINK_SIZE, read_name_ref};
 use crate::binxml::tokens::{
-    BinXmlTemplateValues, TemplateHeader, TemplateSubstitutionDescriptor,
-    read_open_start_element_cursor, read_processing_instruction_data_cursor,
-    read_substitution_descriptor_cursor, read_template_header, read_template_values_cursor,
+    BinXmlTemplateValues, TemplateHeader, read_open_start_element_cursor,
+    read_processing_instruction_data_cursor, read_substitution_descriptor_cursor,
+    read_template_header, read_template_values_cursor,
 };
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{DeserializationError, EvtxError, Result};
@@ -262,7 +262,6 @@ impl<'a> IrTemplateCache<'a> {
                     bump,
                     arena: &mut arena,
                     mode: BuildMode::TemplateDefinition,
-                    name_encoding: BinXmlNameEncoding::Offset,
                     depth,
                 },
             )?;
@@ -312,7 +311,6 @@ impl<'a> IrTemplateCache<'a> {
                                 bump,
                                 arena: &mut arena,
                                 mode: BuildMode::TemplateDefinition,
-                                name_encoding: BinXmlNameEncoding::WevtInline,
                                 depth,
                             },
                         ) {
@@ -379,7 +377,6 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
     ansi_codec: AnsiCodec,
-    name_encoding: BinXmlNameEncoding,
     /// Fragment/instance nesting depth of this stream (see [`MAX_BINXML_NESTING`]).
     depth: usize,
     stack: IrVec<'a, ElementId>,
@@ -455,7 +452,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         )
     }
 
-    fn process_substitution(&mut self, substitution: TemplateSubstitutionDescriptor) -> Result<()> {
+    fn process_substitution(&mut self, id: u16, optional: bool) -> Result<()> {
         if self.mode != BuildMode::TemplateDefinition {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "substitution outside template definition",
@@ -465,14 +462,8 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         // In template definitions, substitutions are *structural*: we can't resolve them yet,
         // so we store a placeholder node that records:
         // - the substitution index into the instance value array
-        // - the declared value type
         // - whether the substitution is optional (may be omitted if empty)
-        let placeholder = Node::Placeholder(Placeholder {
-            id: substitution.substitution_index,
-            value_type: substitution.value_type,
-            optional: substitution.optional,
-        });
-        self.push_node(placeholder)
+        self.push_node(Node::Placeholder(Placeholder { id, optional }))
     }
 
     fn process_value(&mut self, value: BinXmlValue<'a>) -> Result<()> {
@@ -501,7 +492,6 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                         bump: self.bump,
                         arena: &mut *self.arena,
                         mode: BuildMode::Record,
-                        name_encoding: self.name_encoding,
                         depth: self.depth + 1,
                     },
                 )?;
@@ -556,18 +546,10 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     }
 
     fn name(&self, offset: ChunkOffset) -> Result<Name<'a>> {
-        let name = match self.name_encoding {
-            BinXmlNameEncoding::Offset => {
-                let chunk = self.chunk.ok_or_else(|| {
-                    EvtxError::FailedToCreateRecordModel(
-                        "Offset name encoding requires an EVTX chunk context",
-                    )
-                })?;
-                expand_string_ref(offset, chunk, self.bump)
-            }
-            BinXmlNameEncoding::WevtInline => {
-                expand_wevt_inline_name_ref(self.data, offset, self.bump)
-            }
+        // Chunk streams reference the string table; WEVT templates inline names.
+        let name = match self.chunk {
+            Some(chunk) => expand_string_ref(offset, chunk, self.bump),
+            None => expand_wevt_inline_name_ref(self.data, offset, self.bump),
         }?;
         Ok(Name::new(name))
     }
@@ -645,7 +627,6 @@ struct BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena> {
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
     mode: BuildMode,
-    name_encoding: BinXmlNameEncoding,
     /// Fragment/instance nesting depth of this stream; recursion guard.
     depth: usize,
 }
@@ -662,7 +643,6 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
         bump,
         arena,
         mode,
-        name_encoding,
         depth,
     } = args;
     // Only template definitions carry dependency IDs on element start tokens.
@@ -674,9 +654,8 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
     }
     let offset = binxml_slice_offset_in(data, bytes)?;
     let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
-    let mut data_read: u32 = 0;
-    let data_size = bytes.len() as u32;
-    let mut eof = false;
+    let end = cursor.pos() + bytes.len();
+    let inline_names = chunk.is_none();
 
     let mut builder = TreeBuilder {
         chunk,
@@ -686,34 +665,30 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
         bump,
         arena,
         ansi_codec,
-        name_encoding,
         depth,
         stack: IrVec::new_in(bump),
         current_element: None,
         root: None,
     };
 
-    while !eof && data_read < data_size {
-        let start = cursor.position();
+    while cursor.pos() < end {
         let token_byte = cursor.u8()?;
 
         match token_byte {
-            0x00 => {
-                eof = true;
-            }
+            0x00 => break,
             0x0c => {
                 let template = read_template_values_cursor(&mut cursor, chunk, ansi_codec, bump)?;
                 builder.process_template_instance_values(template, bump)?;
             }
-            0x01 => {
-                let elem =
-                    read_open_start_element_cursor(&mut cursor, false, has_dep_id, name_encoding)?;
-                builder.process_open_start_element(elem)?;
-            }
-            0x41 => {
-                let elem =
-                    read_open_start_element_cursor(&mut cursor, true, has_dep_id, name_encoding)?;
-                builder.process_open_start_element(elem)?;
+            0x01 | 0x41 => {
+                let has_attributes = token_byte & 0x40 != 0;
+                let name = read_open_start_element_cursor(
+                    &mut cursor,
+                    has_attributes,
+                    has_dep_id,
+                    inline_names,
+                )?;
+                builder.process_open_start_element(name)?;
             }
             0x02 => {
                 builder.process_close_start_element()?;
@@ -730,28 +705,24 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
                 builder.process_value(value)?;
             }
             0x06 | 0x46 => {
-                let name = read_name_ref(&mut cursor, name_encoding)?;
+                let name = read_name_ref(&mut cursor, inline_names)?;
                 builder.process_attribute(name)?;
             }
             0x09 | 0x49 => {
-                let name = builder.name(read_name_ref(&mut cursor, name_encoding)?)?;
+                let name = builder.name(read_name_ref(&mut cursor, inline_names)?)?;
                 builder.push_node(Node::EntityRef(name))?;
             }
             0x0a => {
-                let name = builder.name(read_name_ref(&mut cursor, name_encoding)?)?;
+                let name = builder.name(read_name_ref(&mut cursor, inline_names)?)?;
                 builder.push_node(Node::PITarget(name))?;
             }
             0x0b => {
                 let data = read_processing_instruction_data_cursor(&mut cursor)?;
                 builder.push_node(Node::PIData(Text::utf16(data)))?;
             }
-            0x0d => {
-                let substitution = read_substitution_descriptor_cursor(&mut cursor, false)?;
-                builder.process_substitution(substitution)?;
-            }
-            0x0e => {
-                let substitution = read_substitution_descriptor_cursor(&mut cursor, true)?;
-                builder.process_substitution(substitution)?;
+            0x0d | 0x0e => {
+                let id = read_substitution_descriptor_cursor(&mut cursor)?;
+                builder.process_substitution(id, token_byte == 0x0e)?;
             }
             0x0f => {
                 cursor.u8_named("fragment_header_major_version")?;
@@ -780,9 +751,6 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
                 .into());
             }
         }
-
-        let total_read = cursor.position() - start;
-        data_read = data_read.saturating_add(total_read as u32);
     }
 
     builder.finish()
@@ -805,7 +773,6 @@ fn build_tree_from_binxml_bytes_direct_root<'a>(
         bump,
         arena,
         mode: BuildMode::Record,
-        name_encoding: BinXmlNameEncoding::Offset,
         depth: 0,
     })
 }
@@ -827,7 +794,6 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
         bump: &chunk.arena,
         arena: &mut arena,
         mode: BuildMode::Record,
-        name_encoding: BinXmlNameEncoding::Offset,
         depth: 0,
     })?;
     Ok(IrTree::new(arena, root))
@@ -994,7 +960,6 @@ fn parse_record_fragment<'a>(
         bump,
         arena,
         mode: BuildMode::Record,
-        name_encoding: BinXmlNameEncoding::Offset,
         depth: depth + 1,
     })
 }
@@ -1048,7 +1013,6 @@ pub(crate) fn build_wevt_template_definition_ir<'a>(
         bump,
         arena: &mut arena,
         mode: BuildMode::TemplateDefinition,
-        name_encoding: BinXmlNameEncoding::WevtInline,
         depth: 0,
     })?;
     Ok(IrTree::new(arena, root))
@@ -1471,9 +1435,12 @@ fn expand_string_ref<'a>(
         None => {
             // Fail-soft fallback for corrupted chunks / missing string cache entries:
             // decode the name into the caller-provided bump arena.
-            let name_off = offset.checked_add(NAME_LINK_SIZE).ok_or(
-                EvtxError::FailedToCreateRecordModel("string table offset overflow"),
-            )?;
+            let name_off =
+                offset
+                    .checked_add(NAME_LINK_SIZE)
+                    .ok_or(EvtxError::FailedToCreateRecordModel(
+                        "string table offset overflow",
+                    ))?;
             let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
             let s = cursor
                 .len_prefixed_utf16_string_bump(true, "name", bump)?

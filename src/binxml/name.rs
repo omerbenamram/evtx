@@ -18,17 +18,6 @@ pub struct BinXmlName {
     str: String,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum BinXmlNameEncoding {
-    /// Standard EVTX encoding where names are referenced by offsets into the chunk string table.
-    Offset,
-    /// WEVT_TEMPLATE / CRIM 5.x encoding where names are stored inline as:
-    /// `u16 name_hash` + `u16 char_count` + `UTF-16LE chars` + `u16 NUL`.
-    ///
-    /// Primary reference: MS-EVEN6 (`Name = NameHash NameNumChars NullTerminatedUnicodeString`).
-    WevtInline,
-}
-
 impl fmt::Display for BinXmlName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.str)
@@ -43,13 +32,15 @@ pub(crate) fn read_name_link(cursor: &mut ByteCursor<'_>) -> Result<Option<Chunk
 }
 
 /// Read a name reference and return the name's offset in the cursor's buffer.
-pub(crate) fn read_name_ref(
-    cursor: &mut ByteCursor<'_>,
-    encoding: BinXmlNameEncoding,
-) -> Result<ChunkOffset> {
-    match encoding {
-        BinXmlNameEncoding::Offset => read_offset_name_ref(cursor),
-        BinXmlNameEncoding::WevtInline => read_wevt_inline_name(cursor),
+///
+/// EVTX chunk streams reference the chunk string table by offset. WEVT_TEMPLATE / CRIM 5.x
+/// streams (`inline`) store names in place as `u16 name_hash` + `u16 char_count` +
+/// `UTF-16LE chars` + `u16 NUL` (MS-EVEN6: `Name = NameHash NameNumChars NullTerminatedUnicodeString`).
+pub(crate) fn read_name_ref(cursor: &mut ByteCursor<'_>, inline: bool) -> Result<ChunkOffset> {
+    if inline {
+        read_wevt_inline_name(cursor)
+    } else {
+        read_offset_name_ref(cursor)
     }
 }
 

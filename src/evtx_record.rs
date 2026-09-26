@@ -176,7 +176,7 @@ impl<'a> EvtxRecord<'a> {
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
     /// values without building a legacy token vector.
     pub fn template_instances(&self) -> Result<Vec<crate::binxml::BinXmlTemplateValues<'a>>> {
-        use crate::binxml::name::{BinXmlNameEncoding, read_name_ref};
+        use crate::binxml::name::read_name_ref;
         use crate::binxml::tokens::{
             read_open_start_element_cursor, read_processing_instruction_data_cursor,
             read_substitution_descriptor_cursor, read_template_values_cursor,
@@ -208,20 +208,10 @@ impl<'a> EvtxRecord<'a> {
                     out.push(template);
                 }
                 0x01 => {
-                    let _ = read_open_start_element_cursor(
-                        &mut cursor,
-                        false,
-                        false,
-                        BinXmlNameEncoding::Offset,
-                    )?;
+                    let _ = read_open_start_element_cursor(&mut cursor, false, false, false)?;
                 }
                 0x41 => {
-                    let _ = read_open_start_element_cursor(
-                        &mut cursor,
-                        true,
-                        false,
-                        BinXmlNameEncoding::Offset,
-                    )?;
+                    let _ = read_open_start_element_cursor(&mut cursor, true, false, false)?;
                 }
                 0x02..=0x04 => {
                     // Structural tokens; no payload.
@@ -236,25 +226,19 @@ impl<'a> EvtxRecord<'a> {
                     )?;
                 }
                 0x06 | 0x46 => {
-                    let _ = read_name_ref(&mut cursor, BinXmlNameEncoding::Offset)?;
+                    let _ = read_name_ref(&mut cursor, false)?;
                 }
                 0x09 | 0x49 => {
-                    let _ = read_name_ref(&mut cursor, BinXmlNameEncoding::Offset)?;
+                    let _ = read_name_ref(&mut cursor, false)?;
                 }
                 0x0a => {
-                    let _ = read_name_ref(
-                        &mut cursor,
-                        BinXmlNameEncoding::Offset,
-                    )?;
+                    let _ = read_name_ref(&mut cursor, false)?;
                 }
                 0x0b => {
                     let _ = read_processing_instruction_data_cursor(&mut cursor)?;
                 }
-                0x0d => {
-                    let _ = read_substitution_descriptor_cursor(&mut cursor, false)?;
-                }
-                0x0e => {
-                    let _ = read_substitution_descriptor_cursor(&mut cursor, true)?;
+                0x0d | 0x0e => {
+                    let _ = read_substitution_descriptor_cursor(&mut cursor)?;
                 }
                 0x0f => {
                     cursor.u8_named("fragment_header_major_version")?;
@@ -350,7 +334,6 @@ mod validated_content_tests {
     #[test]
     fn rendering_reuses_validated_fragments() {
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
-        use crate::binxml::value_variant::BinXmlValueType;
         use crate::model::ir::{Element, IrArena, IrTree, Name, Node, Placeholder, Text};
         use std::{mem::ManuallyDrop, rc::Rc};
 
@@ -362,7 +345,6 @@ mod validated_content_tests {
         let mut root = Element::new_in(Name::new("Root"), bump);
         root.push_child(Node::Placeholder(Placeholder {
             id: 0,
-            value_type: BinXmlValueType::BinXmlType,
             optional: false,
         }));
         let root = template.new_node(root);
@@ -406,7 +388,6 @@ mod validated_content_tests {
             RenderCaches, render_tree_json, render_tree_xml, try_render_validated,
         };
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
-        use crate::binxml::value_variant::BinXmlValueType;
         use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
         use crate::utils::Utf16LeSlice;
         use std::{mem::ManuallyDrop, rc::Rc};
@@ -420,7 +401,6 @@ mod validated_content_tests {
         let mut root = Element::new_in(Name::new("EventData"), bump);
         let slot = Node::Placeholder(Placeholder {
             id: 0,
-            value_type: BinXmlValueType::StringArrayType,
             optional: false,
         });
         // The same array is used in an attribute, ordinary text, and a Data
