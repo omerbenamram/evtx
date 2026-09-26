@@ -70,7 +70,12 @@ pub(crate) fn read_u64_le(buf: &[u8], offset: usize) -> Option<u64> {
 }
 
 #[inline]
-fn truncated(what: &'static str, offset: usize, need: usize, len: usize) -> DeserializationError {
+pub(crate) fn truncated(
+    what: &'static str,
+    offset: usize,
+    need: usize,
+    len: usize,
+) -> DeserializationError {
     DeserializationError::Truncated {
         what,
         offset: offset as u64,

@@ -70,25 +70,37 @@ impl<'a> Utf16LeSlice<'a> {
 
     /// Decode the UTF-16LE slice into a UTF-8 string.
     pub fn to_string(&self) -> Result<String, Utf16LeDecodeError> {
-        decode_utf16le_bytes(self.as_bytes())
+        let mut out = String::with_capacity(self.as_bytes().len() / 2);
+        decode_utf16le(self.as_bytes(), false, |ch| out.push(ch))?;
+        Ok(out)
     }
 }
 
-/// Decode a UTF-16LE byte slice into a UTF-8 string.
-pub(crate) fn decode_utf16le_bytes(bytes: &[u8]) -> Result<String, Utf16LeDecodeError> {
+/// The one UTF-16LE decoder: push each char of `bytes` (stopping at the first
+/// NUL when `until_nul`). Odd length is `OddLength`, unpaired surrogates are
+/// `InvalidData`.
+fn decode_utf16le(
+    bytes: &[u8],
+    until_nul: bool,
+    mut push: impl FnMut(char),
+) -> Result<(), Utf16LeDecodeError> {
     if !bytes.len().is_multiple_of(2) {
         return Err(Utf16LeDecodeError::OddLength);
     }
-
-    let mut units = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    let units = bytes
+        .chunks_exact(2)
+        .map(|u| u16::from_le_bytes([u[0], u[1]]));
+    for ch in char::decode_utf16(units) {
+        match ch.map_err(|_| Utf16LeDecodeError::InvalidData)? {
+            '\0' if until_nul => break,
+            ch => push(ch),
+        }
     }
-
-    String::from_utf16(&units).map_err(|_| Utf16LeDecodeError::InvalidData)
+    Ok(())
 }
 
-/// Decode UTF-16LE bytes into a bump-allocated UTF-8 string slice.
+/// Decode up to `num_chars` UTF-16LE code units (stopping at NUL) into a
+/// bump-allocated UTF-8 string slice.
 pub(crate) fn decode_utf16le_bytes_to_bump_str<'a>(
     bytes: &[u8],
     num_chars: usize,
@@ -97,114 +109,47 @@ pub(crate) fn decode_utf16le_bytes_to_bump_str<'a>(
     if bytes.is_empty() || num_chars == 0 {
         return Ok("");
     }
-
     if !bytes.len().is_multiple_of(2) {
         return Err(Utf16LeDecodeError::OddLength);
     }
-
-    let max_units = bytes.len() / 2;
-    let limit = num_chars.min(max_units);
-    if limit == 0 {
-        return Ok("");
-    }
-
+    let limit = num_chars.min(bytes.len() / 2);
     let mut out = BumpString::with_capacity_in(limit, bump);
-    let mut unit_index = 0usize;
-    while unit_index < limit {
-        let (ch, consumed) = decode_utf16le_at_unit(bytes, unit_index, limit)?;
-        if ch == '\u{0}' {
-            break;
-        }
-        out.push(ch);
-        unit_index += consumed;
-    }
-
+    decode_utf16le(&bytes[..limit * 2], true, |ch| out.push(ch))?;
     Ok(out.into_bump_str())
 }
 
 /// Decode a UTF-16LE byte slice until the first NUL (0x0000), if present.
 #[cfg(feature = "wevt_templates")]
 pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDecodeError> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err(Utf16LeDecodeError::OddLength);
-    }
-
-    let mut units = Vec::with_capacity(bytes.len() / 2);
-    for chunk in bytes.chunks_exact(2) {
-        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
-    }
-
-    decode_utf16_units_z(&units)
-}
-
-/// Decode UTF-16 code units until the first NUL (0x0000), if present.
-#[cfg(feature = "wevt_templates")]
-pub(crate) fn decode_utf16_units_z(units: &[u16]) -> Result<String, Utf16LeDecodeError> {
-    let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
-    String::from_utf16(&units[..end]).map_err(|_| Utf16LeDecodeError::InvalidData)
-}
-
-fn decode_utf16le_at_unit(
-    bytes: &[u8],
-    unit_index: usize,
-    max_units: usize,
-) -> Result<(char, usize), Utf16LeDecodeError> {
-    if unit_index >= max_units {
-        return Err(Utf16LeDecodeError::InvalidData);
-    }
-    let lo = bytes
-        .get(unit_index * 2)
-        .copied()
-        .ok_or(Utf16LeDecodeError::InvalidData)?;
-    let hi = bytes
-        .get(unit_index * 2 + 1)
-        .copied()
-        .ok_or(Utf16LeDecodeError::InvalidData)?;
-    let cu = u16::from_le_bytes([lo, hi]);
-    decode_utf16le_unit_value(bytes, cu, unit_index, max_units)
-}
-
-fn decode_utf16le_unit_value(
-    bytes: &[u8],
-    cu: u16,
-    unit_index: usize,
-    max_units: usize,
-) -> Result<(char, usize), Utf16LeDecodeError> {
-    match cu {
-        0xD800..=0xDBFF => {
-            let next_index = unit_index + 1;
-            if next_index >= max_units {
-                return Err(Utf16LeDecodeError::InvalidData);
-            }
-            let lo = bytes
-                .get(next_index * 2)
-                .copied()
-                .ok_or(Utf16LeDecodeError::InvalidData)?;
-            let hi = bytes
-                .get(next_index * 2 + 1)
-                .copied()
-                .ok_or(Utf16LeDecodeError::InvalidData)?;
-            let cu2 = u16::from_le_bytes([lo, hi]);
-            if !(0xDC00..=0xDFFF).contains(&cu2) {
-                return Err(Utf16LeDecodeError::InvalidData);
-            }
-            let high = (cu as u32) - 0xD800;
-            let low = (cu2 as u32) - 0xDC00;
-            let codepoint = 0x10000 + ((high << 10) | low);
-            let ch = char::from_u32(codepoint).ok_or(Utf16LeDecodeError::InvalidData)?;
-            Ok((ch, 2))
-        }
-        0xDC00..=0xDFFF => Err(Utf16LeDecodeError::InvalidData),
-        _ => {
-            let ch = char::from_u32(u32::from(cu)).ok_or(Utf16LeDecodeError::InvalidData)?;
-            Ok((ch, 1))
-        }
-    }
+    let mut out = String::with_capacity(bytes.len() / 2);
+    decode_utf16le(bytes, true, |ch| out.push(ch))?;
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Utf16LeSlice;
+    use super::{Utf16LeDecodeError as E, Utf16LeSlice, decode_utf16le_bytes_to_bump_str};
+
+    #[test]
+    fn decode_rejects_unpaired_surrogates_and_stops_at_nul() {
+        let bump = bumpalo::Bump::new();
+        let le = |u: &[u16]| u.iter().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+        let bump_str = |u: &[u16]| decode_utf16le_bytes_to_bump_str(&le(u), u.len(), &bump);
+        let owned = |u: &[u16]| Utf16LeSlice::new(&le(u), u.len()).to_string();
+        assert_eq!(
+            bump_str(&[0x61, 0xD83D, 0xDE00, 0, 0xD800]),
+            Ok("a\u{1F600}")
+        );
+        assert_eq!(owned(&[0x61, 0, 0x62]).as_deref(), Ok("a\0b"));
+        for bad in [&[0xD800][..], &[0xDC00], &[0xD800, 0], &[0xD800, 0x61]] {
+            assert_eq!(bump_str(bad), Err(E::InvalidData));
+            assert_eq!(owned(bad), Err(E::InvalidData));
+        }
+        assert_eq!(
+            decode_utf16le_bytes_to_bump_str(&[0x61, 0, 0x62], 1, &bump),
+            Err(E::OddLength)
+        );
+    }
 
     #[test]
     fn nul_search_preserves_code_units_on_unaligned_input() {
