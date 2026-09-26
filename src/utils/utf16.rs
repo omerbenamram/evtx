@@ -88,8 +88,10 @@ fn decode_utf16le(
         return Err(Utf16LeDecodeError::OddLength);
     }
     let units = bytes
-        .chunks_exact(2)
-        .map(|u| u16::from_le_bytes([u[0], u[1]]));
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|u| u16::from_le_bytes(*u));
     for ch in char::decode_utf16(units) {
         match ch.map_err(|_| Utf16LeDecodeError::InvalidData)? {
             '\0' if until_nul => break,
