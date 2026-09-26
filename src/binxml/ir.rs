@@ -81,8 +81,8 @@ use crate::binxml::tokens::{
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{
-    Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Placeholder, TemplateValue, Text,
-    is_optional_empty_template_value,
+    Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Placeholder, Text,
+    is_optional_empty,
 };
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
@@ -149,7 +149,7 @@ impl<'a> ElementBuilder<'a> {
 /// Size (in bytes) of a template definition header (next offset + guid + size).
 pub(crate) const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
 
-/// Cache of parsed BinXML templates keyed by template GUID.
+/// Cache of parsed BinXML templates keyed by template definition offset.
 ///
 /// Templates are stored as IR trees containing placeholders; instantiation
 /// clones the tree and resolves all placeholders using substitution values.
@@ -174,40 +174,6 @@ impl<'a> IrTemplateCache<'a> {
         }
     }
 
-    /// Instantiate a template instance and return the root `ElementId` of the instantiated tree.
-    ///
-    /// This is where template expansion stops being abstract:
-    /// - The cached template definition is an IR tree that may contain `Node::Placeholder`.
-    /// - The provided substitution values are converted to [`TemplateValue`]s (including parsing
-    ///   embedded `BinXmlType` fragments into `TemplateValue::BinXmlElement`).
-    /// - The template tree is deep-cloned into the record arena and all placeholders are resolved.
-    /// - Any array substitutions are expanded into repeated elements (see `resolve_node_into`).
-    ///
-    /// The returned `ElementId` is then *spliced* into the record's tree at the template
-    /// instance token location.
-    fn instantiate_template_direct_values(
-        &mut self,
-        template_ref: BinXmlTemplateValues<'a>,
-        chunk: &'a EvtxChunk<'a>,
-        arena: &mut IrArena<'a>,
-        bump: &'a Bump,
-        depth: usize,
-    ) -> Result<ElementId> {
-        let (template, _) =
-            self.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
-        arena.reserve(template.arena().count());
-        let values =
-            template_values_from_values_in(template_ref.values, chunk, self, arena, bump, depth)?;
-        let (root, _needs_array_expansion) = clone_and_resolve(
-            template.arena(),
-            template.root(),
-            values.as_slice(),
-            self.arena,
-            arena,
-        )?;
-        Ok(root)
-    }
-
     /// Cached template tree + literal-array flag, for the compiled-template
     /// path (`binxml::compiled`).
     pub(crate) fn template_for_compile(
@@ -223,7 +189,7 @@ impl<'a> IrTemplateCache<'a> {
     ///
     /// The returned [`IrTree`] is stored in the cache and contains `Node::Placeholder` nodes.
     /// It is never rendered directly; instead it is used as the source for
-    /// [`instantiate_template_direct_values`].
+    /// [`materialize_instance`].
     fn get_or_parse_template_direct(
         &mut self,
         chunk: &'a EvtxChunk<'a>,
@@ -440,13 +406,11 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
         let chunk = self.src.chunk.ok_or_else(|| {
             EvtxError::FailedToCreateRecordModel("template instance requires an EVTX chunk context")
         })?;
-        let element_id = self.cache.instantiate_template_direct_values(
-            template,
-            chunk,
-            self.arena,
-            self.src.bump,
-            self.depth,
-        )?;
+        // No nested-instance list: nested BinXML is built in stream order (as
+        // `build_in` does), so errors surface in the same order as a full walk.
+        let instance =
+            validate_tpl_instance(template, chunk, self.cache, self.arena, None, self.depth)?;
+        let element_id = materialize_instance(&instance, &[], self.src.bump, self.arena)?;
         self.attach(element_id)
     }
 
@@ -546,18 +510,14 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     }
 }
 
-/// Parse a BinXML byte slice into an IR element tree using the cursor-based fast path.
+/// Parse a BinXML byte slice (a sub-slice of `src.data`) into an IR element tree.
 ///
-/// This is the "token loop" for the production parser. It:
-/// - computes the slice's offset relative to the chunk (`binxml_slice_offset`)
-/// - iterates token bytes using [`ByteCursor`]
-/// - delegates stateful construction to [`TreeBuilder`]
-///
-/// Splicing behavior shows up here via token types:
+/// [`walk_tokens`] parses the tokens and [`TreeBuilder`] builds the tree. Splicing shows up
+/// via token types:
 /// - `0x0c` (TemplateInstance): instantiate the template and attach it immediately
-///   (`TreeBuilder::process_template_instance_values`).
-/// - `Value(BinXmlType(..))`: parsed inside `TreeBuilder::process_value`, which builds a
-///   nested IR subtree and attaches it as child elements.
+///   (`TreeBuilder::template_instance`).
+/// - `Value(BinXmlType(..))`: `TreeBuilder::value` builds a nested IR subtree and attaches it
+///   as child elements.
 ///
 /// `mode` controls whether substitutions become placeholders (template definitions) or are
 /// rejected (records); template definitions also carry dependency IDs on element start tokens.
@@ -650,37 +610,56 @@ impl<'a> TemplateContent<'a> {
     pub(crate) fn materialize(&self, bump: &'a Bump) -> Result<IrTree<'a>> {
         // Preserve fragment element IDs. No fragment bytes are parsed again.
         let mut arena = (*self.frags).clone();
-        let root = self.materialize_instance(usize::MAX, bump, &mut arena)?;
+        let root = materialize_instance(&self.root, &self.nested, bump, &mut arena)?;
         Ok(IrTree::new(arena, root))
     }
+}
 
-    fn materialize_instance(
-        &self,
-        id: usize,
-        bump: &'a Bump,
-        arena: &mut IrArena<'a>,
-    ) -> Result<ElementId> {
-        let instance = self.instance(id);
-        let mut values = IrVec::with_capacity_in(instance.values.len(), bump);
+/// Instantiate a validated template instance into `arena` and return its root.
+///
+/// Nested instances are materialized first so every placeholder resolves to a scalar or an
+/// element; the template tree is then deep-cloned with all placeholders resolved and array
+/// substitutions expanded (see `resolve_node_into`). The returned `ElementId` is *spliced* into
+/// the record tree at the template instance location.
+fn materialize_instance<'a>(
+    instance: &ValidatedInstance<'a>,
+    nested: &[ValidatedInstance<'a>],
+    bump: &'a Bump,
+    arena: &mut IrArena<'a>,
+) -> Result<ElementId> {
+    let has_templates = instance
+        .values
+        .iter()
+        .any(|v| matches!(v, ValidatedValue::Template(_)));
+    let resolved;
+    let values: &[ValidatedValue<'a>] = if has_templates {
+        let mut copy = IrVec::with_capacity_in(instance.values.len(), bump);
         for value in &instance.values {
-            values.push(match value {
-                ValidatedValue::Scalar(value) => TemplateValue::Value(value.clone()),
-                ValidatedValue::Fragment(id) => TemplateValue::BinXmlElement(*id),
-                ValidatedValue::Template(id) => {
-                    TemplateValue::BinXmlElement(self.materialize_instance(*id, bump, arena)?)
-                }
+            copy.push(match value {
+                ValidatedValue::Template(id) => ValidatedValue::Fragment(materialize_instance(
+                    &nested[*id],
+                    nested,
+                    bump,
+                    arena,
+                )?),
+                other => other.clone(),
             });
         }
-        arena.reserve(instance.template.arena().count());
-        clone_and_resolve(
-            instance.template.arena(),
-            instance.template.root(),
-            &values,
-            bump,
-            arena,
-        )
-        .map(|(root, _)| root)
-    }
+        resolved = copy;
+        &resolved
+    } else {
+        // Nothing to swap in: resolve against the validated values directly.
+        &instance.values
+    };
+    arena.reserve(instance.template.arena().count());
+    clone_and_resolve(
+        instance.template.arena(),
+        instance.template.root(),
+        values,
+        bump,
+        arena,
+    )
+    .map(|(root, _)| root)
 }
 
 pub(crate) fn build_record_content<'a>(
@@ -691,7 +670,8 @@ pub(crate) fn build_record_content<'a>(
     if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
         let mut frags = IrArena::new_in(&chunk.arena);
         let mut nested = Vec::new();
-        let root = validate_tpl_instance(template_ref, chunk, cache, &mut frags, &mut nested, 0)?;
+        let root =
+            validate_tpl_instance(template_ref, chunk, cache, &mut frags, Some(&mut nested), 0)?;
         return Ok(RecordContent::Template(TemplateContent {
             root,
             nested,
@@ -701,44 +681,45 @@ pub(crate) fn build_record_content<'a>(
     build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
 }
 
+/// Validate a template instance's substitution values. With `nested`, values that are
+/// themselves single-instance streams are validated recursively and pushed there (as
+/// `ValidatedValue::Template`); without it, every non-empty BinXML value is built in place.
 fn validate_tpl_instance<'a>(
     template_ref: BinXmlTemplateValues<'a>,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     frags: &mut IrArena<'a>,
-    nested: &mut Vec<ValidatedInstance<'a>>,
+    mut nested: Option<&mut Vec<ValidatedInstance<'a>>>,
     depth: usize,
 ) -> Result<ValidatedInstance<'a>> {
     let (template, has_literal_array) =
         cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
-    let mut values: Vec<_> = template_ref
+    let mut has_arrays = false;
+    let values = template_ref
         .values
         .into_iter()
-        .map(ValidatedValue::Scalar)
-        .collect();
-    let mut has_arrays = false;
-    for value in &mut values {
-        let ValidatedValue::Scalar(scalar) = value else {
-            unreachable!()
-        };
-        has_arrays |= scalar.expandable_array_len().is_some();
-        if let BinXmlValue::BinXmlType(bytes) = *scalar {
+        .map(|scalar| {
+            has_arrays |= scalar.expandable_array_len().is_some();
+            let BinXmlValue::BinXmlType(bytes) = scalar else {
+                return Ok(ValidatedValue::Scalar(scalar));
+            };
             if bytes.is_empty() {
-                *value = ValidatedValue::Scalar(BinXmlValue::NullType);
-                continue;
+                return Ok(ValidatedValue::Scalar(BinXmlValue::NullType));
             }
-            if depth < MAX_BINXML_NESTING
+            if let Some(nested) = nested.as_deref_mut()
+                && depth < MAX_BINXML_NESTING
                 && let Some(inner) = read_single_instance_stream(bytes, chunk)?
             {
-                let child = validate_tpl_instance(inner, chunk, cache, frags, nested, depth + 1)?;
-                *value = ValidatedValue::Template(nested.len());
+                let child =
+                    validate_tpl_instance(inner, chunk, cache, frags, Some(nested), depth + 1)?;
                 nested.push(child);
-                continue;
+                return Ok(ValidatedValue::Template(nested.len() - 1));
             }
-            let id = parse_record_fragment(bytes, chunk, cache, frags, &chunk.arena, depth)?;
-            *value = ValidatedValue::Fragment(id);
-        }
-    }
+            let src = Stream::chunk(chunk, &chunk.arena);
+            build_in(src, bytes, cache, frags, BuildMode::Record, depth + 1)
+                .map(ValidatedValue::Fragment)
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
         template,
@@ -746,19 +727,6 @@ fn validate_tpl_instance<'a>(
         has_arrays,
         values,
     })
-}
-
-/// Parse a non-empty embedded BinXML substitution payload into `arena`.
-fn parse_record_fragment<'a>(
-    bytes: &'a [u8],
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
-    arena: &mut IrArena<'a>,
-    bump: &'a Bump,
-    depth: usize,
-) -> Result<ElementId> {
-    let src = Stream::chunk(chunk, bump);
-    build_in(src, bytes, cache, arena, BuildMode::Record, depth + 1)
 }
 
 /// Parse `bytes` as a `[0x0f fragment header] 0x0c TemplateInstance (EOF | end)`
@@ -829,7 +797,7 @@ fn build_template_in<'a>(
 #[cfg(feature = "wevt_templates")]
 pub(crate) fn instantiate_template_definition_ir<'a>(
     template: &IrTree<'a>,
-    values: &[TemplateValue<'a>],
+    values: &[ValidatedValue<'a>],
     bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
     let mut arena = IrArena::with_capacity_in(template.arena().count(), bump);
@@ -892,47 +860,6 @@ pub(crate) fn read_template_definition_header_at(
     )?)?)
 }
 
-/// Convert raw template-instance substitution values into [`TemplateValue`]s.
-///
-/// Most values are kept as-is (`TemplateValue::Value(..)`), but `BinXmlType` is special:
-/// in a substitution array, `BinXmlType` means "this substitution is itself a BinXML fragment".
-/// We parse that fragment into a normal IR subtree and store its root as
-/// `TemplateValue::BinXmlElement(id)`.
-///
-/// This is one of the main "splicing" optimizations in this module: placeholder resolution can
-/// later insert an embedded fragment by simply pushing `Node::Element(id)` into the parent.
-///
-/// Example:
-///
-/// ```text
-/// values_raw = [ StringType("x"), BinXmlType(<C>y</C>) ]
-/// values     = [ Value(StringType("x")), BinXmlElement(id_of_C) ]
-/// ```
-fn template_values_from_values_in<'a>(
-    values_raw: Vec<BinXmlValue<'a>>,
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
-    arena: &mut IrArena<'a>,
-    bump: &'a Bump,
-    depth: usize,
-) -> Result<IrVec<'a, TemplateValue<'a>>> {
-    let mut values = IrVec::with_capacity_in(values_raw.len(), cache.arena);
-    for value in values_raw {
-        match value {
-            BinXmlValue::BinXmlType(bytes) => {
-                if bytes.is_empty() {
-                    values.push(TemplateValue::Value(BinXmlValue::NullType));
-                    continue;
-                }
-                let element_id = parse_record_fragment(bytes, chunk, cache, arena, bump, depth)?;
-                values.push(TemplateValue::BinXmlElement(element_id));
-            }
-            other => values.push(TemplateValue::Value(other)),
-        }
-    }
-    Ok(values)
-}
-
 /// Deep-clone a template element into the record arena while resolving placeholders.
 ///
 /// This is the core template-instantiation routine. It walks the template element's
@@ -958,7 +885,7 @@ fn template_values_from_values_in<'a>(
 fn clone_and_resolve<'a>(
     template_arena: &IrArena<'a>,
     element_id: ElementId,
-    values: &[TemplateValue<'a>],
+    values: &[ValidatedValue<'a>],
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
 ) -> Result<(ElementId, bool)> {
@@ -1045,7 +972,7 @@ fn clone_and_resolve<'a>(
 fn resolve_node_into<'a>(
     template_arena: &IrArena<'a>,
     node: &Node<'a>,
-    values: &[TemplateValue<'a>],
+    values: &[ValidatedValue<'a>],
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
     out: &mut IrVec<'a, Node<'a>>,
@@ -1102,38 +1029,29 @@ fn resolve_node_into<'a>(
 /// ```
 fn resolve_placeholder_into<'a>(
     placeholder: &Placeholder,
-    values: &[TemplateValue<'a>],
+    values: &[ValidatedValue<'a>],
     out: &mut IrVec<'a, Node<'a>>,
 ) -> Result<()> {
-    let index = placeholder.id as usize;
-    if index >= values.len() {
+    let Some(value) = values.get(placeholder.id as usize) else {
         return Ok(());
-    }
-
-    let value = &values[index];
-    if placeholder.optional && is_optional_empty_template_value(value) {
-        return Ok(());
-    }
-
+    };
     match value {
-        TemplateValue::BinXmlElement(element_id) => {
-            out.push(Node::Element(*element_id));
-            Ok(())
-        }
-        TemplateValue::Value(value) => match value {
-            BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
+        ValidatedValue::Fragment(element_id) => out.push(Node::Element(*element_id)),
+        ValidatedValue::Scalar(value) if placeholder.optional && is_optional_empty(value) => {}
+        ValidatedValue::Scalar(BinXmlValue::EvtXml) => {
+            return Err(EvtxError::FailedToCreateRecordModel(
                 "Unimplemented - EvtXml",
-            )),
-            BinXmlValue::BinXmlType(_) => Err(EvtxError::FailedToCreateRecordModel(
+            ));
+        }
+        // Nested templates are materialized into fragments before cloning.
+        ValidatedValue::Scalar(BinXmlValue::BinXmlType(_)) | ValidatedValue::Template(_) => {
+            return Err(EvtxError::FailedToCreateRecordModel(
                 "unsupported BinXML value in template substitution",
-            )),
-            other => {
-                let node = value_to_node(other.clone())?;
-                out.push(node);
-                Ok(())
-            }
-        },
+            ));
+        }
+        ValidatedValue::Scalar(other) => out.push(value_to_node(other.clone())?),
     }
+    Ok(())
 }
 
 /// Append `node` into the current open element's `children`.

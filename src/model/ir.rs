@@ -116,18 +116,6 @@ pub(crate) struct Attr<'a> {
     pub(crate) value: IrVec<'a, Node<'a>>,
 }
 
-/// Substitution values captured for a template instance.
-///
-/// `Value` stores the raw BinXML value, while `BinXmlElement` references a
-/// pre-parsed BinXML fragment that was expanded into the record arena.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TemplateValue<'a> {
-    /// A raw substitution value.
-    Value(BinXmlValue<'a>),
-    /// A parsed BinXML fragment stored in the record arena.
-    BinXmlElement(ElementId),
-}
-
 /// An element with attributes and child nodes.
 ///
 /// `has_element_child` is tracked to speed up JSON rendering decisions.
@@ -285,14 +273,6 @@ pub(crate) fn is_optional_empty(value: &BinXmlValue<'_>) -> bool {
         BinXmlValue::HexInt32ArrayType(v) => v.is_empty(),
         BinXmlValue::HexInt64ArrayType(v) => v.is_empty(),
         _ => false,
-    }
-}
-
-/// Returns true if the template value should be considered "empty" for optional substitutions.
-pub(crate) fn is_optional_empty_template_value(value: &TemplateValue<'_>) -> bool {
-    match value {
-        TemplateValue::BinXmlElement(_) => false,
-        TemplateValue::Value(value) => is_optional_empty(value),
     }
 }
 
