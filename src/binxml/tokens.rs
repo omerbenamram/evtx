@@ -6,11 +6,45 @@ use crate::AnsiCodec;
 use crate::ChunkOffset;
 use crate::binxml::name::read_name_ref;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::evtx_chunk::EvtxChunk;
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use log::{error, trace, warn};
 
 use bumpalo::Bump;
+
+/// Where a BinXML stream lives and how to decode it.
+///
+/// Offsets inside the stream are relative to `data`: `chunk.data` for EVTX chunk streams, the
+/// fragment blob for WEVT_TEMPLATE streams. `chunk` is `None` exactly for WEVT_TEMPLATE
+/// streams, which also means names are stored inline rather than in the chunk string table.
+#[derive(Clone, Copy)]
+pub(crate) struct Stream<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) chunk: Option<&'a EvtxChunk<'a>>,
+    pub(crate) ansi_codec: AnsiCodec,
+    pub(crate) bump: &'a Bump,
+}
+
+impl<'a> Stream<'a> {
+    pub(crate) fn chunk(chunk: &'a EvtxChunk<'a>, bump: &'a Bump) -> Self {
+        Stream {
+            data: chunk.data,
+            chunk: Some(chunk),
+            ansi_codec: chunk.settings.get_ansi_codec(),
+            bump,
+        }
+    }
+
+    pub(crate) fn wevt(data: &'a [u8], ansi_codec: AnsiCodec, bump: &'a Bump) -> Self {
+        Stream {
+            data,
+            chunk: None,
+            ansi_codec,
+            bump,
+        }
+    }
+}
 
 /// Template definition header stored in the chunk template table.
 #[derive(Debug)]
