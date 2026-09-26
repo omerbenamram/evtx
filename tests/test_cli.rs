@@ -10,6 +10,29 @@ use std::process::Command;
 use tempfile::tempdir;
 
 #[test]
+fn template_instance_dump_formats_nested_binxml_without_panicking() {
+    let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["dump-template-instances", "-i"])
+        .arg(regular_sample())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.stdout.is_empty());
+    for line in output
+        .stdout
+        .split(|&b| b == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let value: serde_json::Value = serde_json::from_slice(line).unwrap();
+        assert!(value["substitutions"].is_array());
+    }
+}
+
+#[test]
 fn it_respects_directory_output() {
     let _guard = CLI_TEST_LOCK.lock().unwrap();
     let d = tempdir().unwrap();
