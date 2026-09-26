@@ -5,7 +5,7 @@ use crate::err::{
 use crate::evtx_record::{EVTX_RECORD_HEADER_SIZE, EvtxRecord, EvtxRecordHeader};
 use crate::utils::bytes;
 
-use log::{debug, info, trace};
+use log::{info, trace};
 
 use crate::binxml::ir::{IrTemplateCache, build_record_content};
 use crate::string_cache::StringCache;
@@ -65,7 +65,7 @@ impl EvtxChunkData {
 
         let chunk = EvtxChunkData { header, data };
         if validate_checksum && !chunk.validate_checksum() {
-            // TODO: return checksum here.
+            // Preserve the public error fields and header-first short circuit.
             return Err(ChunkError::InvalidChunkChecksum {
                 expected: 0,
                 found: 0,
@@ -98,65 +98,25 @@ impl EvtxChunkData {
         )
     }
 
+    /// Computed CRC32 of the header (bytes 0..120 and 128..512).
+    fn header_crc(&self) -> u32 {
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&self.data[..120]);
+        hasher.update(&self.data[128..512]);
+        hasher.finalize()
+    }
+
     pub fn validate_data_checksum(&self) -> bool {
-        debug!("Validating data checksum");
-
-        let checksum_disabled = self.header.flags.contains(ChunkFlags::NO_CRC32);
-
-        let expected_checksum = if !checksum_disabled {
-            self.header.events_checksum
-        } else {
-            0
-        };
-
-        let computed_checksum = if !checksum_disabled {
-            checksum_ieee(
-                &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
-            )
-        } else {
-            0
-        };
-
-        debug!(
-            "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, computed_checksum
-        );
-
-        computed_checksum == expected_checksum
+        self.header.flags.contains(ChunkFlags::NO_CRC32)
+            || self
+                .data
+                .get(EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize)
+                .is_some_and(|data| self.header.events_checksum == checksum_ieee(data))
     }
 
     pub fn validate_header_checksum(&self) -> bool {
-        debug!("Validating header checksum");
-
-        let checksum_disabled = self.header.flags.contains(ChunkFlags::NO_CRC32);
-
-        let expected_checksum = if !checksum_disabled {
-            self.header.header_chunk_checksum
-        } else {
-            0
-        };
-
-        let header_bytes_1 = &self.data[..120];
-        let header_bytes_2 = &self.data[128..512];
-
-        let bytes_for_checksum: Vec<u8> = header_bytes_1
-            .iter()
-            .chain(header_bytes_2)
-            .cloned()
-            .collect();
-
-        let computed_checksum = if !checksum_disabled {
-            checksum_ieee(bytes_for_checksum.as_slice())
-        } else {
-            0
-        };
-
-        debug!(
-            "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, computed_checksum
-        );
-
-        computed_checksum == expected_checksum
+        self.header.flags.contains(ChunkFlags::NO_CRC32)
+            || self.header.header_chunk_checksum == self.header_crc()
     }
 
     pub fn validate_checksum(&self) -> bool {
@@ -232,10 +192,8 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub(crate) fn iter_raw(&self) -> IterRawRecords<'_> {
         IterRawRecords {
             chunk: self,
-            walk: RawWalk {
-                offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-                exhausted: false,
-            },
+            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
+            exhausted: false,
         }
     }
 
@@ -254,9 +212,7 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub fn iter(&mut self) -> IterChunkRecords<'_> {
         let estimated_template_buckets = self.estimated_template_buckets();
         IterChunkRecords {
-            chunk: self,
-            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-            exhausted: false,
+            raw: self.iter_raw(),
             ir_template_cache: IrTemplateCache::with_capacity(
                 estimated_template_buckets,
                 &self.arena,
@@ -285,9 +241,7 @@ impl<'chunk> EvtxChunk<'chunk> {
 /// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
 /// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
 pub struct IterChunkRecords<'a> {
-    chunk: &'a EvtxChunk<'a>,
-    offset_from_chunk_start: u64,
-    exhausted: bool,
+    raw: IterRawRecords<'a>,
     /// Per-iterator template cache used during streaming tree construction.
     ir_template_cache: IrTemplateCache<'a>,
 }
@@ -296,19 +250,13 @@ impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut walk = RawWalk {
-            offset_from_chunk_start: self.offset_from_chunk_start,
-            exhausted: self.exhausted,
-        };
-        let raw = raw_next(self.chunk, &mut walk);
-        self.offset_from_chunk_start = walk.offset_from_chunk_start;
-        self.exhausted = walk.exhausted;
-        let raw = match raw? {
+        let chunk = self.raw.chunk;
+        let raw = match self.raw.next()? {
             Ok(raw) => raw,
             Err(err) => return Some(Err(err)),
         };
 
-        let content = match build_record_content(raw.bytes, self.chunk, &mut self.ir_template_cache)
+        let content = match build_record_content(raw.bytes, chunk, &mut self.ir_template_cache)
             .map_err(|err| EvtxError::FailedToParseRecord {
                 record_id: raw.event_record_id,
                 source: Box::new(err),
@@ -318,7 +266,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         };
 
         Some(Ok(EvtxRecord {
-            chunk: self.chunk,
+            chunk,
             event_record_id: raw.event_record_id,
             timestamp: raw.timestamp,
             content,
@@ -336,31 +284,27 @@ pub(crate) struct RawRecord<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
-struct RawWalk {
-    offset_from_chunk_start: u64,
-    exhausted: bool,
-}
-
 /// Iterator over raw record windows. Created by [`EvtxChunk::iter_raw`].
 pub(crate) struct IterRawRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
-    walk: RawWalk,
+    offset_from_chunk_start: u64,
+    exhausted: bool,
 }
 
 impl<'a> Iterator for IterRawRecords<'a> {
     type Item = std::result::Result<RawRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        raw_next(self.chunk, &mut self.walk)
+        raw_next(self)
     }
 }
 
 /// The shared record-header walk (everything `IterChunkRecords::next` did
 /// before content construction, with identical error/termination semantics).
 fn raw_next<'a>(
-    chunk: &'a EvtxChunk<'a>,
-    walk: &mut RawWalk,
+    walk: &mut IterRawRecords<'a>,
 ) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
+    let chunk = walk.chunk;
     // Be resilient to corrupted chunk headers: `free_space_offset` is user-controlled data
     // coming from the EVTX stream, and may point past the end of the chunk.
     let effective_free_space_offset = u64::from(chunk.header.free_space_offset)
@@ -587,6 +531,45 @@ mod tests {
 
         let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
         assert!(chunk.validate_checksum());
+    }
+
+    #[test]
+    fn checksum_errors_preserve_fields_and_reject_invalid_data_bounds() {
+        let file = include_bytes!("../samples/security.evtx");
+        let original = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        for offset in [0, 511, EVTX_CHUNK_SIZE as u32 + 1, u32::MAX] {
+            let mut data = original.to_vec();
+            data[48..52].copy_from_slice(&offset.to_le_bytes());
+            // An invalid header must fail before attempting to slice the record data.
+            assert!(matches!(
+                EvtxChunkData::new(data.clone(), true),
+                Err(ChunkError::InvalidChunkChecksum {
+                    expected: 0,
+                    found: 0
+                })
+            ));
+
+            // A valid header checksum must not make an invalid data range panic either.
+            let chunk = EvtxChunkData::new(data.clone(), false).unwrap();
+            let checksum = chunk.header_crc();
+            data[124..128].copy_from_slice(&checksum.to_le_bytes());
+            assert!(matches!(
+                EvtxChunkData::new(data, true),
+                Err(ChunkError::InvalidChunkChecksum {
+                    expected: 0,
+                    found: 0
+                })
+            ));
+        }
+        let mut data = original.to_vec();
+        data[EVTX_CHUNK_HEADER_SIZE] ^= 1;
+        assert!(matches!(
+            EvtxChunkData::new(data, true),
+            Err(ChunkError::InvalidChunkChecksum {
+                expected: 0,
+                found: 0
+            })
+        ));
     }
 
     #[test]
