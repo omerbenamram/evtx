@@ -1,9 +1,9 @@
 use crate::err::{ChunkError, EvtxError, InputError, Result};
 
 use crate::AnsiCodec;
-use crate::evtx_chunk::EvtxChunkData;
+use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
 use crate::evtx_file_header::EvtxFileHeader;
-use crate::evtx_record::SerializedEvtxRecord;
+use crate::evtx_record::{SerializedEvtxRecord, render_tree};
 use bumpalo::Bump;
 use encoding_rs::WINDOWS_1252;
 
@@ -16,13 +16,22 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use crate::EvtxRecord;
-#[cfg(feature = "multithreading")]
 use std::cmp::max;
 use std::fmt;
 use std::fmt::Debug;
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::Arc;
+
+#[cfg(feature = "multithreading")]
+use rayon::spawn;
+
+/// Without `multithreading`, `num_threads` is always 1, so `chunk_pipeline`
+/// processes inline and never reaches this.
+#[cfg(not(feature = "multithreading"))]
+fn spawn(f: impl FnOnce()) {
+    f()
+}
 
 pub(crate) const EVTX_CHUNK_SIZE: usize = 65536;
 pub(crate) const EVTX_FILE_HEADER_SIZE: usize = 4096;
@@ -31,6 +40,39 @@ pub(crate) const EVTX_FILE_HEADER_SIZE: usize = 4096;
 struct ChunkBatch<P> {
     payload: P,
     arena: Bump,
+}
+
+/// Parse one chunk (reusing `arena`) and build its payload with `f`; a chunk
+/// read/parse error becomes a single-error payload via `on_err`.
+fn with_parsed_chunk<P>(
+    chunk_res: Result<EvtxChunkData>,
+    chunk_id: u64,
+    settings: Arc<ParserSettings>,
+    arena: Bump,
+    program_store: Arc<crate::binxml::compiled::ProgramStore>,
+    on_err: impl FnOnce(EvtxError) -> P,
+    f: impl FnOnce(&mut EvtxChunk<'_>) -> P,
+) -> ChunkBatch<P> {
+    let mut chunk = match chunk_res {
+        Ok(chunk) => chunk,
+        Err(err) => {
+            return ChunkBatch {
+                payload: on_err(err),
+                arena,
+            };
+        }
+    };
+    match chunk.parse_with_arena(settings, arena, program_store) {
+        Err(err) => ChunkBatch {
+            payload: on_err(EvtxError::chunk(chunk_id, err)),
+            arena: Bump::new(),
+        },
+        Ok(mut chunk_records) => {
+            let payload = f(&mut chunk_records);
+            let arena = chunk_records.into_arena();
+            ChunkBatch { payload, arena }
+        }
+    }
 }
 
 /// Parse one chunk and serialize all of its records with `f`.
@@ -42,26 +84,15 @@ fn process_chunk<U>(
     program_store: Arc<crate::binxml::compiled::ProgramStore>,
     f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U>,
 ) -> ChunkBatch<Vec<Result<U>>> {
-    match chunk_res {
-        Err(err) => ChunkBatch {
-            payload: vec![Err(err)],
-            arena,
-        },
-        Ok(mut chunk) => match chunk.parse_with_arena(settings, arena, program_store) {
-            Err(err) => ChunkBatch {
-                payload: vec![Err(EvtxError::FailedToParseChunk {
-                    chunk_id,
-                    source: Box::new(err),
-                })],
-                arena: Bump::new(),
-            },
-            Ok(mut chunk_records) => {
-                let payload = chunk_records.iter().map(f).collect();
-                let arena = chunk_records.into_arena();
-                ChunkBatch { payload, arena }
-            }
-        },
-    }
+    with_parsed_chunk(
+        chunk_res,
+        chunk_id,
+        settings,
+        arena,
+        program_store,
+        |err| vec![Err(err)],
+        |chunk| chunk.iter().map(f).collect(),
+    )
 }
 
 /// One record inside a [`RenderedChunk`]: either the half-open end offset of
@@ -82,12 +113,6 @@ pub struct RenderedChunk {
     pub items: Vec<RenderedChunkItem>,
 }
 
-#[derive(Clone, Copy)]
-enum RenderFormat {
-    Xml,
-    Json,
-}
-
 /// Parse one chunk and render all of its records into a single buffer.
 fn render_chunk(
     chunk_res: Result<EvtxChunkData>,
@@ -95,146 +120,108 @@ fn render_chunk(
     settings: Arc<ParserSettings>,
     arena: Bump,
     program_store: Arc<crate::binxml::compiled::ProgramStore>,
-    format: RenderFormat,
+    json: bool,
     record_numbers: bool,
 ) -> ChunkBatch<RenderedChunk> {
-    match chunk_res {
-        Err(err) => ChunkBatch {
-            payload: RenderedChunk {
-                data: Vec::new(),
-                items: vec![RenderedChunkItem::Failed(err)],
-            },
-            arena,
-        },
-        Ok(mut chunk) => match chunk.parse_with_arena(settings.clone(), arena, program_store) {
-            Err(err) => ChunkBatch {
-                payload: RenderedChunk {
-                    data: Vec::new(),
-                    items: vec![RenderedChunkItem::Failed(EvtxError::FailedToParseChunk {
-                        chunk_id,
-                        source: Box::new(err),
-                    })],
-                },
-                arena: Bump::new(),
-            },
-            Ok(chunk_records) => {
-                let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
-                let mut items = Vec::new();
-                {
-                    use crate::binxml::compiled::{
-                        JsonProgramCache, Preflight, XmlProgramCache, try_render_json_compiled,
-                        try_render_xml_compiled,
-                    };
-                    use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
-                    use crate::binxml::value_render::ValueRenderer;
+    use crate::binxml::compiled::{
+        JsonProgramCache, Preflight, XmlProgramCache, try_render_json_compiled,
+        try_render_xml_compiled,
+    };
+    use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
+    use crate::binxml::value_render::ValueRenderer;
 
-                    let chunk_ref: &crate::EvtxChunk = &chunk_records;
-                    let mut ir_cache = IrTemplateCache::with_capacity(
-                        chunk_ref.estimated_template_buckets(),
-                        &chunk_ref.arena,
-                    );
-                    let mut progs = XmlProgramCache::default();
-                    let mut preflight = Preflight::default();
-                    let mut json_progs = JsonProgramCache::default();
-                    let mut json_preflight = Preflight::default();
-                    let mut value_renderer = ValueRenderer::new();
+    let failed = |err| RenderedChunk {
+        data: Vec::new(),
+        items: vec![RenderedChunkItem::Failed(err)],
+    };
+    with_parsed_chunk(
+        chunk_res,
+        chunk_id,
+        settings,
+        arena,
+        program_store,
+        failed,
+        |chunk| {
+            let chunk_ref: &EvtxChunk = chunk;
+            let settings = &chunk_ref.settings;
+            let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
+            let mut items = Vec::new();
+            let mut ir_cache = IrTemplateCache::with_capacity(
+                chunk_ref.estimated_template_buckets(),
+                &chunk_ref.arena,
+            );
+            let mut progs = XmlProgramCache::default();
+            let mut preflight = Preflight::default();
+            let mut json_progs = JsonProgramCache::default();
+            let mut json_preflight = Preflight::default();
+            let mut value_renderer = ValueRenderer::new();
 
-                    for raw in chunk_ref.iter_raw() {
-                        match raw {
-                            Err(err) => items.push(RenderedChunkItem::Failed(err)),
-                            Ok(raw) => {
-                                let start = data.len();
-                                let event_record_id = raw.event_record_id;
-                                if record_numbers {
-                                    use std::io::Write;
-                                    // Matches the CLI's legacy `Record N` banner; baked in
-                                    // here so a chunk stays a single consumer-side write.
-                                    let _ = writeln!(&mut data, "Record {}", event_record_id);
-                                }
-                                let compiled_done = match format {
-                                    RenderFormat::Xml => try_render_xml_compiled(
-                                        raw.bytes,
-                                        chunk_ref,
-                                        &mut ir_cache,
-                                        &mut progs,
-                                        &mut preflight,
-                                        &settings,
-                                        &mut value_renderer,
-                                        &mut data,
-                                    ),
-                                    RenderFormat::Json => try_render_json_compiled(
-                                        raw.bytes,
-                                        chunk_ref,
-                                        &mut ir_cache,
-                                        &mut json_progs,
-                                        &mut json_preflight,
-                                        &settings,
-                                        &mut value_renderer,
-                                        &mut data,
-                                    ),
-                                };
-                                let rendered = if compiled_done {
-                                    Ok(())
-                                } else {
-                                    // Slow lane: fully materialize, then run the
-                                    // same walker the compiler uses — one output
-                                    // semantics for every record shape.
-                                    build_tree_from_binxml_bytes_direct(
-                                        raw.bytes,
-                                        chunk_ref,
-                                        &mut ir_cache,
-                                    )
-                                    .map_err(|err| EvtxError::FailedToParseRecord {
-                                        record_id: event_record_id,
-                                        source: Box::new(err),
-                                    })
-                                    .and_then(|tree| {
-                                        match format {
-                                            RenderFormat::Xml => {
-                                                crate::binxml::compiled::render_tree_xml(
-                                                    &tree, &settings, &mut data,
-                                                )
-                                            }
-                                            RenderFormat::Json => {
-                                                crate::binxml::compiled::render_tree_json(
-                                                    &tree, &settings, &mut data,
-                                                )
-                                            }
-                                        }
-                                        .map_err(|err| {
-                                            // Match the error shape of `into_xml_bytes`/`into_json_bytes`.
-                                            EvtxError::FailedToParseRecord {
-                                                record_id: event_record_id,
-                                                source: Box::new(err),
-                                            }
-                                        })
-                                    })
-                                };
-                                match rendered {
-                                    Ok(()) => {
-                                        data.push(b'\n');
-                                        items.push(RenderedChunkItem::Record {
-                                            event_record_id,
-                                            end: data.len(),
-                                        });
-                                    }
-                                    Err(err) => {
-                                        data.truncate(start);
-                                        items.push(RenderedChunkItem::Failed(err));
-                                    }
-                                }
-                            }
-                        }
+            for raw in chunk_ref.iter_raw() {
+                let raw = match raw {
+                    Ok(raw) => raw,
+                    Err(err) => {
+                        items.push(RenderedChunkItem::Failed(err));
+                        continue;
+                    }
+                };
+                let start = data.len();
+                let event_record_id = raw.event_record_id;
+                if record_numbers {
+                    use std::io::Write;
+                    // Matches the CLI's legacy `Record N` banner; baked in
+                    // here so a chunk stays a single consumer-side write.
+                    let _ = writeln!(&mut data, "Record {}", event_record_id);
+                }
+                let compiled_done = if json {
+                    try_render_json_compiled(
+                        raw.bytes,
+                        chunk_ref,
+                        &mut ir_cache,
+                        &mut json_progs,
+                        &mut json_preflight,
+                        settings,
+                        &mut value_renderer,
+                        &mut data,
+                    )
+                } else {
+                    try_render_xml_compiled(
+                        raw.bytes,
+                        chunk_ref,
+                        &mut ir_cache,
+                        &mut progs,
+                        &mut preflight,
+                        settings,
+                        &mut value_renderer,
+                        &mut data,
+                    )
+                };
+                let rendered = if compiled_done {
+                    Ok(())
+                } else {
+                    // Slow lane: fully materialize, then run the same walker the
+                    // compiler uses — one output semantics for every record shape.
+                    // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
+                    build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)
+                        .and_then(|tree| render_tree(&tree, settings, json, &mut data))
+                        .map_err(|err| EvtxError::record(event_record_id, err))
+                };
+                match rendered {
+                    Ok(()) => {
+                        data.push(b'\n');
+                        items.push(RenderedChunkItem::Record {
+                            event_record_id,
+                            end: data.len(),
+                        });
+                    }
+                    Err(err) => {
+                        data.truncate(start);
+                        items.push(RenderedChunkItem::Failed(err));
                     }
                 }
-                let arena = chunk_records.into_arena();
-                ChunkBatch {
-                    payload: RenderedChunk { data, items },
-                    arena,
-                }
             }
+            RenderedChunk { data, items }
         },
-    }
+    )
 }
 
 // Stable shim until https://github.com/rust-lang/rust/issues/59359 is merged.
@@ -548,18 +535,15 @@ impl<T: ReadSeek> EvtxParser<T> {
         );
 
         data.seek(SeekFrom::Start(chunk_offset as u64))
-            .map_err(|e| EvtxError::FailedToParseChunk {
-                chunk_id: chunk_number,
-                source: Box::new(ChunkError::FailedToSeekToChunk(e)),
-            })?;
+            .map_err(|e| EvtxError::chunk(chunk_number, ChunkError::FailedToSeekToChunk(e)))?;
 
         let amount_read = data
             .take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)
-            .map_err(|_| EvtxError::incomplete_chunk(chunk_number))?;
+            .map_err(|_| EvtxError::chunk(chunk_number, ChunkError::IncompleteChunk))?;
 
         if amount_read != EVTX_CHUNK_SIZE {
-            return Err(EvtxError::incomplete_chunk(chunk_number));
+            return Err(EvtxError::chunk(chunk_number, ChunkError::IncompleteChunk));
         }
 
         // There might be empty chunks in the middle of a dirty file.
@@ -569,10 +553,7 @@ impl<T: ReadSeek> EvtxParser<T> {
 
         EvtxChunkData::new(chunk_data, validate_checksum)
             .map(Some)
-            .map_err(|e| EvtxError::FailedToParseChunk {
-                chunk_id: chunk_number,
-                source: Box::new(e),
-            })
+            .map_err(|e| EvtxError::chunk(chunk_number, e))
     }
 
     /// Find the next chunk, staring at `chunk_number` (inclusive).
@@ -610,6 +591,13 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
+    /// The next chunk at or after `*current`, advancing `*current` past it.
+    fn next_chunk(&mut self, current: &mut u64) -> Option<Result<EvtxChunkData>> {
+        let (chunk, chunk_number) = self.find_next_chunk(*current)?;
+        *current = chunk_number.checked_add(1)?;
+        Some(chunk)
+    }
+
     /// Return an iterator over all the chunks.
     /// Each chunk supports iterating over it's records in their un-serialized state
     /// (before they are converted to XML or JSON).
@@ -635,7 +623,6 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// bounded streaming pipeline: up to `2 * num_threads` chunks are in flight while
     /// already-completed chunks are drained by the caller, so workers never idle behind
     /// the (serial) consumer.
-    #[cfg(feature = "multithreading")]
     fn chunk_pipeline<'a, P: Send + 'static>(
         &'a mut self,
         work: impl Fn(Result<EvtxChunkData>, u64, Arc<ParserSettings>, Bump) -> ChunkBatch<P>
@@ -659,7 +646,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         // `thread::Result` so a panicking `work` propagates to the consumer thread
         // (matching the old `par_iter().collect()` behavior) instead of hitting
         // rayon's global handler, which aborts the process by default.
-        let (tx, rx) = std::sync::mpsc::channel::<(u64, std::thread::Result<ChunkBatch<P>>)>();
+        // Created on first use: the single-threaded path never needs it.
+        let mut channel = None;
         let mut reorder: std::collections::BTreeMap<u64, std::thread::Result<ChunkBatch<P>>> =
             std::collections::BTreeMap::new();
         let mut next_seq = 0u64;
@@ -678,6 +666,9 @@ impl<T: ReadSeek> EvtxParser<T> {
                 arena_pool.push(batch.arena);
                 return Some(batch.payload);
             }
+            let (tx, rx) = channel.get_or_insert_with(
+                std::sync::mpsc::channel::<(u64, std::thread::Result<ChunkBatch<P>>)>,
+            );
             loop {
                 // Keep the pipeline full. Chunk allocation (I/O) stays on the
                 // consumer thread; parsing + serialization go to the rayon pool.
@@ -693,7 +684,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                     let tx = tx.clone();
                     let work = work.clone();
                     let settings = Arc::clone(&chunk_settings);
-                    rayon::spawn(move || {
+                    spawn(move || {
                         let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             work(chunk_res, seq, settings, arena)
                         }));
@@ -727,31 +718,6 @@ impl<T: ReadSeek> EvtxParser<T> {
         })
     }
 
-    /// Process chunks through `work` and yield one payload per chunk, in chunk order.
-    #[cfg(not(feature = "multithreading"))]
-    fn chunk_pipeline<'a, P: Send + 'static>(
-        &'a mut self,
-        work: impl Fn(Result<EvtxChunkData>, u64, Arc<ParserSettings>, Bump) -> ChunkBatch<P>
-        + Send
-        + Sync
-        + Clone
-        + 'static,
-    ) -> impl Iterator<Item = P> + 'a {
-        let chunk_settings = Arc::clone(&self.config);
-        let mut chunks = self.chunks();
-        let mut arena_pool: Vec<Bump> = vec![Bump::with_capacity(EVTX_CHUNK_SIZE)];
-        let mut seq = 0u64;
-
-        std::iter::from_fn(move || {
-            let chunk_res = chunks.next()?;
-            let arena = arena_pool.pop().unwrap_or_default();
-            let batch = work(chunk_res, seq, Arc::clone(&chunk_settings), arena);
-            seq += 1;
-            arena_pool.push(batch.arena);
-            Some(batch.payload)
-        })
-    }
-
     /// Return an iterator over all the records.
     /// Records will be mapped `f`, which must produce owned data from the records.
     pub fn serialized_records<'a, U: Send + 'static>(
@@ -779,24 +745,21 @@ impl<T: ReadSeek> EvtxParser<T> {
         &mut self,
         record_numbers: bool,
     ) -> impl Iterator<Item = RenderedChunk> + '_ {
-        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
-        self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
-            render_chunk(
-                chunk_res,
-                chunk_id,
-                settings,
-                arena,
-                Arc::clone(&program_store),
-                RenderFormat::Xml,
-                record_numbers,
-            )
-        })
+        self.rendered_chunks(false, record_numbers)
     }
 
     /// CLI-internal: see [`Self::chunks_xml_bytes`].
     #[doc(hidden)]
     pub fn chunks_json_bytes(
         &mut self,
+        record_numbers: bool,
+    ) -> impl Iterator<Item = RenderedChunk> + '_ {
+        self.rendered_chunks(true, record_numbers)
+    }
+
+    fn rendered_chunks(
+        &mut self,
+        json: bool,
         record_numbers: bool,
     ) -> impl Iterator<Item = RenderedChunk> + '_ {
         let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
@@ -807,7 +770,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 settings,
                 arena,
                 Arc::clone(&program_store),
-                RenderFormat::Json,
+                json,
                 record_numbers,
             )
         })
@@ -859,14 +822,7 @@ pub struct IterChunks<'c, T: ReadSeek> {
 impl<T: ReadSeek> Iterator for IterChunks<'_, T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        match self.parser.find_next_chunk(self.current_chunk_number) {
-            None => None,
-            Some((chunk, chunk_number)) => {
-                self.current_chunk_number = chunk_number.checked_add(1)?;
-
-                Some(chunk)
-            }
-        }
+        self.parser.next_chunk(&mut self.current_chunk_number)
     }
 }
 
@@ -879,14 +835,7 @@ impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         info!("Chunk {}", self.current_chunk_number);
-        match self.parser.find_next_chunk(self.current_chunk_number) {
-            None => None,
-            Some((chunk, chunk_number)) => {
-                self.current_chunk_number = chunk_number.checked_add(1)?;
-
-                Some(chunk)
-            }
-        }
+        self.parser.next_chunk(&mut self.current_chunk_number)
     }
 }
 

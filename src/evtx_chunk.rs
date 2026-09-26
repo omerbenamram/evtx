@@ -257,10 +257,8 @@ impl<'a> Iterator for IterChunkRecords<'a> {
         };
 
         let content = match build_record_content(raw.bytes, chunk, &mut self.ir_template_cache)
-            .map_err(|err| EvtxError::FailedToParseRecord {
-                record_id: raw.event_record_id,
-                source: Box::new(err),
-            }) {
+            .map_err(|err| EvtxError::record(raw.event_record_id, err))
+        {
             Ok(content) => content,
             Err(err) => return Some(Err(err)),
         };
@@ -379,12 +377,10 @@ fn raw_next<'a>(
     let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
     if binxml_end > chunk.data.len() as u64 {
         walk.exhausted = true;
-        return Some(Err(EvtxError::FailedToParseRecord {
-            record_id: record_header.event_record_id,
-            source: Box::new(EvtxError::FailedToCreateRecordModel(
-                "record BinXML slice is out of bounds",
-            )),
-        }));
+        return Some(Err(EvtxError::record(
+            record_header.event_record_id,
+            EvtxError::FailedToCreateRecordModel("record BinXML slice is out of bounds"),
+        )));
     }
 
     let bytes = &chunk.data[binxml_start as usize..binxml_end as usize];

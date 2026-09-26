@@ -205,10 +205,17 @@ impl EvtxError {
         EvtxError::CalculationError(msg)
     }
 
-    pub(crate) fn incomplete_chunk(chunk_id: u64) -> EvtxError {
+    pub(crate) fn chunk(chunk_id: u64, e: ChunkError) -> EvtxError {
         EvtxError::FailedToParseChunk {
             chunk_id,
-            source: Box::new(ChunkError::IncompleteChunk),
+            source: Box::new(e),
+        }
+    }
+
+    pub(crate) fn record(record_id: RecordId, e: impl Into<EvtxError>) -> EvtxError {
+        EvtxError::FailedToParseRecord {
+            record_id,
+            source: Box::new(e.into()),
         }
     }
 }
