@@ -72,14 +72,12 @@ use crate::EvtxChunk;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
 };
-use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
+use crate::ChunkOffset;
+use crate::binxml::name::{BinXmlNameEncoding, NAME_LINK_SIZE, read_name_ref};
 use crate::binxml::tokens::{
-    BinXMLAttribute, BinXMLOpenStartElement, BinXMLProcessingInstructionTarget,
-    BinXmlEntityReference, BinXmlTemplateValues, TemplateSubstitutionDescriptor,
-    read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
+    BinXmlTemplateValues, TemplateHeader, TemplateSubstitutionDescriptor,
     read_open_start_element_cursor, read_processing_instruction_data_cursor,
-    read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
-    read_template_values_cursor,
+    read_substitution_descriptor_cursor, read_template_header, read_template_values_cursor,
 };
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{DeserializationError, EvtxError, Result};
@@ -87,16 +85,10 @@ use crate::model::ir::{
     Attr, Element, ElementId, IrArena, IrTree, IrVec, Name, Node, Placeholder, TemplateValue, Text,
     is_optional_empty_template_value,
 };
-use crate::utils::{ByteCursor, Utf16LeSlice};
+use crate::utils::ByteCursor;
 use ahash::AHashMap;
 use bumpalo::Bump;
 use std::rc::Rc;
-
-/// Size (in bytes) of the "name link" header that precedes an inline string table entry.
-///
-/// This is used by [`expand_string_ref`] when falling back to decode a missing string-cache
-/// entry directly from the chunk.
-const BINXML_NAME_LINK_SIZE: u32 = 6;
 
 /// Incremental element builder for streaming token parsing.
 ///
@@ -396,41 +388,26 @@ struct TreeBuilder<'a, 'cache, 'arena> {
 }
 
 impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
-    fn process_open_start_element(&mut self, elem: BinXMLOpenStartElement) -> Result<()> {
+    fn process_open_start_element(&mut self, name: ChunkOffset) -> Result<()> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "open start - Bad parser state",
             ));
         }
-        let name = Name::new(self.expand_name_ref(&elem.name)?);
+        let name = self.name(name)?;
         self.current_element = Some(ElementBuilder::new(name, self.bump));
         Ok(())
     }
 
-    fn process_attribute(&mut self, attr: BinXMLAttribute) -> Result<()> {
+    fn process_attribute(&mut self, name: ChunkOffset) -> Result<()> {
         // Compute name before borrowing `current_element` mutably (avoid borrow conflict).
-        let name = Name::new(self.expand_name_ref(&attr.name)?);
+        let name = self.name(name)?;
         let builder = self
             .current_element
             .as_mut()
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("attribute - Bad parser state"))?;
         builder.start_attribute(name);
         Ok(())
-    }
-
-    fn process_entity_ref(&mut self, entity: BinXmlEntityReference) -> Result<()> {
-        let name = Name::new(self.expand_name_ref(&entity.name)?);
-        self.push_node(Node::EntityRef(name))
-    }
-
-    fn process_pi_target(&mut self, name: BinXMLProcessingInstructionTarget) -> Result<()> {
-        let target = Name::new(self.expand_name_ref(&name.name)?);
-        self.push_node(Node::PITarget(target))
-    }
-
-    fn process_pi_data(&mut self, data: Utf16LeSlice<'a>) -> Result<()> {
-        let node = Node::PIData(Text::utf16(data));
-        self.push_node(node)
     }
 
     fn process_close_start_element(&mut self) -> Result<()> {
@@ -578,20 +555,21 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         )
     }
 
-    fn expand_name_ref(&self, name_ref: &BinXmlNameRef) -> Result<&'a str> {
-        match self.name_encoding {
+    fn name(&self, offset: ChunkOffset) -> Result<Name<'a>> {
+        let name = match self.name_encoding {
             BinXmlNameEncoding::Offset => {
                 let chunk = self.chunk.ok_or_else(|| {
                     EvtxError::FailedToCreateRecordModel(
                         "Offset name encoding requires an EVTX chunk context",
                     )
                 })?;
-                expand_string_ref(name_ref, chunk, self.bump)
+                expand_string_ref(offset, chunk, self.bump)
             }
             BinXmlNameEncoding::WevtInline => {
-                expand_wevt_inline_name_ref(self.data, name_ref, self.bump)
+                expand_wevt_inline_name_ref(self.data, offset, self.bump)
             }
-        }
+        }?;
+        Ok(Name::new(name))
     }
 
     fn push_node(&mut self, node: Node<'a>) -> Result<()> {
@@ -752,20 +730,20 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
                 builder.process_value(value)?;
             }
             0x06 | 0x46 => {
-                let attr = read_attribute_cursor(&mut cursor, name_encoding)?;
-                builder.process_attribute(attr)?;
+                let name = read_name_ref(&mut cursor, name_encoding)?;
+                builder.process_attribute(name)?;
             }
             0x09 | 0x49 => {
-                let entity = read_entity_ref_cursor(&mut cursor, name_encoding)?;
-                builder.process_entity_ref(entity)?;
+                let name = builder.name(read_name_ref(&mut cursor, name_encoding)?)?;
+                builder.push_node(Node::EntityRef(name))?;
             }
             0x0a => {
-                let target = read_processing_instruction_target_cursor(&mut cursor, name_encoding)?;
-                builder.process_pi_target(target)?;
+                let name = builder.name(read_name_ref(&mut cursor, name_encoding)?)?;
+                builder.push_node(Node::PITarget(name))?;
             }
             0x0b => {
                 let data = read_processing_instruction_data_cursor(&mut cursor)?;
-                builder.process_pi_data(data)?;
+                builder.push_node(Node::PIData(Text::utf16(data)))?;
             }
             0x0d => {
                 let substitution = read_substitution_descriptor_cursor(&mut cursor, false)?;
@@ -776,7 +754,9 @@ fn build_tree_from_binxml_bytes_direct_with_mode<'a, 'cache, 'arena>(
                 builder.process_substitution(substitution)?;
             }
             0x0f => {
-                let _ = read_fragment_header_cursor(&mut cursor)?;
+                cursor.u8_named("fragment_header_major_version")?;
+                cursor.u8_named("fragment_header_minor_version")?;
+                cursor.u8_named("fragment_header_flags")?;
             }
             0x07 | 0x47 => {
                 return Err(DeserializationError::UnimplementedToken {
@@ -1127,13 +1107,6 @@ fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
     Ok((slice_start - data_start) as u64)
 }
 
-/// Minimal template header used for cache lookups.
-#[derive(Debug)]
-pub(crate) struct TemplateHeader {
-    pub(crate) guid: [u8; 16],
-    pub(crate) data_size: u32,
-}
-
 fn estimate_node_capacity(data_size: u32) -> usize {
     let bytes = data_size as usize;
     let estimate = bytes / 12;
@@ -1144,15 +1117,10 @@ pub(crate) fn read_template_definition_header_at(
     data: &[u8],
     offset: u32,
 ) -> Result<TemplateHeader> {
-    let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
-    let _next_template_offset = cursor.u32_named("next_template_offset")?;
-    let guid_bytes = cursor.take_bytes(16, "template_guid")?;
-    let data_size = cursor.u32_named("template_data_size")?;
-
-    let guid = <[u8; 16]>::try_from(guid_bytes)
-        .map_err(|_| EvtxError::FailedToCreateRecordModel("template guid size mismatch"))?;
-
-    Ok(TemplateHeader { guid, data_size })
+    Ok(read_template_header(&mut ByteCursor::with_pos(
+        data,
+        offset as usize,
+    )?)?)
 }
 
 /// Convert raw template-instance substitution values into [`TemplateValue`]s.
@@ -1494,16 +1462,16 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
 }
 
 fn expand_string_ref<'a>(
-    string_ref: &BinXmlNameRef,
+    offset: ChunkOffset,
     chunk: &'a EvtxChunk<'a>,
     bump: &'a Bump,
 ) -> Result<&'a str> {
-    match chunk.string_cache.get_cached_string(string_ref.offset) {
+    match chunk.string_cache.get_cached_string(offset) {
         Some(s) => Ok(s.as_str()),
         None => {
             // Fail-soft fallback for corrupted chunks / missing string cache entries:
             // decode the name into the caller-provided bump arena.
-            let name_off = string_ref.offset.checked_add(BINXML_NAME_LINK_SIZE).ok_or(
+            let name_off = offset.checked_add(NAME_LINK_SIZE).ok_or(
                 EvtxError::FailedToCreateRecordModel("string table offset overflow"),
             )?;
             let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
@@ -1517,10 +1485,10 @@ fn expand_string_ref<'a>(
 
 fn expand_wevt_inline_name_ref<'a>(
     data: &'a [u8],
-    string_ref: &BinXmlNameRef,
+    offset: ChunkOffset,
     bump: &'a Bump,
 ) -> Result<&'a str> {
-    let mut cursor = ByteCursor::with_pos(data, string_ref.offset as usize)?;
+    let mut cursor = ByteCursor::with_pos(data, offset as usize)?;
     let _ = cursor.u16_named("wevt_inline_name_hash")?;
     let s = cursor
         .len_prefixed_utf16_string_bump(true, "wevt_inline_name", bump)?

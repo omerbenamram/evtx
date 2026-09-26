@@ -176,12 +176,10 @@ impl<'a> EvtxRecord<'a> {
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
     /// values without building a legacy token vector.
     pub fn template_instances(&self) -> Result<Vec<crate::binxml::BinXmlTemplateValues<'a>>> {
-        use crate::binxml::name::BinXmlNameEncoding;
+        use crate::binxml::name::{BinXmlNameEncoding, read_name_ref};
         use crate::binxml::tokens::{
-            read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
             read_open_start_element_cursor, read_processing_instruction_data_cursor,
-            read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
-            read_template_values_cursor,
+            read_substitution_descriptor_cursor, read_template_values_cursor,
         };
 
         let ansi_codec = self.chunk.settings.get_ansi_codec();
@@ -238,13 +236,13 @@ impl<'a> EvtxRecord<'a> {
                     )?;
                 }
                 0x06 | 0x46 => {
-                    let _ = read_attribute_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
+                    let _ = read_name_ref(&mut cursor, BinXmlNameEncoding::Offset)?;
                 }
                 0x09 | 0x49 => {
-                    let _ = read_entity_ref_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
+                    let _ = read_name_ref(&mut cursor, BinXmlNameEncoding::Offset)?;
                 }
                 0x0a => {
-                    let _ = read_processing_instruction_target_cursor(
+                    let _ = read_name_ref(
                         &mut cursor,
                         BinXmlNameEncoding::Offset,
                     )?;
@@ -259,7 +257,9 @@ impl<'a> EvtxRecord<'a> {
                     let _ = read_substitution_descriptor_cursor(&mut cursor, true)?;
                 }
                 0x0f => {
-                    let _ = read_fragment_header_cursor(&mut cursor)?;
+                    cursor.u8_named("fragment_header_major_version")?;
+                    cursor.u8_named("fragment_header_minor_version")?;
+                    cursor.u8_named("fragment_header_flags")?;
                 }
                 0x07 | 0x47 => {
                     return Err(DeserializationError::UnimplementedToken {
