@@ -1,9 +1,11 @@
 use crate::err::{ChunkError, EvtxError, InputError, Result};
 
+use crate::AnsiCodec;
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
 use bumpalo::Bump;
+use encoding_rs::WINDOWS_1252;
 
 use log::trace;
 #[cfg(not(feature = "multithreading"))]
@@ -13,9 +15,7 @@ use log::{debug, info};
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
-use crate::AnsiCodec;
 use crate::EvtxRecord;
-use encoding_rs::WINDOWS_1252;
 #[cfg(feature = "multithreading")]
 use std::cmp::max;
 use std::fmt;
@@ -419,12 +419,7 @@ impl ParserSettings {
         self
     }
 
-    /// Sets the code page used to decode ANSI strings.
-    ///
-    /// `ansi_codec` is an [`encoding_rs::Encoding`]. The default is
-    /// `encoding_rs::WINDOWS_1252`. Use another ASCII-compatible encoding when
-    /// the log was written on a system with a different ANSI code page, for
-    /// example `encoding_rs::WINDOWS_1251`.
+    /// Sets the [`AnsiCodec`] used to decode ANSI strings.
     pub fn ansi_codec(mut self, ansi_codec: AnsiCodec) -> Self {
         self.ansi_codec = ansi_codec;
 
@@ -456,7 +451,6 @@ impl ParserSettings {
         self
     }
 
-    /// Gets the current ANSI code page.
     pub(crate) fn get_ansi_codec(&self) -> AnsiCodec {
         self.ansi_codec
     }

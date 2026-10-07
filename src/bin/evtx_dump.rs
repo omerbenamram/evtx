@@ -5,7 +5,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
 
-use evtx::{EvtxParser, ParserSettings, RenderedChunk, RenderedChunkItem};
+use evtx::{AnsiCodec, EvtxParser, ParserSettings, RenderedChunk, RenderedChunkItem};
 use log::Level;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -152,7 +152,7 @@ impl EvtxDump {
         };
 
         let ansi_codec = *matches
-            .get_one::<&'static encoding_rs::Encoding>("ansi-codec")
+            .get_one::<AnsiCodec>("ansi-codec")
             .expect("has default");
 
         let output: Box<dyn Write> = if let Some(path) = matches.get_one::<String>("output-target")
@@ -394,7 +394,7 @@ impl FromStr for Ranges {
     }
 }
 
-fn parse_ansi_codec(label: &str) -> std::result::Result<&'static encoding_rs::Encoding, String> {
+fn parse_ansi_codec(label: &str) -> Result<AnsiCodec, String> {
     let codec = encoding_rs::Encoding::for_label(label.as_bytes()).ok_or_else(|| {
         format!(
             "unknown encoding `{label}`; expected an Encoding Standard label such as windows-1252"

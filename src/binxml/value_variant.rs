@@ -11,7 +11,8 @@ use log::{trace, warn};
 use std::borrow::Cow;
 use std::fmt::{self, Display};
 
-/// Decode `bytes` with `ansi_codec`, failing if any byte sequence is invalid.
+/// Decode ANSI bytes. A leading BOM stays data, and invalid sequences error
+/// instead of becoming U+FFFD.
 pub(crate) fn decode_ansi_strict<'a>(
     ansi_codec: AnsiCodec,
     bytes: &'a [u8],
@@ -320,7 +321,12 @@ impl<'a> BinXmlValue<'a> {
                 }
                 let filtered = filtered.into_bump_slice();
                 let decoded = decode_ansi_strict(ansi_codec, filtered)?;
-                BinXmlValue::AnsiStringType(arena.alloc_str(&decoded))
+                // ASCII comes back borrowed from `filtered`, which already lives in the arena.
+                let text = match decoded {
+                    Cow::Borrowed(text) => text,
+                    Cow::Owned(text) => arena.alloc_str(&text),
+                };
+                BinXmlValue::AnsiStringType(text)
             }
             // AnsiString are always sized according to docs
             (BinXmlValueType::AnsiStringType, None) => {
@@ -735,13 +741,13 @@ mod tests {
             let decoded = decode_ansi_strict(codec, &input)
                 .unwrap_or_else(|err| panic!("windows-1252 rejected byte {byte:#04x}: {err}"));
             let expected = match byte {
-                0x00..=0x7F => byte as char,
                 0x80..=0x9F => WINDOWS_1252_C1[(byte - 0x80) as usize],
-                0xA0..=0xFF => char::from_u32(u32::from(byte)).unwrap(),
+                _ => char::from(byte),
             };
+            let mut buf = [0u8; 4];
             assert_eq!(
-                decoded.chars().collect::<Vec<_>>(),
-                vec![expected],
+                decoded.as_ref(),
+                expected.encode_utf8(&mut buf),
                 "byte {byte:#04x}"
             );
         }
