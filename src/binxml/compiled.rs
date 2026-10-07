@@ -21,7 +21,7 @@ use crate::binxml::ir::{
 };
 use crate::binxml::tokens::{single_instance_offset, token};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
-use crate::binxml::value_variant::BinXmlValue;
+use crate::binxml::value_variant::{self, BinXmlValue};
 use crate::err::Result;
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
@@ -1242,12 +1242,11 @@ impl Preflight {
                 // `deserialize_value_type_cursor_in` (NUL filter + strict).
                 let raw = &data[off..end];
                 let filtered: Vec<u8> = raw.iter().copied().filter(|&b| b != 0).collect();
-                let decoded = settings
-                    .get_ansi_codec()
-                    .decode(&filtered, encoding::DecoderTrap::Strict)
-                    .map_err(|_| PreflightBail)?;
+                let decoded =
+                    value_variant::decode_ansi_strict(settings.get_ansi_codec(), &filtered)
+                        .map_err(|_| PreflightBail)?;
                 slot.aux = self.ansi.len() as u32;
-                self.ansi.push(decoded);
+                self.ansi.push(decoded.into_owned());
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every

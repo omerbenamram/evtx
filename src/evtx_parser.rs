@@ -13,9 +13,9 @@ use log::{debug, info};
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
+use crate::AnsiCodec;
 use crate::EvtxRecord;
-use encoding::EncodingRef;
-use encoding::all::WINDOWS_1252;
+use encoding_rs::WINDOWS_1252;
 #[cfg(feature = "multithreading")]
 use std::cmp::max;
 use std::fmt;
@@ -344,8 +344,8 @@ pub struct ParserSettings {
     separate_json_attributes: bool,
     /// If true, output will be indented.
     indent: bool,
-    /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
-    ansi_codec: EncodingRef,
+    /// Controls the ANSI code page used to deserialize ANSI strings inside the xml document.
+    ansi_codec: AnsiCodec,
     /// Optional offline WEVT template cache used as a fallback when embedded EVTX templates
     /// are missing/corrupt (common in carved/dirty logs).
     #[cfg(feature = "wevt_templates")]
@@ -419,8 +419,13 @@ impl ParserSettings {
         self
     }
 
-    /// Sets the ansi codec used by the parser.
-    pub fn ansi_codec(mut self, ansi_codec: EncodingRef) -> Self {
+    /// Sets the code page used to decode ANSI strings.
+    ///
+    /// `ansi_codec` is an [`encoding_rs::Encoding`]. The default is
+    /// `encoding_rs::WINDOWS_1252`. Use another ASCII-compatible encoding when
+    /// the log was written on a system with a different ANSI code page, for
+    /// example `encoding_rs::WINDOWS_1251`.
+    pub fn ansi_codec(mut self, ansi_codec: AnsiCodec) -> Self {
         self.ansi_codec = ansi_codec;
 
         self
@@ -451,8 +456,8 @@ impl ParserSettings {
         self
     }
 
-    /// Gets the current ansi codec
-    pub(crate) fn get_ansi_codec(&self) -> EncodingRef {
+    /// Gets the current ANSI code page.
+    pub(crate) fn get_ansi_codec(&self) -> AnsiCodec {
         self.ansi_codec
     }
 

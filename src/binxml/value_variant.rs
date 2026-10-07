@@ -1,3 +1,4 @@
+use crate::AnsiCodec;
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::utils::invalid_data;
@@ -5,11 +6,23 @@ use crate::utils::windows::{filetime_to_timestamp, read_systime, systime_from_by
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use bumpalo::Bump;
-use encoding::EncodingRef;
 use jiff::Timestamp;
 use log::{trace, warn};
+use std::borrow::Cow;
 use std::fmt::{self, Display};
-use std::string::ToString;
+
+/// Decode `bytes` with `ansi_codec`, failing if any byte sequence is invalid.
+pub(crate) fn decode_ansi_strict<'a>(
+    ansi_codec: AnsiCodec,
+    bytes: &'a [u8],
+) -> Result<Cow<'a, str>> {
+    ansi_codec
+        .decode_without_bom_handling_and_without_replacement(bytes)
+        .ok_or_else(|| DeserializationError::AnsiDecodeError {
+            encoding_used: ansi_codec.name(),
+            inner_message: "invalid sequence".to_owned(),
+        })
+}
 
 /// Borrowed SID bytes (used to avoid heap allocation in the hot path).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -235,7 +248,7 @@ impl<'a> BinXmlValue<'a> {
         cursor: &mut ByteCursor<'a>,
         chunk: Option<&'a EvtxChunk<'a>>,
         size: Option<u16>,
-        ansi_codec: EncodingRef,
+        ansi_codec: AnsiCodec,
         arena: &'a Bump,
     ) -> Result<BinXmlValue<'a>> {
         let value_type_token = cursor.u8()?;
@@ -265,7 +278,7 @@ impl<'a> BinXmlValue<'a> {
         cursor: &mut ByteCursor<'a>,
         chunk: Option<&'a EvtxChunk<'a>>,
         size: Option<u16>,
-        ansi_codec: EncodingRef,
+        ansi_codec: AnsiCodec,
         arena: &'a Bump,
     ) -> Result<BinXmlValue<'a>> {
         let _ = chunk;
@@ -306,12 +319,7 @@ impl<'a> BinXmlValue<'a> {
                     }
                 }
                 let filtered = filtered.into_bump_slice();
-                let decoded = ansi_codec
-                    .decode(filtered, encoding::DecoderTrap::Strict)
-                    .map_err(|m| DeserializationError::AnsiDecodeError {
-                        encoding_used: ansi_codec.name(),
-                        inner_message: m.to_string(),
-                    })?;
+                let decoded = decode_ansi_strict(ansi_codec, filtered)?;
                 BinXmlValue::AnsiStringType(arena.alloc_str(&decoded))
             }
             // AnsiString are always sized according to docs
@@ -703,6 +711,54 @@ impl<'a> BinXmlValue<'a> {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_ansi_strict;
+
+    /// WHATWG windows-1252 mappings for bytes 0x80..=0x9F.
+    const WINDOWS_1252_C1: [char; 32] = [
+        '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}',
+        '\u{017D}', '\u{008F}', '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}',
+        '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}',
+        '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
+    ];
+
+    #[test]
+    fn windows_1252_decodes_every_byte() {
+        let codec = encoding_rs::WINDOWS_1252;
+        for byte in 0u8..=255 {
+            let input = [byte];
+            let decoded = decode_ansi_strict(codec, &input)
+                .unwrap_or_else(|err| panic!("windows-1252 rejected byte {byte:#04x}: {err}"));
+            let expected = match byte {
+                0x00..=0x7F => byte as char,
+                0x80..=0x9F => WINDOWS_1252_C1[(byte - 0x80) as usize],
+                0xA0..=0xFF => char::from_u32(u32::from(byte)).unwrap(),
+            };
+            assert_eq!(
+                decoded.chars().collect::<Vec<_>>(),
+                vec![expected],
+                "byte {byte:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_ansi_decode_rejects_invalid_utf8() {
+        let err = decode_ansi_strict(encoding_rs::UTF_8, &[0xFF]).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("UTF-8"),
+            "error should name the codec, got {message}"
+        );
+        assert!(
+            message.contains("invalid sequence"),
+            "error should describe the failure, got {message}"
+        );
     }
 }
 

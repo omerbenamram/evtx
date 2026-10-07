@@ -15,7 +15,7 @@ exclude = ["**/*.evtx", "**/*.dat"]
 [dependencies]
 bitflags = "2"
 crc32fast = "1"
-encoding = "0.2.33"
+encoding_rs = "0.8"
 byteorder = "1"
 thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }

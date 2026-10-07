@@ -5,8 +5,8 @@
 //! WEVT_TEMPLATE fallback during parsing.
 
 use bumpalo::Bump;
-use encoding::EncodingRef;
 
+use crate::AnsiCodec;
 use crate::ParserSettings;
 use crate::binxml::ir::{build_wevt_template_definition_ir, instantiate_template_definition_ir};
 use crate::binxml::value_variant::BinXmlValue;
@@ -22,7 +22,7 @@ const TEMP_BINXML_OFFSET: usize = 40;
 /// that hold raw `TEMP` blobs (e.g. from [`extract_temp_templates_from_wevt_blob`]).
 ///
 /// [`extract_temp_templates_from_wevt_blob`]: crate::wevt_templates::extract_temp_templates_from_wevt_blob
-pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> Result<String> {
+pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: AnsiCodec) -> Result<String> {
     let binxml = temp_binxml_fragment(temp_bytes)?;
     let bump = Bump::new();
     let template = build_wevt_template_definition_ir(binxml, ansi_codec, &bump)?;
@@ -39,7 +39,7 @@ pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: EncodingRef) -> Result<
 pub fn render_temp_to_xml_with_values<'a>(
     temp_bytes: &[u8],
     substitution_values: &[BinXmlValue<'a>],
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     bump: &'a Bump,
 ) -> Result<String> {
     let binxml = temp_binxml_fragment(temp_bytes)?;
@@ -62,7 +62,7 @@ fn temp_binxml_fragment(temp_bytes: &[u8]) -> Result<&[u8]> {
 /// Render a parsed template definition to XML (with `{sub:idx[:name]}` placeholders).
 pub fn render_template_definition_to_xml(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
 ) -> Result<String> {
     let bump = Bump::new();
     let ir = build_wevt_template_definition_ir(template.binxml, ansi_codec, &bump)?;
@@ -84,7 +84,7 @@ pub fn render_template_definition_to_xml(
 pub fn render_template_definition_to_xml_with_values<'a>(
     template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
     substitution_values: &[BinXmlValue<'a>],
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     bump: &'a Bump,
 ) -> Result<String> {
     let ir = build_wevt_template_definition_ir(template.binxml, ansi_codec, bump)?;
@@ -93,7 +93,7 @@ pub fn render_template_definition_to_xml_with_values<'a>(
     render_ir_xml(&instantiated, ansi_codec)
 }
 
-fn render_ir_xml(tree: &IrTree<'_>, ansi_codec: EncodingRef) -> Result<String> {
+fn render_ir_xml(tree: &IrTree<'_>, ansi_codec: AnsiCodec) -> Result<String> {
     let settings = ParserSettings::default().ansi_codec(ansi_codec);
     let mut out = Vec::new();
     crate::binxml::compiled::render_tree_xml(tree, &settings, &mut out)?;
