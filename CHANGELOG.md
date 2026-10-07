@@ -8,6 +8,23 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** ANSI strings are decoded with `encoding_rs` instead of the
+  unmaintained `encoding` crate
+  ([RUSTSEC-2021-0153](https://rustsec.org/advisories/RUSTSEC-2021-0153), #304).
+  `ParserSettings::ansi_codec` and the WEVT template render helpers now take
+  `evtx::AnsiCodec` (`&'static encoding_rs::Encoding`). `evtx_dump --ansi-codec`
+  accepts an Encoding Standard label and still defaults to `windows-1252`.
+  Default windows-1252 output is unchanged. Labels follow the WHATWG Encoding
+  Standard, so `ascii` and `iso-8859-1` resolve to windows-1252. Code pages
+  outside that standard (`big5-2003`, `hz`, `mac-cyrillic`, `mac-roman`,
+  `pua-mapped-binary`, and OEM pages such as `cp437`) are no longer accepted.
+
+### Security
+
+- Removed the unmaintained `encoding` dependency (RUSTSEC-2021-0153).
+
 ## [0.12.3 - 2026-09-22]
 
 ### Changed

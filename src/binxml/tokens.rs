@@ -2,6 +2,7 @@ use crate::err::{DeserializationError, DeserializationResult as Result};
 
 use winstructs::guid::Guid;
 
+use crate::AnsiCodec;
 use crate::ChunkOffset;
 use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
@@ -11,7 +12,6 @@ use log::{error, trace, warn};
 
 use crate::evtx_chunk::EvtxChunk;
 use bumpalo::Bump;
-use encoding::EncodingRef;
 use std::fmt::{self, Formatter};
 
 /// Processing instruction target name.
@@ -132,7 +132,7 @@ pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
 pub(crate) fn read_template_values_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
     chunk: Option<&'a EvtxChunk<'a>>,
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     arena: &'a Bump,
 ) -> Result<BinXmlTemplateValues<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
@@ -387,7 +387,7 @@ pub(crate) fn read_open_start_element_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use encoding::all::WINDOWS_1252;
+    use encoding_rs::WINDOWS_1252;
 
     #[test]
     fn descriptor_errors_precede_value_errors() {

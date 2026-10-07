@@ -556,7 +556,7 @@ mod wevt_templates {
         assert_eq!(tpl.items.len(), 1);
         assert_eq!(tpl.items[0].name.as_deref(), Some(item_name));
 
-        let xml = render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+        let xml = render_template_definition_to_xml(tpl, encoding_rs::WINDOWS_1252)
             .expect("render should succeed");
         assert!(
             xml.contains("{sub:0:Foo}"),
@@ -568,7 +568,7 @@ mod wevt_templates {
         let applied = render_template_definition_to_xml_with_values(
             tpl,
             &subs,
-            encoding::all::WINDOWS_1252,
+            encoding_rs::WINDOWS_1252,
             &bump,
         )
         .expect("render with substitutions should succeed");
@@ -1379,7 +1379,7 @@ mod wevt_templates_research {
 
                     // Verify each template renders without error
                     for tpl in &ttbl.templates {
-                        let _ = render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+                        let _ = render_template_definition_to_xml(tpl, encoding_rs::WINDOWS_1252)
                             .expect("template render should succeed");
                     }
                 }
@@ -1516,7 +1516,7 @@ mod wevt_templates_research {
         for provider in &manifest.providers {
             if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
                 for tpl in &ttbl.templates {
-                    let _ = render_template_definition_to_xml(tpl, encoding::all::WINDOWS_1252)
+                    let _ = render_template_definition_to_xml(tpl, encoding_rs::WINDOWS_1252)
                         .expect("BinXML parse/render should succeed");
                     parsed_templates += 1;
                 }

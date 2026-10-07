@@ -296,7 +296,7 @@ mod imp {
                     let xml = render_template_definition_to_xml_with_values(
                         tpl,
                         &instance.values,
-                        encoding::all::WINDOWS_1252,
+                        encoding_rs::WINDOWS_1252,
                         &record.chunk.arena,
                     )?;
                     // Found and rendered; stop searching.
@@ -318,7 +318,7 @@ mod imp {
             render_template_definition_to_xml_with_values(
                 tpl,
                 &values,
-                encoding::all::WINDOWS_1252,
+                encoding_rs::WINDOWS_1252,
                 &bump,
             )?
         };

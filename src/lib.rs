@@ -33,6 +33,14 @@ mod utils;
 
 pub type ChunkOffset = u32;
 
+/// Code page used to decode EVTX `AnsiString` values.
+///
+/// This is an [`encoding_rs::Encoding`]. The default is
+/// [`encoding_rs::WINDOWS_1252`]. Pass another ASCII-compatible encoding, such
+/// as `encoding_rs::WINDOWS_1251`, when the log was written with a different
+/// system ANSI code page.
+pub type AnsiCodec = &'static encoding_rs::Encoding;
+
 // For tests, we only initialize logging once.
 #[cfg(test)]
 use std::sync::Once;

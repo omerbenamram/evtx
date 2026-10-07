@@ -67,6 +67,7 @@
 //! The production builder parses BinXML bytes directly (cursor-based) to avoid iterator
 //! overhead and intermediate token allocations.
 
+use crate::AnsiCodec;
 use crate::EvtxChunk;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
@@ -89,7 +90,6 @@ use crate::model::ir::{
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use bumpalo::Bump;
-use encoding::EncodingRef;
 use std::rc::Rc;
 
 /// Size (in bytes) of the "name link" header that precedes an inline string table entry.
@@ -388,7 +388,7 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     mode: BuildMode,
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     name_encoding: BinXmlNameEncoding,
     /// Fragment/instance nesting depth of this stream (see [`MAX_BINXML_NESTING`]).
     depth: usize,
@@ -402,7 +402,7 @@ struct TreeBuilderInit<'a, 'cache, 'arena> {
     data: &'a [u8],
     cache: &'cache mut IrTemplateCache<'a>,
     mode: BuildMode,
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     name_encoding: BinXmlNameEncoding,
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
@@ -696,7 +696,7 @@ struct BuildTreeFromBinXmlBytesDirectArgs<'a, 'cache, 'arena> {
     data: &'a [u8],
     chunk: Option<&'a EvtxChunk<'a>>,
     cache: &'cache mut IrTemplateCache<'a>,
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     bump: &'a Bump,
     arena: &'arena mut IrArena<'a>,
     mode: BuildMode,
@@ -1087,7 +1087,7 @@ fn read_single_instance_stream<'a>(
 #[cfg(feature = "wevt_templates")]
 pub(crate) fn build_wevt_template_definition_ir<'a>(
     binxml: &'a [u8],
-    ansi_codec: EncodingRef,
+    ansi_codec: AnsiCodec,
     bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
     let mut cache = IrTemplateCache::with_capacity(0, bump);

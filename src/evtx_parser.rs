@@ -1,9 +1,11 @@
 use crate::err::{ChunkError, EvtxError, InputError, Result};
 
+use crate::AnsiCodec;
 use crate::evtx_chunk::EvtxChunkData;
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
 use bumpalo::Bump;
+use encoding_rs::WINDOWS_1252;
 
 use log::trace;
 #[cfg(not(feature = "multithreading"))]
@@ -14,8 +16,6 @@ use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
 use crate::EvtxRecord;
-use encoding::EncodingRef;
-use encoding::all::WINDOWS_1252;
 #[cfg(feature = "multithreading")]
 use std::cmp::max;
 use std::fmt;
@@ -344,8 +344,8 @@ pub struct ParserSettings {
     separate_json_attributes: bool,
     /// If true, output will be indented.
     indent: bool,
-    /// Controls the ansi codec used to deserialize ansi strings inside the xml document.
-    ansi_codec: EncodingRef,
+    /// Controls the ANSI code page used to deserialize ANSI strings inside the xml document.
+    ansi_codec: AnsiCodec,
     /// Optional offline WEVT template cache used as a fallback when embedded EVTX templates
     /// are missing/corrupt (common in carved/dirty logs).
     #[cfg(feature = "wevt_templates")]
@@ -419,8 +419,8 @@ impl ParserSettings {
         self
     }
 
-    /// Sets the ansi codec used by the parser.
-    pub fn ansi_codec(mut self, ansi_codec: EncodingRef) -> Self {
+    /// Sets the [`AnsiCodec`] used to decode ANSI strings.
+    pub fn ansi_codec(mut self, ansi_codec: AnsiCodec) -> Self {
         self.ansi_codec = ansi_codec;
 
         self
@@ -451,8 +451,7 @@ impl ParserSettings {
         self
     }
 
-    /// Gets the current ansi codec
-    pub(crate) fn get_ansi_codec(&self) -> EncodingRef {
+    pub(crate) fn get_ansi_codec(&self) -> AnsiCodec {
         self.ansi_codec
     }
 
