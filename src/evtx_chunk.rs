@@ -80,24 +80,6 @@ impl EvtxChunkData {
         EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
-    /// Parse a chunk while reusing an existing bump arena.
-    ///
-    /// The arena is reset before use, retaining its capacity for reuse across chunks.
-    pub(crate) fn parse_with_arena(
-        &mut self,
-        settings: Arc<ParserSettings>,
-        arena: Bump,
-        program_store: Arc<crate::binxml::compiled::ProgramStore>,
-    ) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new_with_arena(
-            &self.data,
-            &self.header,
-            Arc::clone(&settings),
-            arena,
-            program_store,
-        )
-    }
-
     /// Computed CRC32 of the header (bytes 0..120 and 128..512).
     fn header_crc(&self) -> u32 {
         let mut hasher = crc32fast::Hasher::new();
@@ -182,11 +164,6 @@ impl<'chunk> EvtxChunk<'chunk> {
         })
     }
 
-    /// Consume the chunk and return its bump arena for reuse.
-    pub(crate) fn into_arena(self) -> Bump {
-        self.arena
-    }
-
     /// Iterate raw record windows (header walk only, no content build).
     /// Used by the compiled-template render path.
     pub(crate) fn iter_raw(&self) -> IterRawRecords<'_> {
@@ -197,9 +174,6 @@ impl<'chunk> EvtxChunk<'chunk> {
         }
     }
 
-    /// Return an iterator of records from the chunk.
-    /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
-    /// resulting records.
     /// Number of non-empty template-table buckets (cache size hint).
     pub(crate) fn estimated_template_buckets(&self) -> usize {
         self.header
@@ -209,6 +183,9 @@ impl<'chunk> EvtxChunk<'chunk> {
             .count()
     }
 
+    /// Return an iterator of records from the chunk.
+    /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
+    /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords<'_> {
         let estimated_template_buckets = self.estimated_template_buckets();
         IterChunkRecords {
@@ -293,110 +270,81 @@ impl<'a> Iterator for IterRawRecords<'a> {
     type Item = std::result::Result<RawRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        raw_next(self)
+        if self.exhausted
+            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
+        {
+            return None;
+        }
+        let item = self.read_record();
+        // We currently do not try to recover after an invalid record.
+        if !matches!(item, Some(Ok(_))) {
+            self.exhausted = true;
+        }
+        item
     }
 }
 
-/// The shared record-header walk (everything `IterChunkRecords::next` did
-/// before content construction, with identical error/termination semantics).
-fn raw_next<'a>(
-    walk: &mut IterRawRecords<'a>,
-) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
-    let chunk = walk.chunk;
-    // Be resilient to corrupted chunk headers: `free_space_offset` is user-controlled data
-    // coming from the EVTX stream, and may point past the end of the chunk.
-    let effective_free_space_offset = u64::from(chunk.header.free_space_offset)
-        .min(chunk.data.len().try_into().unwrap_or(u64::MAX));
-
-    if walk.exhausted || walk.offset_from_chunk_start >= effective_free_space_offset {
-        return None;
-    }
-
-    let record_start = walk.offset_from_chunk_start;
-    let record_start_usize = record_start as usize;
-
-    if record_start_usize >= chunk.data.len() {
-        // Avoid panicking on an out-of-bounds slice if the header is corrupted.
-        walk.exhausted = true;
-        return None;
-    }
-
-    if chunk.data.len() - record_start_usize < 4 {
-        // Not enough bytes for the record header magic, treat as end-of-chunk.
-        walk.exhausted = true;
-        return None;
-    }
-
-    let record_header = match EvtxRecordHeader::from_bytes_at(chunk.data, record_start_usize) {
-        Ok(record_header) => record_header,
-        Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
+impl<'a> IterRawRecords<'a> {
+    fn read_record(&mut self) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
+        let chunk = self.chunk;
+        let record_start = self.offset_from_chunk_start;
+        // `free_space_offset` comes from the file and may point past the chunk;
+        // running off the end is a truncated header, which ends the chunk below.
+        let record_header = match EvtxRecordHeader::from_bytes_at(chunk.data, record_start as usize)
+        {
+            Ok(record_header) => record_header,
             // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
             // In such cases we may attempt to parse the chunk slack area, which is typically
             // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
             // emitting an error (see issue #197).
-            if magic == [0, 0, 0, 0] {
-                walk.exhausted = true;
+            Err(DeserializationError::InvalidEvtxRecordHeaderMagic {
+                magic: [0, 0, 0, 0],
+            }) => {
                 return None;
             }
-
-            walk.exhausted = true;
-            return Some(Err(EvtxError::DeserializationError(
-                DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
-            )));
-        }
-        Err(DeserializationError::Truncated { .. }) => {
             // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
-            walk.exhausted = true;
-            return None;
-        }
-        Err(err) => {
-            // We currently do not try to recover after an invalid record.
-            walk.exhausted = true;
-            return Some(Err(EvtxError::DeserializationError(err)));
-        }
-    };
+            Err(DeserializationError::Truncated { .. }) => return None,
+            Err(err) => return Some(Err(EvtxError::DeserializationError(err))),
+        };
 
-    trace!(
-        "Record id - {} header - {:?}",
-        record_header.event_record_id, record_header
-    );
+        trace!(
+            "Record id - {} header - {:?}",
+            record_header.event_record_id, record_header
+        );
 
-    let binxml_data_size = match record_header.record_data_size() {
-        Ok(size) => size,
-        Err(err) => {
+        let binxml_data_size = match record_header.record_data_size() {
+            Ok(size) => size,
             //The evtx record is corrupted, skip the rest of the chunk
             //It could be interesting to carve the rest of the chunk to find the next EVTX record header magic `2a2a0000`
-            walk.exhausted = true;
-            return Some(Err(err));
+            Err(err) => return Some(Err(err)),
+        };
+
+        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+
+        let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
+        let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
+        if binxml_end > chunk.data.len() as u64 {
+            return Some(Err(EvtxError::record(
+                record_header.event_record_id,
+                EvtxError::FailedToCreateRecordModel("record BinXML slice is out of bounds"),
+            )));
         }
-    };
 
-    trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+        let bytes = &chunk.data[binxml_start as usize..binxml_end as usize];
 
-    let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
-    let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
-    if binxml_end > chunk.data.len() as u64 {
-        walk.exhausted = true;
-        return Some(Err(EvtxError::record(
-            record_header.event_record_id,
-            EvtxError::FailedToCreateRecordModel("record BinXML slice is out of bounds"),
-        )));
+        self.offset_from_chunk_start += u64::from(record_header.data_size);
+
+        if chunk.header.last_event_record_id == record_header.event_record_id {
+            self.exhausted = true;
+        }
+
+        Some(Ok(RawRecord {
+            event_record_id: record_header.event_record_id,
+            timestamp: record_header.timestamp,
+            binxml_offset: binxml_start,
+            bytes,
+        }))
     }
-
-    let bytes = &chunk.data[binxml_start as usize..binxml_end as usize];
-
-    walk.offset_from_chunk_start += u64::from(record_header.data_size);
-
-    if chunk.header.last_event_record_id == record_header.event_record_id {
-        walk.exhausted = true;
-    }
-
-    Some(Ok(RawRecord {
-        event_record_id: record_header.event_record_id,
-        timestamp: record_header.timestamp,
-        binxml_offset: binxml_start,
-        bytes,
-    }))
 }
 
 impl EvtxChunkHeader {

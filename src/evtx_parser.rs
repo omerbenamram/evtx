@@ -42,59 +42,6 @@ struct ChunkBatch<P> {
     arena: Bump,
 }
 
-/// Parse one chunk (reusing `arena`) and build its payload with `f`; a chunk
-/// read/parse error becomes a single-error payload via `on_err`.
-fn with_parsed_chunk<P>(
-    chunk_res: Result<EvtxChunkData>,
-    chunk_id: u64,
-    settings: Arc<ParserSettings>,
-    arena: Bump,
-    program_store: Arc<crate::binxml::compiled::ProgramStore>,
-    on_err: impl FnOnce(EvtxError) -> P,
-    f: impl FnOnce(&mut EvtxChunk<'_>) -> P,
-) -> ChunkBatch<P> {
-    let mut chunk = match chunk_res {
-        Ok(chunk) => chunk,
-        Err(err) => {
-            return ChunkBatch {
-                payload: on_err(err),
-                arena,
-            };
-        }
-    };
-    match chunk.parse_with_arena(settings, arena, program_store) {
-        Err(err) => ChunkBatch {
-            payload: on_err(EvtxError::chunk(chunk_id, err)),
-            arena: Bump::new(),
-        },
-        Ok(mut chunk_records) => {
-            let payload = f(&mut chunk_records);
-            let arena = chunk_records.into_arena();
-            ChunkBatch { payload, arena }
-        }
-    }
-}
-
-/// Parse one chunk and serialize all of its records with `f`.
-fn process_chunk<U>(
-    chunk_res: Result<EvtxChunkData>,
-    chunk_id: u64,
-    settings: Arc<ParserSettings>,
-    arena: Bump,
-    program_store: Arc<crate::binxml::compiled::ProgramStore>,
-    f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U>,
-) -> ChunkBatch<Vec<Result<U>>> {
-    with_parsed_chunk(
-        chunk_res,
-        chunk_id,
-        settings,
-        arena,
-        program_store,
-        |err| vec![Err(err)],
-        |chunk| chunk.iter().map(f).collect(),
-    )
-}
-
 /// One record inside a [`RenderedChunk`]: either the half-open end offset of
 /// its bytes in `RenderedChunk::data`, or the error it produced.
 #[doc(hidden)]
@@ -113,16 +60,8 @@ pub struct RenderedChunk {
     pub items: Vec<RenderedChunkItem>,
 }
 
-/// Parse one chunk and render all of its records into a single buffer.
-fn render_chunk(
-    chunk_res: Result<EvtxChunkData>,
-    chunk_id: u64,
-    settings: Arc<ParserSettings>,
-    arena: Bump,
-    program_store: Arc<crate::binxml::compiled::ProgramStore>,
-    json: bool,
-    record_numbers: bool,
-) -> ChunkBatch<RenderedChunk> {
+/// Render all of a parsed chunk's records into a single buffer.
+fn render_chunk(chunk: &mut EvtxChunk<'_>, json: bool, record_numbers: bool) -> RenderedChunk {
     use crate::binxml::compiled::{
         JsonProgramCache, Preflight, XmlProgramCache, try_render_json_compiled,
         try_render_xml_compiled,
@@ -130,98 +69,82 @@ fn render_chunk(
     use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
     use crate::binxml::value_render::ValueRenderer;
 
-    let failed = |err| RenderedChunk {
-        data: Vec::new(),
-        items: vec![RenderedChunkItem::Failed(err)],
-    };
-    with_parsed_chunk(
-        chunk_res,
-        chunk_id,
-        settings,
-        arena,
-        program_store,
-        failed,
-        |chunk| {
-            let chunk_ref: &EvtxChunk = chunk;
-            let settings = &chunk_ref.settings;
-            let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
-            let mut items = Vec::new();
-            let mut ir_cache = IrTemplateCache::with_capacity(
-                chunk_ref.estimated_template_buckets(),
-                &chunk_ref.arena,
-            );
-            let mut progs = XmlProgramCache::default();
-            let mut preflight = Preflight::default();
-            let mut json_progs = JsonProgramCache::default();
-            let mut json_preflight = Preflight::default();
-            let mut value_renderer = ValueRenderer::new();
+    let chunk_ref: &EvtxChunk = chunk;
+    let settings = &chunk_ref.settings;
+    let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
+    let mut items = Vec::new();
+    let mut ir_cache =
+        IrTemplateCache::with_capacity(chunk_ref.estimated_template_buckets(), &chunk_ref.arena);
+    let mut progs = XmlProgramCache::default();
+    let mut preflight = Preflight::default();
+    let mut json_progs = JsonProgramCache::default();
+    let mut json_preflight = Preflight::default();
+    let mut value_renderer = ValueRenderer::new();
 
-            for raw in chunk_ref.iter_raw() {
-                let raw = match raw {
-                    Ok(raw) => raw,
-                    Err(err) => {
-                        items.push(RenderedChunkItem::Failed(err));
-                        continue;
-                    }
-                };
-                let start = data.len();
-                let event_record_id = raw.event_record_id;
-                if record_numbers {
-                    use std::io::Write;
-                    // Matches the CLI's legacy `Record N` banner; baked in
-                    // here so a chunk stays a single consumer-side write.
-                    let _ = writeln!(&mut data, "Record {}", event_record_id);
-                }
-                let compiled_done = if json {
-                    try_render_json_compiled(
-                        raw.bytes,
-                        chunk_ref,
-                        &mut ir_cache,
-                        &mut json_progs,
-                        &mut json_preflight,
-                        settings,
-                        &mut value_renderer,
-                        &mut data,
-                    )
-                } else {
-                    try_render_xml_compiled(
-                        raw.bytes,
-                        chunk_ref,
-                        &mut ir_cache,
-                        &mut progs,
-                        &mut preflight,
-                        settings,
-                        &mut value_renderer,
-                        &mut data,
-                    )
-                };
-                let rendered = if compiled_done {
-                    Ok(())
-                } else {
-                    // Slow lane: fully materialize, then run the same walker the
-                    // compiler uses — one output semantics for every record shape.
-                    // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
-                    build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)
-                        .and_then(|tree| render_tree(&tree, settings, json, &mut data))
-                        .map_err(|err| EvtxError::record(event_record_id, err))
-                };
-                match rendered {
-                    Ok(()) => {
-                        data.push(b'\n');
-                        items.push(RenderedChunkItem::Record {
-                            event_record_id,
-                            end: data.len(),
-                        });
-                    }
-                    Err(err) => {
-                        data.truncate(start);
-                        items.push(RenderedChunkItem::Failed(err));
-                    }
-                }
+    for raw in chunk_ref.iter_raw() {
+        let raw = match raw {
+            Ok(raw) => raw,
+            Err(err) => {
+                items.push(RenderedChunkItem::Failed(err));
+                continue;
             }
-            RenderedChunk { data, items }
-        },
-    )
+        };
+        let start = data.len();
+        let event_record_id = raw.event_record_id;
+        if record_numbers {
+            use std::io::Write;
+            // Matches the CLI's legacy `Record N` banner; baked in
+            // here so a chunk stays a single consumer-side write.
+            let _ = writeln!(&mut data, "Record {}", event_record_id);
+        }
+        let compiled_done = if json {
+            try_render_json_compiled(
+                raw.bytes,
+                chunk_ref,
+                &mut ir_cache,
+                &mut json_progs,
+                &mut json_preflight,
+                settings,
+                &mut value_renderer,
+                &mut data,
+            )
+        } else {
+            try_render_xml_compiled(
+                raw.bytes,
+                chunk_ref,
+                &mut ir_cache,
+                &mut progs,
+                &mut preflight,
+                settings,
+                &mut value_renderer,
+                &mut data,
+            )
+        };
+        let rendered = if compiled_done {
+            Ok(())
+        } else {
+            // Slow lane: fully materialize, then run the same walker the
+            // compiler uses — one output semantics for every record shape.
+            // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
+            build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)
+                .and_then(|tree| render_tree(&tree, settings, json, &mut data))
+                .map_err(|err| EvtxError::record(event_record_id, err))
+        };
+        match rendered {
+            Ok(()) => {
+                data.push(b'\n');
+                items.push(RenderedChunkItem::Record {
+                    event_record_id,
+                    end: data.len(),
+                });
+            }
+            Err(err) => {
+                data.truncate(start);
+                items.push(RenderedChunkItem::Failed(err));
+            }
+        }
+    }
+    RenderedChunk { data, items }
 }
 
 // Stable shim until https://github.com/rust-lang/rust/issues/59359 is merged.
@@ -617,7 +540,8 @@ impl<T: ReadSeek> EvtxParser<T> {
             current_chunk_number: 0,
         }
     }
-    /// Process chunks through `work` and yield one payload per chunk, in chunk order.
+    /// Parse each chunk and turn it into a payload with `f` (a chunk that fails to
+    /// read or parse becomes `on_err(err)`); yields one payload per chunk, in chunk order.
     ///
     /// With the `multithreading` feature, chunks are processed on the rayon pool as a
     /// bounded streaming pipeline: up to `2 * num_threads` chunks are in flight while
@@ -625,23 +549,50 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// the (serial) consumer.
     fn chunk_pipeline<'a, P: Send + 'static>(
         &'a mut self,
-        work: impl Fn(Result<EvtxChunkData>, u64, Arc<ParserSettings>, Bump) -> ChunkBatch<P>
-        + Send
-        + Sync
-        + Clone
-        + 'static,
+        on_err: impl Fn(EvtxError) -> P + Send + Sync + Clone + 'static,
+        f: impl Fn(&mut EvtxChunk<'_>) -> P + Send + Sync + Clone + 'static,
     ) -> impl Iterator<Item = P> + 'a {
         // Retrieve parser settings here, while `self` is immutably borrowed.
         let num_threads = max(self.config.num_threads, 1);
-        let chunk_settings = Arc::clone(&self.config);
+        let settings = Arc::clone(&self.config);
+        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
+        // Parse one chunk into a reused `arena` and build its payload.
+        let work = move |chunk_res: Result<EvtxChunkData>, chunk_id: u64, arena: Bump| {
+            let chunk_data = match chunk_res {
+                Ok(chunk_data) => chunk_data,
+                Err(err) => {
+                    return ChunkBatch {
+                        payload: on_err(err),
+                        arena,
+                    };
+                }
+            };
+            match EvtxChunk::new_with_arena(
+                &chunk_data.data,
+                &chunk_data.header,
+                Arc::clone(&settings),
+                arena,
+                Arc::clone(&program_store),
+            ) {
+                Err(err) => ChunkBatch {
+                    payload: on_err(EvtxError::chunk(chunk_id, err)),
+                    arena: Bump::new(),
+                },
+                Ok(mut chunk) => ChunkBatch {
+                    payload: f(&mut chunk),
+                    arena: chunk.arena,
+                },
+            }
+        };
 
         let max_in_flight = num_threads * 2;
 
         // `self` is mutably borrowed from here on.
         let mut chunks = self.chunks();
-        let mut arena_pool: Vec<Bump> = (0..max_in_flight)
-            .map(|_| Bump::with_capacity(EVTX_CHUNK_SIZE))
-            .collect();
+        // Arenas are created on first use and recycled, so the pool grows to
+        // exactly what is in flight (one when single-threaded).
+        let mut arena_pool: Vec<Bump> = Vec::new();
+        let new_arena = || Bump::with_capacity(EVTX_CHUNK_SIZE);
 
         // `thread::Result` so a panicking `work` propagates to the consumer thread
         // (matching the old `par_iter().collect()` behavior) instead of hitting
@@ -660,8 +611,8 @@ impl<T: ReadSeek> EvtxParser<T> {
                 // Single-threaded: process inline; a cross-thread round-trip per
                 // chunk costs ~3% wall time for no benefit.
                 let chunk_res = chunks.next()?;
-                let arena = arena_pool.pop().unwrap_or_default();
-                let batch = work(chunk_res, next_seq, Arc::clone(&chunk_settings), arena);
+                let arena = arena_pool.pop().unwrap_or_else(new_arena);
+                let batch = work(chunk_res, next_seq, arena);
                 next_seq += 1;
                 arena_pool.push(batch.arena);
                 return Some(batch.payload);
@@ -677,16 +628,15 @@ impl<T: ReadSeek> EvtxParser<T> {
                         exhausted = true;
                         break;
                     };
-                    let arena = arena_pool.pop().unwrap_or_default();
+                    let arena = arena_pool.pop().unwrap_or_else(new_arena);
                     let seq = next_seq;
                     next_seq += 1;
                     in_flight += 1;
                     let tx = tx.clone();
                     let work = work.clone();
-                    let settings = Arc::clone(&chunk_settings);
                     spawn(move || {
                         let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            work(chunk_res, seq, settings, arena)
+                            work(chunk_res, seq, arena)
                         }));
                         // The receiver may be gone if the iterator was dropped.
                         let _ = tx.send((seq, batch));
@@ -724,17 +674,10 @@ impl<T: ReadSeek> EvtxParser<T> {
         &'a mut self,
         f: impl FnMut(Result<EvtxRecord<'_>>) -> Result<U> + Send + Sync + Clone + 'static,
     ) -> impl Iterator<Item = Result<U>> + 'a {
-        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
-        self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
-            process_chunk(
-                chunk_res,
-                chunk_id,
-                settings,
-                arena,
-                Arc::clone(&program_store),
-                f.clone(),
-            )
-        })
+        self.chunk_pipeline(
+            |err| vec![Err(err)],
+            move |chunk| chunk.iter().map(f.clone()).collect(),
+        )
         .flatten()
     }
 
@@ -762,17 +705,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         json: bool,
         record_numbers: bool,
     ) -> impl Iterator<Item = RenderedChunk> + '_ {
-        let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
-        self.chunk_pipeline(move |chunk_res, chunk_id, settings, arena| {
-            render_chunk(
-                chunk_res,
-                chunk_id,
-                settings,
-                arena,
-                Arc::clone(&program_store),
-                json,
-                record_numbers,
-            )
+        let failed = |err| RenderedChunk {
+            data: Vec::new(),
+            items: vec![RenderedChunkItem::Failed(err)],
+        };
+        self.chunk_pipeline(failed, move |chunk| {
+            render_chunk(chunk, json, record_numbers)
         })
     }
 

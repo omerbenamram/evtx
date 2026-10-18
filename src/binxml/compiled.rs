@@ -17,7 +17,8 @@
 use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
-    build_tree_from_binxml_bytes_direct, read_template_definition_header_at,
+    binxml_slice_offset_in, build_tree_from_binxml_bytes_direct,
+    read_template_definition_header_at,
 };
 use crate::binxml::tokens::{single_instance_offset, token};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
@@ -381,6 +382,7 @@ fn compile_xml_template(
         settings.should_indent(),
         false,
     );
+    c.ops.reserve(32);
     if is_root {
         c.lits.extend_from_slice(XML_DECL);
     }
@@ -1392,12 +1394,7 @@ fn preflight_record<'a, P: StoredProgram>(
 ) -> Option<Instance> {
     // Single-instance stream shape (mirrors `read_single_instance_stream`).
     let inst_off = single_instance_offset(bytes)?;
-    let data_start = chunk.data.as_ptr() as usize;
-    let slice_start = bytes.as_ptr() as usize;
-    if slice_start < data_start || slice_start + bytes.len() > data_start + chunk.data.len() {
-        return None;
-    }
-    let stream_offset = slice_start - data_start;
+    let stream_offset = binxml_slice_offset_in(chunk.data, bytes).ok()? as usize;
 
     pf.clear();
     let (instance, end) = pf
@@ -1828,6 +1825,7 @@ fn compile_json_template(
     let root = tree.root_element();
     let root_container = is_data_container_name(root.name.as_str());
     let mut c = JsonCompiler::new(Some(tree), Vec::with_capacity(512), false);
+    c.ops.reserve(32);
     if is_root {
         c.lits.push(b'{');
         c.key_with_suffix_plain(root.name.as_str(), 0);

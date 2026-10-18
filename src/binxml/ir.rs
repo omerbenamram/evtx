@@ -825,7 +825,7 @@ fn tree_has_literal_array(tree: &IrTree<'_>) -> bool {
     false
 }
 
-fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
+pub(crate) fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
     if bytes.is_empty() {
         return Err(EvtxError::FailedToCreateRecordModel("empty BinXML slice"));
     }
