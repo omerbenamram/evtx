@@ -21,6 +21,13 @@ and this project adheres to
   outside that standard (`big5-2003`, `hz`, `mac-cyrillic`, `mac-roman`,
   `pua-mapped-binary`, and OEM pages such as `cp437`) are no longer accepted.
 
+### Fixed
+
+- Preserve bool substitution values other than 0/1 (Windows stores bitmasks in
+  some bool fields) as their raw integer in XML and JSON instead of coercing
+  them to `true`. Bool arrays containing such values render as integer arrays.
+  ([#289](https://github.com/omerbenamram/evtx/issues/289))
+
 ### Security
 
 - Removed the unmaintained `encoding` dependency (RUSTSEC-2021-0153).
