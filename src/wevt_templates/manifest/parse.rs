@@ -617,14 +617,7 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
     let mut cur = off_usize + 12;
 
     for _ in 0..count_usize {
-        if cur + TEMP_HEADER_SIZE > end {
-            return Err(trunc_err(
-                "TEMP header",
-                usize_to_u32(cur),
-                TEMP_HEADER_SIZE,
-                end.saturating_sub(cur),
-            ));
-        }
+        require_len(&crim[..end], cur, TEMP_HEADER_SIZE, "TEMP header")?;
         let temp_sig = read_sig_named(crim, cur, "TEMP signature")?;
         if temp_sig != *b"TEMP" {
             return Err(sig_err(usize_to_u32(cur), b"TEMP", temp_sig));
@@ -765,7 +758,11 @@ fn parse_template_items(
             item_descriptor_count,
         )
     })?;
-    if rel_usize + needed > template.len() {
+    // checked: `rel_usize + needed` can wrap on 32-bit targets.
+    if rel_usize
+        .checked_add(needed)
+        .is_none_or(|end| end > template.len())
+    {
         return Err(trunc_err(
             "template item descriptors",
             template_items_offset_abs,

@@ -10,7 +10,7 @@
 
 use super::error::WevtTemplateExtractError;
 use super::types::{ResourceIdentifier, WevtTemplateResource};
-use crate::utils::bytes;
+use crate::utils::{Utf16LeSlice, bytes};
 
 use goblin::pe::options::{ParseMode, ParseOptions};
 use goblin::pe::resource::{ImageResourceDirectory, ResourceDataEntry, ResourceEntry};
@@ -64,11 +64,8 @@ fn parse_resource_name(rsrc: &[u8], offset: usize) -> Result<String, WevtTemplat
     let buf = rsrc
         .get(start..start + char_count * 2)
         .ok_or(malformed("resource name out of bounds"))?;
-    let chars = buf
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]));
-    char::decode_utf16(chars)
-        .collect::<Result<String, _>>()
+    Utf16LeSlice::new(buf, char_count)
+        .to_string()
         .map_err(|_| WevtTemplateExtractError::InvalidResourceName)
 }
 

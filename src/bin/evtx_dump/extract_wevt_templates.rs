@@ -110,7 +110,6 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let mut writer = evtx::wevt_templates::wevtcache::WevtCacheWriter::create(&output, overwrite)?;
 
     let mut error_count = 0usize;
-    let mut written = 0u32;
 
     for path in files {
         let bytes = match fs::read(&path) {
@@ -143,11 +142,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                 );
                 continue;
             }
-            written = written.saturating_add(1);
         }
     }
 
-    let _ = writer.finish()?;
+    let written = writer.finish()?;
 
     if error_count > 0 {
         bail!("extract-wevt-templates completed with {error_count} error(s)");

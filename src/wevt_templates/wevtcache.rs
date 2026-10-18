@@ -74,17 +74,18 @@ pub enum WevtCacheFileError {
 
 pub type Result<T> = std::result::Result<T, WevtCacheFileError>;
 
+/// Builds the error lazily, so the path is only copied when I/O fails.
 fn io_err(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> WevtCacheFileError {
-    let path = path.to_path_buf();
     move |source| WevtCacheFileError::Io {
         action,
-        path,
+        path: path.to_path_buf(),
         source,
     }
 }
 
 /// Header layout: magic (8) + version (u32 LE) + entry_count (u32 LE).
 const HEADER_SIZE: usize = 16;
+const ENTRY_COUNT_OFFSET: usize = 12;
 /// Entry header layout: kind (u8) + len (u64 LE).
 const ENTRY_HEADER_SIZE: usize = 9;
 
@@ -119,7 +120,8 @@ impl WevtCacheWriter {
     }
 
     pub fn write_crim_blob(&mut self, bytes: &[u8]) -> Result<()> {
-        let mut header = [EntryKind::Crim as u8; ENTRY_HEADER_SIZE];
+        let mut header = [0u8; ENTRY_HEADER_SIZE];
+        header[0] = EntryKind::Crim as u8;
         header[1..].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
         self.file
             .write_all(&header)
@@ -141,7 +143,7 @@ impl WevtCacheWriter {
     pub fn finish(mut self) -> Result<u32> {
         // Patch entry_count into header.
         self.file
-            .seek(SeekFrom::Start(12))
+            .seek(SeekFrom::Start(ENTRY_COUNT_OFFSET as u64))
             .map_err(io_err("seek to entry_count", &self.path))?;
         self.file
             .write_all(&self.count.to_le_bytes())
@@ -175,10 +177,11 @@ impl WevtCacheReader {
             });
         }
 
-        if u32_at(8) != VERSION {
+        let version = u32_at(8);
+        if version != VERSION {
             return Err(WevtCacheFileError::UnsupportedVersion {
                 path: path.to_path_buf(),
-                found: u32_at(8),
+                found: version,
                 expected: VERSION,
             });
         }
@@ -186,7 +189,7 @@ impl WevtCacheReader {
         Ok(Self {
             file,
             path: path.to_path_buf(),
-            remaining: u32_at(12),
+            remaining: u32_at(ENTRY_COUNT_OFFSET),
         })
     }
 
