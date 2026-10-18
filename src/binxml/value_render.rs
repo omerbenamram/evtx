@@ -193,8 +193,12 @@ impl ValueRenderer {
             value_ty::REAL32 => self.write_float(writer, f32::from_le_bytes(le4(bytes))),
             value_ty::REAL64 => self.write_float(writer, f64::from_le_bytes(le8(bytes))),
             value_ty::BOOL => {
-                let raw = i32::from_le_bytes(le4(bytes));
-                self.write_bytes(writer, if raw != 0 { b"true" } else { b"false" })
+                // Mirrors the decoder: non-0/1 values are kept as integers.
+                match i32::from_le_bytes(le4(bytes)) {
+                    0 => self.write_bytes(writer, b"false"),
+                    1 => self.write_bytes(writer, b"true"),
+                    raw => write_int!(self, writer, write_i32, raw),
+                }
             }
             value_ty::BINARY => self.write_hex_bytes_upper(writer, bytes),
             value_ty::GUID => self.write_guid(writer, bytes.try_into().expect("guid size")),

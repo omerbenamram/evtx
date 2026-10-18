@@ -7,7 +7,7 @@ use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use bumpalo::Bump;
 use jiff::Timestamp;
-use log::{trace, warn};
+use log::trace;
 use std::borrow::Cow;
 use std::fmt::{self, Display};
 
@@ -362,22 +362,14 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::Real64Type(f64::from_le_bytes(cursor.array::<8>("f64")?))
             }
 
+            // Windows writes bitmasks into some bool slots; keep any value
+            // other than 0/1 as the integer it is instead of coercing to `true`.
             (BinXmlValueType::BoolType, _) => {
-                let raw = i32::from_le_bytes(cursor.array::<4>("bool")?);
-                let v = match raw {
-                    0 => false,
-                    1 => true,
-                    other => {
-                        warn!(
-                            "invalid boolean value {} at offset {}; treating as {}",
-                            other,
-                            cursor.position(),
-                            other != 0
-                        );
-                        other != 0
-                    }
-                };
-                BinXmlValue::BoolType(v)
+                match i32::from_le_bytes(cursor.array::<4>("bool")?) {
+                    0 => BinXmlValue::BoolType(false),
+                    1 => BinXmlValue::BoolType(true),
+                    raw => BinXmlValue::Int32Type(raw),
+                }
             }
 
             (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(cursor.array::<16>("guid")?),
@@ -536,28 +528,19 @@ impl<'a> BinXmlValue<'a> {
                 BinXmlValue::Real64ArrayType(out)
             }
             (BinXmlValueType::BoolArrayType, Some(sz)) => {
-                let out = cursor.read_sized_slice_aligned_in::<4, _>(
+                let raw = cursor.read_sized_slice_aligned_in::<4, _>(
                     sz,
                     "bool_array",
                     arena,
-                    |off, b| {
-                        let raw = i32::from_le_bytes(*b);
-                        Ok(match raw {
-                            0 => false,
-                            1 => true,
-                            other => {
-                                warn!(
-                                    "invalid boolean value {} at offset {}; treating as {}",
-                                    other,
-                                    off,
-                                    other != 0
-                                );
-                                other != 0
-                            }
-                        })
-                    },
+                    |_off, b| Ok(i32::from_le_bytes(*b)),
                 )?;
-                BinXmlValue::BoolArrayType(out)
+                if raw.iter().all(|&v| v == 0 || v == 1) {
+                    BinXmlValue::BoolArrayType(
+                        arena.alloc_slice_fill_iter(raw.iter().map(|&v| v == 1)),
+                    )
+                } else {
+                    BinXmlValue::Int32ArrayType(raw)
+                }
             }
             (BinXmlValueType::GuidArrayType, Some(sz)) => {
                 let out = cursor.read_sized_slice_aligned_in::<16, _>(
@@ -764,6 +747,44 @@ mod tests {
         assert!(
             message.contains("invalid sequence"),
             "error should describe the failure, got {message}"
+        );
+    }
+
+    #[test]
+    fn irregular_bools_keep_raw_value() {
+        use super::{BinXmlValue, BinXmlValueType};
+        use crate::utils::ByteCursor;
+        use bumpalo::Bump;
+
+        fn decode<'a>(ty: BinXmlValueType, bytes: &'a [u8], bump: &'a Bump) -> BinXmlValue<'a> {
+            let mut cursor = ByteCursor::with_pos(bytes, 0).unwrap();
+            let size = Some(bytes.len() as u16);
+            let ansi = encoding_rs::WINDOWS_1252;
+            BinXmlValue::deserialize_value_type_cursor_in(&ty, &mut cursor, None, size, ansi, bump)
+                .unwrap()
+        }
+        let bump = Bump::new();
+        let le = |vals: &[i32]| {
+            vals.iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            decode(BinXmlValueType::BoolType, &le(&[1]), &bump),
+            BinXmlValue::BoolType(true)
+        );
+        assert_eq!(
+            decode(BinXmlValueType::BoolType, &le(&[16]), &bump),
+            BinXmlValue::Int32Type(16)
+        );
+        assert_eq!(
+            decode(BinXmlValueType::BoolArrayType, &le(&[0, 1]), &bump),
+            BinXmlValue::BoolArrayType(&[false, true])
+        );
+        assert_eq!(
+            decode(BinXmlValueType::BoolArrayType, &le(&[1, -2]), &bump),
+            BinXmlValue::Int32ArrayType(&[1, -2])
         );
     }
 }

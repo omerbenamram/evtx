@@ -110,6 +110,47 @@ fn test_parses_sample_with_irregular_boolean_values() {
     test_full_sample(sample_with_irregular_values(), 3028, 0);
 }
 
+/// Issue #289: bool slots holding values other than 0/1 keep the raw integer.
+#[test]
+fn test_irregular_boolean_values_are_preserved() {
+    let mut parser = EvtxParser::from_path(sample_with_irregular_values()).unwrap();
+    let xml = parser
+        .records()
+        .map(Result::unwrap)
+        .find(|r| r.event_record_id == 141)
+        .unwrap();
+    assert!(
+        xml.data.contains(r#"<Data Name="IsMachine">16</Data>"#),
+        "{}",
+        xml.data
+    );
+
+    let json = parser
+        .records_json_value()
+        .map(Result::unwrap)
+        .find(|r| r.event_record_id == 148)
+        .unwrap();
+    let data = &json.data["Event"]["EventData"];
+    assert_eq!(data["IsMachine"], true);
+    assert_eq!(data["IsBackgroundProcessing"], 65536);
+    assert_eq!(data["IsAsyncProcessing"], 8);
+
+    // The CLI renders through the compiled raw-bytes path, which formats
+    // values without decoding them first; check it agrees.
+    let xml: Vec<u8> = parser
+        .chunks_xml_bytes(false)
+        .flat_map(|c| c.data)
+        .collect();
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains(r#"<Data Name="IsMachine">16</Data>"#));
+    let json: Vec<u8> = parser
+        .chunks_json_bytes(false)
+        .flat_map(|c| c.data)
+        .collect();
+    let json = String::from_utf8(json).unwrap();
+    assert!(json.contains(r#""IsBackgroundProcessing":65536"#));
+}
+
 #[test]
 fn test_dirty_sample_with_a_bad_checksum() {
     test_full_sample(sample_with_a_bad_checksum(), 1910, 4)
