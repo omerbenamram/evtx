@@ -134,6 +134,21 @@ fn test_irregular_boolean_values_are_preserved() {
     assert_eq!(data["IsMachine"], true);
     assert_eq!(data["IsBackgroundProcessing"], 65536);
     assert_eq!(data["IsAsyncProcessing"], 8);
+
+    // The CLI renders through the compiled raw-bytes path, which formats
+    // values without decoding them first; check it agrees.
+    let xml: Vec<u8> = parser
+        .chunks_xml_bytes(false)
+        .flat_map(|c| c.data)
+        .collect();
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains(r#"<Data Name="IsMachine">16</Data>"#));
+    let json: Vec<u8> = parser
+        .chunks_json_bytes(false)
+        .flat_map(|c| c.data)
+        .collect();
+    let json = String::from_utf8(json).unwrap();
+    assert!(json.contains(r#""IsBackgroundProcessing":65536"#));
 }
 
 #[test]
