@@ -12,16 +12,30 @@ use std::fmt::{self, Display};
 
 /// Decode ANSI bytes. A leading BOM stays data, and invalid sequences error
 /// instead of becoming U+FFFD.
-pub(crate) fn decode_ansi_strict<'a>(
-    ansi_codec: AnsiCodec,
-    bytes: &'a [u8],
-) -> Result<Cow<'a, str>> {
+fn decode_ansi_strict<'a>(ansi_codec: AnsiCodec, bytes: &'a [u8]) -> Result<Cow<'a, str>> {
     ansi_codec
         .decode_without_bom_handling_and_without_replacement(bytes)
         .ok_or_else(|| DeserializationError::AnsiDecodeError {
             encoding_used: ansi_codec.name(),
             inner_message: "invalid sequence".to_owned(),
         })
+}
+
+/// [`decode_ansi_strict`] with embedded NULs dropped (historical behavior).
+/// Copies into `arena` only when there is a NUL to drop.
+pub(crate) fn decode_ansi_value<'a>(
+    ansi_codec: AnsiCodec,
+    bytes: &'a [u8],
+    arena: &'a Bump,
+) -> Result<Cow<'a, str>> {
+    let bytes = if bytes.contains(&0) {
+        let mut filtered = bumpalo::collections::Vec::with_capacity_in(bytes.len(), arena);
+        filtered.extend(bytes.iter().copied().filter(|&b| b != 0));
+        filtered.into_bump_slice()
+    } else {
+        bytes
+    };
+    decode_ansi_strict(ansi_codec, bytes)
 }
 
 /// Borrowed SID bytes (used to avoid heap allocation in the hot path).
@@ -324,19 +338,9 @@ impl<'a> BinXmlValue<'a> {
             }
 
             (BinXmlValueType::AnsiStringType, Some(sz)) => {
-                let sz_bytes = usize::from(sz);
-                let raw = cursor.take_bytes(sz_bytes, "<ansi_string_value>")?;
-                // Filter embedded NUL bytes (historical behavior).
-                let mut filtered = bumpalo::collections::Vec::with_capacity_in(sz_bytes, arena);
-                for &b in raw {
-                    if b != 0 {
-                        filtered.push(b);
-                    }
-                }
-                let filtered = filtered.into_bump_slice();
-                let decoded = decode_ansi_strict(ansi_codec, filtered)?;
-                // ASCII comes back borrowed from `filtered`, which already lives in the arena.
-                let text = match decoded {
+                let raw = cursor.take_bytes(usize::from(sz), "<ansi_string_value>")?;
+                // Borrowed text points into the chunk data or the arena.
+                let text = match decode_ansi_value(ansi_codec, raw, arena)? {
                     Cow::Borrowed(text) => text,
                     Cow::Owned(text) => arena.alloc_str(&text),
                 };
@@ -679,7 +683,16 @@ impl<'a> BinXmlValue<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_ansi_strict;
+    use super::{decode_ansi_strict, decode_ansi_value};
+    use std::borrow::Cow;
+
+    #[test]
+    fn ansi_value_drops_nuls_and_borrows_without_them() {
+        let (codec, arena) = (encoding_rs::WINDOWS_1252, bumpalo::Bump::new());
+        let plain = decode_ansi_value(codec, b"abc", &arena).unwrap();
+        assert!(matches!(plain, Cow::Borrowed("abc")));
+        assert_eq!(decode_ansi_value(codec, b"a\0b\0", &arena).unwrap(), "ab");
+    }
 
     /// WHATWG windows-1252 mappings for bytes 0x80..=0x9F.
     const WINDOWS_1252_C1: [char; 32] = [

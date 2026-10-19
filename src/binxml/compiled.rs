@@ -22,7 +22,7 @@ use crate::binxml::ir::{
 };
 use crate::binxml::tokens::{ends_stream, single_instance_offset};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
-use crate::binxml::value_variant::{BinXmlValue, decode_ansi_strict, value_ty};
+use crate::binxml::value_variant::{BinXmlValue, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
@@ -983,6 +983,8 @@ pub(crate) struct Preflight {
     slots: Vec<RawSlot>,
     nested: Vec<Instance>,
     ansi: Vec<String>,
+    /// NUL-filter scratch for ANSI decoding, reset before every value.
+    ansi_scratch: bumpalo::Bump,
     /// Per string-array slot: `(start, count)` into `array_items`.
     arrays: Vec<(u32, u32)>,
     /// Flat `(offset, byte len)` spans of string-array items (NUL-free).
@@ -1200,14 +1202,13 @@ impl Preflight {
                 aux: NO_AUX,
             };
             if ty == value_ty::ANSI_STRING && len > 0 {
-                // Decode ANSI now so the executor stays infallible. Mirrors
-                // `deserialize_value_type_cursor_in` (NUL filter + strict).
-                let raw = &data[off..end];
-                let filtered: Vec<u8> = raw.iter().copied().filter(|&b| b != 0).collect();
-                let decoded = decode_ansi_strict(chunk.settings.get_ansi_codec(), &filtered)
-                    .map_err(|_| PreflightBail)?;
+                // Decode ANSI now so the executor stays infallible.
+                let codec = chunk.settings.get_ansi_codec();
+                self.ansi_scratch.reset();
+                let decoded =
+                    decode_ansi_value(codec, &data[off..end], &self.ansi_scratch)?.into_owned();
                 slot.aux = self.ansi.len() as u32;
-                self.ansi.push(decoded.into_owned());
+                self.ansi.push(decoded);
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
