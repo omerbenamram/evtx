@@ -1116,7 +1116,9 @@ pub(crate) struct Instance<S = SlotRange> {
 pub(crate) struct Preflight {
     slots: Vec<RawSlot>,
     nested: Vec<Instance>,
-    ansi: Vec<String>,
+    /// Decoded ANSI values, concatenated; `ansi_spans[i]` is value `i`.
+    ansi: String,
+    ansi_spans: Vec<(u32, u32)>,
     /// NUL-filter scratch for ANSI decoding, reset before every value.
     ansi_scratch: bumpalo::Bump,
     /// Per string-array slot: `(start, count)` into `array_items`.
@@ -1202,10 +1204,16 @@ impl From<EvtxError> for PreflightBail {
 }
 
 impl Preflight {
+    fn ansi(&self, i: usize) -> &str {
+        let (start, end) = self.ansi_spans[i];
+        &self.ansi[start as usize..end as usize]
+    }
+
     fn clear(&mut self) {
         self.slots.clear();
         self.nested.clear();
         self.ansi.clear();
+        self.ansi_spans.clear();
         self.arrays.clear();
         self.array_items.clear();
     }
@@ -1226,7 +1234,7 @@ impl Preflight {
             // The decoded string is empty when sized 0 or NUL-led (mirrors
             // `utf16_by_char_count` truncation).
             value_ty::UTF16_STRING => s.len == 0 || s.bytes(data).starts_with(&[0, 0]),
-            value_ty::ANSI_STRING => s.ansi_idx().is_none_or(|i| self.ansi[i].is_empty()),
+            value_ty::ANSI_STRING => s.ansi_idx().is_none_or(|i| self.ansi(i).is_empty()),
             value_ty::BINARY | value_ty::BIN_XML => s.len == 0,
             _ => false,
         }
@@ -1339,10 +1347,11 @@ impl Preflight {
                 // Decode ANSI now so the executor stays infallible.
                 let codec = chunk.settings.get_ansi_codec();
                 self.ansi_scratch.reset();
-                let decoded =
-                    decode_ansi_value(codec, &data[off..end], &self.ansi_scratch)?.into_owned();
-                slot.aux = self.ansi.len() as u32;
-                self.ansi.push(decoded);
+                let decoded = decode_ansi_value(codec, &data[off..end], &self.ansi_scratch)?;
+                slot.aux = self.ansi_spans.len() as u32;
+                let start = self.ansi.len() as u32;
+                self.ansi.push_str(&decoded);
+                self.ansi_spans.push((start, self.ansi.len() as u32));
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
@@ -2412,7 +2421,7 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
             out,
             s.ty,
             s.bytes(self.data),
-            s.ansi_idx().map(|i| self.pf.ansi[i].as_str()),
+            s.ansi_idx().map(|i| self.pf.ansi(i)),
             mode,
         )
     }
