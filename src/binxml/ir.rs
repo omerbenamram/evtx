@@ -74,7 +74,7 @@ use crate::binxml::array_expand::{
 };
 use crate::binxml::name::NAME_LINK_SIZE;
 use crate::binxml::tokens::{
-    BinXmlTemplateValues, Stream, TemplateHeader, TokenSink, read_template_header,
+    BinXmlTemplateValues, Stream, TemplateHeader, TokenSink, ends_stream, read_template_header,
     read_template_values_cursor, walk_tokens,
 };
 use crate::binxml::value_variant::BinXmlValue;
@@ -200,16 +200,9 @@ impl<'a> IrTemplateCache<'a> {
         }
         let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
 
-        let parsed = (|| {
-            let data_start = template_def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
-            let data_end = data_start.checked_add(header.data_size as usize).ok_or(
-                EvtxError::FailedToCreateRecordModel("template data size overflow"),
-            )?;
-            let bytes = chunk.data.get(data_start..data_end).ok_or(
-                EvtxError::FailedToCreateRecordModel("template data out of bounds"),
-            )?;
+        let parsed = template_body_at(chunk.data, template_def_offset, &header).and_then(|bytes| {
             build_template_in(Stream::chunk(chunk, self.arena), bytes, self, depth)
-        })();
+        });
         // If the embedded chunk template is corrupt/missing, optionally fall back to an
         // offline WEVT cache (provider resources) when configured.
         #[cfg(feature = "wevt_templates")]
@@ -743,10 +736,10 @@ fn read_single_instance_stream<'a>(
     let template_ref =
         read_template_values_cursor(&mut cursor, chunk.settings.get_ansi_codec(), &chunk.arena)?;
 
-    // Anything after the instance other than EOF (or end-of-stream) is a shape we
-    // don't handle here.
+    // Anything after the instance other than EOF is a shape we don't handle
+    // here. An instance that read past the record is accepted.
     let consumed = cursor.position() as usize - stream_offset;
-    if consumed < bytes.len() && bytes[consumed] != 0x00 {
+    if ends_stream(bytes, consumed) == Some(false) {
         return Ok(None);
     }
     Ok(Some(template_ref))
@@ -857,6 +850,23 @@ pub(crate) fn read_template_definition_header_at(
         data,
         offset as usize,
     )?)?)
+}
+
+/// The body (the bytes after the header) of the template definition at
+/// `offset` in `data`.
+pub(crate) fn template_body_at<'d>(
+    data: &'d [u8],
+    offset: u32,
+    header: &TemplateHeader,
+) -> Result<&'d [u8]> {
+    let start = offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
+    let end = start.checked_add(header.data_size as usize).ok_or(
+        EvtxError::FailedToCreateRecordModel("template data size overflow"),
+    )?;
+    data.get(start..end)
+        .ok_or(EvtxError::FailedToCreateRecordModel(
+            "template data out of bounds",
+        ))
 }
 
 /// Deep-clone a template element into the record arena while resolving placeholders.

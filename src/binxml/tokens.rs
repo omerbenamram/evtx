@@ -225,6 +225,15 @@ pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
     }
 }
 
+/// Whether a single-instance `stream` whose instance parsed `consumed` bytes
+/// ends there: the rest is empty or starts with EOF. `None` when the instance
+/// read past the end of `stream`.
+pub(crate) fn ends_stream(stream: &[u8], consumed: usize) -> Option<bool> {
+    stream
+        .get(consumed..)
+        .map(|rest| matches!(rest, [] | [token::EOF, ..]))
+}
+
 /// Read a `TemplateInstance` and parse its substitution values directly.
 ///
 /// This is used by the direct IR builder path.

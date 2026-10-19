@@ -18,9 +18,9 @@ use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
     binxml_slice_offset_in, build_tree_from_binxml_bytes_direct,
-    read_template_definition_header_at,
+    read_template_definition_header_at, template_body_at,
 };
-use crate::binxml::tokens::{single_instance_offset, token};
+use crate::binxml::tokens::{ends_stream, single_instance_offset};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, decode_ansi_strict};
 use crate::err::{EvtxError, Result};
@@ -1082,12 +1082,6 @@ const MAX_FAST_LANE_NESTING: usize = 8;
 /// claim up to `u32::MAX`; nothing legitimate comes close).
 const MAX_SUBSTITUTIONS: usize = 4096;
 
-/// `consumed` bytes of `stream` were parsed as a nested/record instance: the
-/// remainder must be empty or start with EOF (the legacy trailer rule).
-fn ends_stream(stream: &[u8], consumed: usize) -> bool {
-    matches!(stream.get(consumed..), Some([]) | Some([token::EOF, ..]))
-}
-
 struct PreflightBail;
 
 impl From<crate::err::DeserializationError> for PreflightBail {
@@ -1303,7 +1297,7 @@ impl Preflight {
                 false,
             )?;
             // The nested instance must span its whole payload (allow EOF pad).
-            if !ends_stream(frag, nend - s.off as usize) {
+            if ends_stream(frag, nend - s.off as usize) != Some(true) {
                 return Err(PreflightBail);
             }
             if self.nested.len() >= usize::from(u16::MAX) {
@@ -1393,10 +1387,7 @@ fn template_content_key(
     hasher: &ahash::RandomState,
 ) -> Option<([u8; 16], u32, u64)> {
     let header = read_template_definition_header_at(chunk.data, def_offset).ok()?;
-    let body_start = (def_offset as usize).checked_add(TEMPLATE_DEFINITION_HEADER_SIZE)?;
-    let body = chunk
-        .data
-        .get(body_start..body_start.checked_add(header.data_size as usize)?)?;
+    let body = template_body_at(chunk.data, def_offset, &header).ok()?;
     Some((header.guid, header.data_size, hasher.hash_one(body)))
 }
 
@@ -1433,8 +1424,9 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     else {
         return false;
     };
-    // Anything after the instance other than EOF (0x00) is unhandled here.
-    if !ends_stream(bytes, end - stream_offset) {
+    // Anything after the instance other than EOF is unhandled here, and so
+    // is an instance that read past the record (the regular path accepts it).
+    if ends_stream(bytes, end - stream_offset) != Some(true) {
         return false;
     }
     let values = RawValues {
