@@ -4,10 +4,11 @@ extern crate criterion;
 extern crate evtx;
 
 use bumpalo::Bump;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box};
+use criterion::{BenchmarkId, Criterion, Throughput};
 use evtx::Utf16LeSlice;
 use evtx::binxml::bench::write_json_text_content;
 use evtx::model::ir::{IrArena, Node, Text};
+use std::hint::black_box;
 use utf16_simd::max_escaped_len;
 
 struct Case {

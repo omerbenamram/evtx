@@ -6,12 +6,11 @@ mod imp {
     use std::io::{self, Write};
     use std::path::PathBuf;
 
-    fn parse_args() -> (PathBuf, usize, usize, bool) {
+    fn parse_args() -> (PathBuf, usize, usize) {
         let mut args = env::args().skip(1);
         let mut path = PathBuf::from("samples/security_big_sample.evtx");
         let mut loops: usize = 1;
         let mut threads: usize = 1;
-        let mut stats = false;
 
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -30,18 +29,15 @@ mod imp {
                         threads = v.parse().unwrap_or(threads);
                     }
                 }
-                "--stats" => {
-                    stats = true;
-                }
                 _ => {}
             }
         }
 
-        (path, loops, threads, stats)
+        (path, loops, threads)
     }
 
     pub fn run() -> Result<(), Box<dyn std::error::Error>> {
-        let (path, loops, threads, want_stats) = parse_args();
+        let (path, loops, threads) = parse_args();
         let mut sink = io::sink();
 
         for _ in 0..loops {
@@ -64,10 +60,6 @@ mod imp {
                     }
                 }
             }
-        }
-
-        if want_stats {
-            eprintln!("stats requested, but perf counters have been removed");
         }
 
         Ok(())

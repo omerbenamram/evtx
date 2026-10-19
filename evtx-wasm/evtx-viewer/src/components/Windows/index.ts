@@ -6,5 +6,4 @@ export { Popover, Tooltip, type PopoverAnchor } from "./Popover";
 export { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 export { SidebarHeader } from "./SidebarHeader";
 export { Input, Select, SearchContainer, SearchInput } from "./SearchBox";
-export { SelectableRow } from "./SelectableRow";
 export { ProgressBar } from "./ProgressBar";
