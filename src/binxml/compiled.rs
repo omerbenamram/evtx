@@ -3415,4 +3415,33 @@ mod tests {
         };
         assert!(walk_tokens(src, 0, body.len(), true, &mut refs).is_err());
     }
+
+    /// Name offsets are absolute, so the same body bytes at another offset
+    /// share a key only if no name moves into or out of the body.
+    #[test]
+    fn name_refs_key_rejects_moved_bodies() {
+        // One string-table entry at 30: link, length 1, "A".
+        let mut data = [0u8; 40];
+        data[36] = 1;
+        data[38] = b'A';
+        let hasher = ahash::RandomState::new();
+        let start = 100 + TEMPLATE_DEFINITION_HEADER_SIZE;
+        let refs = |inside| NameRefs {
+            body: start..start + 16,
+            inside,
+            outside: vec![30],
+        };
+        let at_100 = refs(false).key(&data, 100, &hasher);
+        assert!(matches!(at_100, Some((_, None))));
+        assert!(matches!(
+            refs(true).key(&data, 100, &hasher),
+            Some((_, Some(100)))
+        ));
+        // Moved, nothing crosses the body boundary: same key.
+        assert_eq!(refs(false).key(&data, 200, &hasher), at_100);
+        // A name was inside the old body.
+        assert_eq!(refs(true).key(&data, 200, &hasher), None);
+        // The outside name lands inside the moved body (24..40).
+        assert_eq!(refs(false).key(&data, 0, &hasher), None);
+    }
 }

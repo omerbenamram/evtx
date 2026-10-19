@@ -250,17 +250,36 @@ fn test_shared_template_names_do_not_leak_across_chunks() {
     let mut swapped = bytes.clone();
     swapped[0x1000..0x1000 + 2 * CHUNK].rotate_left(CHUNK);
 
-    let by_id = |bytes: Vec<u8>| {
-        let mut parser = EvtxParser::from_buffer(bytes)
+    let parser = |bytes: &[u8]| {
+        EvtxParser::from_buffer(bytes.to_vec())
             .unwrap()
-            .with_configuration(ParserSettings::new().num_threads(1));
-        parser
+            .with_configuration(ParserSettings::new().num_threads(1))
+    };
+    // Records API (validated lane).
+    let by_id = |bytes: &[u8]| {
+        parser(bytes)
             .records_json()
             .filter_map(Result::ok)
             .map(|r| (r.event_record_id, r.data))
             .collect::<std::collections::BTreeMap<_, _>>()
     };
-    let (normal, swapped) = (by_id(bytes), by_id(swapped));
+    let normal = by_id(&bytes);
     assert!(normal.values().any(|r| r.contains("Keyɷords")));
-    assert_eq!(normal, swapped);
+    assert_eq!(normal, by_id(&swapped));
+
+    // CLI chunk lane (raw bytes): chunk 0 and 1 trade places.
+    for json in [true, false] {
+        let chunks = |bytes: &[u8]| {
+            let mut parser = parser(bytes);
+            let chunks: Vec<_> = if json {
+                parser.chunks_json_bytes(false).map(|c| c.data).collect()
+            } else {
+                parser.chunks_xml_bytes(false).map(|c| c.data).collect()
+            };
+            chunks
+        };
+        let mut moved = chunks(&swapped);
+        moved.swap(0, 1);
+        assert_eq!(chunks(&bytes), moved, "json: {json}");
+    }
 }
