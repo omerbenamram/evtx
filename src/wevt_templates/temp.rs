@@ -17,16 +17,13 @@ use super::types::{WevtTempTemplateHeader, WevtTempTemplateRef};
 pub fn extract_temp_templates_from_wevt_blob(
     blob: &[u8],
 ) -> Result<Vec<WevtTempTemplateRef>, super::manifest::WevtManifestError> {
-    let mut out = Vec::new();
-
     let manifest = super::manifest::CrimManifest::parse(blob)?;
-
-    for provider in &manifest.providers {
-        let Some(ttbl) = provider.wevt.elements.templates.as_ref() else {
-            continue;
-        };
-        for tpl in &ttbl.templates {
-            out.push(WevtTempTemplateRef {
+    Ok(manifest
+        .providers
+        .iter()
+        .filter_map(|p| p.wevt.elements.templates.as_ref())
+        .flat_map(|ttbl| {
+            ttbl.templates.iter().map(|tpl| WevtTempTemplateRef {
                 ttbl_offset: ttbl.offset,
                 temp_offset: tpl.offset,
                 temp_size: tpl.size,
@@ -37,9 +34,7 @@ pub fn extract_temp_templates_from_wevt_blob(
                     event_type: tpl.event_type,
                     guid: tpl.guid.clone(),
                 },
-            });
-        }
-    }
-
-    Ok(out)
+            })
+        })
+        .collect())
 }

@@ -43,11 +43,6 @@ pub(crate) fn read_array<const N: usize>(buf: &[u8], offset: usize) -> Option<[u
     Some(bytes)
 }
 
-/// Read a single byte at `offset`.
-pub(crate) fn read_u8(buf: &[u8], offset: usize) -> Option<u8> {
-    buf.get(offset).copied()
-}
-
 /// Read a 4-byte signature at `offset` (e.g. `b\"ElfChnk\\0\"[..4]` style).
 #[cfg(feature = "wevt_templates")]
 pub(crate) fn read_sig(buf: &[u8], offset: usize) -> Option<[u8; 4]> {

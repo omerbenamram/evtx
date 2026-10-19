@@ -18,6 +18,9 @@
 
 pub mod manifest;
 
+/// `TEMP` layout: a fixed 40-byte header, then the BinXML fragment.
+pub(crate) const TEMP_HEADER_SIZE: usize = 40;
+
 mod cache;
 mod error;
 mod extract;

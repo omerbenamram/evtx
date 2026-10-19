@@ -12,9 +12,8 @@ use crate::binxml::ir::{build_wevt_template_definition_ir, instantiate_template_
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{IrTree, TemplateValue};
-
-// TEMP layout: BinXML fragment starts at offset 40.
-const TEMP_BINXML_OFFSET: usize = 40;
+use crate::wevt_templates::TEMP_HEADER_SIZE;
+use crate::wevt_templates::manifest::TemplateDefinition;
 
 /// Render a `TEMP` entry to an XML string (with `{sub:N}` placeholders for substitutions).
 ///
@@ -23,12 +22,7 @@ const TEMP_BINXML_OFFSET: usize = 40;
 ///
 /// [`extract_temp_templates_from_wevt_blob`]: crate::wevt_templates::extract_temp_templates_from_wevt_blob
 pub fn render_temp_to_xml(temp_bytes: &[u8], ansi_codec: AnsiCodec) -> Result<String> {
-    let binxml = temp_binxml_fragment(temp_bytes)?;
-    let bump = Bump::new();
-    let template = build_wevt_template_definition_ir(binxml, ansi_codec, &bump)?;
-    let values = placeholder_values(&template, None, &bump);
-    let instantiated = instantiate_template_definition_ir(&template, &values, &bump)?;
-    render_ir_xml(&instantiated, ansi_codec)
+    render_binxml_placeholders(temp_binxml_fragment(temp_bytes)?, None, ansi_codec)
 }
 
 /// Render a `TEMP` entry to an XML string, applying typed substitution values.
@@ -43,37 +37,30 @@ pub fn render_temp_to_xml_with_values<'a>(
     bump: &'a Bump,
 ) -> Result<String> {
     let binxml = temp_binxml_fragment(temp_bytes)?;
-    let template = build_wevt_template_definition_ir(binxml, ansi_codec, bump)?;
-    let values = template_values_from_binxml_values(substitution_values);
-    let instantiated = instantiate_template_definition_ir(&template, &values, bump)?;
-    render_ir_xml(&instantiated, ansi_codec)
+    render_binxml_with_values(binxml, substitution_values, ansi_codec, bump)
 }
 
 fn temp_binxml_fragment(temp_bytes: &[u8]) -> Result<&[u8]> {
-    temp_bytes.get(TEMP_BINXML_OFFSET..).ok_or_else(|| {
+    temp_bytes.get(TEMP_HEADER_SIZE..).ok_or_else(|| {
         EvtxError::calculation_error(format!(
             "TEMP too small to contain BinXML fragment header (len={}, need >= {})",
             temp_bytes.len(),
-            TEMP_BINXML_OFFSET
+            TEMP_HEADER_SIZE
         ))
     })
 }
 
 /// Render a parsed template definition to XML (with `{sub:idx[:name]}` placeholders).
 pub fn render_template_definition_to_xml(
-    template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
+    template: &TemplateDefinition<'_>,
     ansi_codec: AnsiCodec,
 ) -> Result<String> {
-    let bump = Bump::new();
-    let ir = build_wevt_template_definition_ir(template.binxml, ansi_codec, &bump)?;
     let names = template
         .items
         .iter()
         .map(|item| item.name.clone())
         .collect::<Vec<_>>();
-    let values = placeholder_values(&ir, Some(&names), &bump);
-    let instantiated = instantiate_template_definition_ir(&ir, &values, &bump)?;
-    render_ir_xml(&instantiated, ansi_codec)
+    render_binxml_placeholders(template.binxml, Some(&names), ansi_codec)
 }
 
 /// Render a parsed template definition to XML, applying typed substitution values.
@@ -82,21 +69,46 @@ pub fn render_template_definition_to_xml(
 /// template IR. Callers that already have an EVTX record/chunk context can pass
 /// `&record.chunk.arena` to avoid copying substitution values.
 pub fn render_template_definition_to_xml_with_values<'a>(
-    template: &crate::wevt_templates::manifest::TemplateDefinition<'_>,
+    template: &TemplateDefinition<'_>,
     substitution_values: &[BinXmlValue<'a>],
     ansi_codec: AnsiCodec,
     bump: &'a Bump,
 ) -> Result<String> {
-    let ir = build_wevt_template_definition_ir(template.binxml, ansi_codec, bump)?;
-    let values = template_values_from_binxml_values(substitution_values);
-    let instantiated = instantiate_template_definition_ir(&ir, &values, bump)?;
-    render_ir_xml(&instantiated, ansi_codec)
+    render_binxml_with_values(template.binxml, substitution_values, ansi_codec, bump)
 }
 
-fn render_ir_xml(tree: &IrTree<'_>, ansi_codec: AnsiCodec) -> Result<String> {
+fn render_binxml_placeholders(
+    binxml: &[u8],
+    names: Option<&[Option<String>]>,
+    ansi_codec: AnsiCodec,
+) -> Result<String> {
+    let bump = Bump::new();
+    let ir = build_wevt_template_definition_ir(binxml, ansi_codec, &bump)?;
+    let values = placeholder_values(&ir, names, &bump);
+    render_instantiated(&ir, &values, ansi_codec, &bump)
+}
+
+fn render_binxml_with_values<'a>(
+    binxml: &[u8],
+    substitution_values: &[BinXmlValue<'a>],
+    ansi_codec: AnsiCodec,
+    bump: &'a Bump,
+) -> Result<String> {
+    let ir = build_wevt_template_definition_ir(binxml, ansi_codec, bump)?;
+    let values = template_values_from_binxml_values(substitution_values);
+    render_instantiated(&ir, &values, ansi_codec, bump)
+}
+
+fn render_instantiated<'a>(
+    ir: &IrTree<'a>,
+    values: &[TemplateValue<'a>],
+    ansi_codec: AnsiCodec,
+    bump: &'a Bump,
+) -> Result<String> {
+    let instantiated = instantiate_template_definition_ir(ir, values, bump)?;
     let settings = ParserSettings::default().ansi_codec(ansi_codec);
     let mut out = Vec::new();
-    crate::binxml::compiled::render_tree_xml(tree, &settings, &mut out)?;
+    crate::binxml::compiled::render_tree_xml(&instantiated, &settings, &mut out)?;
     String::from_utf8(out).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
