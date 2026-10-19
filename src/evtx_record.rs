@@ -1,7 +1,8 @@
 use crate::EvtxChunk;
+use crate::binxml::BinXmlTemplateValues;
 use crate::binxml::ir::RecordContent;
+use crate::binxml::tokens::{Stream, TokenSink, walk_tokens};
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
-use crate::utils::ByteCursor;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
 
@@ -175,120 +176,24 @@ impl<'a> EvtxRecord<'a> {
     ///
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
     /// values without building a legacy token vector.
-    pub fn template_instances(&self) -> Result<Vec<crate::binxml::BinXmlTemplateValues<'a>>> {
-        use crate::binxml::name::BinXmlNameEncoding;
-        use crate::binxml::tokens::{
-            read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
-            read_open_start_element_cursor, read_processing_instruction_data_cursor,
-            read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
-            read_template_values_cursor,
-        };
-
-        let ansi_codec = self.chunk.settings.get_ansi_codec();
-        let mut out: Vec<crate::binxml::BinXmlTemplateValues<'a>> = Vec::new();
-
-        let mut cursor = ByteCursor::with_pos(self.chunk.data, self.binxml_offset as usize)?;
-        let mut data_read: u32 = 0;
-        let data_size = self.binxml_size;
-        let mut eof = false;
-
-        while !eof && data_read < data_size {
-            let start = cursor.position();
-            let token_byte = cursor.u8()?;
-
-            match token_byte {
-                0x00 => {
-                    eof = true;
-                }
-                0x0c => {
-                    let template = read_template_values_cursor(
-                        &mut cursor,
-                        Some(self.chunk),
-                        ansi_codec,
-                        &self.chunk.arena,
-                    )?;
-                    out.push(template);
-                }
-                0x01 => {
-                    let _ = read_open_start_element_cursor(
-                        &mut cursor,
-                        false,
-                        false,
-                        BinXmlNameEncoding::Offset,
-                    )?;
-                }
-                0x41 => {
-                    let _ = read_open_start_element_cursor(
-                        &mut cursor,
-                        true,
-                        false,
-                        BinXmlNameEncoding::Offset,
-                    )?;
-                }
-                0x02..=0x04 => {
-                    // Structural tokens; no payload.
-                }
-                0x05 | 0x45 => {
-                    let _ = crate::binxml::value_variant::BinXmlValue::from_binxml_cursor_in(
-                        &mut cursor,
-                        Some(self.chunk),
-                        None,
-                        ansi_codec,
-                        &self.chunk.arena,
-                    )?;
-                }
-                0x06 | 0x46 => {
-                    let _ = read_attribute_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
-                }
-                0x09 | 0x49 => {
-                    let _ = read_entity_ref_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
-                }
-                0x0a => {
-                    let _ = read_processing_instruction_target_cursor(
-                        &mut cursor,
-                        BinXmlNameEncoding::Offset,
-                    )?;
-                }
-                0x0b => {
-                    let _ = read_processing_instruction_data_cursor(&mut cursor)?;
-                }
-                0x0d => {
-                    let _ = read_substitution_descriptor_cursor(&mut cursor, false)?;
-                }
-                0x0e => {
-                    let _ = read_substitution_descriptor_cursor(&mut cursor, true)?;
-                }
-                0x0f => {
-                    let _ = read_fragment_header_cursor(&mut cursor)?;
-                }
-                0x07 | 0x47 => {
-                    return Err(DeserializationError::UnimplementedToken {
-                        name: "CDataSection",
-                        offset: cursor.position(),
-                    }
-                    .into());
-                }
-                0x08 | 0x48 => {
-                    return Err(DeserializationError::UnimplementedToken {
-                        name: "CharReference",
-                        offset: cursor.position(),
-                    }
-                    .into());
-                }
-                _ => {
-                    return Err(DeserializationError::InvalidToken {
-                        value: token_byte,
-                        offset: cursor.position(),
-                    }
-                    .into());
-                }
+    pub fn template_instances(&self) -> Result<Vec<BinXmlTemplateValues<'a>>> {
+        struct Instances<'a>(Vec<BinXmlTemplateValues<'a>>);
+        impl<'a> TokenSink<'a> for Instances<'a> {
+            fn template_instance(&mut self, template: BinXmlTemplateValues<'a>) -> Result<()> {
+                self.0.push(template);
+                Ok(())
             }
-
-            let total_read = cursor.position() - start;
-            data_read = data_read.saturating_add(total_read as u32);
         }
 
-        Ok(out)
+        let mut out = Instances(Vec::new());
+        walk_tokens(
+            Stream::chunk(self.chunk, &self.chunk.arena),
+            self.binxml_offset as usize,
+            self.binxml_size as usize,
+            false,
+            &mut out,
+        )?;
+        Ok(out.0)
     }
 }
 
@@ -350,7 +255,6 @@ mod validated_content_tests {
     #[test]
     fn rendering_reuses_validated_fragments() {
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
-        use crate::binxml::value_variant::BinXmlValueType;
         use crate::model::ir::{Element, IrArena, IrTree, Name, Node, Placeholder, Text};
         use std::{mem::ManuallyDrop, rc::Rc};
 
@@ -362,7 +266,6 @@ mod validated_content_tests {
         let mut root = Element::new_in(Name::new("Root"), bump);
         root.push_child(Node::Placeholder(Placeholder {
             id: 0,
-            value_type: BinXmlValueType::BinXmlType,
             optional: false,
         }));
         let root = template.new_node(root);
@@ -406,7 +309,6 @@ mod validated_content_tests {
             RenderCaches, render_tree_json, render_tree_xml, try_render_validated,
         };
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
-        use crate::binxml::value_variant::BinXmlValueType;
         use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
         use crate::utils::Utf16LeSlice;
         use std::{mem::ManuallyDrop, rc::Rc};
@@ -420,7 +322,6 @@ mod validated_content_tests {
         let mut root = Element::new_in(Name::new("EventData"), bump);
         let slot = Node::Placeholder(Placeholder {
             id: 0,
-            value_type: BinXmlValueType::StringArrayType,
             optional: false,
         });
         // The same array is used in an attribute, ordinary text, and a Data

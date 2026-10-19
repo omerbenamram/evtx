@@ -10,7 +10,7 @@
 //!   is resolved during template instantiation (IR build), before rendering.
 //! - `Element::has_element_child` is maintained to optimize rendering decisions.
 
-use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::binxml::value_variant::BinXmlValue;
 use crate::utils::Utf16LeSlice;
 use bumpalo::Bump;
 use bumpalo::collections::Vec as BumpVec;
@@ -99,13 +99,11 @@ const _: () =
 
 /// Template substitution placeholder captured during template parsing.
 ///
-/// `id` indexes into the template substitution array. `value_type` is the
-/// declared substitution type, and `optional` indicates the substitution may
-/// be omitted if empty.
+/// `id` indexes into the template substitution array; `optional` indicates
+/// the substitution may be omitted if empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placeholder {
     pub(crate) id: u16,
-    pub(crate) value_type: BinXmlValueType,
     pub(crate) optional: bool,
 }
 
@@ -116,18 +114,6 @@ pub struct Placeholder {
 pub(crate) struct Attr<'a> {
     pub(crate) name: Name<'a>,
     pub(crate) value: IrVec<'a, Node<'a>>,
-}
-
-/// Substitution values captured for a template instance.
-///
-/// `Value` stores the raw BinXML value, while `BinXmlElement` references a
-/// pre-parsed BinXML fragment that was expanded into the record arena.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TemplateValue<'a> {
-    /// A raw substitution value.
-    Value(BinXmlValue<'a>),
-    /// A parsed BinXML fragment stored in the record arena.
-    BinXmlElement(ElementId),
 }
 
 /// An element with attributes and child nodes.
@@ -287,14 +273,6 @@ pub(crate) fn is_optional_empty(value: &BinXmlValue<'_>) -> bool {
         BinXmlValue::HexInt32ArrayType(v) => v.is_empty(),
         BinXmlValue::HexInt64ArrayType(v) => v.is_empty(),
         _ => false,
-    }
-}
-
-/// Returns true if the template value should be considered "empty" for optional substitutions.
-pub(crate) fn is_optional_empty_template_value(value: &TemplateValue<'_>) -> bool {
-    match value {
-        TemplateValue::BinXmlElement(_) => false,
-        TemplateValue::Value(value) => is_optional_empty(value),
     }
 }
 

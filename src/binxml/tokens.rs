@@ -1,56 +1,181 @@
-use crate::err::{DeserializationError, DeserializationResult as Result};
+use crate::err::{DeserializationError, DeserializationResult as Result, Result as EvtxResult};
 
 use winstructs::guid::Guid;
 
 use crate::AnsiCodec;
 use crate::ChunkOffset;
-use crate::binxml::name::{BinXmlNameEncoding, BinXmlNameRef};
+use crate::binxml::name::read_name_ref;
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
+use crate::evtx_chunk::EvtxChunk;
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use log::{error, trace, warn};
 
-use crate::evtx_chunk::EvtxChunk;
 use bumpalo::Bump;
-use std::fmt::{self, Formatter};
 
-/// Processing instruction target name.
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct BinXMLProcessingInstructionTarget {
-    pub(crate) name: BinXmlNameRef,
+/// Where a BinXML stream lives and how to decode it.
+///
+/// Offsets inside the stream are relative to `data`: `chunk.data` for EVTX chunk streams, the
+/// fragment blob for WEVT_TEMPLATE streams. `chunk` is `None` exactly for WEVT_TEMPLATE
+/// streams, which also means names are stored inline rather than in the chunk string table.
+#[derive(Clone, Copy)]
+pub(crate) struct Stream<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) chunk: Option<&'a EvtxChunk<'a>>,
+    pub(crate) ansi_codec: AnsiCodec,
+    pub(crate) bump: &'a Bump,
 }
 
-/// Open-start element token payload (name and data size).
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct BinXMLOpenStartElement {
-    pub(crate) data_size: u32,
-    pub(crate) name: BinXmlNameRef,
-}
+impl<'a> Stream<'a> {
+    pub(crate) fn chunk(chunk: &'a EvtxChunk<'a>, bump: &'a Bump) -> Self {
+        Stream {
+            data: chunk.data,
+            chunk: Some(chunk),
+            ansi_codec: chunk.settings.get_ansi_codec(),
+            bump,
+        }
+    }
 
-/// Template definition header stored in the chunk template table.
-#[derive(Debug, PartialOrd, PartialEq, Clone)]
-pub(crate) struct BinXmlTemplateDefinitionHeader {
-    /// A pointer to the next template in the bucket.
-    pub(crate) next_template_offset: ChunkOffset,
-    pub(crate) guid: Guid,
-    pub(crate) data_size: u32,
-}
-
-impl fmt::Display for BinXmlTemplateDefinitionHeader {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "<BinXmlTemplateDefinitionHeader - id: {guid}, data_size: {size}>",
-            guid = self.guid,
-            size = self.data_size
-        )
+    #[cfg(feature = "wevt_templates")]
+    pub(crate) fn wevt(data: &'a [u8], ansi_codec: AnsiCodec, bump: &'a Bump) -> Self {
+        Stream {
+            data,
+            chunk: None,
+            ansi_codec,
+            bump,
+        }
     }
 }
 
-/// Entity reference token payload.
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct BinXmlEntityReference {
-    pub(crate) name: BinXmlNameRef,
+/// Receives the tokens [`walk_tokens`] parses. Every token defaults to being ignored.
+pub(crate) trait TokenSink<'a> {
+    fn template_instance(&mut self, _template: BinXmlTemplateValues<'a>) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn open_start(&mut self, _name: ChunkOffset) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn close_start(&mut self) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn close_empty(&mut self) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn close_element(&mut self) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn value(&mut self, _value: BinXmlValue<'a>) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn attribute(&mut self, _name: ChunkOffset) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn entity_ref(&mut self, _name: ChunkOffset) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn pi_target(&mut self, _name: ChunkOffset) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn pi_data(&mut self, _data: Utf16LeSlice<'a>) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn substitution(&mut self, _id: u16, _optional: bool) -> EvtxResult<()> {
+        Ok(())
+    }
+}
+
+/// Parse the BinXML token stream `src.data[start..start + len]` (up to EOF), handing each
+/// token to `sink`. Template definitions (`has_dep_id`) carry dependency IDs on element starts.
+pub(crate) fn walk_tokens<'a>(
+    src: Stream<'a>,
+    start: usize,
+    len: usize,
+    has_dep_id: bool,
+    sink: &mut impl TokenSink<'a>,
+) -> EvtxResult<()> {
+    let mut cursor = ByteCursor::with_pos(src.data, start)?;
+    // Public record offsets/sizes may be edited by callers; oversized windows still
+    // report the cursor's normal truncation error, including on 32-bit targets.
+    let end = start.saturating_add(len);
+    let inline_names = src.chunk.is_none();
+
+    while cursor.pos() < end {
+        let token = cursor.u8()?;
+        match token {
+            token::EOF => break,
+            token::TEMPLATE_INSTANCE => sink.template_instance(read_template_values_cursor(
+                &mut cursor,
+                src.ansi_codec,
+                src.bump,
+            )?)?,
+            0x01 | 0x41 => sink.open_start(read_open_start_element_cursor(
+                &mut cursor,
+                token & 0x40 != 0,
+                has_dep_id,
+                inline_names,
+            )?)?,
+            0x02 => sink.close_start()?,
+            0x03 => sink.close_empty()?,
+            0x04 => sink.close_element()?,
+            0x05 | 0x45 => sink.value(BinXmlValue::from_binxml_cursor_in(
+                &mut cursor,
+                None,
+                src.ansi_codec,
+                src.bump,
+            )?)?,
+            0x06 | 0x46 => sink.attribute(read_name_ref(&mut cursor, inline_names)?)?,
+            0x09 | 0x49 => sink.entity_ref(read_name_ref(&mut cursor, inline_names)?)?,
+            0x0a => sink.pi_target(read_name_ref(&mut cursor, inline_names)?)?,
+            0x0b => sink.pi_data(read_processing_instruction_data_cursor(&mut cursor)?)?,
+            0x0d | 0x0e => sink.substitution(
+                read_substitution_descriptor_cursor(&mut cursor)?,
+                token == 0x0e,
+            )?,
+            token::FRAGMENT_HEADER => {
+                cursor.u8_named("fragment_header_major_version")?;
+                cursor.u8_named("fragment_header_minor_version")?;
+                cursor.u8_named("fragment_header_flags")?;
+            }
+            0x07 | 0x47 => {
+                return Err(DeserializationError::UnimplementedToken {
+                    name: "CDataSection",
+                    offset: cursor.position(),
+                }
+                .into());
+            }
+            0x08 | 0x48 => {
+                return Err(DeserializationError::UnimplementedToken {
+                    name: "CharReference",
+                    offset: cursor.position(),
+                }
+                .into());
+            }
+            _ => {
+                return Err(DeserializationError::InvalidToken {
+                    value: token,
+                    offset: cursor.position(),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Template definition header stored in the chunk template table.
+#[derive(Debug)]
+pub(crate) struct TemplateHeader {
+    pub(crate) guid: [u8; 16],
+    /// Includes the fragment header, element and end of file token; excludes
+    /// this header.
+    pub(crate) data_size: u32,
+}
+
+pub(crate) fn read_template_header(cursor: &mut ByteCursor<'_>) -> Result<TemplateHeader> {
+    let _next_template_offset = cursor.u32_named("next_template_offset")?;
+    let guid = cursor.array::<16>("template_guid")?;
+    let data_size = cursor.u32_named("template_data_size")?;
+    Ok(TemplateHeader { guid, data_size })
 }
 
 /// Template instance payload parsed into substitution values.
@@ -70,32 +195,6 @@ pub struct BinXmlTemplateValues<'a> {
 struct TemplateValueDescriptor {
     size: u16,
     value_type: BinXmlValueType,
-}
-
-/// Placeholder descriptor within a template definition.
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct TemplateSubstitutionDescriptor {
-    /// Zero-based index of the substitution value.
-    pub(crate) substitution_index: u16,
-    pub(crate) value_type: BinXmlValueType,
-    pub(crate) ignore: bool,
-    /// True for conditional substitutions; optional values may be omitted when empty.
-    pub(crate) optional: bool,
-}
-
-/// Fragment header at the start of a BinXML stream.
-#[repr(C)]
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct BinXMLFragmentHeader {
-    pub(crate) major_version: u8,
-    pub(crate) minor_version: u8,
-    pub(crate) flags: u8,
-}
-
-/// Attribute token payload.
-#[derive(Debug, PartialOrd, PartialEq, Eq, Clone)]
-pub(crate) struct BinXMLAttribute {
-    pub(crate) name: BinXmlNameRef,
 }
 
 /// BinXML stream token bytes (MS-EVEN6 §2.2.3.1).
@@ -131,7 +230,6 @@ pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
 /// This is used by the direct IR builder path.
 pub(crate) fn read_template_values_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
-    chunk: Option<&'a EvtxChunk<'a>>,
     ansi_codec: AnsiCodec,
     arena: &'a Bump,
 ) -> Result<BinXmlTemplateValues<'a>> {
@@ -144,8 +242,8 @@ pub(crate) fn read_template_values_cursor<'a>(
 
     // Need to skip over the template data.
     if (cursor.position() as u32) == template_definition_data_offset {
-        let template_header = read_template_definition_header_cursor(cursor)?;
-        template_guid = Some(template_header.guid.clone());
+        let template_header = read_template_header(cursor)?;
+        template_guid = Some(Guid::from_buffer(&template_header.guid).expect("16-byte GUID"));
         cursor.set_pos_u64(
             cursor.position() + u64::from(template_header.data_size),
             "Skip cached template",
@@ -158,13 +256,7 @@ pub(crate) fn read_template_values_cursor<'a>(
     // precedence and cursor positions for truncated/unknown descriptors.
     for _ in 0..number_of_substitutions {
         let _ = cursor.u16()?;
-        let value_type_token = cursor.u8()?;
-        BinXmlValueType::from_u8(value_type_token).ok_or(
-            DeserializationError::InvalidValueVariant {
-                value: value_type_token,
-                offset: cursor.position(),
-            },
-        )?;
+        BinXmlValueType::from_cursor(cursor)?;
         let _ = cursor.u8()?;
     }
     let descriptors = &cursor.buf()[descriptor_start..cursor.pos()];
@@ -184,7 +276,6 @@ pub(crate) fn read_template_values_cursor<'a>(
         let value = BinXmlValue::deserialize_value_type_cursor_in(
             &descriptor.value_type,
             cursor,
-            chunk,
             Some(descriptor.size),
             ansi_codec,
             arena,
@@ -230,76 +321,6 @@ pub(crate) fn read_template_values_cursor<'a>(
     })
 }
 
-fn read_template_definition_header_cursor(
-    cursor: &mut ByteCursor<'_>,
-) -> Result<BinXmlTemplateDefinitionHeader> {
-    // If any of these fail we cannot reliably report the template information in error.
-    let next_template_offset = cursor.u32_named("next_template_offset")?;
-    let guid_bytes = cursor.take_bytes(16, "template_guid")?;
-    let template_guid = Guid::from_buffer(guid_bytes).map_err(|_| {
-        DeserializationError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "invalid GUID",
-        ))
-    })?;
-    // Data size includes the fragment header, element and end of file token;
-    // except for the first 33 bytes of the template definition (above)
-    let data_size = cursor.u32_named("template_data_size")?;
-
-    Ok(BinXmlTemplateDefinitionHeader {
-        next_template_offset,
-        guid: template_guid,
-        data_size,
-    })
-}
-
-pub(crate) fn read_entity_ref_cursor(
-    cursor: &mut ByteCursor<'_>,
-    name_encoding: BinXmlNameEncoding,
-) -> Result<BinXmlEntityReference> {
-    trace!("Offset `0x{:08x}` - EntityReference", cursor.position());
-    let name = BinXmlNameRef::from_cursor_with_encoding(cursor, name_encoding)?;
-    trace!("\t name: {:?}", name);
-    Ok(BinXmlEntityReference { name })
-}
-
-pub(crate) fn read_attribute_cursor(
-    cursor: &mut ByteCursor<'_>,
-    name_encoding: BinXmlNameEncoding,
-) -> Result<BinXMLAttribute> {
-    trace!("Offset `0x{:08x}` - Attribute", cursor.position());
-    let name = BinXmlNameRef::from_cursor_with_encoding(cursor, name_encoding)?;
-    Ok(BinXMLAttribute { name })
-}
-
-pub(crate) fn read_fragment_header_cursor(
-    cursor: &mut ByteCursor<'_>,
-) -> Result<BinXMLFragmentHeader> {
-    trace!("Offset `0x{:08x}` - FragmentHeader", cursor.position());
-    let major_version = cursor.u8_named("fragment_header_major_version")?;
-    let minor_version = cursor.u8_named("fragment_header_minor_version")?;
-    let flags = cursor.u8_named("fragment_header_flags")?;
-    Ok(BinXMLFragmentHeader {
-        major_version,
-        minor_version,
-        flags,
-    })
-}
-
-pub(crate) fn read_processing_instruction_target_cursor(
-    cursor: &mut ByteCursor<'_>,
-    name_encoding: BinXmlNameEncoding,
-) -> Result<BinXMLProcessingInstructionTarget> {
-    trace!(
-        "Offset `0x{:08x}` - ProcessingInstructionTarget",
-        cursor.position(),
-    );
-
-    let name = BinXmlNameRef::from_cursor_with_encoding(cursor, name_encoding)?;
-    trace!("\tPITarget Name - {:?}", name);
-    Ok(BinXMLProcessingInstructionTarget { name })
-}
-
 pub(crate) fn read_processing_instruction_data_cursor<'a>(
     cursor: &mut ByteCursor<'a>,
 ) -> Result<Utf16LeSlice<'a>> {
@@ -315,41 +336,24 @@ pub(crate) fn read_processing_instruction_data_cursor<'a>(
     Ok(data)
 }
 
-pub(crate) fn read_substitution_descriptor_cursor(
-    cursor: &mut ByteCursor<'_>,
-    optional: bool,
-) -> Result<TemplateSubstitutionDescriptor> {
+/// Read a substitution descriptor (index + validated value type), returning the index.
+pub(crate) fn read_substitution_descriptor_cursor(cursor: &mut ByteCursor<'_>) -> Result<u16> {
     trace!(
-        "Offset `0x{:08x}` - SubstitutionDescriptor<optional={}>",
-        cursor.position(),
-        optional
+        "Offset `0x{:08x}` - SubstitutionDescriptor",
+        cursor.position()
     );
     let substitution_index = cursor.u16()?;
-    let value_type_token = cursor.u8()?;
-
-    let value_type = BinXmlValueType::from_u8(value_type_token).ok_or(
-        DeserializationError::InvalidValueVariant {
-            value: value_type_token,
-            offset: cursor.position(),
-        },
-    )?;
-
-    let ignore = optional && (value_type == BinXmlValueType::NullType);
-
-    Ok(TemplateSubstitutionDescriptor {
-        substitution_index,
-        value_type,
-        ignore,
-        optional,
-    })
+    BinXmlValueType::from_cursor(cursor)?;
+    Ok(substitution_index)
 }
 
+/// Read an element start header and return its name offset.
 pub(crate) fn read_open_start_element_cursor(
     cursor: &mut ByteCursor<'_>,
     has_attributes: bool,
     has_dependency_identifier: bool,
-    name_encoding: BinXmlNameEncoding,
-) -> Result<BinXMLOpenStartElement> {
+    inline_names: bool,
+) -> Result<ChunkOffset> {
     trace!(
         "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, has_dependency_identifier={}>",
         cursor.position(),
@@ -361,33 +365,84 @@ pub(crate) fn read_open_start_element_cursor(
     // - Template definitions: include a dependency identifier (u16)
     // - Direct record elements / nested BinXML (substitution value type 0x21): omit it
     if has_dependency_identifier {
-        let dependency_identifier = cursor.u16_named("open_start_element_dependency_identifier")?;
-
-        trace!(
-            "\t Dependency Identifier - `0x{:04x} ({})`",
-            dependency_identifier, dependency_identifier
-        );
+        let _dependency_identifier =
+            cursor.u16_named("open_start_element_dependency_identifier")?;
     }
 
-    let data_size = cursor.u32_named("open_start_element_data_size")?;
+    let _data_size = cursor.u32_named("open_start_element_data_size")?;
+    let name = read_name_ref(cursor, inline_names)?;
 
-    trace!("\t Data Size - {}", data_size);
-    let name = BinXmlNameRef::from_cursor_with_encoding(cursor, name_encoding)?;
-    trace!("\t Name - {:?}", name);
+    if has_attributes {
+        let _attribute_list_data_size =
+            cursor.u32_named("open_start_element_attribute_list_data_size")?;
+    }
 
-    let _attribute_list_data_size = if has_attributes {
-        cursor.u32_named("open_start_element_attribute_list_data_size")?
-    } else {
-        0
-    };
-
-    Ok(BinXMLOpenStartElement { data_size, name })
+    Ok(name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use encoding_rs::WINDOWS_1252;
+
+    #[test]
+    fn oversized_token_window_reports_truncation() {
+        struct Ignore;
+        impl TokenSink<'_> for Ignore {}
+        let bump = Bump::new();
+        let src = Stream {
+            data: &[0, 2],
+            chunk: None,
+            ansi_codec: WINDOWS_1252,
+            bump: &bump,
+        };
+        let err = walk_tokens(src, 1, usize::MAX, false, &mut Ignore).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::err::EvtxError::DeserializationError(DeserializationError::Truncated {
+                what: "u8",
+                offset: 2,
+                need: 1,
+                have: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn truncated_fragment_headers_keep_field_errors() {
+        struct Ignore;
+        impl TokenSink<'_> for Ignore {}
+        let bump = Bump::new();
+        let bytes = [0x0f, 1, 1];
+        for (i, what) in [
+            "fragment_header_major_version",
+            "fragment_header_minor_version",
+            "fragment_header_flags",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let data = &bytes[..i + 1];
+            let src = Stream {
+                data,
+                chunk: None,
+                ansi_codec: WINDOWS_1252,
+                bump: &bump,
+            };
+            let err = walk_tokens(src, 0, data.len(), false, &mut Ignore).unwrap_err();
+            let crate::err::EvtxError::DeserializationError(DeserializationError::Truncated {
+                what: actual,
+                offset,
+                need: 1,
+                have: 0,
+            }) = err
+            else {
+                panic!("unexpected error: {err:?}")
+            };
+            assert_eq!(actual, what);
+            assert_eq!(offset, (i + 1) as u64);
+        }
+    }
 
     #[test]
     fn descriptor_errors_precede_value_errors() {
@@ -398,8 +453,7 @@ mod tests {
             bytes.extend_from_slice(&[1, 0, ty]); // second descriptor lacks padding
             let bump = Bump::new();
             let mut cursor = ByteCursor::with_pos(&bytes, 0).unwrap();
-            let error =
-                read_template_values_cursor(&mut cursor, None, WINDOWS_1252, &bump).unwrap_err();
+            let error = read_template_values_cursor(&mut cursor, WINDOWS_1252, &bump).unwrap_err();
             assert_eq!(cursor.pos(), 20);
             if ty == 0xff {
                 assert!(matches!(

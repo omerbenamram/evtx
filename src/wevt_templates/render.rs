@@ -8,10 +8,12 @@ use bumpalo::Bump;
 
 use crate::AnsiCodec;
 use crate::ParserSettings;
-use crate::binxml::ir::{build_wevt_template_definition_ir, instantiate_template_definition_ir};
+use crate::binxml::ir::{
+    ValidatedValue, build_wevt_template_definition_ir, instantiate_template_definition_ir,
+};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
-use crate::model::ir::{IrTree, TemplateValue};
+use crate::model::ir::IrTree;
 use crate::wevt_templates::TEMP_HEADER_SIZE;
 use crate::wevt_templates::manifest::TemplateDefinition;
 
@@ -101,7 +103,7 @@ fn render_binxml_with_values<'a>(
 
 fn render_instantiated<'a>(
     ir: &IrTree<'a>,
-    values: &[TemplateValue<'a>],
+    values: &[ValidatedValue<'a>],
     ansi_codec: AnsiCodec,
     bump: &'a Bump,
 ) -> Result<String> {
@@ -137,7 +139,7 @@ fn placeholder_values<'a>(
     template: &IrTree<'_>,
     names: Option<&[Option<String>]>,
     bump: &'a Bump,
-) -> Vec<TemplateValue<'a>> {
+) -> Vec<ValidatedValue<'a>> {
     let max_id = max_placeholder_id(template);
     let mut out = Vec::with_capacity(max_id + 1);
 
@@ -149,21 +151,21 @@ fn placeholder_values<'a>(
             s = format!("{{sub:{idx}:{name}}}");
         }
         let s = bump.alloc_str(&s);
-        out.push(TemplateValue::Value(BinXmlValue::AnsiStringType(s)));
+        out.push(ValidatedValue::Scalar(BinXmlValue::AnsiStringType(s)));
     }
     out
 }
 
-fn template_values_from_binxml_values<'a>(values: &[BinXmlValue<'a>]) -> Vec<TemplateValue<'a>> {
+fn template_values_from_binxml_values<'a>(values: &[BinXmlValue<'a>]) -> Vec<ValidatedValue<'a>> {
     values
         .iter()
         .map(|v| match v {
             // Offline WEVT rendering does not currently splice nested BinXML substitutions.
             // Treat these as empty so rendering can proceed.
             BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => {
-                TemplateValue::Value(BinXmlValue::NullType)
+                ValidatedValue::Scalar(BinXmlValue::NullType)
             }
-            other => TemplateValue::Value(other.clone()),
+            other => ValidatedValue::Scalar(other.clone()),
         })
         .collect()
 }

@@ -1,6 +1,5 @@
 use crate::AnsiCodec;
 use crate::err::{DeserializationError, DeserializationResult as Result};
-use crate::evtx_chunk::EvtxChunk;
 use crate::utils::invalid_data;
 use crate::utils::windows::{filetime_to_timestamp, read_systime, systime_from_bytes};
 use crate::utils::{ByteCursor, Utf16LeSlice};
@@ -222,47 +221,37 @@ impl BinXmlValueType {
     pub(crate) fn from_u8(byte: u8) -> Option<BinXmlValueType> {
         Self::LOOKUP[byte as usize]
     }
+
+    /// Read a value type byte, rejecting unknown types.
+    #[inline]
+    pub(crate) fn from_cursor(cursor: &mut ByteCursor<'_>) -> Result<BinXmlValueType> {
+        let value = cursor.u8()?;
+        Self::from_u8(value).ok_or(DeserializationError::InvalidValueVariant {
+            value,
+            offset: cursor.position(),
+        })
+    }
 }
 
 impl<'a> BinXmlValue<'a> {
     pub(crate) fn from_binxml_cursor_in(
         cursor: &mut ByteCursor<'a>,
-        chunk: Option<&'a EvtxChunk<'a>>,
         size: Option<u16>,
         ansi_codec: AnsiCodec,
         arena: &'a Bump,
     ) -> Result<BinXmlValue<'a>> {
-        let value_type_token = cursor.u8()?;
-
-        let value_type = BinXmlValueType::from_u8(value_type_token).ok_or_else(|| {
-            DeserializationError::InvalidValueVariant {
-                value: value_type_token,
-                offset: cursor.position(),
-            }
-        })?;
-
-        let data = Self::deserialize_value_type_cursor_in(
-            &value_type,
-            cursor,
-            chunk,
-            size,
-            ansi_codec,
-            arena,
-        )?;
-
-        Ok(data)
+        let value_type = BinXmlValueType::from_cursor(cursor)?;
+        Self::deserialize_value_type_cursor_in(&value_type, cursor, size, ansi_codec, arena)
     }
 
     #[inline(always)]
     pub(crate) fn deserialize_value_type_cursor_in(
         value_type: &BinXmlValueType,
         cursor: &mut ByteCursor<'a>,
-        chunk: Option<&'a EvtxChunk<'a>>,
         size: Option<u16>,
         ansi_codec: AnsiCodec,
         arena: &'a Bump,
     ) -> Result<BinXmlValue<'a>> {
-        let _ = chunk;
         trace!(
             "Offset `0x{offset:08x} ({offset}): {value_type:?}, {size:?}",
             offset = cursor.position(),
@@ -542,7 +531,6 @@ mod error_tests {
             let err = BinXmlValue::deserialize_value_type_cursor_in(
                 &BinXmlValueType::SizeTType,
                 &mut cursor,
-                None,
                 Some(size),
                 encoding_rs::WINDOWS_1252,
                 &bump,
@@ -702,7 +690,7 @@ mod tests {
             let mut cursor = ByteCursor::with_pos(bytes, 0).unwrap();
             let size = Some(bytes.len() as u16);
             let ansi = encoding_rs::WINDOWS_1252;
-            BinXmlValue::deserialize_value_type_cursor_in(&ty, &mut cursor, None, size, ansi, bump)
+            BinXmlValue::deserialize_value_type_cursor_in(&ty, &mut cursor, size, ansi, bump)
                 .unwrap()
         }
         let bump = Bump::new();
