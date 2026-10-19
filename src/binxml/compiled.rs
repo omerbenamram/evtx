@@ -255,6 +255,18 @@ pub(crate) trait TemplateProgram: Sized {
         is_root: bool,
         settings: &ParserSettings,
     ) -> Option<Self>;
+    /// Run a prepared instance. Errors may leave partial output.
+    fn exec<'a, V: ValueSource<'a>>(
+        instance: Instance<V::Scope>,
+        progs: &ProgramCache<Self>,
+        values: &V,
+        chunk: &'a EvtxChunk<'a>,
+        cache: Option<&mut IrTemplateCache<'a>>,
+        vr: &mut ValueRenderer,
+        out: &mut Vec<u8>,
+    ) -> Result<()>;
+    /// The materialized walker for this format (the slow lane).
+    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()>;
 }
 
 impl TemplateProgram for XmlProgram {
@@ -273,6 +285,20 @@ impl TemplateProgram for XmlProgram {
         settings: &ParserSettings,
     ) -> Option<Self> {
         compile_xml_template(tree, has_literal_array, base_indent, is_root, settings)
+    }
+    fn exec<'a, V: ValueSource<'a>>(
+        instance: Instance<V::Scope>,
+        progs: &ProgramCache<Self>,
+        values: &V,
+        chunk: &'a EvtxChunk<'a>,
+        cache: Option<&mut IrTemplateCache<'a>>,
+        vr: &mut ValueRenderer,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        exec(instance, progs, values, chunk, cache, vr, out)
+    }
+    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
+        render_tree_xml(tree, settings, out)
     }
 }
 
@@ -946,7 +972,7 @@ impl RawSlot {
 
 /// A cached program and the substitution slots for one validated instance.
 #[derive(Clone, Copy)]
-struct Instance<S = SlotRange> {
+pub(crate) struct Instance<S = SlotRange> {
     prog: usize,
     slots: S,
 }
@@ -1118,7 +1144,6 @@ impl Preflight {
         depth: usize,
         cache: &mut IrTemplateCache<'a>,
         progs: &mut ProgramCache<P>,
-        settings: &ParserSettings,
         base_indent: u16,
         is_root: bool,
     ) -> std::result::Result<(Instance, usize), PreflightBail> {
@@ -1151,7 +1176,6 @@ impl Preflight {
             chunk,
             (def_offset, base_indent, is_root),
             progs,
-            settings,
             TemplateSource::Bytes(cache),
         )
         .ok_or(PreflightBail)?;
@@ -1217,7 +1241,7 @@ impl Preflight {
                 // `deserialize_value_type_cursor_in` (NUL filter + strict).
                 let raw = &data[off..end];
                 let filtered: Vec<u8> = raw.iter().copied().filter(|&b| b != 0).collect();
-                let decoded = decode_ansi_strict(settings.get_ansi_codec(), &filtered)
+                let decoded = decode_ansi_strict(chunk.settings.get_ansi_codec(), &filtered)
                     .map_err(|_| PreflightBail)?;
                 slot.aux = self.ansi.len() as u32;
                 self.ansi.push(decoded.into_owned());
@@ -1275,7 +1299,6 @@ impl Preflight {
                 depth + 1,
                 cache,
                 progs,
-                settings,
                 child_indent,
                 false,
             )?;
@@ -1320,9 +1343,9 @@ fn get_or_compile<'a, P: StoredProgram>(
     chunk: &'a EvtxChunk<'a>,
     key: (u32, u16, bool),
     progs: &mut ProgramCache<P>,
-    settings: &ParserSettings,
     source: TemplateSource<'_, 'a>,
 ) -> Option<usize> {
+    let settings = &chunk.settings;
     let (def_offset, base_indent, is_root) = key;
     if let Some(entry) = progs.by_key.get(&key) {
         return *entry;
@@ -1381,79 +1404,64 @@ fn template_content_key(
 // Per-record entry + executor
 // ---------------------------------------------------------------------------
 
-/// Shared pre-flight of both compiled lanes: `None` when the record isn't
-/// covered (the caller then uses the regular path).
-#[inline]
-fn preflight_record<'a, P: StoredProgram>(
+/// Try to render one record's BinXML via the compiled-template path.
+///
+/// Returns `false` with `out` untouched when the record isn't covered (the
+/// caller then uses the regular path). On `true` the record was rendered
+/// byte-identically to `P::render_tree` over the materialized record.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     bytes: &[u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     progs: &mut ProgramCache<P>,
     pf: &mut Preflight,
-    settings: &ParserSettings,
-) -> Option<Instance> {
-    // Single-instance stream shape (mirrors `read_single_instance_stream`).
-    let inst_off = single_instance_offset(bytes)?;
-    let stream_offset = binxml_slice_offset_in(chunk.data, bytes).ok()? as usize;
-
-    pf.clear();
-    let (instance, end) = pf
-        .scan_instance(
-            chunk,
-            stream_offset + inst_off,
-            0,
-            cache,
-            progs,
-            settings,
-            0,
-            true,
-        )
-        .ok()?;
-    // Anything after the instance other than EOF (0x00) is unhandled here.
-    ends_stream(bytes, end - stream_offset).then_some(instance)
-}
-
-/// Try to render one record's BinXML via the compiled-template path.
-///
-/// Returns `false` with `out` untouched when the record isn't covered (the
-/// caller then uses the regular path). On `true` the record was rendered
-/// byte-identically to `render_xml_record_content`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn try_render_xml_compiled<'a>(
-    bytes: &[u8],
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
-    progs: &mut XmlProgramCache,
-    pf: &mut Preflight,
-    settings: &ParserSettings,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> bool {
-    let Some(instance) = preflight_record(bytes, chunk, cache, progs, pf, settings) else {
+    // Single-instance stream shape (mirrors `read_single_instance_stream`).
+    let Some(inst_off) = single_instance_offset(bytes) else {
         return false;
     };
-
-    let start = out.len();
-    match exec(
-        instance,
-        progs,
-        &RawValues {
-            pf,
-            data: chunk.data,
-        },
-        chunk,
-        Some(cache),
-        vr,
-        out,
-    ) {
-        Ok(()) => true,
-        Err(_) => {
-            // Unreachable post-preflight except for attribute-position BinXml
-            // elements, which the regular path also rejects per record.
-            out.truncate(start);
-            false
-        }
+    let Ok(stream_offset) = binxml_slice_offset_in(chunk.data, bytes) else {
+        return false;
+    };
+    let stream_offset = stream_offset as usize;
+    pf.clear();
+    let Ok((instance, end)) =
+        pf.scan_instance(chunk, stream_offset + inst_off, 0, cache, progs, 0, true)
+    else {
+        return false;
+    };
+    // Anything after the instance other than EOF (0x00) is unhandled here.
+    if !ends_stream(bytes, end - stream_offset) {
+        return false;
     }
+    let values = RawValues {
+        pf,
+        data: chunk.data,
+    };
+    exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out)
+}
+
+/// `P::exec`, truncating `out` back on error. Errors are unreachable after a
+/// successful preflight except for attribute-position BinXml elements, which
+/// the regular path also rejects per record.
+fn exec_or_rollback<'a, P: TemplateProgram, V: ValueSource<'a>>(
+    instance: Instance<V::Scope>,
+    progs: &ProgramCache<P>,
+    values: &V,
+    chunk: &'a EvtxChunk<'a>,
+    cache: Option<&mut IrTemplateCache<'a>>,
+    vr: &mut ValueRenderer,
+    out: &mut Vec<u8>,
+) -> bool {
+    let start = out.len();
+    let ok = P::exec(instance, progs, values, chunk, cache, vr, out).is_ok();
+    if !ok {
+        out.truncate(start);
+    }
+    ok
 }
 
 /// Runtime slot class for `Body`/`ChildSlot` branching.
@@ -1781,6 +1789,20 @@ impl TemplateProgram for JsonProgram {
         settings: &ParserSettings,
     ) -> Option<Self> {
         compile_json_template(tree, has_literal_array, is_root, settings)
+    }
+    fn exec<'a, V: ValueSource<'a>>(
+        instance: Instance<V::Scope>,
+        progs: &ProgramCache<Self>,
+        values: &V,
+        _chunk: &'a EvtxChunk<'a>,
+        _cache: Option<&mut IrTemplateCache<'a>>,
+        vr: &mut ValueRenderer,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        exec_json(instance, progs, values, vr, out)
+    }
+    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
+        render_tree_json(tree, settings, out)
     }
 }
 
@@ -2221,45 +2243,10 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 // JSON executor
 // ---------------------------------------------------------------------------
 
-/// Try to render one record's BinXML as JSON via the compiled-template path.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn try_render_json_compiled<'a>(
-    bytes: &[u8],
-    chunk: &'a EvtxChunk<'a>,
-    cache: &mut IrTemplateCache<'a>,
-    progs: &mut JsonProgramCache,
-    pf: &mut Preflight,
-    settings: &ParserSettings,
-    vr: &mut ValueRenderer,
-    out: &mut Vec<u8>,
-) -> bool {
-    let Some(instance) = preflight_record(bytes, chunk, cache, progs, pf, settings) else {
-        return false;
-    };
-
-    let start = out.len();
-    match exec_json(
-        instance,
-        progs,
-        &RawValues {
-            pf,
-            data: chunk.data,
-        },
-        vr,
-        out,
-    ) {
-        Ok(()) => true,
-        Err(_) => {
-            out.truncate(start);
-            false
-        }
-    }
-}
-
 /// The same executors consume either the CLI's checked byte spans or values
 /// already validated by the record iterator. Implementations are specialized
 /// at compile time; the decoded path never reads substitution bytes again.
-trait ValueSource<'a> {
+pub(crate) trait ValueSource<'a> {
     type Scope: Copy;
     type Value;
     fn slots(&self, scope: Self::Scope) -> &[Self::Value];
@@ -2415,6 +2402,26 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
 }
 
 impl<'a> DecodedValues<'_, 'a> {
+    fn render<P: StoredProgram>(
+        &mut self,
+        chunk: &'a EvtxChunk<'a>,
+        progs: &mut ProgramCache<P>,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let Some(instance) = self.prepare(usize::MAX, 0, 0, true, chunk, progs) else {
+            return false;
+        };
+        exec_or_rollback(
+            instance,
+            progs,
+            self,
+            chunk,
+            None,
+            &mut ValueRenderer::new(),
+            out,
+        )
+    }
+
     /// Check program compatibility only. All values, nested templates and
     /// fragments have already been decoded and validated by the iterator.
     fn prepare<P: StoredProgram>(
@@ -2435,7 +2442,6 @@ impl<'a> DecodedValues<'_, 'a> {
             chunk,
             (input.offset, indent, root),
             progs,
-            &chunk.settings,
             TemplateSource::Validated(&input.template, input.has_literal_array),
         )?;
         if input.has_arrays {
@@ -2489,24 +2495,10 @@ pub(crate) fn try_render_validated<'a>(
         content,
         nested: &mut caches.nested,
     };
-    let mut vr = ValueRenderer::new();
-    let start = out.len();
-    let rendered = if json {
-        let Some(instance) = values.prepare(usize::MAX, 0, 0, true, chunk, &mut caches.json) else {
-            return false;
-        };
-        exec_json(instance, &caches.json, &values, &mut vr, out)
+    if json {
+        values.render(chunk, &mut caches.json, out)
     } else {
-        let Some(instance) = values.prepare(usize::MAX, 0, 0, true, chunk, &mut caches.xml) else {
-            return false;
-        };
-        exec(instance, &caches.xml, &values, chunk, None, &mut vr, out)
-    };
-    if rendered.is_ok() {
-        true
-    } else {
-        out.truncate(start);
-        false
+        values.render(chunk, &mut caches.xml, out)
     }
 }
 

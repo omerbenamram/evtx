@@ -1,9 +1,10 @@
 use crate::err::{ChunkError, EvtxError, InputError, Result};
 
 use crate::AnsiCodec;
+use crate::binxml::compiled::{JsonProgram, StoredProgram, XmlProgram};
 use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
 use crate::evtx_file_header::EvtxFileHeader;
-use crate::evtx_record::{SerializedEvtxRecord, render_tree};
+use crate::evtx_record::SerializedEvtxRecord;
 use bumpalo::Bump;
 use encoding_rs::WINDOWS_1252;
 
@@ -60,12 +61,12 @@ pub struct RenderedChunk {
     pub items: Vec<RenderedChunkItem>,
 }
 
-/// Render all of a parsed chunk's records into a single buffer.
-fn render_chunk(chunk: &mut EvtxChunk<'_>, json: bool, record_numbers: bool) -> RenderedChunk {
-    use crate::binxml::compiled::{
-        JsonProgramCache, Preflight, XmlProgramCache, try_render_json_compiled,
-        try_render_xml_compiled,
-    };
+/// Render all of a parsed chunk's records into a single buffer, in `P`'s format.
+fn render_chunk<P: StoredProgram>(
+    chunk: &mut EvtxChunk<'_>,
+    record_numbers: bool,
+) -> RenderedChunk {
+    use crate::binxml::compiled::{Preflight, ProgramCache, try_render_compiled};
     use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
     use crate::binxml::value_render::ValueRenderer;
 
@@ -75,10 +76,8 @@ fn render_chunk(chunk: &mut EvtxChunk<'_>, json: bool, record_numbers: bool) -> 
     let mut items = Vec::new();
     let mut ir_cache =
         IrTemplateCache::with_capacity(chunk_ref.estimated_template_buckets(), &chunk_ref.arena);
-    let mut progs = XmlProgramCache::default();
+    let mut progs = ProgramCache::<P>::default();
     let mut preflight = Preflight::default();
-    let mut json_progs = JsonProgramCache::default();
-    let mut json_preflight = Preflight::default();
     let mut value_renderer = ValueRenderer::new();
 
     for raw in chunk_ref.iter_raw() {
@@ -97,29 +96,15 @@ fn render_chunk(chunk: &mut EvtxChunk<'_>, json: bool, record_numbers: bool) -> 
             // here so a chunk stays a single consumer-side write.
             let _ = writeln!(&mut data, "Record {}", event_record_id);
         }
-        let compiled_done = if json {
-            try_render_json_compiled(
-                raw.bytes,
-                chunk_ref,
-                &mut ir_cache,
-                &mut json_progs,
-                &mut json_preflight,
-                settings,
-                &mut value_renderer,
-                &mut data,
-            )
-        } else {
-            try_render_xml_compiled(
-                raw.bytes,
-                chunk_ref,
-                &mut ir_cache,
-                &mut progs,
-                &mut preflight,
-                settings,
-                &mut value_renderer,
-                &mut data,
-            )
-        };
+        let compiled_done = try_render_compiled(
+            raw.bytes,
+            chunk_ref,
+            &mut ir_cache,
+            &mut progs,
+            &mut preflight,
+            &mut value_renderer,
+            &mut data,
+        );
         let rendered = if compiled_done {
             Ok(())
         } else {
@@ -127,7 +112,7 @@ fn render_chunk(chunk: &mut EvtxChunk<'_>, json: bool, record_numbers: bool) -> 
             // compiler uses — one output semantics for every record shape.
             // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
             build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)
-                .and_then(|tree| render_tree(&tree, settings, json, &mut data))
+                .and_then(|tree| P::render_tree(&tree, settings, &mut data))
                 .map_err(|err| EvtxError::record(event_record_id, err))
         };
         match rendered {
@@ -710,7 +695,11 @@ impl<T: ReadSeek> EvtxParser<T> {
             items: vec![RenderedChunkItem::Failed(err)],
         };
         self.chunk_pipeline(failed, move |chunk| {
-            render_chunk(chunk, json, record_numbers)
+            if json {
+                render_chunk::<JsonProgram>(chunk, record_numbers)
+            } else {
+                render_chunk::<XmlProgram>(chunk, record_numbers)
+            }
         })
     }
 
