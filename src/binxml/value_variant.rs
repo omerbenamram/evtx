@@ -163,6 +163,37 @@ pub enum BinXmlValueType {
     EvtXmlArrayType,
 }
 
+/// Substitution value-type wire bytes (MS-EVEN6 §2.2.4.1) interpreted by the
+/// fast path. Anything outside this vocabulary routes to the materialize lane.
+pub(crate) mod value_ty {
+    pub(crate) const NULL: u8 = 0x00;
+    pub(crate) const UTF16_STRING: u8 = 0x01;
+    pub(crate) const ANSI_STRING: u8 = 0x02;
+    pub(crate) const INT8: u8 = 0x03;
+    pub(crate) const UINT8: u8 = 0x04;
+    pub(crate) const INT16: u8 = 0x05;
+    pub(crate) const UINT16: u8 = 0x06;
+    pub(crate) const INT32: u8 = 0x07;
+    pub(crate) const UINT32: u8 = 0x08;
+    pub(crate) const INT64: u8 = 0x09;
+    pub(crate) const UINT64: u8 = 0x0a;
+    pub(crate) const REAL32: u8 = 0x0b;
+    pub(crate) const REAL64: u8 = 0x0c;
+    pub(crate) const BOOL: u8 = 0x0d;
+    pub(crate) const BINARY: u8 = 0x0e;
+    pub(crate) const GUID: u8 = 0x0f;
+    pub(crate) const SIZE_T: u8 = 0x10;
+    pub(crate) const FILETIME: u8 = 0x11;
+    pub(crate) const SYSTIME: u8 = 0x12;
+    pub(crate) const SID: u8 = 0x13;
+    pub(crate) const HEX_INT32: u8 = 0x14;
+    pub(crate) const HEX_INT64: u8 = 0x15;
+    pub(crate) const BIN_XML: u8 = 0x21;
+    /// UTF-16 string array (`0x01 | 0x80`): NUL-terminated strings packed
+    /// back to back. The only array type observed in real logs.
+    pub(crate) const STR_ARRAY: u8 = 0x81;
+}
+
 impl BinXmlValueType {
     /// Lookup table for O(1) byte-to-type conversion without indirect branches.
     const LOOKUP: [Option<BinXmlValueType>; 256] = {
