@@ -22,7 +22,7 @@ use crate::binxml::ir::{
 use crate::binxml::tokens::{single_instance_offset, token};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, decode_ansi_strict};
-use crate::err::Result;
+use crate::err::{EvtxError, Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
 use crate::utils::{ByteCursor, Utf16LeSlice};
@@ -279,6 +279,31 @@ impl TemplateProgram for XmlProgram {
 // Compilation (template definition IR -> program)
 // ---------------------------------------------------------------------------
 
+/// `flush_lit_run`/`side_range` for a compiler with `lits`, `ops: Vec<$op>`
+/// and `run_start` fields.
+macro_rules! lit_run_methods {
+    ($op:ident) => {
+        fn flush_lit_run(&mut self) {
+            let end = self.lits.len();
+            if end > self.run_start {
+                self.ops
+                    .push($op::Lit(LitRange(self.run_start as u32, end as u32)));
+            }
+            self.run_start = end;
+        }
+
+        /// Emit bytes via `f` as a side range (not part of any literal run).
+        /// The current run must be flushed first.
+        fn side_range(&mut self, f: impl FnOnce(&mut Self)) -> LitRange {
+            debug_assert_eq!(self.run_start, self.lits.len(), "unflushed lit run");
+            let start = self.lits.len() as u32;
+            f(self);
+            self.run_start = self.lits.len();
+            LitRange(start, self.lits.len() as u32)
+        }
+    };
+}
+
 struct Bail;
 
 struct XmlCompiler<'t, 'a> {
@@ -314,12 +339,28 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 }
 
 /// Compile-lane bail sentinel (mapped to `None` by `compile_xml_template`).
-fn bail_err() -> crate::err::EvtxError {
-    crate::err::EvtxError::FailedToCreateRecordModel("compiled-template bail")
+fn bail_err() -> EvtxError {
+    model_err("compiled-template bail")
 }
 
-fn unresolved_placeholder() -> crate::err::EvtxError {
-    crate::err::EvtxError::FailedToCreateRecordModel("unresolved placeholder in tree")
+fn unresolved_placeholder() -> EvtxError {
+    model_err("unresolved placeholder in tree")
+}
+
+fn element_in_attr() -> EvtxError {
+    model_err("element node inside attribute value")
+}
+
+fn element_in_text() -> EvtxError {
+    model_err("unexpected element node in text context")
+}
+
+fn unresolved_nested_json() -> EvtxError {
+    model_err("unresolved nested instance in compiled JSON")
+}
+
+fn model_err(msg: &'static str) -> EvtxError {
+    EvtxError::FailedToCreateRecordModel(msg)
 }
 
 /// Compile a cached template definition into an XML program. Returns `None`
@@ -391,24 +432,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.arena.get(id).expect("invalid element id")
     }
 
-    fn flush_lit_run(&mut self) {
-        let end = self.lits.len();
-        if end > self.run_start {
-            self.ops
-                .push(XOp::Lit(LitRange(self.run_start as u32, end as u32)));
-        }
-        self.run_start = end;
-    }
-
-    /// Emit bytes via `f` as a side range (not part of any literal run).
-    /// The current run must be flushed first.
-    fn side_range(&mut self, f: impl FnOnce(&mut Self)) -> LitRange {
-        debug_assert_eq!(self.run_start, self.lits.len(), "unflushed lit run");
-        let start = self.lits.len() as u32;
-        f(self);
-        self.run_start = self.lits.len();
-        LitRange(start, self.lits.len() as u32)
-    }
+    lit_run_methods!(XOp);
 
     fn indent_str(&mut self, level: u16) {
         if self.indent_on {
@@ -520,9 +544,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                             self.lits.extend_from_slice(b"?>");
                         }
                         Node::PIData(_) => {
-                            return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                                "PIData without PITarget",
-                            ));
+                            return Err(model_err("PIData without PITarget"));
                         }
                         node => self.compile_literal_content_node(node, false)?,
                     }
@@ -592,19 +614,15 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             match node {
                 Node::Placeholder(_) => {
                     if self.materialized {
-                        return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                            "unresolved placeholder in attribute value",
-                        ));
+                        return Err(model_err("unresolved placeholder in attribute value"));
                     }
                     n_placeholders += 1;
                 }
                 Node::Element(_) => {
-                    return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                        "element node inside attribute value",
-                    ));
+                    return Err(element_in_attr());
                 }
                 Node::PITarget(_) | Node::PIData(_) => {
-                    return Err(crate::err::EvtxError::Unimplemented {
+                    return Err(EvtxError::Unimplemented {
                         name: "processing instruction in attribute value".to_string(),
                     });
                 }
@@ -770,31 +788,16 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             }
             // PIs contribute nothing in content position (`render_single_node`).
             Node::PITarget(_) | Node::PIData(_) => Ok(()),
-            Node::Element(_) => Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                "unexpected element node in text context",
-            )),
+            Node::Element(_) => Err(element_in_text()),
             Node::Placeholder(_) => Err(unresolved_placeholder()),
         }
     }
 
     fn compile_literal_text(&mut self, text: &Text<'a>, in_attribute: bool) -> Result<()> {
+        let mode = StringEscapeMode::Xml { in_attribute };
         match text {
-            Text::Utf16(value) => {
-                let bytes = value.as_bytes();
-                let units = bytes.len() / 2;
-                if units == 0 {
-                    return Ok(());
-                }
-                let mut sink = std::mem::take(&mut self.lits);
-                let res = utf16_simd::write_xml_utf16le(&mut sink, bytes, units, in_attribute);
-                self.lits = sink;
-                res.map_err(crate::err::EvtxError::from)?;
-                Ok(())
-            }
-            Text::Utf8(value) => {
-                xml_escape_str_into(&mut self.lits, value, in_attribute);
-                Ok(())
-            }
+            Text::Utf16(value) => self.vr.write_utf16_escaped(&mut self.lits, *value, mode),
+            Text::Utf8(value) => self.vr.write_str_escaped(&mut self.lits, value, mode),
         }
     }
 
@@ -810,23 +813,6 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 }
             }
             Text::Utf8(value) => self.lits.extend_from_slice(value.as_bytes()),
-        }
-    }
-}
-
-/// Mirrors `XmlEmitter::write_escaped_str` for compile-time UTF-8 literals.
-fn xml_escape_str_into(out: &mut Vec<u8>, text: &str, in_attribute: bool) {
-    for ch in text.chars() {
-        match ch {
-            '&' => out.extend_from_slice(b"&amp;"),
-            '<' => out.extend_from_slice(b"&lt;"),
-            '>' => out.extend_from_slice(b"&gt;"),
-            '"' if in_attribute => out.extend_from_slice(b"&quot;"),
-            '\'' if in_attribute => out.extend_from_slice(b"&apos;"),
-            _ => {
-                let mut buf = [0_u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-            }
         }
     }
 }
@@ -1082,8 +1068,8 @@ impl From<crate::err::DeserializationError> for PreflightBail {
     }
 }
 
-impl From<crate::err::EvtxError> for PreflightBail {
-    fn from(_: crate::err::EvtxError) -> Self {
+impl From<EvtxError> for PreflightBail {
+    fn from(_: EvtxError) -> Self {
         PreflightBail
     }
 }
@@ -1393,6 +1379,43 @@ fn template_content_key(
 // Per-record entry + executor
 // ---------------------------------------------------------------------------
 
+/// Shared pre-flight of both compiled lanes: `None` when the record isn't
+/// covered (the caller then uses the regular path).
+#[inline]
+fn preflight_record<'a, P: StoredProgram>(
+    bytes: &[u8],
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+    progs: &mut ProgramCache<P>,
+    pf: &mut Preflight,
+    settings: &ParserSettings,
+) -> Option<Instance> {
+    // Single-instance stream shape (mirrors `read_single_instance_stream`).
+    let inst_off = single_instance_offset(bytes)?;
+    let data_start = chunk.data.as_ptr() as usize;
+    let slice_start = bytes.as_ptr() as usize;
+    if slice_start < data_start || slice_start + bytes.len() > data_start + chunk.data.len() {
+        return None;
+    }
+    let stream_offset = slice_start - data_start;
+
+    pf.clear();
+    let (instance, end) = pf
+        .scan_instance(
+            chunk,
+            stream_offset + inst_off,
+            0,
+            cache,
+            progs,
+            settings,
+            0,
+            true,
+        )
+        .ok()?;
+    // Anything after the instance other than EOF (0x00) is unhandled here.
+    ends_stream(bytes, end - stream_offset).then_some(instance)
+}
+
 /// Try to render one record's BinXML via the compiled-template path.
 ///
 /// Returns `false` with `out` untouched when the record isn't covered (the
@@ -1409,36 +1432,9 @@ pub(crate) fn try_render_xml_compiled<'a>(
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> bool {
-    // Single-instance stream shape (mirrors `read_single_instance_stream`).
-    let Some(inst_off) = single_instance_offset(bytes) else {
+    let Some(instance) = preflight_record(bytes, chunk, cache, progs, pf, settings) else {
         return false;
     };
-    let data_start = chunk.data.as_ptr() as usize;
-    let slice_start = bytes.as_ptr() as usize;
-    if slice_start < data_start || slice_start + bytes.len() > data_start + chunk.data.len() {
-        return false;
-    }
-    let stream_offset = slice_start - data_start;
-
-    pf.clear();
-    let (instance, end) = match pf.scan_instance(
-        chunk,
-        stream_offset + inst_off,
-        0,
-        cache,
-        progs,
-        settings,
-        0,
-        true,
-    ) {
-        Ok(v) => v,
-        Err(PreflightBail) => return false,
-    };
-
-    // Anything after the instance other than EOF (0x00) is unhandled here.
-    if !ends_stream(bytes, end - stream_offset) {
-        return false;
-    }
 
     let start = out.len();
     match exec(
@@ -1527,9 +1523,7 @@ fn exec<'a, V: ValueSource<'a>>(
             XOp::Val { slot, in_attr } => {
                 if let Some(s) = slot_at(*slot) {
                     if pf.element(s) {
-                        return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                            "element node inside attribute value",
-                        ));
+                        return Err(element_in_attr());
                     }
                     write_val!(s, *in_attr);
                 }
@@ -1539,9 +1533,7 @@ fn exec<'a, V: ValueSource<'a>>(
                     && !pf.empty(s)
                 {
                     if pf.element(s) {
-                        return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                            "element node inside attribute value",
-                        ));
+                        return Err(element_in_attr());
                     }
                     write_lit!(*pre);
                     write_val!(s, true);
@@ -1804,7 +1796,6 @@ struct JsonCompiler<'t, 'a> {
     constraints: Vec<SlotConstraint>,
     expand_slots: Vec<u16>,
     vr: ValueRenderer,
-    formatter: sonic_rs::format::CompactFormatter,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
     separate: bool,
 }
@@ -1820,7 +1811,6 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             constraints: Vec::new(),
             expand_slots: Vec::new(),
             vr: ValueRenderer::new(),
-            formatter: sonic_rs::format::CompactFormatter,
             separate,
         }
     }
@@ -1840,9 +1830,7 @@ fn compile_json_template(
     let mut c = JsonCompiler::new(Some(tree), Vec::with_capacity(512), false);
     if is_root {
         c.lits.push(b'{');
-        c.lits.push(b'"');
-        c.lits.extend_from_slice(root.name.as_str().as_bytes());
-        c.lits.extend_from_slice(b"\":");
+        c.key_with_suffix_plain(root.name.as_str(), 0);
     }
     match c.compile_element_value(tree.root(), root_container) {
         Ok(()) => {
@@ -1887,22 +1875,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         self.tree.expect("tree-bound walk")
     }
 
-    fn flush_lit_run(&mut self) {
-        let end = self.lits.len();
-        if end > self.run_start {
-            self.ops
-                .push(JOp::Lit(LitRange(self.run_start as u32, end as u32)));
-        }
-        self.run_start = end;
-    }
-
-    fn side_range(&mut self, f: impl FnOnce(&mut Self)) -> LitRange {
-        debug_assert_eq!(self.run_start, self.lits.len(), "unflushed lit run");
-        let start = self.lits.len() as u32;
-        f(self);
-        self.run_start = self.lits.len();
-        LitRange(start, self.lits.len() as u32)
-    }
+    lit_run_methods!(JOp);
 
     /// `write_element_value` equivalent: emits the VALUE of `element` (the
     /// member key is the caller's responsibility).
@@ -2262,34 +2235,9 @@ pub(crate) fn try_render_json_compiled<'a>(
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> bool {
-    // Single-instance stream shape (mirrors `read_single_instance_stream`).
-    let Some(inst_off) = single_instance_offset(bytes) else {
+    let Some(instance) = preflight_record(bytes, chunk, cache, progs, pf, settings) else {
         return false;
     };
-    let data_start = chunk.data.as_ptr() as usize;
-    let slice_start = bytes.as_ptr() as usize;
-    if slice_start < data_start || slice_start + bytes.len() > data_start + chunk.data.len() {
-        return false;
-    }
-    let stream_offset = slice_start - data_start;
-
-    pf.clear();
-    let (instance, end) = match pf.scan_instance(
-        chunk,
-        stream_offset + inst_off,
-        0,
-        cache,
-        progs,
-        settings,
-        0,
-        true,
-    ) {
-        Ok(v) => v,
-        Err(PreflightBail) => return false,
-    };
-    if !ends_stream(bytes, end - stream_offset) {
-        return false;
-    }
 
     let start = out.len();
     match exec_json(
@@ -2448,9 +2396,7 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
         if matches!(value, BinXmlValue::StringArrayType(_)) {
             // Reused array slots must expand at every occurrence. Scalar ops
             // fall back to materialization, matching the raw source.
-            return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                "array substitution outside its expand op",
-            ));
+            return Err(model_err("array substitution outside its expand op"));
         }
         vr.write_value_text(out, value, mode)
     }
@@ -2656,9 +2602,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
                             write_lit!(*empty);
                         } else if pf.element(s) {
                             let Some(inst) = pf.nested(s) else {
-                                return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                                    "unresolved nested instance in compiled JSON",
-                                ));
+                                return Err(unresolved_nested_json());
                             };
                             out.push(b'{');
                             out.push(b'"');
@@ -2733,9 +2677,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
                     continue; // constraint guarantees elem-or-empty
                 }
                 let Some(inst) = pf.nested(s) else {
-                    return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                        "unresolved nested instance in compiled JSON",
-                    ));
+                    return Err(unresolved_nested_json());
                 };
                 let name = progs.programs[inst.prog].root_name.as_slice();
                 // `_N` suffix: static members first, then prior dynamics.
@@ -2820,9 +2762,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             self.key_with_suffix_plain(root.name.as_str(), 0);
             self.write_element_value_no_attrs_plain(root, false)?;
         } else {
-            self.lits.push(b'"');
-            self.lits.extend_from_slice(root.name.as_str().as_bytes());
-            self.lits.extend_from_slice(b"\":");
+            self.key_with_suffix_plain(root.name.as_str(), 0);
             self.write_element_value_plain(root, false)?;
         }
         self.lits.push(b'}');
@@ -2846,11 +2786,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     fn json_escaped_str_plain(&mut self, s: &str) -> Result<()> {
-        use sonic_rs::format::Formatter;
-        self.formatter
-            .write_string_fast(&mut self.lits, s, false)
-            .map_err(crate::err::EvtxError::from)?;
-        Ok(())
+        self.vr
+            .write_str_escaped(&mut self.lits, s, StringEscapeMode::Json)
     }
 
     fn json_text_plain(&mut self, text: &Text<'_>) -> Result<()> {
@@ -2859,24 +2796,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
         match text {
             Text::Utf16(value) => {
-                let bytes = value.as_bytes();
-                let units = bytes.len() / 2;
-                if units > 0 {
-                    utf16_simd::write_json_utf16le(&mut self.lits, bytes, units, false)
-                        .map_err(crate::err::EvtxError::from)?;
-                }
-                Ok(())
+                self.vr
+                    .write_utf16_escaped(&mut self.lits, *value, StringEscapeMode::Json)
             }
             Text::Utf8(value) => self.json_escaped_str_plain(value),
         }
-    }
-
-    fn write_u64_plain(&mut self, v: u64) -> Result<()> {
-        use sonic_rs::format::Formatter;
-        self.formatter
-            .write_u64(&mut self.lits, v)
-            .map_err(crate::err::EvtxError::from)?;
-        Ok(())
     }
 
     /// Pre-render a bare JSON number/bool (see `json_bare_value`).
@@ -2959,7 +2883,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         self.json_escaped_str_plain(s)?;
                     } else {
                         self.lits.extend_from_slice(b"&#");
-                        self.write_u64_plain(u64::from(*ch))?;
+                        self.vr.write_u64(&mut self.lits, u64::from(*ch))?;
                         self.lits.push(b';');
                     }
                 }
@@ -2987,9 +2911,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     if skip_elements {
                         continue;
                     }
-                    return Err(crate::err::EvtxError::FailedToCreateRecordModel(
-                        "unexpected element node in text context",
-                    ));
+                    return Err(element_in_text());
                 }
             }
         }
@@ -3121,7 +3043,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             .extend_from_slice(element.name.as_str().as_bytes());
         if suffix > 0 {
             self.lits.push(b'_');
-            self.write_u64_plain(u64::from(suffix))?;
+            self.vr.write_u64(&mut self.lits, u64::from(suffix))?;
         }
         self.lits.extend_from_slice(b"_attributes\":{");
         let wrote_any = self.attrs_object_body_plain(&element.attrs)?;

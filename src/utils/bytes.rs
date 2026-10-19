@@ -27,6 +27,13 @@
 
 use crate::err::DeserializationError;
 
+/// The first `N` bytes of `b` as an array, for slices already bounds-checked.
+///
+/// Panics if `b` is shorter than `N`.
+pub(crate) fn le<const N: usize>(b: &[u8]) -> [u8; N] {
+    b[..N].try_into().expect("caller bounds-checked")
+}
+
 /// Read `N` raw bytes at `offset`.
 ///
 /// Returns `None` if the range is out of bounds.
@@ -63,7 +70,12 @@ pub(crate) fn read_u64_le(buf: &[u8], offset: usize) -> Option<u64> {
 }
 
 #[inline]
-fn truncated(what: &'static str, offset: usize, need: usize, len: usize) -> DeserializationError {
+pub(crate) fn truncated(
+    what: &'static str,
+    offset: usize,
+    need: usize,
+    len: usize,
+) -> DeserializationError {
     DeserializationError::Truncated {
         what,
         offset: offset as u64,
