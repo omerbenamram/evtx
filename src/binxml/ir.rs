@@ -696,6 +696,11 @@ fn validate_tpl_instance<'a>(
     // Collected in place (same allocation as `values`), then rewritten. A
     // single fallible `map(..).collect::<Result<Vec<_>>>()` measured ~4.5% more
     // instructions on the records API (`records_json`, security_big_sample).
+    const _: () = assert!(
+        size_of::<BinXmlValue>() == size_of::<ValidatedValue>()
+            && align_of::<BinXmlValue>() == align_of::<ValidatedValue>(),
+        "in-place collect needs equal layouts"
+    );
     let mut values: Vec<_> = template_ref
         .values
         .into_iter()
