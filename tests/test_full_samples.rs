@@ -237,3 +237,30 @@ fn test_sample_with_zero_data_size_event() {
     }
     assert_eq!(count, 336, "Single threaded iteration failed");
 }
+
+/// Chunks share compiled templates, but a template body can reference a name
+/// stored elsewhere in its chunk. Corrupting that name in one chunk must not
+/// leak into the other chunk, whichever chunk is rendered first.
+#[test]
+fn test_shared_template_names_do_not_leak_across_chunks() {
+    const CHUNK: usize = 0x10000;
+    let mut bytes = include_bytes!("../samples/2-vss_7-System.evtx").to_vec();
+    // `Keywords` -> `Keyɷords` in chunk 1's string table.
+    bytes[0x1000 + CHUNK + 0x475] = 0x02;
+    let mut swapped = bytes.clone();
+    swapped[0x1000..0x1000 + 2 * CHUNK].rotate_left(CHUNK);
+
+    let by_id = |bytes: Vec<u8>| {
+        let mut parser = EvtxParser::from_buffer(bytes)
+            .unwrap()
+            .with_configuration(ParserSettings::new().num_threads(1));
+        parser
+            .records_json()
+            .filter_map(Result::ok)
+            .map(|r| (r.event_record_id, r.data))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let (normal, swapped) = (by_id(bytes), by_id(swapped));
+    assert!(normal.values().any(|r| r.contains("Keyɷords")));
+    assert_eq!(normal, swapped);
+}
