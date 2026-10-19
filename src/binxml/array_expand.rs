@@ -211,7 +211,7 @@ fn scalar_replacement_from_array_value<'a>(
 mod tests {
     use super::*;
     use crate::ParserSettings;
-    use crate::binxml::compiled::render_tree_xml;
+    use crate::binxml::compiled::{TemplateProgram, XmlProgram};
     use crate::model::ir::IrTree;
     use crate::model::ir::Name;
     use crate::utils::Utf16LeSlice;
@@ -580,7 +580,7 @@ mod tests {
         let tree = IrTree::new(arena, some_event);
         let settings = ParserSettings::default().indent(false);
         let mut out = Vec::new();
-        render_tree_xml(&tree, &settings, &mut out).unwrap();
+        XmlProgram::render_tree(&tree, &settings, &mut out).unwrap();
 
         let xml = String::from_utf8(out).unwrap();
         assert_eq!(

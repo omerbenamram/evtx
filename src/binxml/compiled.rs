@@ -439,8 +439,13 @@ impl TemplateProgram for XmlProgram {
     ) -> Result<()> {
         exec(instance, progs, values, chunk, cache, vr, out)
     }
+    /// The single-walker slow lane (irregular records, after
+    /// materialization), writing straight into `out`. Byte-compatible with
+    /// the cached-program lane by construction: it IS the same walk, with
+    /// zero placeholder sites.
     fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
-        render_tree_xml(tree, settings, out)
+        out.extend_from_slice(XML_DECL);
+        render_fragment_xml(tree.arena(), tree.root(), 0, settings.should_indent(), out)
     }
 }
 
@@ -567,19 +572,6 @@ fn compile_xml_template(
         }
         Err(_) => None,
     }
-}
-
-/// Render a fully materialized record tree to XML: the single-walker slow
-/// lane (irregular records, after materialization) writing straight into
-/// `out`. Byte-compatible with the cached-program lane by construction —
-/// it IS the same walk, with zero placeholder sites.
-pub(crate) fn render_tree_xml(
-    tree: &IrTree<'_>,
-    settings: &ParserSettings,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    out.extend_from_slice(XML_DECL);
-    render_fragment_xml(tree.arena(), tree.root(), 0, settings.should_indent(), out)
 }
 
 /// Render a materialized fragment subtree at `indent` (executor cold path).
@@ -1895,8 +1887,17 @@ impl TemplateProgram for JsonProgram {
     ) -> Result<()> {
         exec_json(instance, progs, values, vr, out)
     }
+    /// The single-walker slow lane, honoring `--separate-json-attributes`.
     fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
-        render_tree_json(tree, settings, out)
+        let mut c = JsonCompiler::new(
+            Some(tree),
+            std::mem::take(out),
+            settings.should_separate_json_attributes(),
+        );
+        let res = c.render_root_plain();
+        debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+        *out = c.lits;
+        res
     }
 }
 
@@ -2806,7 +2807,7 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
 // JSON materialized layer (the old JsonEmitter semantics over plain nodes).
 //
 // This layer is the sole behavioral source of truth for JSON text: both the
-// slow lane (render_tree_json) and the compiler's pre-rendering of literal
+// slow lane (`JsonProgram::render_tree`) and the compiler's pre-rendering of literal
 // content go through these `*_plain` methods, so the two lanes cannot drift.
 // ---------------------------------------------------------------------------
 //
@@ -2815,24 +2816,6 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
 // calls them for placeholder-free pieces (subtrees, literal attributes,
 // literal `Data` elements). Placeholder nodes are real errors here, mirroring
 // the legacy emitter's behavior on materialized trees.
-
-/// Render a fully materialized record tree to JSON (the single-walker slow
-/// lane), honoring `--separate-json-attributes`.
-pub(crate) fn render_tree_json(
-    tree: &IrTree<'_>,
-    settings: &ParserSettings,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut c = JsonCompiler::new(
-        Some(tree),
-        std::mem::take(out),
-        settings.should_separate_json_attributes(),
-    );
-    let res = c.render_root_plain();
-    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
-    *out = c.lits;
-    res
-}
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Mirrors `render_json_with_scope` for a materialized tree.

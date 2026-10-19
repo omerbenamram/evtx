@@ -96,11 +96,11 @@ pub(crate) fn render_tree(
     json: bool,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    use crate::binxml::compiled::{render_tree_json, render_tree_xml};
+    use crate::binxml::compiled::{JsonProgram, TemplateProgram, XmlProgram};
     if json {
-        render_tree_json(tree, settings, out)
+        JsonProgram::render_tree(tree, settings, out)
     } else {
-        render_tree_xml(tree, settings, out)
+        XmlProgram::render_tree(tree, settings, out)
     }
 }
 
@@ -316,7 +316,7 @@ mod validated_content_tests {
     #[test]
     fn repeated_array_slots_fall_back_in_both_formats() {
         use crate::binxml::compiled::{
-            RenderCaches, render_tree_json, render_tree_xml, try_render_validated,
+            JsonProgram, RenderCaches, TemplateProgram, XmlProgram, try_render_validated,
         };
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
         use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
@@ -373,9 +373,9 @@ mod validated_content_tests {
                 assert_eq!(output, b"prefix", "partial output must be rolled back");
                 let mut materialized = Vec::new();
                 if json {
-                    render_tree_json(&tree, &chunk.settings, &mut materialized).unwrap();
+                    JsonProgram::render_tree(&tree, &chunk.settings, &mut materialized).unwrap();
                 } else {
-                    render_tree_xml(&tree, &chunk.settings, &mut materialized).unwrap();
+                    XmlProgram::render_tree(&tree, &chunk.settings, &mut materialized).unwrap();
                 }
                 assert!(!String::from_utf8(materialized).unwrap().contains("x,y"));
             }
