@@ -693,32 +693,46 @@ fn validate_tpl_instance<'a>(
 ) -> Result<ValidatedInstance<'a>> {
     let (template, has_literal_array) =
         cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
-    let mut has_arrays = false;
-    let values = template_ref
+    // Collected in place (same allocation as `values`), then rewritten. A
+    // single fallible `map(..).collect::<Result<Vec<_>>>()` measured ~4.5% more
+    // instructions on the records API (`records_json`, security_big_sample).
+    let mut values: Vec<_> = template_ref
         .values
         .into_iter()
-        .map(|scalar| {
-            has_arrays |= scalar.expandable_array_len().is_some();
-            let BinXmlValue::BinXmlType(bytes) = scalar else {
-                return Ok(ValidatedValue::Scalar(scalar));
-            };
-            if bytes.is_empty() {
-                return Ok(ValidatedValue::Scalar(BinXmlValue::NullType));
-            }
-            if let Some(nested) = nested.as_deref_mut()
-                && depth < MAX_BINXML_NESTING
-                && let Some(inner) = read_single_instance_stream(bytes, chunk)?
-            {
-                let child =
-                    validate_tpl_instance(inner, chunk, cache, frags, Some(nested), depth + 1)?;
-                nested.push(child);
-                return Ok(ValidatedValue::Template(nested.len() - 1));
-            }
-            let src = Stream::chunk(chunk, &chunk.arena);
-            build_in(src, bytes, cache, frags, BuildMode::Record, depth + 1)
-                .map(ValidatedValue::Fragment)
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .map(ValidatedValue::Scalar)
+        .collect();
+    let mut has_arrays = false;
+    for value in &mut values {
+        let ValidatedValue::Scalar(scalar) = value else {
+            unreachable!()
+        };
+        has_arrays |= scalar.expandable_array_len().is_some();
+        let BinXmlValue::BinXmlType(bytes) = *scalar else {
+            continue;
+        };
+        if bytes.is_empty() {
+            *value = ValidatedValue::Scalar(BinXmlValue::NullType);
+            continue;
+        }
+        if let Some(nested) = nested.as_deref_mut()
+            && depth < MAX_BINXML_NESTING
+            && let Some(inner) = read_single_instance_stream(bytes, chunk)?
+        {
+            let child = validate_tpl_instance(inner, chunk, cache, frags, Some(nested), depth + 1)?;
+            *value = ValidatedValue::Template(nested.len());
+            nested.push(child);
+            continue;
+        }
+        let src = Stream::chunk(chunk, &chunk.arena);
+        *value = ValidatedValue::Fragment(build_in(
+            src,
+            bytes,
+            cache,
+            frags,
+            BuildMode::Record,
+            depth + 1,
+        )?);
+    }
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
         template,
