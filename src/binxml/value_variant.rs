@@ -524,6 +524,19 @@ mod error_tests {
     use super::*;
 
     #[test]
+    fn display_never_fails() {
+        for v in [
+            BinXmlValue::EvtHandle,
+            BinXmlValue::EvtXml,
+            BinXmlValue::BinXmlType(&[1, 2]),
+            BinXmlValue::BinaryArrayType,
+            BinXmlValue::EvtXmlArrayType,
+        ] {
+            assert_eq!(v.to_string(), "");
+        }
+    }
+
+    #[test]
     fn truncated_size_t_keeps_type_specific_errors() {
         let bump = Bump::new();
         for (size, what) in [(4, "sizet32"), (8, "sizet64")] {
@@ -723,12 +736,12 @@ impl<'a> Display for BinXmlValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut vr = crate::binxml::value_render::ValueRenderer::default();
         let mut writer = Vec::new();
-        vr.write_json_value_text(&mut writer, self)
-            .map_err(|_| fmt::Error)?;
-
-        match self {
-            BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Ok(()),
-            _ => write!(f, "{}", String::from_utf8(writer).unwrap()),
+        // Values with no text form (handles, nested BinXML, unsupported arrays)
+        // display as empty; `fmt::Error` here would make `to_string()` panic.
+        if vr.write_json_value_text(&mut writer, self).is_err() {
+            return Ok(());
         }
+
+        write!(f, "{}", String::from_utf8(writer).unwrap())
     }
 }
