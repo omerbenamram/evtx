@@ -5,8 +5,7 @@
 //! comma-delimited arrays, etc.). This module centralizes that logic so both
 //! renderers stay in sync and avoid allocating intermediate `String`s.
 
-use crate::binxml::compiled::value_ty;
-use crate::binxml::value_variant::{BinXmlValue, SidRef};
+use crate::binxml::value_variant::{BinXmlValue, SidRef, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
 use crate::utils::bytes::le;
