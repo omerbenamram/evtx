@@ -14,13 +14,15 @@
 //! the CLI materializes its raw input. Failed execution rolls output back
 //! before falling back.
 
+use crate::ChunkOffset;
 use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
     binxml_slice_offset_in, build_tree_from_binxml_bytes_direct,
     read_template_definition_header_at, template_body_at,
 };
-use crate::binxml::tokens::{ends_stream, single_instance_offset};
+use crate::binxml::name::read_name_link;
+use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
@@ -28,6 +30,7 @@ use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
 const INDENT_WIDTH: u16 = 2;
@@ -154,14 +157,153 @@ impl<P> ProgramCache<P> {
 /// instead of once per chunk. Shared across worker threads.
 #[derive(Default)]
 pub(crate) struct ProgramStore {
-    xml: std::sync::RwLock<AHashMap<StoreKey, Option<Arc<XmlProgram>>>>,
-    json: std::sync::RwLock<AHashMap<StoreKey, Option<Arc<JsonProgram>>>>,
+    /// Name references per template body (`None`: never shared).
+    names: std::sync::RwLock<AHashMap<TemplateKey, Option<Arc<NameRefs>>>>,
+    xml: Shard<XmlProgram>,
+    json: Shard<JsonProgram>,
     hasher: ahash::RandomState,
 }
 
-/// Content identity of a compiled program: template identity (GUID, size,
-/// definition-bytes hash) plus the compile parameters.
-type StoreKey = ([u8; 16], u32, u64, u16, bool);
+/// Template identity: GUID, data size, body-bytes hash.
+type TemplateKey = ([u8; 16], u32, u64);
+
+/// The names a body resolves in one chunk: hash of the name entries the body
+/// does not hold, and the definition offset when its parse depends on it.
+type NamesKey = (u64, Option<u32>);
+
+/// Content identity of a compiled program: template identity and the names
+/// it resolves, plus the compile parameters.
+type StoreKey = (TemplateKey, NamesKey, u16, bool);
+
+type Shard<P> = std::sync::RwLock<AHashMap<StoreKey, Option<Arc<P>>>>;
+
+impl ProgramStore {
+    /// Content identity of the template at `def_offset` in `chunk`.
+    fn key(&self, chunk: &EvtxChunk<'_>, def_offset: u32) -> Option<(TemplateKey, NamesKey)> {
+        let data = chunk.data;
+        let header = read_template_definition_header_at(data, def_offset).ok()?;
+        let body = template_body_at(data, def_offset, &header).ok()?;
+        let template = (header.guid, header.data_size, self.hasher.hash_one(body));
+        // Read guard dropped before the write below; hashing runs unlocked.
+        let known = self
+            .names
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&template)
+            .cloned();
+        let refs = match known {
+            Some(refs) => refs,
+            None => {
+                let refs = NameRefs::of(chunk, def_offset, body.len()).map(Arc::new);
+                self.names
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(template, refs.clone());
+                refs
+            }
+        }?;
+        Some((template, refs.key(data, def_offset, &self.hasher)?))
+    }
+}
+
+/// The names a template body references. Bodies name elements by chunk
+/// offset, often outside the body, so equal bodies in two chunks can resolve
+/// different names.
+struct NameRefs {
+    /// Where the body was walked. Name offsets are absolute and a name at
+    /// a body position is parsed inline, so the same bytes elsewhere parse
+    /// the same only if no referenced name moves into or out of the body.
+    body: std::ops::Range<usize>,
+    /// Some name starts inside `body`.
+    inside: bool,
+    /// Names whose entries the body does not wholly hold.
+    outside: Vec<ChunkOffset>,
+}
+
+impl NameRefs {
+    /// `None` when the body does not parse within its bounds, or embeds
+    /// BinXML (whose names and templates are not tracked).
+    fn of(chunk: &EvtxChunk<'_>, def_offset: u32, len: usize) -> Option<Self> {
+        let start = def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
+        let mut refs = NameRefs {
+            body: start..start + len,
+            inside: false,
+            outside: Vec::new(),
+        };
+        let bump = bumpalo::Bump::new();
+        // Cut at the body end: a token read past it uses bytes the key misses.
+        let src = Stream {
+            data: chunk.data.get(..start + len)?,
+            ..Stream::chunk(chunk, &bump)
+        };
+        walk_tokens(src, start, len, true, &mut refs).ok()?;
+        // Entries wholly inside the body are covered by the body hash.
+        let body = &refs.body;
+        refs.outside.retain(|&offset| {
+            name_entry(chunk.data, offset)
+                .is_none_or(|e| (offset as usize) < body.start || e.end > body.end)
+        });
+        Some(refs)
+    }
+
+    /// The names the body at `def_offset` resolves in `data`.
+    fn key(&self, data: &[u8], def_offset: u32, hasher: &ahash::RandomState) -> Option<NamesKey> {
+        let start = def_offset as usize + TEMPLATE_DEFINITION_HEADER_SIZE;
+        let body = start..start + self.body.len();
+        if body != self.body
+            && (self.inside || self.outside.iter().any(|&o| body.contains(&(o as usize))))
+        {
+            return None;
+        }
+        let mut state = hasher.build_hasher();
+        for &offset in &self.outside {
+            state.write(&data[name_entry(data, offset)?]);
+        }
+        Some((state.finish(), self.inside.then_some(def_offset)))
+    }
+
+    fn name(&mut self, offset: ChunkOffset) -> Result<()> {
+        self.inside |= self.body.contains(&(offset as usize));
+        if !self.outside.contains(&offset) {
+            self.outside.push(offset);
+        }
+        Ok(())
+    }
+}
+
+/// The rendered part (length + UTF-16 chars) of the string-table entry at
+/// `offset`, after its link.
+fn name_entry(data: &[u8], offset: ChunkOffset) -> Option<std::ops::Range<usize>> {
+    let mut cursor = ByteCursor::with_pos(data, offset as usize).ok()?;
+    read_name_link(&mut cursor).ok()?;
+    let start = cursor.pos();
+    let len = cursor.u16_named("name_len").ok()?;
+    cursor.take_bytes(2 * usize::from(len), "name").ok()?;
+    Some(start..cursor.pos())
+}
+
+impl<'a> TokenSink<'a> for NameRefs {
+    fn open_start(&mut self, name: ChunkOffset) -> Result<()> {
+        self.name(name)
+    }
+    fn attribute(&mut self, name: ChunkOffset) -> Result<()> {
+        self.name(name)
+    }
+    fn entity_ref(&mut self, name: ChunkOffset) -> Result<()> {
+        self.name(name)
+    }
+    fn pi_target(&mut self, name: ChunkOffset) -> Result<()> {
+        self.name(name)
+    }
+    fn value(&mut self, value: BinXmlValue<'a>) -> Result<()> {
+        match value {
+            BinXmlValue::BinXmlType(_) => Err(EvtxError::FailedToCreateRecordModel(
+                "embedded BinXML in template body",
+            )),
+            _ => Ok(()),
+        }
+    }
+}
 
 impl std::fmt::Debug for ProgramStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -171,17 +313,17 @@ impl std::fmt::Debug for ProgramStore {
 
 /// Per-format shard access used by `get_or_compile`.
 pub(crate) trait StoredProgram: TemplateProgram {
-    fn shard(store: &ProgramStore) -> &std::sync::RwLock<AHashMap<StoreKey, Option<Arc<Self>>>>;
+    fn shard(store: &ProgramStore) -> &Shard<Self>;
 }
 
 impl StoredProgram for XmlProgram {
-    fn shard(store: &ProgramStore) -> &std::sync::RwLock<AHashMap<StoreKey, Option<Arc<Self>>>> {
+    fn shard(store: &ProgramStore) -> &Shard<Self> {
         &store.xml
     }
 }
 
 impl StoredProgram for JsonProgram {
-    fn shard(store: &ProgramStore) -> &std::sync::RwLock<AHashMap<StoreKey, Option<Arc<Self>>>> {
+    fn shard(store: &ProgramStore) -> &Shard<Self> {
         &store.json
     }
 }
@@ -297,8 +439,13 @@ impl TemplateProgram for XmlProgram {
     ) -> Result<()> {
         exec(instance, progs, values, chunk, cache, vr, out)
     }
+    /// The single-walker slow lane (irregular records, after
+    /// materialization), writing straight into `out`. Byte-compatible with
+    /// the cached-program lane by construction: it IS the same walk, with
+    /// zero placeholder sites.
     fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
-        render_tree_xml(tree, settings, out)
+        out.extend_from_slice(XML_DECL);
+        render_fragment_xml(tree.arena(), tree.root(), 0, settings.should_indent(), out)
     }
 }
 
@@ -425,19 +572,6 @@ fn compile_xml_template(
         }
         Err(_) => None,
     }
-}
-
-/// Render a fully materialized record tree to XML: the single-walker slow
-/// lane (irregular records, after materialization) writing straight into
-/// `out`. Byte-compatible with the cached-program lane by construction —
-/// it IS the same walk, with zero placeholder sites.
-pub(crate) fn render_tree_xml(
-    tree: &IrTree<'_>,
-    settings: &ParserSettings,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    out.extend_from_slice(XML_DECL);
-    render_fragment_xml(tree.arena(), tree.root(), 0, settings.should_indent(), out)
 }
 
 /// Render a materialized fragment subtree at `indent` (executor cold path).
@@ -982,7 +1116,9 @@ pub(crate) struct Instance<S = SlotRange> {
 pub(crate) struct Preflight {
     slots: Vec<RawSlot>,
     nested: Vec<Instance>,
-    ansi: Vec<String>,
+    /// Decoded ANSI values, concatenated; `ansi_spans[i]` is value `i`.
+    ansi: String,
+    ansi_spans: Vec<(u32, u32)>,
     /// NUL-filter scratch for ANSI decoding, reset before every value.
     ansi_scratch: bumpalo::Bump,
     /// Per string-array slot: `(start, count)` into `array_items`.
@@ -1068,10 +1204,16 @@ impl From<EvtxError> for PreflightBail {
 }
 
 impl Preflight {
+    fn ansi(&self, i: usize) -> &str {
+        let (start, end) = self.ansi_spans[i];
+        &self.ansi[start as usize..end as usize]
+    }
+
     fn clear(&mut self) {
         self.slots.clear();
         self.nested.clear();
         self.ansi.clear();
+        self.ansi_spans.clear();
         self.arrays.clear();
         self.array_items.clear();
     }
@@ -1092,7 +1234,7 @@ impl Preflight {
             // The decoded string is empty when sized 0 or NUL-led (mirrors
             // `utf16_by_char_count` truncation).
             value_ty::UTF16_STRING => s.len == 0 || s.bytes(data).starts_with(&[0, 0]),
-            value_ty::ANSI_STRING => s.ansi_idx().is_none_or(|i| self.ansi[i].is_empty()),
+            value_ty::ANSI_STRING => s.ansi_idx().is_none_or(|i| self.ansi(i).is_empty()),
             value_ty::BINARY | value_ty::BIN_XML => s.len == 0,
             _ => false,
         }
@@ -1205,10 +1347,11 @@ impl Preflight {
                 // Decode ANSI now so the executor stays infallible.
                 let codec = chunk.settings.get_ansi_codec();
                 self.ansi_scratch.reset();
-                let decoded =
-                    decode_ansi_value(codec, &data[off..end], &self.ansi_scratch)?.into_owned();
-                slot.aux = self.ansi.len() as u32;
-                self.ansi.push(decoded);
+                let decoded = decode_ansi_value(codec, &data[off..end], &self.ansi_scratch)?;
+                slot.aux = self.ansi_spans.len() as u32;
+                let start = self.ansi.len() as u32;
+                self.ansi.push_str(&decoded);
+                self.ansi_spans.push((start, self.ansi.len() as u32));
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
@@ -1317,8 +1460,9 @@ fn get_or_compile<'a, P: StoredProgram>(
 
     // Cross-chunk store, keyed by template content identity.
     let store = &*chunk.program_store;
-    let store_key = template_content_key(chunk, def_offset, &store.hasher)
-        .map(|(guid, size, hash)| (guid, size, hash, base_indent, is_root));
+    let store_key = store
+        .key(chunk, def_offset)
+        .map(|(template, names)| (template, names, base_indent, is_root));
     // Lock sections are bare map reads/inserts (compilation happens outside),
     // so a poisoned lock cannot hold inconsistent data: recover and continue.
     if let Some(sk) = store_key.as_ref()
@@ -1348,17 +1492,6 @@ fn get_or_compile<'a, P: StoredProgram>(
             .insert(sk, compiled.clone());
     }
     progs.insert(key, compiled)
-}
-
-/// Template content identity at `def_offset`: (GUID, data size, bytes hash).
-fn template_content_key(
-    chunk: &EvtxChunk<'_>,
-    def_offset: u32,
-    hasher: &ahash::RandomState,
-) -> Option<([u8; 16], u32, u64)> {
-    let header = read_template_definition_header_at(chunk.data, def_offset).ok()?;
-    let body = template_body_at(chunk.data, def_offset, &header).ok()?;
-    Some((header.guid, header.data_size, hasher.hash_one(body)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1763,8 +1896,17 @@ impl TemplateProgram for JsonProgram {
     ) -> Result<()> {
         exec_json(instance, progs, values, vr, out)
     }
+    /// The single-walker slow lane, honoring `--separate-json-attributes`.
     fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
-        render_tree_json(tree, settings, out)
+        let mut c = JsonCompiler::new(
+            Some(tree),
+            std::mem::take(out),
+            settings.should_separate_json_attributes(),
+        );
+        let res = c.render_root_plain();
+        debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+        *out = c.lits;
+        res
     }
 }
 
@@ -2279,7 +2421,7 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
             out,
             s.ty,
             s.bytes(self.data),
-            s.ansi_idx().map(|i| self.pf.ansi[i].as_str()),
+            s.ansi_idx().map(|i| self.pf.ansi(i)),
             mode,
         )
     }
@@ -2674,7 +2816,7 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
 // JSON materialized layer (the old JsonEmitter semantics over plain nodes).
 //
 // This layer is the sole behavioral source of truth for JSON text: both the
-// slow lane (render_tree_json) and the compiler's pre-rendering of literal
+// slow lane (`JsonProgram::render_tree`) and the compiler's pre-rendering of literal
 // content go through these `*_plain` methods, so the two lanes cannot drift.
 // ---------------------------------------------------------------------------
 //
@@ -2683,24 +2825,6 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
 // calls them for placeholder-free pieces (subtrees, literal attributes,
 // literal `Data` elements). Placeholder nodes are real errors here, mirroring
 // the legacy emitter's behavior on materialized trees.
-
-/// Render a fully materialized record tree to JSON (the single-walker slow
-/// lane), honoring `--separate-json-attributes`.
-pub(crate) fn render_tree_json(
-    tree: &IrTree<'_>,
-    settings: &ParserSettings,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    let mut c = JsonCompiler::new(
-        Some(tree),
-        std::mem::take(out),
-        settings.should_separate_json_attributes(),
-    );
-    let res = c.render_root_plain();
-    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
-    *out = c.lits;
-    res
-}
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Mirrors `render_json_with_scope` for a materialized tree.
@@ -3263,9 +3387,61 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn chunk_remains_send() {
         fn assert_send<T: Send>() {}
         assert_send::<crate::EvtxChunk<'static>>();
+    }
+
+    /// Embedded BinXML names elements the body's name walk does not see, so
+    /// such a body must not be shared across chunks.
+    #[test]
+    fn name_refs_reject_embedded_binxml() {
+        // Value token, BinXml type, 1-byte payload (EOF); then EOF.
+        let body = [0x05, 0x21, 0x01, 0x00, 0x00, 0x00];
+        let bump = bumpalo::Bump::new();
+        let src = Stream {
+            data: &body,
+            chunk: None,
+            ansi_codec: encoding_rs::WINDOWS_1252,
+            bump: &bump,
+        };
+        let mut refs = NameRefs {
+            body: 0..body.len(),
+            inside: false,
+            outside: Vec::new(),
+        };
+        assert!(walk_tokens(src, 0, body.len(), true, &mut refs).is_err());
+    }
+
+    /// Name offsets are absolute, so the same body bytes at another offset
+    /// share a key only if no name moves into or out of the body.
+    #[test]
+    fn name_refs_key_rejects_moved_bodies() {
+        // One string-table entry at 30: link, length 1, "A".
+        let mut data = [0u8; 40];
+        data[36] = 1;
+        data[38] = b'A';
+        let hasher = ahash::RandomState::new();
+        let start = 100 + TEMPLATE_DEFINITION_HEADER_SIZE;
+        let refs = |inside| NameRefs {
+            body: start..start + 16,
+            inside,
+            outside: vec![30],
+        };
+        let at_100 = refs(false).key(&data, 100, &hasher);
+        assert!(matches!(at_100, Some((_, None))));
+        assert!(matches!(
+            refs(true).key(&data, 100, &hasher),
+            Some((_, Some(100)))
+        ));
+        // Moved, nothing crosses the body boundary: same key.
+        assert_eq!(refs(false).key(&data, 200, &hasher), at_100);
+        // A name was inside the old body.
+        assert_eq!(refs(true).key(&data, 200, &hasher), None);
+        // The outside name lands inside the moved body (24..40).
+        assert_eq!(refs(false).key(&data, 0, &hasher), None);
     }
 }

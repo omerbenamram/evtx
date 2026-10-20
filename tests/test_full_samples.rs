@@ -237,3 +237,49 @@ fn test_sample_with_zero_data_size_event() {
     }
     assert_eq!(count, 336, "Single threaded iteration failed");
 }
+
+/// Chunks share compiled templates, but a template body can reference a name
+/// stored elsewhere in its chunk. Corrupting that name in one chunk must not
+/// leak into the other chunk, whichever chunk is rendered first.
+#[test]
+fn test_shared_template_names_do_not_leak_across_chunks() {
+    const CHUNK: usize = 0x10000;
+    let mut bytes = include_bytes!("../samples/2-vss_7-System.evtx").to_vec();
+    // `Keywords` -> `Keyɷords` in chunk 1's string table.
+    bytes[0x1000 + CHUNK + 0x475] = 0x02;
+    let mut swapped = bytes.clone();
+    swapped[0x1000..0x1000 + 2 * CHUNK].rotate_left(CHUNK);
+
+    let parser = |bytes: &[u8]| {
+        EvtxParser::from_buffer(bytes.to_vec())
+            .unwrap()
+            .with_configuration(ParserSettings::new().num_threads(1))
+    };
+    // Records API (validated lane).
+    let by_id = |bytes: &[u8]| {
+        parser(bytes)
+            .records_json()
+            .filter_map(Result::ok)
+            .map(|r| (r.event_record_id, r.data))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let normal = by_id(&bytes);
+    assert!(normal.values().any(|r| r.contains("Keyɷords")));
+    assert_eq!(normal, by_id(&swapped));
+
+    // CLI chunk lane (raw bytes): chunk 0 and 1 trade places.
+    for json in [true, false] {
+        let chunks = |bytes: &[u8]| {
+            let mut parser = parser(bytes);
+            let chunks: Vec<_> = if json {
+                parser.chunks_json_bytes(false).map(|c| c.data).collect()
+            } else {
+                parser.chunks_xml_bytes(false).map(|c| c.data).collect()
+            };
+            chunks
+        };
+        let mut moved = chunks(&swapped);
+        moved.swap(0, 1);
+        assert_eq!(chunks(&bytes), moved, "json: {json}");
+    }
+}
