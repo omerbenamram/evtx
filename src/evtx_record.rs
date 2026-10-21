@@ -13,6 +13,7 @@ pub use jiff::tz::Offset;
 pub type RecordId = u64;
 
 pub(crate) const EVTX_RECORD_HEADER_SIZE: usize = 24;
+pub(crate) const EVTX_RECORD_MAGIC: &[u8; 4] = b"\x2a\x2a\x00\x00";
 
 #[derive(Debug, Clone)]
 pub struct EvtxRecord<'a> {
@@ -22,6 +23,8 @@ pub struct EvtxRecord<'a> {
     pub(crate) content: RecordContent<'a>,
     pub binxml_offset: u64,
     pub binxml_size: u32,
+    /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
+    pub recovered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +39,8 @@ pub struct SerializedEvtxRecord<T> {
     pub event_record_id: RecordId,
     pub timestamp: Timestamp,
     pub data: T,
+    /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
+    pub recovered: bool,
 }
 
 impl SerializedEvtxRecord<Vec<u8>> {
@@ -45,6 +50,7 @@ impl SerializedEvtxRecord<Vec<u8>> {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
             data: String::from_utf8(self.data).map_err(crate::err::SerializationError::from)?,
+            recovered: self.recovered,
         })
     }
 }
@@ -54,7 +60,7 @@ impl EvtxRecordHeader {
         let _ = bytes::slice_r(buf, offset, EVTX_RECORD_HEADER_SIZE, "EVTX record header")?;
 
         let magic = bytes::read_array_r::<4>(buf, offset, "record header magic")?;
-        if &magic != b"\x2a\x2a\x00\x00" {
+        if &magic != EVTX_RECORD_MAGIC {
             return Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic });
         }
 
@@ -116,6 +122,7 @@ impl<'a> EvtxRecord<'a> {
             timestamp,
             data: serde_json::from_str(&record_with_json.data)
                 .map_err(crate::err::SerializationError::from)?,
+            recovered: record_with_json.recovered,
         })
     }
 
@@ -156,6 +163,7 @@ impl<'a> EvtxRecord<'a> {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
             data,
+            recovered: self.recovered,
         })
     }
 

@@ -2,10 +2,12 @@ use crate::err::{
     ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError,
 };
 
-use crate::evtx_record::{EVTX_RECORD_HEADER_SIZE, EvtxRecord, EvtxRecordHeader};
+use crate::evtx_record::{
+    EVTX_RECORD_HEADER_SIZE, EVTX_RECORD_MAGIC, EvtxRecord, EvtxRecordHeader,
+};
 use crate::utils::bytes;
 
-use log::{info, trace};
+use log::{debug, info, trace};
 
 use crate::binxml::ir::{IrTemplateCache, build_record_content};
 use crate::string_cache::StringCache;
@@ -171,6 +173,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
             exhausted: false,
+            live_until: 0,
         }
     }
 
@@ -228,26 +231,34 @@ impl<'a> Iterator for IterChunkRecords<'a> {
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         let chunk = self.raw.chunk;
-        let raw = match self.raw.next()? {
-            Ok(raw) => raw,
-            Err(err) => return Some(Err(err)),
-        };
+        loop {
+            let raw = match self.raw.next()? {
+                Ok(raw) => raw,
+                Err(err) => return Some(Err(err)),
+            };
 
-        let content = match build_record_content(raw.bytes, chunk, &mut self.ir_template_cache)
-            .map_err(|err| EvtxError::record(raw.event_record_id, err))
-        {
-            Ok(content) => content,
-            Err(err) => return Some(Err(err)),
-        };
+            let content = match build_record_content(raw.bytes, chunk, &mut self.ir_template_cache)
+            {
+                Ok(content) => content,
+                // Carved hits that don't parse are noise, not errors.
+                Err(err) if raw.recovered => {
+                    debug!("Skipping carved record {}: {err:?}", raw.event_record_id);
+                    self.raw.rescan_after(&raw);
+                    continue;
+                }
+                Err(err) => return Some(Err(EvtxError::record(raw.event_record_id, err))),
+            };
 
-        Some(Ok(EvtxRecord {
-            chunk,
-            event_record_id: raw.event_record_id,
-            timestamp: raw.timestamp,
-            content,
-            binxml_offset: raw.binxml_offset,
-            binxml_size: raw.bytes.len() as u32,
-        }))
+            return Some(Ok(EvtxRecord {
+                chunk,
+                event_record_id: raw.event_record_id,
+                timestamp: raw.timestamp,
+                content,
+                binxml_offset: raw.binxml_offset,
+                binxml_size: raw.bytes.len() as u32,
+                recovered: raw.recovered,
+            }));
+        }
     }
 }
 
@@ -257,6 +268,8 @@ pub(crate) struct RawRecord<'a> {
     pub(crate) timestamp: crate::evtx_record::Timestamp,
     pub(crate) binxml_offset: u64,
     pub(crate) bytes: &'a [u8],
+    /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
+    pub(crate) recovered: bool,
 }
 
 /// Iterator over raw record windows. Created by [`EvtxChunk::iter_raw`].
@@ -264,28 +277,65 @@ pub(crate) struct IterRawRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
+    /// Carved records before this offset are live (resynced after a corrupt record).
+    live_until: u64,
 }
 
 impl<'a> Iterator for IterRawRecords<'a> {
     type Item = std::result::Result<RawRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        if self.exhausted
-            || self.offset_from_chunk_start >= u64::from(self.chunk.header.free_space_offset)
-        {
+        let free_space_offset = u64::from(self.chunk.header.free_space_offset);
+        if !self.exhausted && self.offset_from_chunk_start < free_space_offset {
+            match self.read_record(false) {
+                Some(Ok(raw)) => return Some(Ok(raw)),
+                Some(Err(err)) => {
+                    self.exhausted = true;
+                    self.live_until = free_space_offset;
+                    return Some(Err(err));
+                }
+                None => {}
+            }
+        }
+        self.exhausted = true;
+        if !self.chunk.settings.should_recover_records() {
             return None;
         }
-        let item = self.read_record();
-        // We currently do not try to recover after an invalid record.
-        if !matches!(item, Some(Ok(_))) {
-            self.exhausted = true;
-        }
-        item
+        self.carve_record().map(Ok)
     }
 }
 
 impl<'a> IterRawRecords<'a> {
-    fn read_record(&mut self) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
+    /// Scan the rest of the chunk (past the last valid record, or from 512 in a cleared chunk)
+    /// for stale records. A hit needs the record magic and a matching trailing size copy.
+    fn carve_record(&mut self) -> Option<RawRecord<'a>> {
+        let data = self.chunk.data;
+        loop {
+            let from = (self.offset_from_chunk_start as usize).min(data.len());
+            let Some(hit) = data[from..].windows(4).position(|w| w == EVTX_RECORD_MAGIC) else {
+                self.offset_from_chunk_start = data.len() as u64;
+                return None;
+            };
+            let pos = (from + hit) as u64;
+            self.offset_from_chunk_start = pos;
+            // On success `read_record` advances past the record.
+            if let Some(Ok(raw)) = self.read_record(true) {
+                return Some(raw);
+            }
+            self.offset_from_chunk_start = pos + 1;
+        }
+    }
+
+    /// Resume carving just after `raw`'s magic, for a hit that turned out to be noise
+    /// (real records may sit inside the span it claimed).
+    pub(crate) fn rescan_after(&mut self, raw: &RawRecord<'_>) {
+        self.offset_from_chunk_start = raw.binxml_offset - EVTX_RECORD_HEADER_SIZE as u64 + 1;
+    }
+
+    fn read_record(
+        &mut self,
+        carving: bool,
+    ) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
         let chunk = self.chunk;
         let record_start = self.offset_from_chunk_start;
         // `free_space_offset` comes from the file and may point past the chunk;
@@ -314,8 +364,6 @@ impl<'a> IterRawRecords<'a> {
 
         let binxml_data_size = match record_header.record_data_size() {
             Ok(size) => size,
-            //The evtx record is corrupted, skip the rest of the chunk
-            //It could be interesting to carve the rest of the chunk to find the next EVTX record header magic `2a2a0000`
             Err(err) => return Some(Err(err)),
         };
 
@@ -327,6 +375,15 @@ impl<'a> IterRawRecords<'a> {
             return Some(Err(EvtxError::record(
                 record_header.event_record_id,
                 EvtxError::FailedToCreateRecordModel("record BinXML slice is out of bounds"),
+            )));
+        }
+
+        // A carved hit must also end with the copy of its size.
+        if carving
+            && bytes::read_u32_le(chunk.data, binxml_end as usize) != Some(record_header.data_size)
+        {
+            return Some(Err(EvtxError::FailedToCreateRecordModel(
+                "carved record size copy mismatch",
             )));
         }
 
@@ -343,6 +400,7 @@ impl<'a> IterRawRecords<'a> {
             timestamp: record_header.timestamp,
             binxml_offset: binxml_start,
             bytes,
+            recovered: carving && record_start >= self.live_until,
         }))
     }
 }

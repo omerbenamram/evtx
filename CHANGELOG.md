@@ -8,6 +8,20 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `ParserSettings::recover_records` / `evtx_dump --recover-records` carve stale
+  records from unallocated chunk space: cleared chunks (reset header, old data)
+  and the slack past a chunk's last record. A hit needs the record magic and a
+  matching trailing size copy. Carved records have `recovered: true` (on
+  `EvtxRecord` and `SerializedEvtxRecord`); the record iterators skip ones that
+  fail to parse or render. `evtx_dump` marks them with `Record N (recovered)`, a
+  top-level `"recovered": true` in JSON, and `<!-- recovered -->` in XML. With
+  recovery on, the walk also resyncs past a corrupt record; records found that
+  way before `free_space_offset` stay live and their errors are reported.
+  Thanks @forensicmatt for the original work in #189.
+- **Breaking:** `SerializedEvtxRecord` has a new `recovered` field.
+
 ### Changed
 
 - **Breaking:** ANSI strings are decoded with `encoding_rs` instead of the
