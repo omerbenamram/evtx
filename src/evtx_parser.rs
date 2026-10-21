@@ -80,7 +80,8 @@ fn render_chunk<P: StoredProgram>(
     let mut preflight = Preflight::default();
     let mut value_renderer = ValueRenderer::new();
 
-    for raw in chunk_ref.iter_raw() {
+    let mut raw_records = chunk_ref.iter_raw();
+    while let Some(raw) = raw_records.next() {
         let raw = match raw {
             Ok(raw) => raw,
             Err(err) => {
@@ -88,14 +89,16 @@ fn render_chunk<P: StoredProgram>(
                 continue;
             }
         };
-        let start = data.len();
+        let record_start = data.len();
         let event_record_id = raw.event_record_id;
         if record_numbers {
             use std::io::Write;
             // Matches the CLI's legacy `Record N` banner; baked in
             // here so a chunk stays a single consumer-side write.
-            let _ = writeln!(&mut data, "Record {}", event_record_id);
+            let suffix = if raw.recovered { " (recovered)" } else { "" };
+            let _ = writeln!(&mut data, "Record {}{}", event_record_id, suffix);
         }
+        let body_start = data.len();
         let compiled_done = try_render_compiled(
             raw.bytes,
             chunk_ref,
@@ -117,6 +120,9 @@ fn render_chunk<P: StoredProgram>(
         };
         match rendered {
             Ok(()) => {
+                if raw.recovered {
+                    P::mark_recovered(&mut data, body_start);
+                }
                 data.push(b'\n');
                 items.push(RenderedChunkItem::Record {
                     event_record_id,
@@ -124,8 +130,13 @@ fn render_chunk<P: StoredProgram>(
                 });
             }
             Err(err) => {
-                data.truncate(start);
-                items.push(RenderedChunkItem::Failed(err));
+                data.truncate(record_start);
+                if raw.recovered {
+                    debug!("Skipping carved record {event_record_id}: {err:?}");
+                    raw_records.rescan_after(&raw);
+                } else {
+                    items.push(RenderedChunkItem::Failed(err));
+                }
             }
         }
     }
@@ -241,6 +252,9 @@ pub struct ParserSettings {
     indent: bool,
     /// Controls the ANSI code page used to deserialize ANSI strings inside the xml document.
     ansi_codec: AnsiCodec,
+    /// If enabled, also carve stale records from unallocated chunk space
+    /// (cleared chunks and the slack past the last record).
+    recover_records: bool,
     /// Optional offline WEVT template cache used as a fallback when embedded EVTX templates
     /// are missing/corrupt (common in carved/dirty logs).
     #[cfg(feature = "wevt_templates")]
@@ -254,7 +268,8 @@ impl Debug for ParserSettings {
             .field("validate_checksums", &self.validate_checksums)
             .field("separate_json_attributes", &self.separate_json_attributes)
             .field("indent", &self.indent)
-            .field("ansi_codec", &self.ansi_codec.name());
+            .field("ansi_codec", &self.ansi_codec.name())
+            .field("recover_records", &self.recover_records);
 
         #[cfg(feature = "wevt_templates")]
         ds.field("wevt_cache", &self.wevt_cache.is_some());
@@ -270,6 +285,7 @@ impl PartialEq for ParserSettings {
             && self.validate_checksums == other.validate_checksums
             && self.separate_json_attributes == other.separate_json_attributes
             && self.indent == other.indent
+            && self.recover_records == other.recover_records
     }
 }
 
@@ -281,6 +297,7 @@ impl Default for ParserSettings {
             separate_json_attributes: false,
             indent: true,
             ansi_codec: WINDOWS_1252,
+            recover_records: false,
             #[cfg(feature = "wevt_templates")]
             wevt_cache: None,
         }
@@ -346,6 +363,27 @@ impl ParserSettings {
         self
     }
 
+    /// Also yield records carved from unallocated chunk space (cleared chunks, chunk slack).
+    /// Such records have `recovered` set; the record iterators skip ones that fail to parse
+    /// or render. `evtx_dump --recover-records` marks them in its output.
+    ///
+    /// ```rust
+    /// # use evtx::{EvtxParser, ParserSettings};
+    /// # let fp = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/security.evtx");
+    /// let settings = ParserSettings::new().recover_records(true);
+    /// let mut parser = EvtxParser::from_path(fp).unwrap().with_configuration(settings);
+    /// for record in parser.records_json().filter_map(Result::ok) {
+    ///     if record.recovered {
+    ///         println!("carved record {}", record.event_record_id);
+    ///     }
+    /// }
+    /// ```
+    pub fn recover_records(mut self, recover: bool) -> Self {
+        self.recover_records = recover;
+
+        self
+    }
+
     pub(crate) fn get_ansi_codec(&self) -> AnsiCodec {
         self.ansi_codec
     }
@@ -361,6 +399,10 @@ impl ParserSettings {
 
     pub(crate) fn should_indent(&self) -> bool {
         self.indent
+    }
+
+    pub(crate) fn should_recover_records(&self) -> bool {
+        self.recover_records
     }
 }
 
@@ -661,7 +703,18 @@ impl<T: ReadSeek> EvtxParser<T> {
     ) -> impl Iterator<Item = Result<U>> + 'a {
         self.chunk_pipeline(
             |err| vec![Err(err)],
-            move |chunk| chunk.iter().map(f.clone()).collect(),
+            move |chunk| {
+                let mut f = f.clone();
+                chunk
+                    .iter()
+                    .filter_map(|record| {
+                        let recovered = record.as_ref().is_ok_and(|r| r.recovered);
+                        let out = f(record);
+                        // Carved hits that fail to render are noise, like ones that fail to build.
+                        (!recovered || out.is_ok()).then_some(out)
+                    })
+                    .collect()
+            },
         )
         .flatten()
     }

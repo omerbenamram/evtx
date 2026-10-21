@@ -314,15 +314,33 @@ impl std::fmt::Debug for ProgramStore {
 /// Per-format shard access used by `get_or_compile`.
 pub(crate) trait StoredProgram: TemplateProgram {
     fn shard(store: &ProgramStore) -> &Shard<Self>;
+    /// Tag the record rendered at `out[start..]` as carved (CLI output).
+    fn mark_recovered(out: &mut Vec<u8>, start: usize);
 }
 
 impl StoredProgram for XmlProgram {
     fn shard(store: &ProgramStore) -> &Shard<Self> {
         &store.xml
     }
+    fn mark_recovered(out: &mut Vec<u8>, start: usize) {
+        if out[start..].starts_with(XML_DECL) {
+            let at = start + XML_DECL.len();
+            out.splice(at..at, b"<!-- recovered -->\n".iter().copied());
+        }
+    }
 }
 
 impl StoredProgram for JsonProgram {
+    fn mark_recovered(out: &mut Vec<u8>, start: usize) {
+        if out.get(start) == Some(&b'{') {
+            let mark: &[u8] = if out.get(start + 1) == Some(&b'\n') {
+                b"\n  \"recovered\": true,"
+            } else {
+                b"\"recovered\":true,"
+            };
+            out.splice(start + 1..start + 1, mark.iter().copied());
+        }
+    }
     fn shard(store: &ProgramStore) -> &Shard<Self> {
         &store.json
     }

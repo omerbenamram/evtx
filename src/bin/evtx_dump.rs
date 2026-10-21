@@ -147,6 +147,7 @@ impl EvtxDump {
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
             .ansi_codec(ansi_codec)
+            .recover_records(matches.get_flag("recover-records"))
             .wevt_cache(wevt_cache);
 
         Ok(EvtxDump {
@@ -476,6 +477,12 @@ fn main() -> Result<()> {
                 .action(ArgAction::SetTrue)
                 .help(indoc!("When set, chunks with invalid checksums will not be parsed. \
                 Usually dirty files have bad checksums, so using this flag will result in fewer records.")),
+        )
+        .arg(
+            Arg::new("recover-records")
+                .long("recover-records")
+                .action(ArgAction::SetTrue)
+                .help("Also carve deleted/stale records from unallocated chunk space (cleared chunks, chunk slack)."),
         )
         .arg(
             Arg::new("no-indent")
