@@ -119,17 +119,6 @@ jobs:
           LLVM_TOOLS_PATH=$(rustc --print sysroot)/lib/rustlib/${{ matrix.target }}/bin
           echo "PATH=$LLVM_TOOLS_PATH:$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Set up Homebrew (macOS only)
-        if: runner.os == 'macOS'
-        id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-
-      - name: Install LLVM 19 (macOS only)
-        if: runner.os == 'macOS'
-        run: |
-          brew install llvm@19
-          echo "$(brew --prefix llvm@19)/bin" >> $GITHUB_PATH
-
       - name: Install Cross toolchain (zig)
         if: matrix.build == 'macos-aarch64' || matrix.build == 'linux-aarch64'
         uses: mlugg/setup-zig@v2
