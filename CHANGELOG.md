@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.0 - 2026-10-22]
+
 ### Added
 
 - `ParserSettings::recover_records` / `evtx_dump --recover-records` carve stale
@@ -34,6 +36,7 @@ and this project adheres to
   Standard, so `ascii` and `iso-8859-1` resolve to windows-1252. Code pages
   outside that standard (`big5-2003`, `hz`, `mac-cyrillic`, `mac-roman`,
   `pua-mapped-binary`, and OEM pages such as `cp437`) are no longer accepted.
+- Updated `sonic-rs` to 0.5.10 (#317).
 
 ### Fixed
 

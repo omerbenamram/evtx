@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "evtx"
-version = "0.12.3"
+version = "0.13.0"
 dependencies = [
  "ahash",
  "anyhow",
