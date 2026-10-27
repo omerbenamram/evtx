@@ -20,6 +20,7 @@ thiserror = "2"
 log = { version = "0.4.17", features = ["release_max_level_debug"] }
 winstructs = "0.3.0"
 ahash = "0.8"
+memchr = "2"
 # Optional: PE parsing for `evtx_dump extract-wevt-templates` resource extraction.
 goblin = { version = "0.10", optional = true }
 # Optional: used by `evtx_dump extract-wevt-templates` for cross-platform glob expansion.
