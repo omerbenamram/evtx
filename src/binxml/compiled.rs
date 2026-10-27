@@ -28,6 +28,8 @@ use crate::binxml::value_variant::{BinXmlValue, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
+use crate::mta::{self, RenderingInfo, SystemFields};
+use crate::utils::bytes::{read_u16_le, read_u32_le, read_u64_le};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use std::hash::{BuildHasher, Hasher};
@@ -122,6 +124,8 @@ pub(crate) struct XmlProgram {
     elem_slots: Vec<(u16, u16)>,
     /// Slots compiled as `XOp::Expand` (string arrays allowed).
     expand_slots: Vec<u16>,
+    root_name: Vec<u8>,
+    system_fields: Option<SystemFields>,
 }
 
 /// Per-chunk programs have stable indices, so records borrow them without
@@ -316,6 +320,15 @@ pub(crate) trait StoredProgram: TemplateProgram {
     fn shard(store: &ProgramStore) -> &Shard<Self>;
     /// Tag the record rendered at `out[start..]` as carved (CLI output).
     fn mark_recovered(out: &mut Vec<u8>, start: usize);
+    /// Render `fragment` as the last child of the `Event` element rendered at `out[start..]`,
+    /// as `render_tree` renders it in the tree. `false` when `out` does not end with that
+    /// element or the fragment fails to render, and the caller discards `out[start..]`.
+    fn append_to_event(
+        fragment: &IrTree<'_>,
+        settings: &ParserSettings,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> bool;
 }
 
 impl StoredProgram for XmlProgram {
@@ -327,6 +340,24 @@ impl StoredProgram for XmlProgram {
             let at = start + XML_DECL.len();
             out.splice(at..at, b"<!-- recovered -->\n".iter().copied());
         }
+    }
+    fn append_to_event(
+        fragment: &IrTree<'_>,
+        settings: &ParserSettings,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let indent = settings.should_indent();
+        let close: &[u8] = if indent { b"</Event>\n" } else { b"</Event>" };
+        if !out[start..].ends_with(close) {
+            return false;
+        }
+        let at = out.len() - close.len();
+        let rendered =
+            render_fragment_xml(fragment.arena(), fragment.root(), INDENT_WIDTH, indent, out);
+        // The closing tag moves after the fragment.
+        out[at..].rotate_left(close.len());
+        rendered.is_ok()
     }
 }
 
@@ -340,6 +371,24 @@ impl StoredProgram for JsonProgram {
             };
             out.splice(start + 1..start + 1, mark.iter().copied());
         }
+    }
+    fn append_to_event(
+        fragment: &IrTree<'_>,
+        settings: &ParserSettings,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        // `{"Event":{...}}`, rendered without separate attributes.
+        if settings.should_separate_json_attributes() || !out[start..].ends_with(b"}}") {
+            return false;
+        }
+        let at = out.len() - 2;
+        let rendered = Self::render_tree(fragment, settings, out);
+        // `{"RenderingInfo":{...}}` becomes `,"RenderingInfo":{...}` before the closing `}}`.
+        out[at + 2] = b',';
+        out.pop();
+        out[at..].rotate_left(2);
+        rendered.is_ok()
     }
     fn shard(store: &ProgramStore) -> &Shard<Self> {
         &store.json
@@ -408,6 +457,11 @@ pub(crate) trait TemplateProgram: Sized {
     fn expand_slots(&self) -> &[u16] {
         &[]
     }
+    /// The template's root element name.
+    fn root_name(&self) -> &[u8];
+    /// Where a root program's records keep their `System` fields, when an `.MTA` file is set.
+    /// `None` otherwise, and for templates whose records need their tree built for them.
+    fn system_fields(&self) -> Option<&SystemFields>;
     fn compile(
         tree: &IrTree<'_>,
         has_literal_array: bool,
@@ -436,6 +490,12 @@ impl TemplateProgram for XmlProgram {
     }
     fn expand_slots(&self) -> &[u16] {
         &self.expand_slots
+    }
+    fn root_name(&self) -> &[u8] {
+        &self.root_name
+    }
+    fn system_fields(&self) -> Option<&SystemFields> {
+        self.system_fields.as_ref()
     }
     fn compile(
         tree: &IrTree<'_>,
@@ -586,9 +646,24 @@ fn compile_xml_template(
                 indent_on: c.indent_on,
                 elem_slots: c.elem_slots,
                 expand_slots: c.expand_slots,
+                root_name: tree.root_element().name.as_str().as_bytes().to_vec(),
+                system_fields: system_fields(tree, is_root, settings),
             })
         }
         Err(_) => None,
+    }
+}
+
+/// `TemplateProgram::system_fields` for a template.
+fn system_fields(
+    tree: &IrTree<'_>,
+    is_root: bool,
+    settings: &ParserSettings,
+) -> Option<SystemFields> {
+    if is_root && settings.get_mta().is_some() {
+        SystemFields::of(tree)
+    } else {
+        None
     }
 }
 
@@ -1520,10 +1595,12 @@ fn get_or_compile<'a, P: StoredProgram>(
 ///
 /// Returns `false` with `out` untouched when the record isn't covered (the
 /// caller then uses the regular path). On `true` the record was rendered
-/// byte-identically to `P::render_tree` over the materialized record.
+/// byte-identically to `P::render_tree` over the materialized record, with
+/// `mta::add_rendering_info` applied when an `.MTA` file is set.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     bytes: &[u8],
+    record_number: u64,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     progs: &mut ProgramCache<P>,
@@ -1554,7 +1631,45 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
         pf,
         data: chunk.data,
     };
-    exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out)
+    let rendering_info = match chunk.settings.get_mta() {
+        None => None,
+        Some(mta) => {
+            let Some(fields) = progs.programs[instance.prog].system_fields() else {
+                return false;
+            };
+            let slots = values.slots(instance.slots);
+            let value = |id| values.mta_value(slots, id, progs);
+            if fields.needs_tree(value) {
+                return false;
+            }
+            fields.rendering_info(mta, record_number, value)
+        }
+    };
+    let start = out.len();
+    if !exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out) {
+        return false;
+    }
+    match rendering_info {
+        Some(info) if !append_rendering_info::<P>(&info, chunk, start, out) => {
+            out.truncate(start);
+            false
+        }
+        _ => true,
+    }
+}
+
+/// Adds `info` to the record rendered at `out[start..]`, where `mta::add_rendering_info` puts
+/// it in a record's tree.
+fn append_rendering_info<'a, P: StoredProgram>(
+    info: &RenderingInfo<'a>,
+    chunk: &'a EvtxChunk<'a>,
+    start: usize,
+    out: &mut Vec<u8>,
+) -> bool {
+    let bump = &chunk.arena;
+    let mut arena = IrArena::new_in(bump);
+    let root = mta::rendering_info_element(info, &mut arena, bump);
+    P::append_to_event(&IrTree::new(arena, root), &chunk.settings, start, out)
 }
 
 /// `P::exec`, truncating `out` back on error. Errors are unreachable after a
@@ -1881,6 +1996,7 @@ pub(crate) struct JsonProgram {
     expand_slots: Vec<u16>,
     /// Raw root element name bytes (member key for nested-instance values).
     root_name: Vec<u8>,
+    system_fields: Option<SystemFields>,
 }
 
 impl TemplateProgram for JsonProgram {
@@ -1893,6 +2009,12 @@ impl TemplateProgram for JsonProgram {
     }
     fn expand_slots(&self) -> &[u16] {
         &self.expand_slots
+    }
+    fn root_name(&self) -> &[u8] {
+        &self.root_name
+    }
+    fn system_fields(&self) -> Option<&SystemFields> {
+        self.system_fields.as_ref()
     }
     fn compile(
         tree: &IrTree<'_>,
@@ -1987,6 +2109,7 @@ fn compile_json_template(
                 constraints: c.constraints,
                 expand_slots: c.expand_slots,
                 root_name: root.name.as_str().as_bytes().to_vec(),
+                system_fields: system_fields(tree, is_root, settings),
             })
         }
         Err(Bail) => None,
@@ -2398,6 +2521,48 @@ pub(crate) trait ValueSource<'a> {
 struct RawValues<'s, 'a> {
     pf: &'s Preflight,
     data: &'a [u8],
+}
+
+impl RawValues<'_, '_> {
+    /// Substitution `id` of an instance, as `mta::SystemFields` reads it.
+    fn mta_value<'s, P: TemplateProgram>(
+        &'s self,
+        slots: &[RawSlot],
+        id: u16,
+        progs: &'s ProgramCache<P>,
+    ) -> mta::Value<'s> {
+        let Some(s) = slots.get(usize::from(id)) else {
+            return mta::Value::None;
+        };
+        if self.pf.slot_empty(s, self.data) {
+            return mta::Value::None;
+        }
+        let bytes = s.bytes(self.data);
+        let number = match s.ty {
+            value_ty::BIN_XML => {
+                let nested = s.nested_idx().map(|i| self.pf.nested[i].prog);
+                return mta::Value::Element(nested.map(|prog| progs.programs[prog].root_name()));
+            }
+            value_ty::UTF16_STRING => return mta::Value::Utf16(bytes),
+            value_ty::ANSI_STRING => {
+                return s
+                    .ansi_idx()
+                    .map_or(mta::Value::None, |i| mta::Value::Text(self.pf.ansi(i)));
+            }
+            value_ty::UINT8 => bytes.first().map(|&v| u64::from(v)),
+            value_ty::UINT16 => read_u16_le(bytes, 0).map(u64::from),
+            value_ty::UINT32 | value_ty::HEX_INT32 => read_u32_le(bytes, 0).map(u64::from),
+            value_ty::UINT64 | value_ty::HEX_INT64 => read_u64_le(bytes, 0),
+            value_ty::INT8 => bytes.first().and_then(|&v| u64::try_from(v as i8).ok()),
+            value_ty::INT16 => read_u16_le(bytes, 0).and_then(|v| u64::try_from(v as i16).ok()),
+            value_ty::INT32 => read_u32_le(bytes, 0).and_then(|v| u64::try_from(v as i32).ok()),
+            value_ty::INT64 => read_u64_le(bytes, 0).and_then(|v| u64::try_from(v as i64).ok()),
+            value_ty::SIZE_T if bytes.len() == 4 => read_u32_le(bytes, 0).map(u64::from),
+            value_ty::SIZE_T => read_u64_le(bytes, 0),
+            _ => None,
+        };
+        number.map_or(mta::Value::None, mta::Value::Number)
+    }
 }
 
 impl<'a> ValueSource<'a> for RawValues<'_, 'a> {

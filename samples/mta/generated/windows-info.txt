@@ -1,2 +1,0 @@
-Microsoft Windows Server 2025 Datacenter 10.0.26100 (build 26100)
-UI culture: en-US, culture: en-US

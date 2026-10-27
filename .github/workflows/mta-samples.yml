@@ -1,19 +1,14 @@
 name: MTA samples
 
-# Regenerates the .MTA fixtures and Windows' ground truth for them on a
-# Windows runner (see scripts/mta/generate-mta-samples.ps1) and uploads them
-# as an artifact.
+# Regenerates the .MTA fixtures in samples/mta and Windows' own rendering of
+# them (see scripts/mta/generate-mta-samples.ps1) on a Windows runner, and
+# uploads the result as an artifact. Copy the artifact over samples/mta to
+# update the fixtures.
 on:
   workflow_dispatch:
-  push:
-    branches: [claude/project-thread-8cehyp]
-    paths:
-      - scripts/mta/**
-      - samples/mta/setup-export.evtx
-      - .github/workflows/mta-samples.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   generate:
@@ -30,20 +25,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mta-out
+          name: mta-samples
           path: ${{ runner.temp }}/mta-out
-      # Temporary, while the fixtures are being developed: commit the output
-      # back so it can be inspected without downloading the artifact.
-      - name: Commit output
-        if: github.event_name == 'push'
-        shell: pwsh
-        run: |
-          git config core.autocrlf false
-          Remove-Item -Recurse -Force samples/mta/generated -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force samples/mta/generated | Out-Null
-          Copy-Item -Recurse "$env:RUNNER_TEMP\mta-out\*" samples/mta/generated/
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add samples/mta/generated
-          git commit -m "chore: MTA samples from run $env:GITHUB_RUN_ID"
-          git push origin "HEAD:$env:GITHUB_REF_NAME"

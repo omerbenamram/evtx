@@ -131,6 +131,14 @@ impl<'a> EvtxRecord<'a> {
     /// same materialized walker otherwise.
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
         let settings = &self.chunk.settings;
+        if let Some(mta) = settings.get_mta() {
+            let mut tree = match &self.content {
+                RecordContent::Tree(tree) => tree.clone(),
+                RecordContent::Template(content) => content.materialize(&self.chunk.arena)?,
+            };
+            crate::mta::add_rendering_info(&mut tree, self.event_record_id, mta, &self.chunk.arena);
+            return render_tree(&tree, settings, json, data);
+        }
         match &self.content {
             RecordContent::Tree(tree) => render_tree(tree, settings, json, data),
             RecordContent::Template(content) => {
