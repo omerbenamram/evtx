@@ -9,6 +9,7 @@ on:
     branches: [claude/project-thread-8cehyp]
     paths:
       - scripts/mta/**
+      - samples/mta/setup-export.evtx
       - .github/workflows/mta-samples.yml
 
 permissions:
@@ -20,12 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Generate, archive and probe
+      - name: Generate and archive
         shell: powershell
         run: ./scripts/mta/generate-mta-samples.ps1 -Phase Generate -OutDir "$env:RUNNER_TEMP\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
-      - name: Probe with the test publishers removed
+      - name: Probe
         shell: powershell
-        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Uninstalled -OutDir "$env:RUNNER_TEMP\mta-out"
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Probe -OutDir "$env:RUNNER_TEMP\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -45,5 +46,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add samples/mta/generated
           git commit -m "chore: MTA samples from run $env:GITHUB_RUN_ID"
-          git pull --rebase origin $env:GITHUB_REF_NAME
           git push origin "HEAD:$env:GITHUB_REF_NAME"

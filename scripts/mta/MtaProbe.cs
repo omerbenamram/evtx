@@ -1,7 +1,7 @@
 // Ground-truth probe for MTA fixtures: asks wevtapi to render every event of
-// an .evtx, either from the installed publishers or from the archive
-// (EvtOpenPublisherMetadata with LogFilePath set, which is how Windows reads
-// LocaleMetaData\*.MTA). Writes one JSON object per event.
+// an archived .evtx from its LocaleMetaData\*.MTA (EvtOpenPublisherMetadata
+// with LogFilePath set, which reads only the archive even when the publisher
+// is installed). Writes one JSON object per event.
 //
 // Compiled by generate-mta-samples.ps1 through Add-Type in Windows
 // PowerShell 5.1, so it sticks to C# 5.
@@ -25,9 +25,6 @@ public static class MtaProbe
     const int EvtFormatMessageTask = 3;
     const int EvtFormatMessageOpcode = 4;
     const int EvtFormatMessageKeyword = 5;
-    const int EvtFormatMessageChannel = 6;
-    const int EvtFormatMessageProvider = 7;
-    const int EvtFormatMessageXml = 9;
 
     [DllImport("wevtapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern IntPtr EvtQuery(IntPtr session, string path, string query, int flags);
@@ -151,13 +148,8 @@ public static class MtaProbe
         return n == null ? null : n.InnerText;
     }
 
-    // logFilePath empty: installed publishers. Otherwise: the archive.
-    public static int Probe(string evtxPath, string logFilePath, int lcid, string outPath, bool includeXml)
+    public static int Probe(string evtxPath, int lcid, string outPath)
     {
-        if (logFilePath != null && logFilePath.Length == 0)
-        {
-            logFilePath = null;
-        }
         IntPtr query = EvtQuery(IntPtr.Zero, evtxPath, "*", EvtQueryFilePath | EvtQueryForwardDirection);
         if (query == IntPtr.Zero)
         {
@@ -191,7 +183,7 @@ public static class MtaProbe
                         IntPtr pm;
                         if (!metadata.TryGetValue(providerName, out pm))
                         {
-                            pm = EvtOpenPublisherMetadata(IntPtr.Zero, providerName, logFilePath, lcid, 0);
+                            pm = EvtOpenPublisherMetadata(IntPtr.Zero, providerName, evtxPath, lcid, 0);
                             metadata[providerName] = pm;
                             metadataErrors[providerName] = pm == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
                         }
@@ -200,12 +192,13 @@ public static class MtaProbe
                         sb.Append("{\"index\":").Append(index);
                         sb.Append(",\"provider\":"); Json(sb, providerName);
                         sb.Append(",\"event_record_id\":"); Json(sb, Child(system, ns, "EventRecordID"));
-                        sb.Append(",\"event_id\":"); Json(sb, Child(system, ns, "EventID"));
+                        XmlElement eventId = (XmlElement)system.SelectSingleNode("e:EventID", ns);
+                        sb.Append(",\"event_id\":"); Json(sb, eventId.InnerText);
+                        sb.Append(",\"qualifiers\":"); Json(sb, eventId.HasAttribute("Qualifiers") ? eventId.GetAttribute("Qualifiers") : null);
                         sb.Append(",\"level\":"); Json(sb, Child(system, ns, "Level"));
                         sb.Append(",\"task\":"); Json(sb, Child(system, ns, "Task"));
                         sb.Append(",\"opcode\":"); Json(sb, Child(system, ns, "Opcode"));
                         sb.Append(",\"keywords\":"); Json(sb, Child(system, ns, "Keywords"));
-                        sb.Append(",\"channel\":"); Json(sb, Child(system, ns, "Channel"));
                         sb.Append(",\"metadata_error\":").Append(metadataErrors[providerName]);
                         if (pm != IntPtr.Zero)
                         {
@@ -214,12 +207,6 @@ public static class MtaProbe
                             Field(sb, "task_name", Format(pm, evt, EvtFormatMessageTask));
                             Field(sb, "opcode_name", Format(pm, evt, EvtFormatMessageOpcode));
                             Field(sb, "keyword_names", Format(pm, evt, EvtFormatMessageKeyword));
-                            Field(sb, "channel_name", Format(pm, evt, EvtFormatMessageChannel));
-                            Field(sb, "provider_name", Format(pm, evt, EvtFormatMessageProvider));
-                            if (includeXml)
-                            {
-                                Field(sb, "rendered_xml", Format(pm, evt, EvtFormatMessageXml));
-                            }
                         }
                         sb.Append("}");
                         writer.WriteLine(sb.ToString());
