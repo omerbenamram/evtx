@@ -235,6 +235,11 @@ impl<'a> IrTree<'a> {
         &self.arena
     }
 
+    /// Returns a mutable reference to the element arena.
+    pub(crate) fn arena_mut(&mut self) -> &mut IrArena<'a> {
+        &mut self.arena
+    }
+
     /// Returns the root element.
     pub(crate) fn root_element(&self) -> &Element<'a> {
         self.element(self.root)

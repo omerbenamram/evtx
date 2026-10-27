@@ -24,10 +24,11 @@ use crate::binxml::ir::{
 use crate::binxml::name::read_name_link;
 use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
-use crate::binxml::value_variant::{BinXmlValue, decode_ansi_value, value_ty};
+use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
+use crate::mta::{self, RenderingInfo, SystemFields};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use std::hash::{BuildHasher, Hasher};
@@ -122,6 +123,8 @@ pub(crate) struct XmlProgram {
     elem_slots: Vec<(u16, u16)>,
     /// Slots compiled as `XOp::Expand` (string arrays allowed).
     expand_slots: Vec<u16>,
+    root_name: Vec<u8>,
+    system_fields: Option<SystemFields>,
 }
 
 /// Per-chunk programs have stable indices, so records borrow them without
@@ -316,6 +319,15 @@ pub(crate) trait StoredProgram: TemplateProgram {
     fn shard(store: &ProgramStore) -> &Shard<Self>;
     /// Tag the record rendered at `out[start..]` as carved (CLI output).
     fn mark_recovered(out: &mut Vec<u8>, start: usize);
+    /// Render `fragment` as the last child of the `Event` element rendered at `out[start..]`,
+    /// as `render_tree` renders it in the tree. `false` when `out` does not end with that
+    /// element or the fragment fails to render, and the caller discards `out[start..]`.
+    fn append_to_event(
+        fragment: &IrTree<'_>,
+        settings: &ParserSettings,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> bool;
 }
 
 impl StoredProgram for XmlProgram {
@@ -327,6 +339,24 @@ impl StoredProgram for XmlProgram {
             let at = start + XML_DECL.len();
             out.splice(at..at, b"<!-- recovered -->\n".iter().copied());
         }
+    }
+    fn append_to_event(
+        fragment: &IrTree<'_>,
+        settings: &ParserSettings,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        let indent = settings.should_indent();
+        let close: &[u8] = if indent { b"</Event>\n" } else { b"</Event>" };
+        if !out[start..].ends_with(close) {
+            return false;
+        }
+        // The fragment goes before the closing tag.
+        out.truncate(out.len() - close.len());
+        let rendered =
+            render_fragment_xml(fragment.arena(), fragment.root(), INDENT_WIDTH, indent, out);
+        out.extend_from_slice(close);
+        rendered.is_ok()
     }
 }
 
@@ -340,6 +370,23 @@ impl StoredProgram for JsonProgram {
             };
             out.splice(start + 1..start + 1, mark.iter().copied());
         }
+    }
+    fn append_to_event(
+        fragment: &IrTree<'_>,
+        _settings: &ParserSettings,
+        start: usize,
+        out: &mut Vec<u8>,
+    ) -> bool {
+        // `{"Event":{...}}`: the fragment becomes the last member of `Event`.
+        if !out[start..].ends_with(b"}}") {
+            return false;
+        }
+        out.truncate(out.len() - 2);
+        let mut c = JsonCompiler::new(Some(fragment), std::mem::take(out), false);
+        let rendered = c.render_member_plain();
+        *out = c.lits;
+        out.extend_from_slice(b"}}");
+        rendered.is_ok()
     }
     fn shard(store: &ProgramStore) -> &Shard<Self> {
         &store.json
@@ -408,6 +455,11 @@ pub(crate) trait TemplateProgram: Sized {
     fn expand_slots(&self) -> &[u16] {
         &[]
     }
+    /// The template's root element name.
+    fn root_name(&self) -> &[u8];
+    /// Where the program's records keep their `System` fields, when an `.MTA` file is set.
+    /// `None` otherwise, and for templates whose records need their tree built for them.
+    fn system_fields(&self) -> Option<&SystemFields>;
     fn compile(
         tree: &IrTree<'_>,
         has_literal_array: bool,
@@ -436,6 +488,12 @@ impl TemplateProgram for XmlProgram {
     }
     fn expand_slots(&self) -> &[u16] {
         &self.expand_slots
+    }
+    fn root_name(&self) -> &[u8] {
+        &self.root_name
+    }
+    fn system_fields(&self) -> Option<&SystemFields> {
+        self.system_fields.as_ref()
     }
     fn compile(
         tree: &IrTree<'_>,
@@ -586,6 +644,8 @@ fn compile_xml_template(
                 indent_on: c.indent_on,
                 elem_slots: c.elem_slots,
                 expand_slots: c.expand_slots,
+                root_name: tree.root_element().name.as_str().as_bytes().to_vec(),
+                system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
         }
         Err(_) => None,
@@ -1520,10 +1580,12 @@ fn get_or_compile<'a, P: StoredProgram>(
 ///
 /// Returns `false` with `out` untouched when the record isn't covered (the
 /// caller then uses the regular path). On `true` the record was rendered
-/// byte-identically to `P::render_tree` over the materialized record.
+/// byte-identically to `P::render_tree` over the materialized record, with
+/// `mta::add_rendering_info` applied when an `.MTA` file is set.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     bytes: &[u8],
+    record_number: u64,
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
     progs: &mut ProgramCache<P>,
@@ -1554,7 +1616,53 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
         pf,
         data: chunk.data,
     };
-    exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out)
+    let rendering_info = match chunk.settings.get_mta() {
+        None => None,
+        Some(mta) => {
+            let Some(fields) = progs.programs[instance.prog].system_fields() else {
+                return false;
+            };
+            let slots = values.slots(instance.slots);
+            let value = |id| values.mta_value(slots, id, progs, chunk);
+            if fields.needs_tree(value) {
+                return false;
+            }
+            fields.rendering_info(mta, record_number, value)
+        }
+    };
+    let start = out.len();
+    if !exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out) {
+        return false;
+    }
+    if let Some(info) = rendering_info {
+        if !append_rendering_info::<P>(&info, chunk, start, out) {
+            out.truncate(start);
+            return false;
+        }
+        #[cfg(test)]
+        MTA_SPLICES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    true
+}
+
+/// How many records got their `RenderingInfo` from `try_render_compiled`, for the tests in
+/// `mta` that check it renders them as the record's tree does.
+#[cfg(test)]
+pub(crate) static MTA_SPLICES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Adds `info` to the record rendered at `out[start..]`, where `mta::add_rendering_info` puts
+/// it in a record's tree.
+fn append_rendering_info<'a, P: StoredProgram>(
+    info: &RenderingInfo<'a>,
+    chunk: &'a EvtxChunk<'a>,
+    start: usize,
+    out: &mut Vec<u8>,
+) -> bool {
+    let bump = &chunk.arena;
+    let mut arena = IrArena::new_in(bump);
+    let root = mta::rendering_info_element(info, &mut arena, bump);
+    P::append_to_event(&IrTree::new(arena, root), &chunk.settings, start, out)
 }
 
 /// `P::exec`, truncating `out` back on error. Errors are unreachable after a
@@ -1881,6 +1989,7 @@ pub(crate) struct JsonProgram {
     expand_slots: Vec<u16>,
     /// Raw root element name bytes (member key for nested-instance values).
     root_name: Vec<u8>,
+    system_fields: Option<SystemFields>,
 }
 
 impl TemplateProgram for JsonProgram {
@@ -1893,6 +2002,12 @@ impl TemplateProgram for JsonProgram {
     }
     fn expand_slots(&self) -> &[u16] {
         &self.expand_slots
+    }
+    fn root_name(&self) -> &[u8] {
+        &self.root_name
+    }
+    fn system_fields(&self) -> Option<&SystemFields> {
+        self.system_fields.as_ref()
     }
     fn compile(
         tree: &IrTree<'_>,
@@ -1987,6 +2102,7 @@ fn compile_json_template(
                 constraints: c.constraints,
                 expand_slots: c.expand_slots,
                 root_name: root.name.as_str().as_bytes().to_vec(),
+                system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
         }
         Err(Bail) => None,
@@ -2398,6 +2514,43 @@ pub(crate) trait ValueSource<'a> {
 struct RawValues<'s, 'a> {
     pf: &'s Preflight,
     data: &'a [u8],
+}
+
+impl<'a> RawValues<'_, 'a> {
+    /// Substitution `id` of an instance, as `mta::SystemFields` reads it: decoded the way the
+    /// record's tree holds it.
+    fn mta_value<'s, P: TemplateProgram>(
+        &'s self,
+        slots: &[RawSlot],
+        id: u16,
+        progs: &'s ProgramCache<P>,
+        chunk: &'a EvtxChunk<'a>,
+    ) -> mta::Value<'s> {
+        let Some(s) = slots.get(usize::from(id)) else {
+            return mta::Value::None;
+        };
+        if self.pf.slot_empty(s, self.data) {
+            return mta::Value::None;
+        }
+        if s.ty == value_ty::BIN_XML {
+            let nested = s.nested_idx().map(|i| self.pf.nested[i].prog);
+            return mta::Value::Element(nested.map(|prog| progs.programs[prog].root_name()));
+        }
+        let value = BinXmlValueType::from_u8(s.ty).and_then(|ty| {
+            let mut cursor = ByteCursor::with_pos(s.bytes(self.data), 0).ok()?;
+            let ansi_codec = chunk.settings.get_ansi_codec();
+            let size = Some(s.len);
+            BinXmlValue::deserialize_value_type_cursor_in(
+                &ty,
+                &mut cursor,
+                size,
+                ansi_codec,
+                &chunk.arena,
+            )
+            .ok()
+        });
+        value.map_or(mta::Value::None, mta::Value::Scalar)
+    }
 }
 
 impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
@@ -2846,6 +2999,14 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
 // the legacy emitter's behavior on materialized trees.
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
+    /// `,"<root>":<value>`: the root as one more member of an enclosing object.
+    fn render_member_plain(&mut self) -> Result<()> {
+        let root = self.tree().root_element();
+        self.lits.push(b',');
+        self.key_with_suffix_plain(root.name.as_str(), 0);
+        self.write_element_value_plain(root, false)
+    }
+
     /// Mirrors `render_json_with_scope` for a materialized tree.
     fn render_root_plain(&mut self) -> Result<()> {
         let root = self.tree().root_element();
