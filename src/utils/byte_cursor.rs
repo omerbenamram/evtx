@@ -1,7 +1,7 @@
 use crate::binxml::value_variant::SidRef;
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::bytes;
-use crate::utils::{Utf16LeSlice, decode_utf16le_bytes_to_bump_str};
+use crate::utils::{Utf16LeSlice, decode_utf16le_bytes_to_bump_str, invalid_data};
 use bumpalo::Bump;
 use std::io;
 
@@ -107,47 +107,10 @@ impl<'a> ByteCursor<'a> {
         u64 / u64_named: u64,
     );
 
+    /// SID: 8-byte header (sub-authority count at `[1]`), then 4 bytes per sub-authority.
     pub(crate) fn read_sid_ref(&mut self) -> DeserializationResult<SidRef<'a>> {
-        let start = self.pos();
-        let remaining = self
-            .buf()
-            .get(start..)
-            .ok_or_else(|| DeserializationError::Truncated {
-                what: "sid",
-                offset: start as u64,
-                need: 1,
-                have: 0,
-            })?;
-
-        if remaining.len() < 8 {
-            return Err(DeserializationError::Truncated {
-                what: "sid",
-                offset: start as u64,
-                need: 8,
-                have: remaining.len(),
-            });
-        }
-
-        let sub_count = remaining[1] as usize;
-        let len = 8usize
-            .checked_add(sub_count.saturating_mul(4))
-            .ok_or_else(|| DeserializationError::Truncated {
-                what: "sid",
-                offset: start as u64,
-                need: usize::MAX,
-                have: remaining.len(),
-            })?;
-
-        if remaining.len() < len {
-            return Err(DeserializationError::Truncated {
-                what: "sid",
-                offset: start as u64,
-                need: len,
-                have: remaining.len(),
-            });
-        }
-
-        let bytes = self.take_bytes(len, "sid")?;
+        let sub_count = bytes::read_array_r::<8>(self.buf, self.pos, "sid")?[1];
+        let bytes = self.take_bytes(8 + usize::from(sub_count) * 4, "sid")?;
         Ok(SidRef::new(bytes))
     }
 
@@ -163,12 +126,7 @@ impl<'a> ByteCursor<'a> {
             return Ok(&[]);
         }
         if ELEM_BYTES == 0 {
-            return Err(DeserializationError::Truncated {
-                what,
-                offset: self.position(),
-                need: size_usize,
-                have: self.buf().len().saturating_sub(self.pos()),
-            });
+            return Err(bytes::truncated(what, self.pos, size_usize, self.buf.len()));
         }
         if (size_usize % ELEM_BYTES) != 0 {
             return Err(DeserializationError::Io(io::Error::new(
@@ -197,14 +155,6 @@ impl<'a> ByteCursor<'a> {
         Ok(out)
     }
 
-    #[inline]
-    fn invalid_data(what: &'static str, offset: u64) -> DeserializationError {
-        DeserializationError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{what} at offset {offset}: invalid data"),
-        ))
-    }
-
     /// Read `char_count` UTF-16 code units (little-endian), stopping at NUL if present,
     /// without trimming whitespace.
     pub(crate) fn utf16_by_char_count(
@@ -216,19 +166,13 @@ impl<'a> ByteCursor<'a> {
             return Ok(None);
         }
 
-        let byte_len =
-            char_count
-                .checked_mul(2)
-                .ok_or_else(|| DeserializationError::Truncated {
-                    what,
-                    offset: self.pos as u64,
-                    need: usize::MAX,
-                    have: self.buf.len().saturating_sub(self.pos),
-                })?;
+        let byte_len = char_count
+            .checked_mul(2)
+            .ok_or_else(|| bytes::truncated(what, self.pos, usize::MAX, self.buf.len()))?;
 
         let bytes = self.take_bytes(byte_len, what)?;
         if !bytes.len().is_multiple_of(2) {
-            return Err(Self::invalid_data(what, self.pos as u64));
+            return Err(invalid_data(what, self.pos as u64));
         }
 
         Ok(Some(Utf16LeSlice::until_nul(bytes)))
@@ -259,13 +203,10 @@ impl<'a> ByteCursor<'a> {
     ) -> DeserializationResult<Option<String>> {
         let start = self.pos;
         let slice = self.len_prefixed_utf16_string(is_null_terminated, what)?;
-        match slice {
-            Some(value) => value
-                .to_string()
-                .map(Some)
-                .map_err(|_| Self::invalid_data(what, start as u64)),
-            None => Ok(None),
-        }
+        slice
+            .map(|v| v.to_string())
+            .transpose()
+            .map_err(|_| invalid_data(what, start as u64))
     }
 
     /// Read UTF-16 code units until a NUL (0x0000) code unit is encountered.
@@ -286,12 +227,7 @@ impl<'a> ByteCursor<'a> {
         let bytes = self
             .buf
             .get(start..end)
-            .ok_or_else(|| DeserializationError::Truncated {
-                what,
-                offset: start as u64,
-                need: 2,
-                have: self.buf.len().saturating_sub(start),
-            })?;
+            .ok_or_else(|| bytes::truncated(what, start, 2, self.buf.len()))?;
 
         Ok(Utf16LeSlice::new(bytes, bytes.len() / 2))
     }
@@ -305,15 +241,9 @@ impl<'a> ByteCursor<'a> {
     ) -> DeserializationResult<Option<&'a str>> {
         let start = self.pos;
         let slice = self.len_prefixed_utf16_string(is_null_terminated, what)?;
-        match slice {
-            Some(value) => decode_utf16le_bytes_to_bump_str(
-                value.as_bytes(),
-                value.as_bytes().len() / 2,
-                arena,
-            )
-            .map(Some)
-            .map_err(|_| Self::invalid_data(what, start as u64)),
-            None => Ok(None),
-        }
+        slice
+            .map(|v| decode_utf16le_bytes_to_bump_str(v.as_bytes(), v.as_bytes().len() / 2, arena))
+            .transpose()
+            .map_err(|_| invalid_data(what, start as u64))
     }
 }

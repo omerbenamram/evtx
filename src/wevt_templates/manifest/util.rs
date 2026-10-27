@@ -12,13 +12,9 @@ pub(super) fn read_sized_utf16_string(
     require_len(buf, off_usize, 4, what)?;
     let size = read_u32_named(buf, off_usize, what)?;
     if size < 4 {
-        return Err(WevtManifestError::SizeOutOfBounds { what, offset, size });
+        return Err(size_err(what, offset, size));
     }
-    let size_usize = usize::try_from(size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-        what,
-        offset,
-        size,
-    })?;
+    let size_usize = size as usize;
     require_len(buf, off_usize, size_usize, what)?;
     let bytes = &buf[off_usize + 4..off_usize + size_usize];
     decode_utf16_z(bytes, what, offset)
@@ -29,58 +25,62 @@ pub(super) fn decode_utf16_z(bytes: &[u8], what: &'static str, offset: u32) -> R
         .map_err(|_| WevtManifestError::InvalidUtf16String { what, offset })
 }
 
-pub(super) fn read_sig_named(buf: &[u8], offset: usize, what: &'static str) -> Result<[u8; 4]> {
-    bytes::read_sig(buf, offset).ok_or(WevtManifestError::Truncated {
+pub(super) fn size_err(what: &'static str, offset: u32, size: u32) -> WevtManifestError {
+    WevtManifestError::SizeOutOfBounds { what, offset, size }
+}
+
+pub(super) fn off_err(what: &'static str, offset: u32, len: usize) -> WevtManifestError {
+    WevtManifestError::OffsetOutOfBounds { what, offset, len }
+}
+
+pub(super) fn trunc_err(
+    what: &'static str,
+    offset: u32,
+    need: usize,
+    have: usize,
+) -> WevtManifestError {
+    WevtManifestError::Truncated {
         what,
-        offset: usize_to_u32(offset),
-        need: 4,
-        have: buf.len().saturating_sub(offset),
-    })
+        offset,
+        need,
+        have,
+    }
+}
+
+fn truncated(buf: &[u8], offset: usize, need: usize, what: &'static str) -> WevtManifestError {
+    trunc_err(
+        what,
+        usize_to_u32(offset),
+        need,
+        buf.len().saturating_sub(offset),
+    )
+}
+
+pub(super) fn read_sig_named(buf: &[u8], offset: usize, what: &'static str) -> Result<[u8; 4]> {
+    bytes::read_sig(buf, offset).ok_or_else(|| truncated(buf, offset, 4, what))
 }
 
 pub(super) fn read_u8_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u8> {
-    bytes::read_u8(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 1,
-        have: buf.len().saturating_sub(offset),
-    })
+    buf.get(offset)
+        .copied()
+        .ok_or_else(|| truncated(buf, offset, 1, what))
 }
 
 pub(super) fn read_u16_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u16> {
-    bytes::read_u16_le(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 2,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u16_le(buf, offset).ok_or_else(|| truncated(buf, offset, 2, what))
 }
 
 pub(super) fn read_u32_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u32> {
-    bytes::read_u32_le(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 4,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u32_le(buf, offset).ok_or_else(|| truncated(buf, offset, 4, what))
 }
 
 pub(super) fn read_u64_named(buf: &[u8], offset: usize, what: &'static str) -> Result<u64> {
-    bytes::read_u64_le(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 8,
-        have: buf.len().saturating_sub(offset),
-    })
+    bytes::read_u64_le(buf, offset).ok_or_else(|| truncated(buf, offset, 8, what))
 }
 
 pub(super) fn read_guid_named(buf: &[u8], offset: usize, what: &'static str) -> Result<Guid> {
-    let bytes = bytes::read_array::<16>(buf, offset).ok_or(WevtManifestError::Truncated {
-        what,
-        offset: usize_to_u32(offset),
-        need: 16,
-        have: buf.len().saturating_sub(offset),
-    })?;
+    let bytes =
+        bytes::read_array::<16>(buf, offset).ok_or_else(|| truncated(buf, offset, 16, what))?;
     Guid::from_buffer(&bytes).map_err(|_| WevtManifestError::InvalidGuid {
         what,
         offset: usize_to_u32(offset),
@@ -88,13 +88,9 @@ pub(super) fn read_guid_named(buf: &[u8], offset: usize, what: &'static str) -> 
 }
 
 pub(super) fn u32_to_usize(offset: u32, what: &'static str, len: usize) -> Result<usize> {
-    let off = usize::try_from(offset).map_err(|_| WevtManifestError::OffsetOutOfBounds {
-        what,
-        offset,
-        len,
-    })?;
+    let off = offset as usize;
     if off > len {
-        return Err(WevtManifestError::OffsetOutOfBounds { what, offset, len });
+        return Err(off_err(what, offset, len));
     }
     Ok(off)
 }
@@ -105,36 +101,35 @@ pub(super) fn usize_to_u32(v: usize) -> u32 {
 
 pub(super) fn require_len(buf: &[u8], off: usize, need: usize, what: &'static str) -> Result<()> {
     if off > buf.len() || buf.len().saturating_sub(off) < need {
-        return Err(WevtManifestError::Truncated {
-            what,
-            offset: usize_to_u32(off),
-            need,
-            have: buf.len().saturating_sub(off),
-        });
+        return Err(truncated(buf, off, need, what));
     }
     Ok(())
 }
 
 pub(super) fn checked_end(len: usize, off: u32, size: u32, what: &'static str) -> Result<usize> {
-    let off_usize = u32_to_usize(off, what, len)?;
-    let size_usize = usize::try_from(size).map_err(|_| WevtManifestError::SizeOutOfBounds {
-        what,
-        offset: off,
-        size,
-    })?;
-    let end = off_usize
-        .checked_add(size_usize)
-        .ok_or(WevtManifestError::SizeOutOfBounds {
-            what,
-            offset: off,
-            size,
-        })?;
-    if end > len {
-        return Err(WevtManifestError::SizeOutOfBounds {
-            what,
-            offset: off,
-            size,
-        });
+    let start = u32_to_usize(off, what, len)?;
+    // `start <= len`, so this comparison cannot overflow on any target.
+    if size as usize > len - start {
+        return Err(size_err(what, off, size));
     }
-    Ok(end)
+    Ok(start + size as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_region_is_a_size_error() {
+        let err = checked_end(64, 40, u32::MAX, "TEMP.size").unwrap_err();
+        assert!(matches!(
+            err,
+            WevtManifestError::SizeOutOfBounds {
+                what: "TEMP.size",
+                offset: 40,
+                size: u32::MAX,
+            }
+        ));
+        assert_eq!(checked_end(64, 40, 24, "TEMP.size").unwrap(), 64);
+    }
 }

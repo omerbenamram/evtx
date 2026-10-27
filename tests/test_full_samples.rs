@@ -110,6 +110,47 @@ fn test_parses_sample_with_irregular_boolean_values() {
     test_full_sample(sample_with_irregular_values(), 3028, 0);
 }
 
+/// Issue #289: bool slots holding values other than 0/1 keep the raw integer.
+#[test]
+fn test_irregular_boolean_values_are_preserved() {
+    let mut parser = EvtxParser::from_path(sample_with_irregular_values()).unwrap();
+    let xml = parser
+        .records()
+        .map(Result::unwrap)
+        .find(|r| r.event_record_id == 141)
+        .unwrap();
+    assert!(
+        xml.data.contains(r#"<Data Name="IsMachine">16</Data>"#),
+        "{}",
+        xml.data
+    );
+
+    let json = parser
+        .records_json_value()
+        .map(Result::unwrap)
+        .find(|r| r.event_record_id == 148)
+        .unwrap();
+    let data = &json.data["Event"]["EventData"];
+    assert_eq!(data["IsMachine"], true);
+    assert_eq!(data["IsBackgroundProcessing"], 65536);
+    assert_eq!(data["IsAsyncProcessing"], 8);
+
+    // The CLI renders through the compiled raw-bytes path, which formats
+    // values without decoding them first; check it agrees.
+    let xml: Vec<u8> = parser
+        .chunks_xml_bytes(false)
+        .flat_map(|c| c.data)
+        .collect();
+    let xml = String::from_utf8(xml).unwrap();
+    assert!(xml.contains(r#"<Data Name="IsMachine">16</Data>"#));
+    let json: Vec<u8> = parser
+        .chunks_json_bytes(false)
+        .flat_map(|c| c.data)
+        .collect();
+    let json = String::from_utf8(json).unwrap();
+    assert!(json.contains(r#""IsBackgroundProcessing":65536"#));
+}
+
 #[test]
 fn test_dirty_sample_with_a_bad_checksum() {
     test_full_sample(sample_with_a_bad_checksum(), 1910, 4)
@@ -195,4 +236,50 @@ fn test_sample_with_zero_data_size_event() {
         count += 1;
     }
     assert_eq!(count, 336, "Single threaded iteration failed");
+}
+
+/// Chunks share compiled templates, but a template body can reference a name
+/// stored elsewhere in its chunk. Corrupting that name in one chunk must not
+/// leak into the other chunk, whichever chunk is rendered first.
+#[test]
+fn test_shared_template_names_do_not_leak_across_chunks() {
+    const CHUNK: usize = 0x10000;
+    let mut bytes = include_bytes!("../samples/2-vss_7-System.evtx").to_vec();
+    // `Keywords` -> `Keyɷords` in chunk 1's string table.
+    bytes[0x1000 + CHUNK + 0x475] = 0x02;
+    let mut swapped = bytes.clone();
+    swapped[0x1000..0x1000 + 2 * CHUNK].rotate_left(CHUNK);
+
+    let parser = |bytes: &[u8]| {
+        EvtxParser::from_buffer(bytes.to_vec())
+            .unwrap()
+            .with_configuration(ParserSettings::new().num_threads(1))
+    };
+    // Records API (validated lane).
+    let by_id = |bytes: &[u8]| {
+        parser(bytes)
+            .records_json()
+            .filter_map(Result::ok)
+            .map(|r| (r.event_record_id, r.data))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let normal = by_id(&bytes);
+    assert!(normal.values().any(|r| r.contains("Keyɷords")));
+    assert_eq!(normal, by_id(&swapped));
+
+    // CLI chunk lane (raw bytes): chunk 0 and 1 trade places.
+    for json in [true, false] {
+        let chunks = |bytes: &[u8]| {
+            let mut parser = parser(bytes);
+            let chunks: Vec<_> = if json {
+                parser.chunks_json_bytes(false).map(|c| c.data).collect()
+            } else {
+                parser.chunks_xml_bytes(false).map(|c| c.data).collect()
+            };
+            chunks
+        };
+        let mut moved = chunks(&swapped);
+        moved.swap(0, 1);
+        assert_eq!(chunks(&bytes), moved, "json: {json}");
+    }
 }

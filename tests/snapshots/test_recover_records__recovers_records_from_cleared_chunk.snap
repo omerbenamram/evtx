@@ -1,0 +1,14 @@
+---
+source: tests/test_recover_records.rs
+expression: ids
+---
+[
+    (
+        1,
+        Number(5),
+    ),
+    (
+        2,
+        Number(5),
+    ),
+]

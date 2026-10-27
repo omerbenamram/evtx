@@ -5,10 +5,10 @@
 //! comma-delimited arrays, etc.). This module centralizes that logic so both
 //! renderers stay in sync and avoid allocating intermediate `String`s.
 
-use crate::binxml::compiled::value_ty;
-use crate::binxml::value_variant::{BinXmlValue, SidRef};
+use crate::binxml::value_variant::{BinXmlValue, SidRef, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
+use crate::utils::bytes::le;
 use jiff::{Timestamp, tz::Offset};
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
@@ -96,7 +96,9 @@ impl ValueRenderer {
                 self.write_datetime(writer, tm)
             }
             BinXmlValue::SidType(sid) => self.write_sid(writer, sid),
-            BinXmlValue::HexInt32Type(v) => self.write_hex_prefixed_u32_lower(writer, *v),
+            BinXmlValue::HexInt32Type(v) => {
+                self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
+            }
             BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
             BinXmlValue::StringArrayType(items) => self.write_list(writer, items, |s, w, item| {
                 s.write_utf16_escaped(w, *item, string_mode)
@@ -144,7 +146,7 @@ impl ValueRenderer {
                 self.write_list(writer, items, |s, w, v| s.write_sid(w, v))
             }
             BinXmlValue::HexInt32ArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_hex_prefixed_u32_lower(w, *v)
+                s.write_hex_prefixed_u64_lower(w, u64::from(*v))
             }),
             BinXmlValue::HexInt64ArrayType(items) => self.write_list(writer, items, |s, w, v| {
                 s.write_hex_prefixed_u64_lower(w, *v)
@@ -184,30 +186,34 @@ impl ValueRenderer {
             }
             value_ty::INT8 => write_int!(self, writer, write_i8, bytes[0] as i8),
             value_ty::UINT8 => write_int!(self, writer, write_u8, bytes[0]),
-            value_ty::INT16 => write_int!(self, writer, write_i16, i16::from_le_bytes(le2(bytes))),
-            value_ty::UINT16 => write_int!(self, writer, write_u16, u16::from_le_bytes(le2(bytes))),
-            value_ty::INT32 => write_int!(self, writer, write_i32, i32::from_le_bytes(le4(bytes))),
-            value_ty::UINT32 => write_int!(self, writer, write_u32, u32::from_le_bytes(le4(bytes))),
-            value_ty::INT64 => write_int!(self, writer, write_i64, i64::from_le_bytes(le8(bytes))),
-            value_ty::UINT64 => write_int!(self, writer, write_u64, u64::from_le_bytes(le8(bytes))),
-            value_ty::REAL32 => self.write_float(writer, f32::from_le_bytes(le4(bytes))),
-            value_ty::REAL64 => self.write_float(writer, f64::from_le_bytes(le8(bytes))),
+            value_ty::INT16 => write_int!(self, writer, write_i16, i16::from_le_bytes(le(bytes))),
+            value_ty::UINT16 => write_int!(self, writer, write_u16, u16::from_le_bytes(le(bytes))),
+            value_ty::INT32 => write_int!(self, writer, write_i32, i32::from_le_bytes(le(bytes))),
+            value_ty::UINT32 => write_int!(self, writer, write_u32, u32::from_le_bytes(le(bytes))),
+            value_ty::INT64 => write_int!(self, writer, write_i64, i64::from_le_bytes(le(bytes))),
+            value_ty::UINT64 => write_int!(self, writer, write_u64, u64::from_le_bytes(le(bytes))),
+            value_ty::REAL32 => self.write_float(writer, f32::from_le_bytes(le(bytes))),
+            value_ty::REAL64 => self.write_float(writer, f64::from_le_bytes(le(bytes))),
             value_ty::BOOL => {
-                let raw = i32::from_le_bytes(le4(bytes));
-                self.write_bytes(writer, if raw != 0 { b"true" } else { b"false" })
+                // Mirrors the decoder: non-0/1 values are kept as integers.
+                match i32::from_le_bytes(le(bytes)) {
+                    0 => self.write_bytes(writer, b"false"),
+                    1 => self.write_bytes(writer, b"true"),
+                    raw => write_int!(self, writer, write_i32, raw),
+                }
             }
             value_ty::BINARY => self.write_hex_bytes_upper(writer, bytes),
             value_ty::GUID => self.write_guid(writer, bytes.try_into().expect("guid size")),
             // SizeT renders as HexInt of its width.
             value_ty::SIZE_T if bytes.len() == 4 => {
-                self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes)))
+                self.write_hex_prefixed_u64_lower(writer, u64::from(u32::from_le_bytes(le(bytes))))
             }
             value_ty::SIZE_T => {
-                self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes)))
+                self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le(bytes)))
             }
             value_ty::FILETIME => {
                 let tm =
-                    crate::utils::windows::filetime_to_timestamp(u64::from_le_bytes(le8(bytes)))?;
+                    crate::utils::windows::filetime_to_timestamp(u64::from_le_bytes(le(bytes)))?;
                 self.write_datetime(writer, &tm)
             }
             value_ty::SYSTIME => {
@@ -217,10 +223,10 @@ impl ValueRenderer {
             }
             value_ty::SID => self.write_sid(writer, &SidRef::new(bytes)),
             value_ty::HEX_INT32 => {
-                self.write_hex_prefixed_u32_lower(writer, u32::from_le_bytes(le4(bytes)))
+                self.write_hex_prefixed_u64_lower(writer, u64::from(u32::from_le_bytes(le(bytes))))
             }
             value_ty::HEX_INT64 => {
-                self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le8(bytes)))
+                self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le(bytes)))
             }
             // Only reachable for empty payloads (non-empty BinXml classifies
             // as an element); mirrors the NullType conversion.
@@ -229,6 +235,10 @@ impl ValueRenderer {
                 "unsupported raw value type in compiled renderer",
             )),
         }
+    }
+
+    pub(crate) fn write_u64<W: WriteExt>(&mut self, writer: &mut W, v: u64) -> Result<()> {
+        write_int!(self, writer, write_u64, v)
     }
 
     fn write_bytes<W: WriteExt>(&mut self, writer: &mut W, bytes: &[u8]) -> Result<()> {
@@ -257,7 +267,7 @@ impl ValueRenderer {
         Ok(())
     }
 
-    fn write_utf16_escaped<W: WriteExt>(
+    pub(crate) fn write_utf16_escaped<W: WriteExt>(
         &mut self,
         writer: &mut W,
         value: Utf16LeSlice<'_>,
@@ -279,7 +289,7 @@ impl ValueRenderer {
         }
     }
 
-    fn write_str_escaped<W: WriteExt>(
+    pub(crate) fn write_str_escaped<W: WriteExt>(
         &mut self,
         writer: &mut W,
         value: &str,
@@ -354,7 +364,11 @@ impl ValueRenderer {
     ///
     /// Wire layout: revision, sub-authority count, 48-bit big-endian
     /// `IdentifierAuthority`, then 4-byte little-endian sub-authorities.
-    fn write_sid<W: WriteExt>(&mut self, writer: &mut W, sid: &SidRef<'_>) -> Result<()> {
+    pub(crate) fn write_sid<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        sid: &SidRef<'_>,
+    ) -> Result<()> {
         let &[revision, sub_count, a0, a1, a2, a3, a4, a5, ref subs @ ..] = sid.as_bytes() else {
             return self.write_bytes(writer, b"S-?");
         };
@@ -369,15 +383,6 @@ impl ValueRenderer {
             write_int!(self, writer, write_u32, sub)?;
         }
         Ok(())
-    }
-
-    fn write_hex_prefixed_u32_lower<W: WriteExt>(
-        &mut self,
-        writer: &mut W,
-        value: u32,
-    ) -> Result<()> {
-        self.write_bytes(writer, b"0x")?;
-        self.write_hex_u64_lower(writer, u64::from(value))
     }
 
     fn write_hex_prefixed_u64_lower<W: WriteExt>(
@@ -446,14 +451,4 @@ fn to_hex_digit_lower(value: u8) -> u8 {
         0..=9 => b'0' + value,
         _ => b'a' + (value - 10),
     }
-}
-
-fn le2(b: &[u8]) -> [u8; 2] {
-    b[..2].try_into().expect("preflight-validated size")
-}
-fn le4(b: &[u8]) -> [u8; 4] {
-    b[..4].try_into().expect("preflight-validated size")
-}
-fn le8(b: &[u8]) -> [u8; 8] {
-    b[..8].try_into().expect("preflight-validated size")
 }

@@ -5,6 +5,7 @@ use winstructs::guid::Guid;
 use super::error::{Result, WevtManifestError};
 use super::types::*;
 use super::util::*;
+use crate::wevt_templates::TEMP_HEADER_SIZE;
 
 impl<'a> CrimManifest<'a> {
     /// Parse a CRIM manifest blob (the payload stored inside a `WEVT_TEMPLATE` resource).
@@ -13,12 +14,9 @@ impl<'a> CrimManifest<'a> {
     /// against EVTX event metadata (e.g. event→template lookups for offline caches).
     pub fn parse(data: &'a [u8]) -> Result<Self> {
         let header = parse_crim_header(data)?;
-        let crim_size_usize = usize::try_from(header.size)
-            .ok()
-            .filter(|&s| s <= data.len())
+        let data = data
+            .get(..header.size as usize)
             .ok_or_else(|| size_err("CRIM.size", 0, header.size))?;
-
-        let data = &data[..crim_size_usize];
 
         let (provider_count, providers_bytes) =
             count_bytes(header.provider_count, 20, "CRIM.provider_count", 12)?;
@@ -54,6 +52,14 @@ impl<'a> CrimManifest<'a> {
         })
     }
 
+    /// All `TEMP` template definitions across every provider's `TTBL`.
+    pub(crate) fn templates(&self) -> impl Iterator<Item = &TemplateDefinition<'a>> {
+        self.providers
+            .iter()
+            .filter_map(|p| p.wevt.elements.templates.as_ref())
+            .flat_map(|ttbl| &ttbl.templates)
+    }
+
     /// Build lookup indices to support joining events/templates.
     ///
     /// This is primarily used by cache builders and tooling: it yields stable keys for mapping
@@ -62,16 +68,14 @@ impl<'a> CrimManifest<'a> {
         let mut templates_by_guid: HashMap<String, Vec<&TemplateDefinition<'a>>> = HashMap::new();
         let mut event_to_template_guids: HashMap<EventKey, Vec<Guid>> = HashMap::new();
 
-        for provider in &self.providers {
-            if let Some(ttbl) = provider.wevt.elements.templates.as_ref() {
-                for tpl in &ttbl.templates {
-                    templates_by_guid
-                        .entry(tpl.guid.to_string())
-                        .or_default()
-                        .push(tpl);
-                }
-            }
+        for tpl in self.templates() {
+            templates_by_guid
+                .entry(tpl.guid.to_string())
+                .or_default()
+                .push(tpl);
+        }
 
+        for provider in &self.providers {
             if let Some(evnt) = provider.wevt.elements.events.as_ref() {
                 for ev in &evnt.events {
                     let Some(template_offset) = ev.template_offset else {
@@ -241,28 +245,19 @@ fn parse_provider_elements<'a>(
             _ => {
                 // Unknown element: try to read size (offset+4) and capture the region.
                 let off = u32_to_usize(d.element_offset, "provider element offset", crim.len())?;
-                if off + 8 <= crim.len() {
-                    let size = read_u32_named(crim, off + 4, "provider element size")?;
-                    let end = u32_to_usize(
-                        d.element_offset.saturating_add(size),
-                        "unknown element end",
-                        crim.len(),
-                    )?;
-                    let data = &crim[off..end];
-                    out.unknown.push(UnknownElement {
-                        signature: d.signature,
-                        offset: d.element_offset,
-                        size,
-                        data,
-                    });
-                } else {
-                    return Err(trunc_err(
-                        "unknown element header",
-                        d.element_offset,
-                        8,
-                        crim.len().saturating_sub(off),
-                    ));
-                }
+                require_len(crim, off, 8, "unknown element header")?;
+                let size = read_u32_named(crim, off + 4, "provider element size")?;
+                let end = u32_to_usize(
+                    d.element_offset.saturating_add(size),
+                    "unknown element end",
+                    crim.len(),
+                )?;
+                out.unknown.push(UnknownElement {
+                    signature: d.signature,
+                    offset: d.element_offset,
+                    size,
+                    data: &crim[off..end],
+                });
             }
         }
     }
@@ -278,29 +273,12 @@ fn sig_err(offset: u32, expected: &[u8; 4], found: [u8; 4]) -> WevtManifestError
     }
 }
 
-fn size_err(what: &'static str, offset: u32, size: u32) -> WevtManifestError {
-    WevtManifestError::SizeOutOfBounds { what, offset, size }
-}
-
 fn count_err(what: &'static str, offset: u32, count: u32) -> WevtManifestError {
     WevtManifestError::CountOutOfBounds {
         what,
         offset,
         count,
     }
-}
-
-fn trunc_err(what: &'static str, offset: u32, need: usize, have: usize) -> WevtManifestError {
-    WevtManifestError::Truncated {
-        what,
-        offset,
-        need,
-        have,
-    }
-}
-
-fn off_err(what: &'static str, offset: u32, len: usize) -> WevtManifestError {
-    WevtManifestError::OffsetOutOfBounds { what, offset, len }
 }
 
 struct TableNames {
@@ -344,12 +322,8 @@ fn read_opt_name(crim: &[u8], offset: u32, what: &'static str) -> Result<Option<
     }
 }
 
-fn u32_count(count: u32, what: &'static str, offset: u32) -> Result<usize> {
-    usize::try_from(count).map_err(|_| count_err(what, offset, count))
-}
-
 fn count_bytes(count: u32, rec: usize, what: &'static str, offset: u32) -> Result<(usize, usize)> {
-    let n = u32_count(count, what, offset)?;
+    let n = count as usize;
     let bytes = n
         .checked_mul(rec)
         .ok_or_else(|| count_err(what, offset, count))?;
@@ -637,26 +611,19 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
     let (off_usize, size, count) =
         read_block_header(crim, off, b"TTBL", 12, &table_names!("TTBL"))?;
     let end = region_end(crim.len(), off, size, 12, "TTBL.size")?;
-    let count_usize = u32_count(count, "TTBL.count", off + 8)?;
+    let count_usize = count as usize;
 
     let mut templates = Vec::with_capacity(count_usize);
     let mut cur = off_usize + 12;
 
     for _ in 0..count_usize {
-        if cur + 40 > end {
-            return Err(trunc_err(
-                "TEMP header",
-                usize_to_u32(cur),
-                40,
-                end.saturating_sub(cur),
-            ));
-        }
+        require_len(&crim[..end], cur, TEMP_HEADER_SIZE, "TEMP header")?;
         let temp_sig = read_sig_named(crim, cur, "TEMP signature")?;
         if temp_sig != *b"TEMP" {
             return Err(sig_err(usize_to_u32(cur), b"TEMP", temp_sig));
         }
         let temp_size = read_u32_named(crim, cur + 4, "TEMP.size")?;
-        if temp_size < 40 {
+        if (temp_size as usize) < TEMP_HEADER_SIZE {
             return Err(size_err("TEMP.size", usize_to_u32(cur), temp_size));
         }
         let temp_end = checked_end(end, usize_to_u32(cur), temp_size, "TEMP.size")?;
@@ -710,13 +677,10 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
             ));
         }
 
-        let binxml_start = 40usize;
         let binxml_end = items_rel_usize.min(template_slice.len());
-        let binxml = if binxml_end >= binxml_start {
-            &template_slice[binxml_start..binxml_end]
-        } else {
-            &template_slice[binxml_start..binxml_start]
-        };
+        let binxml = template_slice
+            .get(TEMP_HEADER_SIZE..binxml_end)
+            .unwrap_or_default();
 
         let items = parse_template_items(
             template_slice,
@@ -753,11 +717,7 @@ fn parse_template_items(
     item_descriptor_count: u32,
     template_items_offset_abs: u32,
 ) -> Result<Vec<TemplateItem>> {
-    let count_usize = u32_count(
-        item_descriptor_count,
-        "TEMP.item_descriptor_count",
-        template_off_abs + 8,
-    )?;
+    let count_usize = item_descriptor_count as usize;
 
     if count_usize == 0 {
         // Validate template_items_offset for the zero-items case.
@@ -783,7 +743,7 @@ fn parse_template_items(
 
     let rel = template_items_offset_abs - template_off_abs;
     let rel_usize = u32_to_usize(rel, "TEMP.template_items_offset (relative)", template.len())?;
-    if rel_usize < 40 || rel_usize >= template.len() {
+    if rel_usize < TEMP_HEADER_SIZE || rel_usize >= template.len() {
         return Err(off_err(
             "TEMP.template_items_offset (relative)",
             template_items_offset_abs,
@@ -798,7 +758,11 @@ fn parse_template_items(
             item_descriptor_count,
         )
     })?;
-    if rel_usize + needed > template.len() {
+    // checked: `rel_usize + needed` can wrap on 32-bit targets.
+    if rel_usize
+        .checked_add(needed)
+        .is_none_or(|end| end > template.len())
+    {
         return Err(trunc_err(
             "template item descriptors",
             template_items_offset_abs,
@@ -903,7 +867,7 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
         read_block_header(crim, off, b"MAPS", 16, &table_names!("MAPS"))?;
     // Note: bytes 12-15 are `data_offset` in the struct but libfwevt ignores it; so do we.
     let end = region_end(crim.len(), off, size, 16, "MAPS.size")?;
-    let count_usize = u32_count(count, "MAPS.count", off + 8)?;
+    let count_usize = count as usize;
 
     if count_usize == 0 {
         return Ok(MapsDefinitions {
@@ -935,31 +899,14 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     let mut maps = Vec::with_capacity(count_usize);
     for &map_off in &map_offsets {
         let map_off_usize = u32_to_usize(map_off, "MAPS map offset", crim.len())?;
-        if map_off_usize + 4 > crim.len() {
-            return Err(trunc_err(
-                "MAPS map signature",
-                map_off,
-                4,
-                crim.len().saturating_sub(map_off_usize),
-            ));
-        }
         let sig = read_sig_named(crim, map_off_usize, "MAPS map signature")?;
 
         match &sig {
             b"VMAP" => {
                 // VMAP has its own size field at offset 4.
-                if map_off_usize + 8 > crim.len() {
-                    return Err(trunc_err(
-                        "VMAP size field",
-                        map_off,
-                        8,
-                        crim.len().saturating_sub(map_off_usize),
-                    ));
-                }
+                require_len(crim, map_off_usize, 8, "VMAP size field")?;
                 let vmap_size = read_u32_named(crim, map_off_usize + 4, "VMAP.size")?;
-                let vmap_size_usize = usize::try_from(vmap_size)
-                    .map_err(|_| size_err("VMAP.size", map_off, vmap_size))?;
-                let slice_end = map_off_usize.saturating_add(vmap_size_usize).min(end);
+                let slice_end = map_off_usize.saturating_add(vmap_size as usize).min(end);
                 let map_slice = &crim[map_off_usize..slice_end];
                 maps.push(MapDefinition::ValueMap(parse_vmap(
                     crim, map_off, map_slice,
@@ -1006,10 +953,10 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
     let map_string_offset = read_u32_named(map_slice, 8, "VMAP.map_string_offset")?;
     let entry_count = read_u32_named(map_slice, 12, "VMAP.entry_count")?;
 
-    let size_usize = usize::try_from(size)
-        .ok()
-        .filter(|&s| s >= 16 && s <= map_slice.len())
-        .ok_or_else(|| size_err("VMAP.size", off, size))?;
+    let size_usize = size as usize;
+    if size_usize < 16 || size_usize > map_slice.len() {
+        return Err(size_err("VMAP.size", off, size));
+    }
 
     let (entry_count_usize, entries_bytes) =
         count_bytes(entry_count, 8, "VMAP.entry_count", off + 12)?;

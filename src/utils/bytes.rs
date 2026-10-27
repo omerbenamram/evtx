@@ -27,6 +27,13 @@
 
 use crate::err::DeserializationError;
 
+/// The first `N` bytes of `b` as an array, for slices already bounds-checked.
+///
+/// Panics if `b` is shorter than `N`.
+pub(crate) fn le<const N: usize>(b: &[u8]) -> [u8; N] {
+    b[..N].try_into().expect("caller bounds-checked")
+}
+
 /// Read `N` raw bytes at `offset`.
 ///
 /// Returns `None` if the range is out of bounds.
@@ -34,11 +41,6 @@ pub(crate) fn read_array<const N: usize>(buf: &[u8], offset: usize) -> Option<[u
     let end = offset.checked_add(N)?;
     let bytes: [u8; N] = buf.get(offset..end)?.try_into().ok()?;
     Some(bytes)
-}
-
-/// Read a single byte at `offset`.
-pub(crate) fn read_u8(buf: &[u8], offset: usize) -> Option<u8> {
-    buf.get(offset).copied()
 }
 
 /// Read a 4-byte signature at `offset` (e.g. `b\"ElfChnk\\0\"[..4]` style).
@@ -63,7 +65,12 @@ pub(crate) fn read_u64_le(buf: &[u8], offset: usize) -> Option<u64> {
 }
 
 #[inline]
-fn truncated(what: &'static str, offset: usize, need: usize, len: usize) -> DeserializationError {
+pub(crate) fn truncated(
+    what: &'static str,
+    offset: usize,
+    need: usize,
+    len: usize,
+) -> DeserializationError {
     DeserializationError::Truncated {
         what,
         offset: offset as u64,

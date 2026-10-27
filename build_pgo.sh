@@ -23,14 +23,8 @@ if [ "$TARGET" = "unknown" ]; then
     exit 1
 fi
 
-# if target contains apple-darwin
-if [[ "$TARGET" == *"apple-darwin"* ]]; then
-    export PATH="$(brew --prefix llvm@19)/bin:$PATH"
-fi
-
 echo "Using target: $TARGET"
 
-echo "Using llvm version: $(llvm-config --version)"
 echo "Using llvm-profdata version: $(llvm-profdata --version)"
 echo "Using llvm-profdata at: $(which llvm-profdata)"
 

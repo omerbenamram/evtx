@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use bumpalo::Bump;
 use thiserror::Error;
 
-use super::manifest::WevtManifestError;
+use super::TEMP_HEADER_SIZE;
+use super::manifest::{CrimManifest, WevtManifestError};
 
 #[derive(Debug, Error)]
 pub enum WevtCacheError {
@@ -87,27 +88,27 @@ impl WevtCache {
     ///
     /// This is **strict**: parse failures return an error and do not modify the cache.
     pub fn add_wevt_blob(&mut self, bytes: Vec<u8>) -> Result<usize, WevtCacheError> {
-        let templates = crate::wevt_templates::extract_temp_templates_from_wevt_blob(&bytes)
-            .map_err(|source| WevtCacheError::CrimParse { source })?;
+        let manifest =
+            CrimManifest::parse(&bytes).map_err(|source| WevtCacheError::CrimParse { source })?;
 
         let crim_index = self.crim_blobs.len();
-        self.crim_blobs.push(bytes);
-
         let mut inserted = 0usize;
-        for t in templates {
-            let g = normalize_guid(&t.header.guid.to_string());
+        for tpl in manifest.templates() {
             // First source wins for stability.
-            let entry = self.sources_by_guid.entry(g);
+            let entry = self
+                .sources_by_guid
+                .entry(normalize_guid(&tpl.guid.to_string()));
             if let std::collections::hash_map::Entry::Vacant(v) = entry {
                 v.insert(TemplateSource::CrimSlice {
                     crim_index,
-                    temp_offset: t.temp_offset,
-                    temp_size: t.temp_size,
+                    temp_offset: tpl.offset,
+                    temp_size: tpl.size,
                 });
-                inserted = inserted.saturating_add(1);
+                inserted += 1;
             }
         }
 
+        self.crim_blobs.push(bytes);
         Ok(inserted)
     }
 
@@ -120,21 +121,18 @@ impl WevtCache {
         template_guid: &str,
         arena: &'a Bump,
     ) -> Result<&'a [u8], WevtCacheError> {
-        // TEMP layout: first 40 bytes are header, BinXML starts at offset 40.
-        const TEMP_BINXML_OFFSET: usize = 40;
-
         let guid = normalize_guid(template_guid);
         let temp = self.get_temp_bytes_for_guid(&guid)?;
 
-        if temp.len() < TEMP_BINXML_OFFSET {
+        if temp.len() < TEMP_HEADER_SIZE {
             return Err(WevtCacheError::TempTooSmall {
                 guid,
                 len: temp.len(),
-                need: TEMP_BINXML_OFFSET,
+                need: TEMP_HEADER_SIZE,
             });
         }
 
-        Ok(arena.alloc_slice_copy(&temp[TEMP_BINXML_OFFSET..]))
+        Ok(arena.alloc_slice_copy(&temp[TEMP_HEADER_SIZE..]))
     }
 
     fn get_temp_bytes_for_guid(&self, guid: &str) -> Result<&[u8], WevtCacheError> {

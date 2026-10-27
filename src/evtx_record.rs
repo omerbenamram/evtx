@@ -1,7 +1,8 @@
 use crate::EvtxChunk;
+use crate::binxml::BinXmlTemplateValues;
 use crate::binxml::ir::RecordContent;
+use crate::binxml::tokens::{Stream, TokenSink, walk_tokens};
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
-use crate::utils::ByteCursor;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
 
@@ -12,6 +13,7 @@ pub use jiff::tz::Offset;
 pub type RecordId = u64;
 
 pub(crate) const EVTX_RECORD_HEADER_SIZE: usize = 24;
+pub(crate) const EVTX_RECORD_MAGIC: &[u8; 4] = b"\x2a\x2a\x00\x00";
 
 #[derive(Debug, Clone)]
 pub struct EvtxRecord<'a> {
@@ -21,6 +23,8 @@ pub struct EvtxRecord<'a> {
     pub(crate) content: RecordContent<'a>,
     pub binxml_offset: u64,
     pub binxml_size: u32,
+    /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
+    pub recovered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +39,8 @@ pub struct SerializedEvtxRecord<T> {
     pub event_record_id: RecordId,
     pub timestamp: Timestamp,
     pub data: T,
+    /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
+    pub recovered: bool,
 }
 
 impl SerializedEvtxRecord<Vec<u8>> {
@@ -44,6 +50,7 @@ impl SerializedEvtxRecord<Vec<u8>> {
             event_record_id: self.event_record_id,
             timestamp: self.timestamp,
             data: String::from_utf8(self.data).map_err(crate::err::SerializationError::from)?,
+            recovered: self.recovered,
         })
     }
 }
@@ -53,7 +60,7 @@ impl EvtxRecordHeader {
         let _ = bytes::slice_r(buf, offset, EVTX_RECORD_HEADER_SIZE, "EVTX record header")?;
 
         let magic = bytes::read_array_r::<4>(buf, offset, "record header magic")?;
-        if &magic != b"\x2a\x2a\x00\x00" {
+        if &magic != EVTX_RECORD_MAGIC {
             return Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic });
         }
 
@@ -88,6 +95,21 @@ impl EvtxRecordHeader {
     }
 }
 
+/// Render a materialized tree as JSON or XML.
+pub(crate) fn render_tree(
+    tree: &crate::model::ir::IrTree<'_>,
+    settings: &crate::ParserSettings,
+    json: bool,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    use crate::binxml::compiled::{JsonProgram, TemplateProgram, XmlProgram};
+    if json {
+        JsonProgram::render_tree(tree, settings, out)
+    } else {
+        XmlProgram::render_tree(tree, settings, out)
+    }
+}
+
 impl<'a> EvtxRecord<'a> {
     /// Consumes the record and returns the rendered JSON as a `serde_json::Value`.
     pub fn into_json_value(self) -> Result<SerializedEvtxRecord<serde_json::Value>> {
@@ -100,6 +122,7 @@ impl<'a> EvtxRecord<'a> {
             timestamp,
             data: serde_json::from_str(&record_with_json.data)
                 .map_err(crate::err::SerializationError::from)?,
+            recovered: record_with_json.recovered,
         })
     }
 
@@ -107,24 +130,41 @@ impl<'a> EvtxRecord<'a> {
     /// program when the record's templates compile (the common case), the
     /// same materialized walker otherwise.
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
-        use crate::binxml::compiled::{render_tree_json, render_tree_xml, try_render_validated};
-        let render = |tree: &crate::model::ir::IrTree<'_>, data: &mut Vec<u8>| {
-            if json {
-                render_tree_json(tree, &self.chunk.settings, data)
-            } else {
-                render_tree_xml(tree, &self.chunk.settings, data)
-            }
-        };
+        let settings = &self.chunk.settings;
         match &self.content {
-            RecordContent::Tree(tree) => render(tree, data),
+            RecordContent::Tree(tree) => render_tree(tree, settings, json, data),
             RecordContent::Template(content) => {
                 let mut caches = self.chunk.render_caches.borrow_mut();
-                if try_render_validated(content, self.chunk, &mut caches, json, data) {
+                if crate::binxml::compiled::try_render_validated(
+                    content,
+                    self.chunk,
+                    &mut caches,
+                    json,
+                    data,
+                ) {
                     return Ok(());
                 }
-                render(&content.materialize(&self.chunk.arena)?, data)
+                render_tree(
+                    &content.materialize(&self.chunk.arena)?,
+                    settings,
+                    json,
+                    data,
+                )
             }
         }
+    }
+
+    fn render_bytes(self, json: bool) -> Result<SerializedEvtxRecord<Vec<u8>>> {
+        // Estimate buffer size based on BinXML size
+        let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
+        self.render_into(json, &mut data)
+            .map_err(|e| EvtxError::record(self.event_record_id, e))?;
+        Ok(SerializedEvtxRecord {
+            event_record_id: self.event_record_id,
+            timestamp: self.timestamp,
+            data,
+            recovered: self.recovered,
+        })
     }
 
     /// Consumes the record and renders it as compact JSON bytes (no UTF-8 validation pass).
@@ -132,18 +172,7 @@ impl<'a> EvtxRecord<'a> {
     /// The renderers only emit valid UTF-8; use this in write-to-sink paths where the
     /// `String` type is not needed.
     pub fn into_json_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
-        // Estimate buffer size based on BinXML size
-        let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
-        self.render_into(true, &mut data)
-            .map_err(|e| EvtxError::FailedToParseRecord {
-                record_id: self.event_record_id,
-                source: Box::new(e),
-            })?;
-        Ok(SerializedEvtxRecord {
-            event_record_id: self.event_record_id,
-            timestamp: self.timestamp,
-            data,
-        })
+        self.render_bytes(true)
     }
 
     /// Consumes the record and renders it as compact JSON (streaming IR renderer).
@@ -153,17 +182,7 @@ impl<'a> EvtxRecord<'a> {
 
     /// Consumes the record and renders it as XML bytes (no UTF-8 validation pass).
     pub fn into_xml_bytes(self) -> Result<SerializedEvtxRecord<Vec<u8>>> {
-        let mut data = Vec::with_capacity(self.binxml_size as usize * 2);
-        self.render_into(false, &mut data)
-            .map_err(|e| EvtxError::FailedToParseRecord {
-                record_id: self.event_record_id,
-                source: Box::new(e),
-            })?;
-        Ok(SerializedEvtxRecord {
-            event_record_id: self.event_record_id,
-            timestamp: self.timestamp,
-            data,
-        })
+        self.render_bytes(false)
     }
 
     /// Consumes the record and parse it, producing an XML serialized record.
@@ -175,120 +194,24 @@ impl<'a> EvtxRecord<'a> {
     ///
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
     /// values without building a legacy token vector.
-    pub fn template_instances(&self) -> Result<Vec<crate::binxml::BinXmlTemplateValues<'a>>> {
-        use crate::binxml::name::BinXmlNameEncoding;
-        use crate::binxml::tokens::{
-            read_attribute_cursor, read_entity_ref_cursor, read_fragment_header_cursor,
-            read_open_start_element_cursor, read_processing_instruction_data_cursor,
-            read_processing_instruction_target_cursor, read_substitution_descriptor_cursor,
-            read_template_values_cursor,
-        };
-
-        let ansi_codec = self.chunk.settings.get_ansi_codec();
-        let mut out: Vec<crate::binxml::BinXmlTemplateValues<'a>> = Vec::new();
-
-        let mut cursor = ByteCursor::with_pos(self.chunk.data, self.binxml_offset as usize)?;
-        let mut data_read: u32 = 0;
-        let data_size = self.binxml_size;
-        let mut eof = false;
-
-        while !eof && data_read < data_size {
-            let start = cursor.position();
-            let token_byte = cursor.u8()?;
-
-            match token_byte {
-                0x00 => {
-                    eof = true;
-                }
-                0x0c => {
-                    let template = read_template_values_cursor(
-                        &mut cursor,
-                        Some(self.chunk),
-                        ansi_codec,
-                        &self.chunk.arena,
-                    )?;
-                    out.push(template);
-                }
-                0x01 => {
-                    let _ = read_open_start_element_cursor(
-                        &mut cursor,
-                        false,
-                        false,
-                        BinXmlNameEncoding::Offset,
-                    )?;
-                }
-                0x41 => {
-                    let _ = read_open_start_element_cursor(
-                        &mut cursor,
-                        true,
-                        false,
-                        BinXmlNameEncoding::Offset,
-                    )?;
-                }
-                0x02..=0x04 => {
-                    // Structural tokens; no payload.
-                }
-                0x05 | 0x45 => {
-                    let _ = crate::binxml::value_variant::BinXmlValue::from_binxml_cursor_in(
-                        &mut cursor,
-                        Some(self.chunk),
-                        None,
-                        ansi_codec,
-                        &self.chunk.arena,
-                    )?;
-                }
-                0x06 | 0x46 => {
-                    let _ = read_attribute_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
-                }
-                0x09 | 0x49 => {
-                    let _ = read_entity_ref_cursor(&mut cursor, BinXmlNameEncoding::Offset)?;
-                }
-                0x0a => {
-                    let _ = read_processing_instruction_target_cursor(
-                        &mut cursor,
-                        BinXmlNameEncoding::Offset,
-                    )?;
-                }
-                0x0b => {
-                    let _ = read_processing_instruction_data_cursor(&mut cursor)?;
-                }
-                0x0d => {
-                    let _ = read_substitution_descriptor_cursor(&mut cursor, false)?;
-                }
-                0x0e => {
-                    let _ = read_substitution_descriptor_cursor(&mut cursor, true)?;
-                }
-                0x0f => {
-                    let _ = read_fragment_header_cursor(&mut cursor)?;
-                }
-                0x07 | 0x47 => {
-                    return Err(DeserializationError::UnimplementedToken {
-                        name: "CDataSection",
-                        offset: cursor.position(),
-                    }
-                    .into());
-                }
-                0x08 | 0x48 => {
-                    return Err(DeserializationError::UnimplementedToken {
-                        name: "CharReference",
-                        offset: cursor.position(),
-                    }
-                    .into());
-                }
-                _ => {
-                    return Err(DeserializationError::InvalidToken {
-                        value: token_byte,
-                        offset: cursor.position(),
-                    }
-                    .into());
-                }
+    pub fn template_instances(&self) -> Result<Vec<BinXmlTemplateValues<'a>>> {
+        struct Instances<'a>(Vec<BinXmlTemplateValues<'a>>);
+        impl<'a> TokenSink<'a> for Instances<'a> {
+            fn template_instance(&mut self, template: BinXmlTemplateValues<'a>) -> Result<()> {
+                self.0.push(template);
+                Ok(())
             }
-
-            let total_read = cursor.position() - start;
-            data_read = data_read.saturating_add(total_read as u32);
         }
 
-        Ok(out)
+        let mut out = Instances(Vec::new());
+        walk_tokens(
+            Stream::chunk(self.chunk, &self.chunk.arena),
+            self.binxml_offset as usize,
+            self.binxml_size as usize,
+            false,
+            &mut out,
+        )?;
+        Ok(out.0)
     }
 }
 
@@ -350,7 +273,6 @@ mod validated_content_tests {
     #[test]
     fn rendering_reuses_validated_fragments() {
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
-        use crate::binxml::value_variant::BinXmlValueType;
         use crate::model::ir::{Element, IrArena, IrTree, Name, Node, Placeholder, Text};
         use std::{mem::ManuallyDrop, rc::Rc};
 
@@ -362,7 +284,6 @@ mod validated_content_tests {
         let mut root = Element::new_in(Name::new("Root"), bump);
         root.push_child(Node::Placeholder(Placeholder {
             id: 0,
-            value_type: BinXmlValueType::BinXmlType,
             optional: false,
         }));
         let root = template.new_node(root);
@@ -403,10 +324,9 @@ mod validated_content_tests {
     #[test]
     fn repeated_array_slots_fall_back_in_both_formats() {
         use crate::binxml::compiled::{
-            RenderCaches, render_tree_json, render_tree_xml, try_render_validated,
+            JsonProgram, RenderCaches, TemplateProgram, XmlProgram, try_render_validated,
         };
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
-        use crate::binxml::value_variant::BinXmlValueType;
         use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
         use crate::utils::Utf16LeSlice;
         use std::{mem::ManuallyDrop, rc::Rc};
@@ -420,7 +340,6 @@ mod validated_content_tests {
         let mut root = Element::new_in(Name::new("EventData"), bump);
         let slot = Node::Placeholder(Placeholder {
             id: 0,
-            value_type: BinXmlValueType::StringArrayType,
             optional: false,
         });
         // The same array is used in an attribute, ordinary text, and a Data
@@ -462,9 +381,9 @@ mod validated_content_tests {
                 assert_eq!(output, b"prefix", "partial output must be rolled back");
                 let mut materialized = Vec::new();
                 if json {
-                    render_tree_json(&tree, &chunk.settings, &mut materialized).unwrap();
+                    JsonProgram::render_tree(&tree, &chunk.settings, &mut materialized).unwrap();
                 } else {
-                    render_tree_xml(&tree, &chunk.settings, &mut materialized).unwrap();
+                    XmlProgram::render_tree(&tree, &chunk.settings, &mut materialized).unwrap();
                 }
                 assert!(!String::from_utf8(materialized).unwrap().contains("x,y"));
             }

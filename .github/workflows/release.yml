@@ -88,10 +88,10 @@ jobs:
             os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
           - build: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
           - build: macos-x86
-            os: macos-15
+            os: macos-15-intel
             target: x86_64-apple-darwin
           - build: windows
             os: windows-2022
@@ -118,17 +118,6 @@ jobs:
           echo "CARGO_HOME=$HOME/.cargo" >> $GITHUB_ENV
           LLVM_TOOLS_PATH=$(rustc --print sysroot)/lib/rustlib/${{ matrix.target }}/bin
           echo "PATH=$LLVM_TOOLS_PATH:$HOME/.cargo/bin:$PATH" >> $GITHUB_ENV
-
-      - name: Set up Homebrew (macOS only)
-        if: runner.os == 'macOS'
-        id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-
-      - name: Install LLVM 19 (macOS only)
-        if: runner.os == 'macOS'
-        run: |
-          brew install llvm@19
-          echo "$(brew --prefix llvm@19)/bin" >> $GITHUB_PATH
 
       - name: Install Cross toolchain (zig)
         if: matrix.build == 'macos-aarch64' || matrix.build == 'linux-aarch64'
@@ -190,3 +179,46 @@ jobs:
             cp "$ASSET" "$upload_path"
           fi
           gh release upload "$RELEASE_VERSION" "$upload_path" --clobber
+
+  publish-crates:
+    name: publish-crates
+    # Last: crates.io is irreversible, so only publish once every binary built.
+    needs: ["create-release", "build-release"]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          # samples/dlls ship in the .crate; without LFS they'd be pointer files.
+          lfs: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92.0
+
+      - name: Check tag matches Cargo.toml
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          CRATE="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [ "$CRATE" = "$VERSION" ] || { echo "tag $VERSION != Cargo.toml $CRATE"; exit 1; }
+
+      - name: Publish utf16-simd (if version is new)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run == true && '--dry-run' || '' }}
+        run: |
+          V=$(sed -n 's/^version = "\(.*\)"/\1/p' utf16-simd/Cargo.toml | head -n1)
+          if curl -sf https://index.crates.io/ut/f1/utf16-simd | grep -q "\"vers\":\"$V\""; then
+            echo "utf16-simd $V already on crates.io"
+          else
+            cargo publish --manifest-path utf16-simd/Cargo.toml $DRY_RUN
+          fi
+
+      - name: Publish evtx
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run == true && '--dry-run' || '' }}
+        run: cargo publish $DRY_RUN

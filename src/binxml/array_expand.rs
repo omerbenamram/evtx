@@ -57,14 +57,6 @@ enum ArrayLocation {
     Attr { attr_idx: usize, node_idx: usize },
 }
 
-#[derive(Debug, Clone)]
-enum ScalarReplacement<'a> {
-    /// Remove the substitution node entirely (producing an empty element / empty attribute value).
-    Omit,
-    /// Replace the substitution node with the provided scalar node.
-    Node(Node<'a>),
-}
-
 fn expand_first_array_in_element<'a>(
     arena: &mut IrArena<'a>,
     bump: &'a Bump,
@@ -97,7 +89,7 @@ fn expand_first_array_in_element<'a>(
             let element = arena
                 .get(element_id)
                 .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid element id"))?;
-            clone_element_with_replacement(bump, element, loc, &replacement)
+            clone_element_with_replacement(bump, element, loc, replacement.as_ref())
         };
 
         out.push(arena.new_node(new_elem));
@@ -110,7 +102,7 @@ fn clone_element_with_replacement<'a>(
     bump: &'a Bump,
     element: &Element<'a>,
     loc: ArrayLocation,
-    replacement: &ScalarReplacement<'a>,
+    replacement: Option<&Node<'a>>,
 ) -> Element<'a> {
     let mut out = Element {
         name: element.name,
@@ -132,7 +124,7 @@ fn clone_element_with_replacement<'a>(
 
         for (n_idx, node) in attr.value.iter().enumerate() {
             if replace_idx == Some(n_idx) {
-                push_replacement(&mut new_attr.value, replacement);
+                new_attr.value.extend(replacement.cloned());
             } else {
                 new_attr.value.push(node.clone());
             }
@@ -150,20 +142,13 @@ fn clone_element_with_replacement<'a>(
 
     for (c_idx, node) in element.children.iter().enumerate() {
         if replace_child_idx == Some(c_idx) {
-            push_replacement(&mut out.children, replacement);
+            out.children.extend(replacement.cloned());
         } else {
             out.children.push(node.clone());
         }
     }
 
     out
-}
-
-fn push_replacement<'a>(out: &mut IrVec<'a, Node<'a>>, replacement: &ScalarReplacement<'a>) {
-    match replacement {
-        ScalarReplacement::Omit => {}
-        ScalarReplacement::Node(node) => out.push(node.clone()),
-    }
 }
 
 /// Find the first expandable array value inside `element`.
@@ -177,69 +162,56 @@ fn push_replacement<'a>(out: &mut IrVec<'a, Node<'a>>, replacement: &ScalarRepla
 fn find_first_array_value<'a>(
     element: &Element<'a>,
 ) -> Option<(ArrayLocation, BinXmlValue<'a>, usize)> {
-    for (idx, node) in element.children.iter().enumerate() {
-        let Node::Value(value) = node else { continue };
-        let Some(len) = value.expandable_array_len() else {
-            continue;
-        };
-        if len <= 1 {
-            // Single-item arrays don't require element repetition and should not block scanning
-            // for later expandable arrays within the same element.
-            continue;
-        }
-        return Some((ArrayLocation::Child(idx), value.clone(), len));
-    }
+    // Single-item arrays don't require element repetition and must not block scanning for
+    // later expandable arrays within the same element.
+    let expandable = |node: &Node<'a>| match node {
+        Node::Value(value) => value
+            .expandable_array_len()
+            .filter(|&len| len > 1)
+            .map(|len| (value.clone(), len)),
+        _ => None,
+    };
 
-    for (a_idx, attr) in element.attrs.iter().enumerate() {
-        for (n_idx, node) in attr.value.iter().enumerate() {
-            let Node::Value(value) = node else { continue };
-            let Some(len) = value.expandable_array_len() else {
-                continue;
-            };
-            if len <= 1 {
-                continue;
-            }
-            return Some((
-                ArrayLocation::Attr {
-                    attr_idx: a_idx,
-                    node_idx: n_idx,
-                },
-                value.clone(),
-                len,
-            ));
-        }
-    }
-
-    None
+    let child = element.children.iter().enumerate().find_map(|(idx, node)| {
+        expandable(node).map(|(value, len)| (ArrayLocation::Child(idx), value, len))
+    });
+    child.or_else(|| {
+        element
+            .attrs
+            .iter()
+            .enumerate()
+            .find_map(|(attr_idx, attr)| {
+                attr.value.iter().enumerate().find_map(|(node_idx, node)| {
+                    expandable(node).map(|(value, len)| {
+                        (ArrayLocation::Attr { attr_idx, node_idx }, value, len)
+                    })
+                })
+            })
+    })
 }
 
-/// Convert an array value into the scalar replacement for a single item at `idx`.
+/// Convert an array value into the scalar replacement for a single item at `idx`
+/// (`None` if the array representation is unsupported).
 ///
-/// Empty strings map to `ScalarReplacement::Omit` to produce empty elements (e.g. `<Data/>`).
+/// Empty strings map to `Some(None)`, omitting the node to produce empty elements (e.g. `<Data/>`).
 fn scalar_replacement_from_array_value<'a>(
     value: &BinXmlValue<'a>,
     idx: usize,
-) -> Option<ScalarReplacement<'a>> {
-    let scalar = value.array_item_as_value(idx)?;
-    match scalar {
+) -> Option<Option<Node<'a>>> {
+    Some(match value.array_item_as_value(idx)? {
         // Strings are represented as `Node::Text` in the IR.
-        BinXmlValue::StringType(s) => {
-            if s.is_empty() {
-                Some(ScalarReplacement::Omit)
-            } else {
-                Some(ScalarReplacement::Node(Node::Text(Text::utf16(s))))
-            }
-        }
+        BinXmlValue::StringType(s) if s.is_empty() => None,
+        BinXmlValue::StringType(s) => Some(Node::Text(Text::utf16(s))),
         // Everything else stays as a typed value node.
-        other => Some(ScalarReplacement::Node(Node::Value(other))),
-    }
+        other => Some(Node::Value(other)),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ParserSettings;
-    use crate::binxml::compiled::render_tree_xml;
+    use crate::binxml::compiled::{TemplateProgram, XmlProgram};
     use crate::model::ir::IrTree;
     use crate::model::ir::Name;
     use crate::utils::Utf16LeSlice;
@@ -608,7 +580,7 @@ mod tests {
         let tree = IrTree::new(arena, some_event);
         let settings = ParserSettings::default().indent(false);
         let mut out = Vec::new();
-        render_tree_xml(&tree, &settings, &mut out).unwrap();
+        XmlProgram::render_tree(&tree, &settings, &mut out).unwrap();
 
         let xml = String::from_utf8(out).unwrap();
         assert_eq!(

@@ -2,7 +2,9 @@ use crate::err::{
     ChunkError, DeserializationError, DeserializationResult, EvtxChunkResult, EvtxError,
 };
 
-use crate::evtx_record::{EVTX_RECORD_HEADER_SIZE, EvtxRecord, EvtxRecordHeader};
+use crate::evtx_record::{
+    EVTX_RECORD_HEADER_SIZE, EVTX_RECORD_MAGIC, EvtxRecord, EvtxRecordHeader,
+};
 use crate::utils::bytes;
 
 use log::{debug, info, trace};
@@ -65,7 +67,7 @@ impl EvtxChunkData {
 
         let chunk = EvtxChunkData { header, data };
         if validate_checksum && !chunk.validate_checksum() {
-            // TODO: return checksum here.
+            // Preserve the public error fields and header-first short circuit.
             return Err(ChunkError::InvalidChunkChecksum {
                 expected: 0,
                 found: 0,
@@ -80,83 +82,25 @@ impl EvtxChunkData {
         EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
     }
 
-    /// Parse a chunk while reusing an existing bump arena.
-    ///
-    /// The arena is reset before use, retaining its capacity for reuse across chunks.
-    pub(crate) fn parse_with_arena(
-        &mut self,
-        settings: Arc<ParserSettings>,
-        arena: Bump,
-        program_store: Arc<crate::binxml::compiled::ProgramStore>,
-    ) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new_with_arena(
-            &self.data,
-            &self.header,
-            Arc::clone(&settings),
-            arena,
-            program_store,
-        )
+    /// Computed CRC32 of the header (bytes 0..120 and 128..512).
+    fn header_crc(&self) -> u32 {
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&self.data[..120]);
+        hasher.update(&self.data[128..512]);
+        hasher.finalize()
     }
 
     pub fn validate_data_checksum(&self) -> bool {
-        debug!("Validating data checksum");
-
-        let checksum_disabled = self.header.flags.contains(ChunkFlags::NO_CRC32);
-
-        let expected_checksum = if !checksum_disabled {
-            self.header.events_checksum
-        } else {
-            0
-        };
-
-        let computed_checksum = if !checksum_disabled {
-            checksum_ieee(
-                &self.data[EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize],
-            )
-        } else {
-            0
-        };
-
-        debug!(
-            "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, computed_checksum
-        );
-
-        computed_checksum == expected_checksum
+        self.header.flags.contains(ChunkFlags::NO_CRC32)
+            || self
+                .data
+                .get(EVTX_CHUNK_HEADER_SIZE..self.header.free_space_offset as usize)
+                .is_some_and(|data| self.header.events_checksum == checksum_ieee(data))
     }
 
     pub fn validate_header_checksum(&self) -> bool {
-        debug!("Validating header checksum");
-
-        let checksum_disabled = self.header.flags.contains(ChunkFlags::NO_CRC32);
-
-        let expected_checksum = if !checksum_disabled {
-            self.header.header_chunk_checksum
-        } else {
-            0
-        };
-
-        let header_bytes_1 = &self.data[..120];
-        let header_bytes_2 = &self.data[128..512];
-
-        let bytes_for_checksum: Vec<u8> = header_bytes_1
-            .iter()
-            .chain(header_bytes_2)
-            .cloned()
-            .collect();
-
-        let computed_checksum = if !checksum_disabled {
-            checksum_ieee(bytes_for_checksum.as_slice())
-        } else {
-            0
-        };
-
-        debug!(
-            "Expected checksum: {:?}, found: {:?}",
-            expected_checksum, computed_checksum
-        );
-
-        computed_checksum == expected_checksum
+        self.header.flags.contains(ChunkFlags::NO_CRC32)
+            || self.header.header_chunk_checksum == self.header_crc()
     }
 
     pub fn validate_checksum(&self) -> bool {
@@ -222,26 +166,17 @@ impl<'chunk> EvtxChunk<'chunk> {
         })
     }
 
-    /// Consume the chunk and return its bump arena for reuse.
-    pub(crate) fn into_arena(self) -> Bump {
-        self.arena
-    }
-
     /// Iterate raw record windows (header walk only, no content build).
     /// Used by the compiled-template render path.
     pub(crate) fn iter_raw(&self) -> IterRawRecords<'_> {
         IterRawRecords {
             chunk: self,
-            walk: RawWalk {
-                offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-                exhausted: false,
-            },
+            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
+            exhausted: false,
+            live_until: 0,
         }
     }
 
-    /// Return an iterator of records from the chunk.
-    /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
-    /// resulting records.
     /// Number of non-empty template-table buckets (cache size hint).
     pub(crate) fn estimated_template_buckets(&self) -> usize {
         self.header
@@ -251,12 +186,13 @@ impl<'chunk> EvtxChunk<'chunk> {
             .count()
     }
 
+    /// Return an iterator of records from the chunk.
+    /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
+    /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords<'_> {
         let estimated_template_buckets = self.estimated_template_buckets();
         IterChunkRecords {
-            chunk: self,
-            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-            exhausted: false,
+            raw: self.iter_raw(),
             ir_template_cache: IrTemplateCache::with_capacity(
                 estimated_template_buckets,
                 &self.arena,
@@ -285,9 +221,7 @@ impl<'chunk> EvtxChunk<'chunk> {
 /// The reason we only keep a single 'a lifetime (and not 'chunk as well) is because we don't
 /// care about the larger lifetime, and so it allows us to simplify the definition of the struct.
 pub struct IterChunkRecords<'a> {
-    chunk: &'a EvtxChunk<'a>,
-    offset_from_chunk_start: u64,
-    exhausted: bool,
+    raw: IterRawRecords<'a>,
     /// Per-iterator template cache used during streaming tree construction.
     ir_template_cache: IrTemplateCache<'a>,
 }
@@ -296,35 +230,35 @@ impl<'a> Iterator for IterChunkRecords<'a> {
     type Item = std::result::Result<EvtxRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let mut walk = RawWalk {
-            offset_from_chunk_start: self.offset_from_chunk_start,
-            exhausted: self.exhausted,
-        };
-        let raw = raw_next(self.chunk, &mut walk);
-        self.offset_from_chunk_start = walk.offset_from_chunk_start;
-        self.exhausted = walk.exhausted;
-        let raw = match raw? {
-            Ok(raw) => raw,
-            Err(err) => return Some(Err(err)),
-        };
+        let chunk = self.raw.chunk;
+        loop {
+            let raw = match self.raw.next()? {
+                Ok(raw) => raw,
+                Err(err) => return Some(Err(err)),
+            };
 
-        let content = match build_record_content(raw.bytes, self.chunk, &mut self.ir_template_cache)
-            .map_err(|err| EvtxError::FailedToParseRecord {
-                record_id: raw.event_record_id,
-                source: Box::new(err),
-            }) {
-            Ok(content) => content,
-            Err(err) => return Some(Err(err)),
-        };
+            let content = match build_record_content(raw.bytes, chunk, &mut self.ir_template_cache)
+            {
+                Ok(content) => content,
+                // Carved hits that don't parse are noise, not errors.
+                Err(err) if raw.recovered => {
+                    debug!("Skipping carved record {}: {err:?}", raw.event_record_id);
+                    self.raw.rescan_after(&raw);
+                    continue;
+                }
+                Err(err) => return Some(Err(EvtxError::record(raw.event_record_id, err))),
+            };
 
-        Some(Ok(EvtxRecord {
-            chunk: self.chunk,
-            event_record_id: raw.event_record_id,
-            timestamp: raw.timestamp,
-            content,
-            binxml_offset: raw.binxml_offset,
-            binxml_size: raw.bytes.len() as u32,
-        }))
+            return Some(Ok(EvtxRecord {
+                chunk,
+                event_record_id: raw.event_record_id,
+                timestamp: raw.timestamp,
+                content,
+                binxml_offset: raw.binxml_offset,
+                binxml_size: raw.bytes.len() as u32,
+                recovered: raw.recovered,
+            }));
+        }
     }
 }
 
@@ -334,129 +268,141 @@ pub(crate) struct RawRecord<'a> {
     pub(crate) timestamp: crate::evtx_record::Timestamp,
     pub(crate) binxml_offset: u64,
     pub(crate) bytes: &'a [u8],
-}
-
-struct RawWalk {
-    offset_from_chunk_start: u64,
-    exhausted: bool,
+    /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
+    pub(crate) recovered: bool,
 }
 
 /// Iterator over raw record windows. Created by [`EvtxChunk::iter_raw`].
 pub(crate) struct IterRawRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
-    walk: RawWalk,
+    offset_from_chunk_start: u64,
+    exhausted: bool,
+    /// Carved records before this offset are live (resynced after a corrupt record).
+    live_until: u64,
 }
 
 impl<'a> Iterator for IterRawRecords<'a> {
     type Item = std::result::Result<RawRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        raw_next(self.chunk, &mut self.walk)
+        let free_space_offset = u64::from(self.chunk.header.free_space_offset);
+        if !self.exhausted && self.offset_from_chunk_start < free_space_offset {
+            match self.read_record(false) {
+                Some(Ok(raw)) => return Some(Ok(raw)),
+                Some(Err(err)) => {
+                    self.exhausted = true;
+                    self.live_until = free_space_offset;
+                    return Some(Err(err));
+                }
+                None => {}
+            }
+        }
+        self.exhausted = true;
+        if !self.chunk.settings.should_recover_records() {
+            return None;
+        }
+        self.carve_record().map(Ok)
     }
 }
 
-/// The shared record-header walk (everything `IterChunkRecords::next` did
-/// before content construction, with identical error/termination semantics).
-fn raw_next<'a>(
-    chunk: &'a EvtxChunk<'a>,
-    walk: &mut RawWalk,
-) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
-    // Be resilient to corrupted chunk headers: `free_space_offset` is user-controlled data
-    // coming from the EVTX stream, and may point past the end of the chunk.
-    let effective_free_space_offset = u64::from(chunk.header.free_space_offset)
-        .min(chunk.data.len().try_into().unwrap_or(u64::MAX));
-
-    if walk.exhausted || walk.offset_from_chunk_start >= effective_free_space_offset {
-        return None;
+impl<'a> IterRawRecords<'a> {
+    /// Scan the rest of the chunk (past the last valid record, or from 512 in a cleared chunk)
+    /// for stale records. A hit needs the record magic and a matching trailing size copy.
+    fn carve_record(&mut self) -> Option<RawRecord<'a>> {
+        let data = self.chunk.data;
+        loop {
+            let from = (self.offset_from_chunk_start as usize).min(data.len());
+            let Some(hit) = data[from..].windows(4).position(|w| w == EVTX_RECORD_MAGIC) else {
+                self.offset_from_chunk_start = data.len() as u64;
+                return None;
+            };
+            let pos = (from + hit) as u64;
+            self.offset_from_chunk_start = pos;
+            // On success `read_record` advances past the record.
+            if let Some(Ok(raw)) = self.read_record(true) {
+                return Some(raw);
+            }
+            self.offset_from_chunk_start = pos + 1;
+        }
     }
 
-    let record_start = walk.offset_from_chunk_start;
-    let record_start_usize = record_start as usize;
-
-    if record_start_usize >= chunk.data.len() {
-        // Avoid panicking on an out-of-bounds slice if the header is corrupted.
-        walk.exhausted = true;
-        return None;
+    /// Resume carving just after `raw`'s magic, for a hit that turned out to be noise
+    /// (real records may sit inside the span it claimed).
+    pub(crate) fn rescan_after(&mut self, raw: &RawRecord<'_>) {
+        self.offset_from_chunk_start = raw.binxml_offset - EVTX_RECORD_HEADER_SIZE as u64 + 1;
     }
 
-    if chunk.data.len() - record_start_usize < 4 {
-        // Not enough bytes for the record header magic, treat as end-of-chunk.
-        walk.exhausted = true;
-        return None;
-    }
-
-    let record_header = match EvtxRecordHeader::from_bytes_at(chunk.data, record_start_usize) {
-        Ok(record_header) => record_header,
-        Err(DeserializationError::InvalidEvtxRecordHeaderMagic { magic }) => {
+    fn read_record(
+        &mut self,
+        carving: bool,
+    ) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
+        let chunk = self.chunk;
+        let record_start = self.offset_from_chunk_start;
+        // `free_space_offset` comes from the file and may point past the chunk;
+        // running off the end is a truncated header, which ends the chunk below.
+        let record_header = match EvtxRecordHeader::from_bytes_at(chunk.data, record_start as usize)
+        {
+            Ok(record_header) => record_header,
             // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
             // In such cases we may attempt to parse the chunk slack area, which is typically
             // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
             // emitting an error (see issue #197).
-            if magic == [0, 0, 0, 0] {
-                walk.exhausted = true;
+            Err(DeserializationError::InvalidEvtxRecordHeaderMagic {
+                magic: [0, 0, 0, 0],
+            }) => {
                 return None;
             }
+            // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
+            Err(DeserializationError::Truncated { .. }) => return None,
+            Err(err) => return Some(Err(EvtxError::DeserializationError(err))),
+        };
 
-            walk.exhausted = true;
-            return Some(Err(EvtxError::DeserializationError(
-                DeserializationError::InvalidEvtxRecordHeaderMagic { magic },
+        trace!(
+            "Record id - {} header - {:?}",
+            record_header.event_record_id, record_header
+        );
+
+        let binxml_data_size = match record_header.record_data_size() {
+            Ok(size) => size,
+            Err(err) => return Some(Err(err)),
+        };
+
+        trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
+
+        let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
+        let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
+        if binxml_end > chunk.data.len() as u64 {
+            return Some(Err(EvtxError::record(
+                record_header.event_record_id,
+                EvtxError::FailedToCreateRecordModel("record BinXML slice is out of bounds"),
             )));
         }
-        Err(DeserializationError::Truncated { .. }) => {
-            // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
-            walk.exhausted = true;
-            return None;
+
+        // A carved hit must also end with the copy of its size.
+        if carving
+            && bytes::read_u32_le(chunk.data, binxml_end as usize) != Some(record_header.data_size)
+        {
+            return Some(Err(EvtxError::FailedToCreateRecordModel(
+                "carved record size copy mismatch",
+            )));
         }
-        Err(err) => {
-            // We currently do not try to recover after an invalid record.
-            walk.exhausted = true;
-            return Some(Err(EvtxError::DeserializationError(err)));
+
+        let bytes = &chunk.data[binxml_start as usize..binxml_end as usize];
+
+        self.offset_from_chunk_start += u64::from(record_header.data_size);
+
+        if chunk.header.last_event_record_id == record_header.event_record_id {
+            self.exhausted = true;
         }
-    };
 
-    trace!(
-        "Record id - {} header - {:?}",
-        record_header.event_record_id, record_header
-    );
-
-    let binxml_data_size = match record_header.record_data_size() {
-        Ok(size) => size,
-        Err(err) => {
-            //The evtx record is corrupted, skip the rest of the chunk
-            //It could be interesting to carve the rest of the chunk to find the next EVTX record header magic `2a2a0000`
-            walk.exhausted = true;
-            return Some(Err(err));
-        }
-    };
-
-    trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
-
-    let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
-    let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
-    if binxml_end > chunk.data.len() as u64 {
-        walk.exhausted = true;
-        return Some(Err(EvtxError::FailedToParseRecord {
-            record_id: record_header.event_record_id,
-            source: Box::new(EvtxError::FailedToCreateRecordModel(
-                "record BinXML slice is out of bounds",
-            )),
-        }));
+        Some(Ok(RawRecord {
+            event_record_id: record_header.event_record_id,
+            timestamp: record_header.timestamp,
+            binxml_offset: binxml_start,
+            bytes,
+            recovered: carving && record_start >= self.live_until,
+        }))
     }
-
-    let bytes = &chunk.data[binxml_start as usize..binxml_end as usize];
-
-    walk.offset_from_chunk_start += u64::from(record_header.data_size);
-
-    if chunk.header.last_event_record_id == record_header.event_record_id {
-        walk.exhausted = true;
-    }
-
-    Some(Ok(RawRecord {
-        event_record_id: record_header.event_record_id,
-        timestamp: record_header.timestamp,
-        binxml_offset: binxml_start,
-        bytes,
-    }))
 }
 
 impl EvtxChunkHeader {
@@ -587,6 +533,45 @@ mod tests {
 
         let chunk = EvtxChunkData::new(chunk_data, false).unwrap();
         assert!(chunk.validate_checksum());
+    }
+
+    #[test]
+    fn checksum_errors_preserve_fields_and_reject_invalid_data_bounds() {
+        let file = include_bytes!("../samples/security.evtx");
+        let original = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        for offset in [0, 511, EVTX_CHUNK_SIZE as u32 + 1, u32::MAX] {
+            let mut data = original.to_vec();
+            data[48..52].copy_from_slice(&offset.to_le_bytes());
+            // An invalid header must fail before attempting to slice the record data.
+            assert!(matches!(
+                EvtxChunkData::new(data.clone(), true),
+                Err(ChunkError::InvalidChunkChecksum {
+                    expected: 0,
+                    found: 0
+                })
+            ));
+
+            // A valid header checksum must not make an invalid data range panic either.
+            let chunk = EvtxChunkData::new(data.clone(), false).unwrap();
+            let checksum = chunk.header_crc();
+            data[124..128].copy_from_slice(&checksum.to_le_bytes());
+            assert!(matches!(
+                EvtxChunkData::new(data, true),
+                Err(ChunkError::InvalidChunkChecksum {
+                    expected: 0,
+                    found: 0
+                })
+            ));
+        }
+        let mut data = original.to_vec();
+        data[EVTX_CHUNK_HEADER_SIZE] ^= 1;
+        assert!(matches!(
+            EvtxChunkData::new(data, true),
+            Err(ChunkError::InvalidChunkChecksum {
+                expected: 0,
+                found: 0
+            })
+        ));
     }
 
     #[test]

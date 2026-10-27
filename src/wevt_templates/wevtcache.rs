@@ -22,10 +22,12 @@
 //! `WEVT_TEMPLATE` resource bytes (a CRIM/WEVT manifest blob).
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
+
+use crate::utils::bytes;
 
 pub(crate) const MAGIC: [u8; 8] = *b"WEVTCACH";
 pub(crate) const VERSION: u32 = 1;
@@ -35,74 +37,6 @@ pub(crate) const VERSION: u32 = 1;
 pub enum EntryKind {
     /// Raw `WEVT_TEMPLATE` resource bytes (CRIM/WEVT payload).
     Crim = 1,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WevtCacheHeader {
-    pub(crate) magic: [u8; 8],
-    pub(crate) version: u32,
-    pub(crate) entry_count: u32,
-}
-
-impl WevtCacheHeader {
-    pub(crate) fn new(entry_count: u32) -> Self {
-        Self {
-            magic: MAGIC,
-            version: VERSION,
-            entry_count,
-        }
-    }
-
-    fn read_from(mut r: impl Read) -> std::io::Result<Self> {
-        let mut magic = [0u8; 8];
-        r.read_exact(&mut magic)?;
-
-        let mut version_bytes = [0u8; 4];
-        r.read_exact(&mut version_bytes)?;
-        let version = u32::from_le_bytes(version_bytes);
-
-        let mut count_bytes = [0u8; 4];
-        r.read_exact(&mut count_bytes)?;
-        let entry_count = u32::from_le_bytes(count_bytes);
-
-        Ok(Self {
-            magic,
-            version,
-            entry_count,
-        })
-    }
-
-    fn write_to(&self, mut w: impl Write) -> std::io::Result<()> {
-        w.write_all(&self.magic)?;
-        w.write_all(&self.version.to_le_bytes())?;
-        w.write_all(&self.entry_count.to_le_bytes())?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WevtCacheEntryHeader {
-    pub(crate) kind: EntryKind,
-    pub(crate) len: u64,
-}
-
-impl WevtCacheEntryHeader {
-    fn read_from(mut r: impl Read) -> std::io::Result<(u8, u64)> {
-        let mut kind = [0u8; 1];
-        r.read_exact(&mut kind)?;
-
-        let mut len_bytes = [0u8; 8];
-        r.read_exact(&mut len_bytes)?;
-        let len = u64::from_le_bytes(len_bytes);
-
-        Ok((kind[0], len))
-    }
-
-    fn write_to(&self, mut w: impl Write) -> std::io::Result<()> {
-        w.write_all(&[self.kind as u8])?;
-        w.write_all(&self.len.to_le_bytes())?;
-        Ok(())
-    }
 }
 
 #[derive(Debug, Error)]
@@ -140,6 +74,21 @@ pub enum WevtCacheFileError {
 
 pub type Result<T> = std::result::Result<T, WevtCacheFileError>;
 
+/// Builds the error lazily, so the path is only copied when I/O fails.
+fn io_err(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> WevtCacheFileError {
+    move |source| WevtCacheFileError::Io {
+        action,
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// Header layout: magic (8) + version (u32 LE) + entry_count (u32 LE).
+const HEADER_SIZE: usize = 16;
+const ENTRY_COUNT_OFFSET: usize = 12;
+/// Entry header layout: kind (u8) + len (u64 LE).
+const ENTRY_HEADER_SIZE: usize = 9;
+
 pub struct WevtCacheWriter {
     file: File,
     path: PathBuf,
@@ -154,20 +103,14 @@ impl WevtCacheWriter {
             });
         }
 
-        let mut file = File::create(path).map_err(|e| WevtCacheFileError::Io {
-            action: "create",
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        let mut file = File::create(path).map_err(io_err("create", path))?;
 
-        // Header: magic + version + entry_count placeholder.
-        WevtCacheHeader::new(0)
-            .write_to(&mut file)
-            .map_err(|e| WevtCacheFileError::Io {
-                action: "write header",
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+        // entry_count is a placeholder, patched by `finish`.
+        let mut header = [0u8; HEADER_SIZE];
+        header[..8].copy_from_slice(&MAGIC);
+        header[8..12].copy_from_slice(&VERSION.to_le_bytes());
+        file.write_all(&header)
+            .map_err(io_err("write header", path))?;
 
         Ok(Self {
             file,
@@ -177,28 +120,15 @@ impl WevtCacheWriter {
     }
 
     pub fn write_crim_blob(&mut self, bytes: &[u8]) -> Result<()> {
-        self.write_entry(EntryKind::Crim, bytes)
-    }
-
-    fn write_entry(&mut self, kind: EntryKind, bytes: &[u8]) -> Result<()> {
-        WevtCacheEntryHeader {
-            kind,
-            len: bytes.len() as u64,
-        }
-        .write_to(&mut self.file)
-        .map_err(|e| WevtCacheFileError::Io {
-            action: "write entry header",
-            path: self.path.clone(),
-            source: e,
-        })?;
-
+        let mut header = [0u8; ENTRY_HEADER_SIZE];
+        header[0] = EntryKind::Crim as u8;
+        header[1..].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+        self.file
+            .write_all(&header)
+            .map_err(io_err("write entry header", &self.path))?;
         self.file
             .write_all(bytes)
-            .map_err(|e| WevtCacheFileError::Io {
-                action: "write entry payload",
-                path: self.path.clone(),
-                source: e,
-            })?;
+            .map_err(io_err("write entry payload", &self.path))?;
 
         self.count =
             self.count
@@ -212,29 +142,13 @@ impl WevtCacheWriter {
 
     pub fn finish(mut self) -> Result<u32> {
         // Patch entry_count into header.
-        let entry_count_offset = MAGIC.len() as u64 + 4;
-
         self.file
-            .seek(SeekFrom::Start(entry_count_offset))
-            .map_err(|e| WevtCacheFileError::Io {
-                action: "seek to entry_count",
-                path: self.path.clone(),
-                source: e,
-            })?;
-
+            .seek(SeekFrom::Start(ENTRY_COUNT_OFFSET as u64))
+            .map_err(io_err("seek to entry_count", &self.path))?;
         self.file
             .write_all(&self.count.to_le_bytes())
-            .map_err(|e| WevtCacheFileError::Io {
-                action: "write entry_count",
-                path: self.path.clone(),
-                source: e,
-            })?;
-
-        self.file.flush().map_err(|e| WevtCacheFileError::Io {
-            action: "flush",
-            path: self.path.clone(),
-            source: e,
-        })?;
+            .map_err(io_err("write entry_count", &self.path))?;
+        self.file.flush().map_err(io_err("flush", &self.path))?;
 
         Ok(self.count)
     }
@@ -248,29 +162,26 @@ pub struct WevtCacheReader {
 
 impl WevtCacheReader {
     pub fn open(path: &Path) -> Result<Self> {
-        let mut file = File::open(path).map_err(|e| WevtCacheFileError::Io {
-            action: "open",
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        let mut file = File::open(path).map_err(io_err("open", path))?;
 
-        let header = WevtCacheHeader::read_from(&mut file).map_err(|e| WevtCacheFileError::Io {
-            action: "read header",
-            path: path.to_path_buf(),
-            source: e,
-        })?;
+        let mut header = [0u8; HEADER_SIZE];
+        file.read_exact(&mut header)
+            .map_err(io_err("read header", path))?;
+        let u32_at = |o: usize| u32::from_le_bytes(bytes::le(&header[o..]));
 
-        if header.magic != MAGIC {
+        let magic: [u8; 8] = bytes::le(&header);
+        if magic != MAGIC {
             return Err(WevtCacheFileError::InvalidMagic {
                 path: path.to_path_buf(),
-                found: header.magic,
+                found: magic,
             });
         }
 
-        if header.version != VERSION {
+        let version = u32_at(8);
+        if version != VERSION {
             return Err(WevtCacheFileError::UnsupportedVersion {
                 path: path.to_path_buf(),
-                found: header.version,
+                found: version,
                 expected: VERSION,
             });
         }
@@ -278,7 +189,7 @@ impl WevtCacheReader {
         Ok(Self {
             file,
             path: path.to_path_buf(),
-            remaining: header.entry_count,
+            remaining: u32_at(ENTRY_COUNT_OFFSET),
         })
     }
 
@@ -287,15 +198,12 @@ impl WevtCacheReader {
             return Ok(None);
         }
 
-        let (kind_u8, len_u64) = WevtCacheEntryHeader::read_from(&mut self.file).map_err(|e| {
-            WevtCacheFileError::Io {
-                action: "read entry header",
-                path: self.path.clone(),
-                source: e,
-            }
-        })?;
+        let mut header = [0u8; ENTRY_HEADER_SIZE];
+        self.file
+            .read_exact(&mut header)
+            .map_err(io_err("read entry header", &self.path))?;
 
-        let kind = match kind_u8 {
+        let kind = match header[0] {
             x if x == EntryKind::Crim as u8 => EntryKind::Crim,
             other => {
                 return Err(WevtCacheFileError::UnknownEntryKind {
@@ -305,6 +213,7 @@ impl WevtCacheReader {
             }
         };
 
+        let len_u64 = u64::from_le_bytes(bytes::le(&header[1..]));
         let len: usize =
             usize::try_from(len_u64).map_err(|_| WevtCacheFileError::EntryLengthTooLarge {
                 path: self.path.clone(),
@@ -314,11 +223,7 @@ impl WevtCacheReader {
         let mut buf = vec![0u8; len];
         self.file
             .read_exact(&mut buf)
-            .map_err(|e| WevtCacheFileError::Io {
-                action: "read entry payload",
-                path: self.path.clone(),
-                source: e,
-            })?;
+            .map_err(io_err("read entry payload", &self.path))?;
 
         self.remaining -= 1;
         Ok(Some((kind, buf)))
@@ -334,16 +239,10 @@ where
 
     while let Some((kind, bytes)) = reader.next_entry()? {
         match kind {
-            EntryKind::Crim => {
-                f(bytes)?;
-                count =
-                    count
-                        .checked_add(1)
-                        .ok_or_else(|| WevtCacheFileError::EntryCountOverflow {
-                            path: path.to_path_buf(),
-                        })?;
-            }
+            EntryKind::Crim => f(bytes)?,
         }
+        // Cannot overflow: bounded by the header's u32 entry_count.
+        count += 1;
     }
 
     Ok(count)

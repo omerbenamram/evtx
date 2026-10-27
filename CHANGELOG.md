@@ -8,6 +8,47 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.13.0 - 2026-10-22]
+
+### Added
+
+- `ParserSettings::recover_records` / `evtx_dump --recover-records` carve stale
+  records from unallocated chunk space: cleared chunks (reset header, old data)
+  and the slack past a chunk's last record. A hit needs the record magic and a
+  matching trailing size copy. Carved records have `recovered: true` (on
+  `EvtxRecord` and `SerializedEvtxRecord`); the record iterators skip ones that
+  fail to parse or render. `evtx_dump` marks them with `Record N (recovered)`, a
+  top-level `"recovered": true` in JSON, and `<!-- recovered -->` in XML. With
+  recovery on, the walk also resyncs past a corrupt record; records found that
+  way before `free_space_offset` stay live and their errors are reported.
+  Thanks @forensicmatt for the original work in #189.
+- **Breaking:** `SerializedEvtxRecord` has a new `recovered` field.
+
+### Changed
+
+- **Breaking:** ANSI strings are decoded with `encoding_rs` instead of the
+  unmaintained `encoding` crate
+  ([RUSTSEC-2021-0153](https://rustsec.org/advisories/RUSTSEC-2021-0153), #304).
+  `ParserSettings::ansi_codec` and the WEVT template render helpers now take
+  `evtx::AnsiCodec` (`&'static encoding_rs::Encoding`). `evtx_dump --ansi-codec`
+  accepts an Encoding Standard label and still defaults to `windows-1252`.
+  Default windows-1252 output is unchanged. Labels follow the WHATWG Encoding
+  Standard, so `ascii` and `iso-8859-1` resolve to windows-1252. Code pages
+  outside that standard (`big5-2003`, `hz`, `mac-cyrillic`, `mac-roman`,
+  `pua-mapped-binary`, and OEM pages such as `cp437`) are no longer accepted.
+- Updated `sonic-rs` to 0.5.10 (#317).
+
+### Fixed
+
+- Preserve bool substitution values other than 0/1 (Windows stores bitmasks in
+  some bool fields) as their raw integer in XML and JSON instead of coercing
+  them to `true`. Bool arrays containing such values render as integer arrays.
+  ([#289](https://github.com/omerbenamram/evtx/issues/289))
+
+### Security
+
+- Removed the unmaintained `encoding` dependency (RUSTSEC-2021-0153).
+
 ## [0.12.3 - 2026-09-22]
 
 ### Changed

@@ -9,6 +9,21 @@ mod wevt_cache_fallback {
     const EVTX_FILE_HEADER_SIZE: usize = 4096;
     const EVTX_CHUNK_SIZE: usize = 65536;
 
+    #[test]
+    fn cache_errors_remain_exhaustive() {
+        use evtx::wevt_templates::WevtCacheError;
+
+        let error = WevtCache::new().add_wevt_blob(Vec::new()).unwrap_err();
+        // Downstream exhaustive matches must continue to compile.
+        let kind = match &error {
+            WevtCacheError::TempSliceOutOfBounds { .. } => "slice",
+            WevtCacheError::CrimParse { .. } => "parse",
+            WevtCacheError::TemplateNotFound { .. } => "missing",
+            WevtCacheError::TempTooSmall { .. } => "small",
+        };
+        assert_eq!(kind, "parse");
+    }
+
     fn compute_wevt_inline_name_hash_utf16(name: &str) -> u16 {
         const MULT: u32 = 65599;
         let mut hash: u32 = 0;
