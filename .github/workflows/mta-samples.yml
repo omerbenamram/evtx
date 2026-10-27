@@ -1,0 +1,49 @@
+name: MTA samples
+
+# Regenerates the .MTA fixtures and Windows' ground truth for them on a
+# Windows runner (see scripts/mta/generate-mta-samples.ps1) and uploads them
+# as an artifact.
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/project-thread-8cehyp]
+    paths:
+      - scripts/mta/**
+      - .github/workflows/mta-samples.yml
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Generate, archive and probe
+        shell: powershell
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Generate -OutDir "$env:RUNNER_TEMP\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
+      - name: Probe with the test publishers removed
+        shell: powershell
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Uninstalled -OutDir "$env:RUNNER_TEMP\mta-out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mta-out
+          path: ${{ runner.temp }}/mta-out
+      # Temporary, while the fixtures are being developed: commit the output
+      # back so it can be inspected without downloading the artifact.
+      - name: Commit output
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          Remove-Item -Recurse -Force samples/mta/generated -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force samples/mta/generated | Out-Null
+          Copy-Item -Recurse "$env:RUNNER_TEMP\mta-out\*" samples/mta/generated/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add samples/mta/generated
+          git commit -m "chore: MTA samples from run $env:GITHUB_RUN_ID"
+          git pull --rebase origin $env:GITHUB_REF_NAME
+          git push origin "HEAD:$env:GITHUB_REF_NAME"

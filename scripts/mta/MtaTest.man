@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Test provider used by generate-mta-samples.ps1 to produce .MTA fixtures.
+
+  It covers what the MTA format stores per publisher (custom levels, tasks,
+  task-specific and global opcodes, keywords) and per event (messages with
+  inserts, %n/%t/%% escapes, XML-special and non-ASCII characters, events
+  without a message). The de-DE strings exist so `wevtutil al /l:de-DE`
+  produces a non-1033 MTA with real localized content.
+-->
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://schemas.microsoft.com/win/2004/08/events eventman.xsd">
+  <instrumentation>
+    <events>
+      <provider name="MtaTest-Provider"
+                guid="{6C4A7D21-3B8E-4F5A-9C2D-1E0F3A4B5C6D}"
+                symbol="MTATEST_PROVIDER"
+                resourceFileName="C:\MtaTest\MtaTest.dll"
+                messageFileName="C:\MtaTest\MtaTest.dll"
+                message="$(string.Provider.Name)">
+        <events>
+          <event value="1" version="0" channel="Operational" level="win:Informational" task="Connect" opcode="win:Start" keywords="Network" template="T_Connect" symbol="EVT_CONNECT" message="$(string.Event.Connect)"/>
+          <event value="2" version="0" channel="Operational" level="win:Warning" task="Connect" opcode="Handshake" keywords="Network Security" template="T_Text" symbol="EVT_HANDSHAKE" message="$(string.Event.Handshake)"/>
+          <event value="3" version="0" channel="Operational" level="MtaFatal" task="BigTask" opcode="GlobalOp" keywords="Storage Security" template="T_Text" symbol="EVT_ESCAPES" message="$(string.Event.Escapes)"/>
+          <event value="4" version="0" channel="Operational" level="win:Informational" symbol="EVT_NO_MESSAGE"/>
+          <event value="5" version="0" channel="Admin" level="win:Error" template="T_Text" symbol="EVT_ADMIN" message="$(string.Event.Admin)"/>
+          <event value="6" version="0" channel="Operational" level="win:Informational" task="Disconnect" opcode="win:Stop" keywords="High" template="T_Text" symbol="EVT_DISCONNECT" message="$(string.Event.Disconnect)"/>
+          <event value="7" version="0" channel="Operational" level="win:Verbose" template="T_Text" symbol="EVT_LONG" message="$(string.Event.Long)"/>
+          <event value="8" version="0" channel="Operational" level="win:Informational" task="Disconnect" opcode="win:Info" template="T_Types" symbol="EVT_TYPES" message="$(string.Event.Types)"/>
+          <event value="9" version="0" channel="Operational" level="win:Critical" template="T_Text" symbol="EVT_NO_TASK" message="$(string.Event.NoTask)"/>
+        </events>
+        <levels>
+          <level name="MtaFatal" symbol="LEVEL_MTA_FATAL" value="16" message="$(string.Level.Fatal)"/>
+        </levels>
+        <tasks>
+          <task name="Connect" symbol="TASK_CONNECT" value="1" eventGUID="{0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0}" message="$(string.Task.Connect)">
+            <opcodes>
+              <opcode name="Handshake" symbol="OPCODE_HANDSHAKE" value="10" message="$(string.Opcode.Handshake)"/>
+            </opcodes>
+          </task>
+          <task name="Disconnect" symbol="TASK_DISCONNECT" value="2" message="$(string.Task.Disconnect)"/>
+          <task name="BigTask" symbol="TASK_BIG" value="300" message="$(string.Task.Big)"/>
+        </tasks>
+        <opcodes>
+          <opcode name="GlobalOp" symbol="OPCODE_GLOBALOP" value="11" message="$(string.Opcode.Global)"/>
+        </opcodes>
+        <channels>
+          <channel chid="Operational" name="MtaTest-Provider/Operational" type="Operational" enabled="true" symbol="CHANNEL_OPERATIONAL" message="$(string.Channel.Operational)"/>
+          <channel chid="Admin" name="MtaTest-Provider/Admin" type="Admin" enabled="true" symbol="CHANNEL_ADMIN" message="$(string.Channel.Admin)"/>
+        </channels>
+        <keywords>
+          <keyword name="Network" symbol="KW_NETWORK" mask="0x1" message="$(string.Keyword.Network)"/>
+          <keyword name="Storage" symbol="KW_STORAGE" mask="0x2" message="$(string.Keyword.Storage)"/>
+          <keyword name="Security" symbol="KW_SECURITY" mask="0x4" message="$(string.Keyword.Security)"/>
+          <keyword name="High" symbol="KW_HIGH" mask="0x800000000000" message="$(string.Keyword.High)"/>
+        </keywords>
+        <templates>
+          <template tid="T_Connect">
+            <data name="Target" inType="win:UnicodeString"/>
+            <data name="Port" inType="win:UInt32"/>
+          </template>
+          <template tid="T_Text">
+            <data name="Text" inType="win:UnicodeString"/>
+          </template>
+          <template tid="T_Types">
+            <data name="Flag" inType="win:Boolean"/>
+            <data name="Id" inType="win:GUID"/>
+            <data name="Count" inType="win:Int64"/>
+          </template>
+        </templates>
+      </provider>
+    </events>
+  </instrumentation>
+  <localization>
+    <resources culture="en-US">
+      <stringTable>
+        <string id="Provider.Name" value="MTA Test Provider"/>
+        <string id="Channel.Operational" value="MTA Test Operational"/>
+        <string id="Channel.Admin" value="MTA Test Admin"/>
+        <string id="Level.Fatal" value="Fatal (custom)"/>
+        <string id="Task.Connect" value="Connect"/>
+        <string id="Task.Disconnect" value="Disconnect"/>
+        <string id="Task.Big" value="Big Task 300"/>
+        <string id="Opcode.Handshake" value="Handshake (task-specific)"/>
+        <string id="Opcode.Global" value="Global Opcode"/>
+        <string id="Keyword.Network" value="Network"/>
+        <string id="Keyword.Storage" value="Storage"/>
+        <string id="Keyword.Security" value="Security"/>
+        <string id="Keyword.High" value="High Bit 47"/>
+        <string id="Event.Connect" value="Connected to %1 on port %2."/>
+        <string id="Event.Handshake" value="Handshake &lt;%1&gt; &amp; &quot;quoted&quot; 'apos' ünïcödé 日本語 😀"/>
+        <string id="Event.Escapes" value="Line one%nLine two%tafter tab: %1"/>
+        <string id="Event.Admin" value="Admin channel error: %1"/>
+        <string id="Event.Disconnect" value="Disconnected from %1 (100%% done)."/>
+        <string id="Event.Long" value="Long message follows: %1"/>
+        <string id="Event.Types" value="Flag=%1 Id=%2 Count=%3"/>
+        <string id="Event.NoTask" value="Critical event without task, opcode or keywords: %1"/>
+      </stringTable>
+    </resources>
+    <resources culture="de-DE">
+      <stringTable>
+        <string id="Provider.Name" value="MTA-Testanbieter"/>
+        <string id="Channel.Operational" value="MTA-Test Betrieb"/>
+        <string id="Channel.Admin" value="MTA-Test Verwaltung"/>
+        <string id="Level.Fatal" value="Schwerwiegend (eigene Stufe)"/>
+        <string id="Task.Connect" value="Verbinden"/>
+        <string id="Task.Disconnect" value="Trennen"/>
+        <string id="Task.Big" value="Große Aufgabe 300"/>
+        <string id="Opcode.Handshake" value="Handshake (aufgabenspezifisch)"/>
+        <string id="Opcode.Global" value="Globaler Opcode"/>
+        <string id="Keyword.Network" value="Netzwerk"/>
+        <string id="Keyword.Storage" value="Speicher"/>
+        <string id="Keyword.Security" value="Sicherheit"/>
+        <string id="Keyword.High" value="Hohes Bit 47"/>
+        <string id="Event.Connect" value="Verbunden mit %1 an Port %2."/>
+        <string id="Event.Handshake" value="Handshake &lt;%1&gt; &amp; „Anführungszeichen“ Größe ÄÖÜ äöü ß"/>
+        <string id="Event.Escapes" value="Zeile eins%nZeile zwei%tnach Tab: %1"/>
+        <string id="Event.Admin" value="Fehler im Verwaltungskanal: %1"/>
+        <string id="Event.Disconnect" value="Getrennt von %1 (100%% fertig)."/>
+        <string id="Event.Long" value="Lange Meldung folgt: %1"/>
+        <string id="Event.Types" value="Kennzeichen=%1 Kennung=%2 Anzahl=%3"/>
+        <string id="Event.NoTask" value="Kritisches Ereignis ohne Aufgabe, Opcode oder Schlüsselwörter: %1"/>
+      </stringTable>
+    </resources>
+  </localization>
+</instrumentationManifest>
