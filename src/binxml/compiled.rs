@@ -2304,6 +2304,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     self.compile_element_value(*id, is_data_container_name(cname))?;
                 }
                 Node::Placeholder(ph) => {
+                    if seen_slot_child {
+                        return Err(Bail); // dynamic same-name suffixing needs runtime state
+                    }
                     // Dynamic member: nested-instance value (or absent).
                     self.flush_lit_run();
                     let name_ranges: Vec<(LitRange, u16)> = static_names
@@ -2800,10 +2803,8 @@ fn exec_json<'a, V: ValueSource<'a>>(
                         break;
                     }
                 }
-                // (Prior dynamic same-name members would need scratch state;
-                // a second dynamic member with a colliding name is not
-                // expressible in compiled shapes today: one SlotChild per
-                // object is enforced at compile time via `seen_slot_child`.)
+                // Prior dynamic same-name members would need scratch state; the
+                // compiler admits at most one SlotChild per object.
                 if *lead_comma {
                     out.push(b',');
                 }
@@ -3406,11 +3407,38 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ir::Name;
+    use bumpalo::Bump;
 
     #[test]
     fn chunk_remains_send() {
         fn assert_send<T: Send>() {}
-        assert_send::<crate::EvtxChunk<'static>>();
+        assert_send::<EvtxChunk<'static>>();
+    }
+
+    fn binxml_placeholder(id: u16) -> Node<'static> {
+        Node::Placeholder(Placeholder { id, optional: true })
+    }
+
+    #[test]
+    fn json_compiler_bails_on_multiple_dynamic_child_slots() {
+        let bump = Bump::new();
+        let mut arena = IrArena::new_in(&bump);
+
+        let static_child = arena.new_node(Element::new_in(Name::new("Static"), &bump));
+
+        let mut root = Element::new_in(Name::new("Parent"), &bump);
+        root.push_child(Node::Element(static_child));
+        root.push_child(binxml_placeholder(0));
+        root.push_child(binxml_placeholder(1));
+        let root = arena.new_node(root);
+
+        let tree = IrTree::new(arena, root);
+
+        assert!(
+            compile_json_template(&tree, false, true, &ParserSettings::default()).is_none(),
+            "multiple dynamic child slots need runtime name-suffix state; use the materialized path"
+        );
     }
 
     /// Embedded BinXML names elements the body's name walk does not see, so
