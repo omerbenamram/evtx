@@ -1,0 +1,29 @@
+name: MTA samples
+
+# Regenerates the .MTA fixtures in samples/mta and Windows' own rendering of
+# them (see scripts/mta/generate-mta-samples.ps1) on a Windows runner, and
+# uploads the result as an artifact. Copy the artifact over samples/mta to
+# update the fixtures.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Generate and archive
+        shell: powershell
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Generate -OutDir "$env:RUNNER_TEMP\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
+      - name: Probe
+        shell: powershell
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Probe -OutDir "$env:RUNNER_TEMP\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mta-samples
+          path: ${{ runner.temp }}/mta-out

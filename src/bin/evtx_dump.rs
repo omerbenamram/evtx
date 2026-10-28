@@ -141,6 +141,11 @@ impl EvtxDump {
             .map(|p| load_wevt_cache_from_wevtcache_file(p))
             .transpose()?;
 
+        let mta = matches
+            .get_one::<PathBuf>("mta")
+            .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
+            .transpose()?;
+
         let parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
@@ -148,7 +153,8 @@ impl EvtxDump {
             .indent(!no_indent)
             .ansi_codec(ansi_codec)
             .recover_records(matches.get_flag("recover-records"))
-            .wevt_cache(wevt_cache);
+            .wevt_cache(wevt_cache)
+            .mta(mta);
 
         Ok(EvtxDump {
             parser_settings,
@@ -518,6 +524,13 @@ fn main() -> Result<()> {
                 .long("wevt-cache")
                 .value_name("WEVTCACHE")
                 .help("Path to a WEVT template cache file (`.wevtcache`). When set, evtx_dump will try to render records using this cache if the embedded EVTX template expansion fails."),
+        )
+        .arg(
+            Arg::new("mta")
+                .long("mta")
+                .value_name("MTA")
+                .value_parser(clap::value_parser!(PathBuf))
+                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element."),
         )
         .arg(
             Arg::new("stop-after-one-error")

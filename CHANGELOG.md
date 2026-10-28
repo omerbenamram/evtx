@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `evtx::mta` reads the localized strings Windows saves next to an exported log
+  in `LocaleMetaData\<log>_<LCID>.MTA` (*Save All Events As* with display
+  information in Event Viewer, or `wevtutil al`). With `ParserSettings::mta` or
+  `evtx_dump --mta <file>`, every record whose publisher is in the file gets a
+  `RenderingInfo` element with its message and its level, task, opcode and
+  keyword names, matched to events the way Windows matches them.
+  `MtaFile::rendering_info` looks the strings up without rendering. See
+  `docs/mta.md`. Thanks @dev-joss for the original work and samples in #284.
+
 ## [0.13.0 - 2026-10-22]
 
 ### Added

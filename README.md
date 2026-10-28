@@ -108,6 +108,14 @@ Debugging helpers:
 
 See [`docs/wevt_templates.md`](docs/wevt_templates.md) for details and background (issue #103).
 
+## Localized strings from `.MTA` files
+
+When a log is saved with display information (Event Viewer's *Save All Events As*, or `wevtutil al`), Windows also writes the event messages and the level, task, opcode and keyword names to `LocaleMetaData\<log>_<LCID>.MTA` next to the `.evtx`. `evtx_dump` can add them to each record as a `RenderingInfo` element, like the one forwarded events have:
+
+- `evtx_dump --mta LocaleMetaData/Security_1033.MTA Security.evtx`
+
+In the library, this is `ParserSettings::mta` (see the `evtx::mta` module). See [`docs/mta.md`](docs/mta.md) for the file format and how Windows matches its strings to events.
+
 ## Example usage (as library):
 ```rust
 use evtx::EvtxParser;

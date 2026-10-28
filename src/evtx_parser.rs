@@ -5,6 +5,7 @@ use crate::binxml::compiled::{JsonProgram, StoredProgram, XmlProgram};
 use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
+use crate::mta::MtaFile;
 use bumpalo::Bump;
 use encoding_rs::WINDOWS_1252;
 
@@ -72,6 +73,7 @@ fn render_chunk<P: StoredProgram>(
 
     let chunk_ref: &EvtxChunk = chunk;
     let settings = &chunk_ref.settings;
+    let mta = settings.get_mta();
     let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
     let mut items = Vec::new();
     let mut ir_cache =
@@ -101,6 +103,7 @@ fn render_chunk<P: StoredProgram>(
         let body_start = data.len();
         let compiled_done = try_render_compiled(
             raw.bytes,
+            event_record_id,
             chunk_ref,
             &mut ir_cache,
             &mut progs,
@@ -115,7 +118,17 @@ fn render_chunk<P: StoredProgram>(
             // compiler uses — one output semantics for every record shape.
             // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
             build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)
-                .and_then(|tree| P::render_tree(&tree, settings, &mut data))
+                .and_then(|mut tree| {
+                    if let Some(mta) = mta {
+                        crate::mta::add_rendering_info(
+                            &mut tree,
+                            event_record_id,
+                            mta,
+                            &chunk_ref.arena,
+                        );
+                    }
+                    P::render_tree(&tree, settings, &mut data)
+                })
                 .map_err(|err| EvtxError::record(event_record_id, err))
         };
         match rendered {
@@ -259,6 +272,8 @@ pub struct ParserSettings {
     /// are missing/corrupt (common in carved/dirty logs).
     #[cfg(feature = "wevt_templates")]
     wevt_cache: Option<Arc<crate::wevt_templates::WevtCache>>,
+    /// Optional `.MTA` file whose localized strings are added to records as `RenderingInfo`.
+    mta: Option<Arc<MtaFile>>,
 }
 
 impl Debug for ParserSettings {
@@ -274,6 +289,8 @@ impl Debug for ParserSettings {
         #[cfg(feature = "wevt_templates")]
         ds.field("wevt_cache", &self.wevt_cache.is_some());
 
+        ds.field("mta", &self.mta.is_some());
+
         ds.finish()
     }
 }
@@ -286,6 +303,7 @@ impl PartialEq for ParserSettings {
             && self.separate_json_attributes == other.separate_json_attributes
             && self.indent == other.indent
             && self.recover_records == other.recover_records
+            && self.mta.as_ref().map(Arc::as_ptr) == other.mta.as_ref().map(Arc::as_ptr)
     }
 }
 
@@ -300,6 +318,7 @@ impl Default for ParserSettings {
             recover_records: false,
             #[cfg(feature = "wevt_templates")]
             wevt_cache: None,
+            mta: None,
         }
     }
 }
@@ -342,6 +361,17 @@ impl ParserSettings {
     #[cfg(feature = "wevt_templates")]
     pub fn wevt_cache(mut self, cache: Option<Arc<crate::wevt_templates::WevtCache>>) -> Self {
         self.wevt_cache = cache;
+        self
+    }
+
+    /// Add the localized strings of an `.MTA` file (from the `LocaleMetaData` folder next to a
+    /// log saved with display information) to every record as a `RenderingInfo` element. See
+    /// [`crate::mta`].
+    ///
+    /// This slows rendering down, most of all through the record API ([`EvtxParser::records`]
+    /// and the like), which then builds each record's tree to add the element.
+    pub fn mta(mut self, mta: Option<Arc<MtaFile>>) -> Self {
+        self.mta = mta;
         self
     }
 
@@ -391,6 +421,10 @@ impl ParserSettings {
     #[cfg(feature = "wevt_templates")]
     pub(crate) fn get_wevt_cache(&self) -> Option<&Arc<crate::wevt_templates::WevtCache>> {
         self.wevt_cache.as_ref()
+    }
+
+    pub(crate) fn get_mta(&self) -> Option<&MtaFile> {
+        self.mta.as_deref()
     }
 
     pub(crate) fn should_separate_json_attributes(&self) -> bool {

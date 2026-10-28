@@ -312,21 +312,42 @@ impl ValueRenderer {
         text: &str,
         in_attribute: bool,
     ) -> Result<()> {
-        for ch in text.chars() {
-            match ch {
-                '&' => self.write_bytes(writer, b"&amp;")?,
-                '<' => self.write_bytes(writer, b"&lt;")?,
-                '>' => self.write_bytes(writer, b"&gt;")?,
-                '"' if in_attribute => self.write_bytes(writer, b"&quot;")?,
-                '\'' if in_attribute => self.write_bytes(writer, b"&apos;")?,
-                _ => {
-                    let mut buf = [0_u8; 4];
-                    let slice = ch.encode_utf8(&mut buf).as_bytes();
-                    self.write_bytes(writer, slice)?;
-                }
-            }
+        // The escaped characters are ASCII, so they are never part of a longer UTF-8 sequence.
+        let bytes = text.as_bytes();
+        if in_attribute {
+            let special = bytes
+                .iter()
+                .enumerate()
+                .filter(|(_, byte)| matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\''));
+            self.write_xml_escaped_at(writer, bytes, special.map(|(i, _)| i))
+        } else {
+            // `memchr` finds these a lot faster than a loop over the bytes does.
+            let special = memchr::memchr3_iter(b'&', b'<', b'>', bytes);
+            self.write_xml_escaped_at(writer, bytes, special)
         }
-        Ok(())
+    }
+
+    /// Writes `bytes`, escaping the characters at `special`.
+    fn write_xml_escaped_at<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        bytes: &[u8],
+        special: impl Iterator<Item = usize>,
+    ) -> Result<()> {
+        let mut run = 0;
+        for i in special {
+            let escaped: &[u8] = match bytes[i] {
+                b'&' => b"&amp;",
+                b'<' => b"&lt;",
+                b'>' => b"&gt;",
+                b'"' => b"&quot;",
+                _ => b"&apos;",
+            };
+            self.write_bytes(writer, &bytes[run..i])?;
+            self.write_bytes(writer, escaped)?;
+            run = i + 1;
+        }
+        self.write_bytes(writer, &bytes[run..])
     }
 
     fn write_hex_bytes_upper<W: WriteExt>(&mut self, writer: &mut W, bytes: &[u8]) -> Result<()> {
@@ -450,5 +471,29 @@ fn to_hex_digit_lower(value: u8) -> u8 {
     match value {
         0..=9 => b'0' + value,
         _ => b'a' + (value - 10),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xml_escapes_utf8_text() {
+        let escape = |text: &str, in_attribute: bool| {
+            let mut out = Vec::new();
+            ValueRenderer::new()
+                .write_str_escaped(&mut out, text, StringEscapeMode::Xml { in_attribute })
+                .unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let text = "<a & \"b\"> 'c' ünï 日本 😀";
+        assert_eq!(escape(text, false), "&lt;a &amp; \"b\"&gt; 'c' ünï 日本 😀");
+        assert_eq!(
+            escape(text, true),
+            "&lt;a &amp; &quot;b&quot;&gt; &apos;c&apos; ünï 日本 😀"
+        );
+        assert_eq!(escape("plain", false), "plain");
+        assert_eq!(escape("", true), "");
     }
 }

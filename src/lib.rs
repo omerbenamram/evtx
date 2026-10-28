@@ -19,6 +19,7 @@ pub use utils::utf16::{Utf16LeDecodeError, Utf16LeSlice};
 pub mod binxml;
 pub mod err;
 pub mod model;
+pub mod mta;
 
 // Optional: PE resource parsing to extract WEVT_TEMPLATE blobs (see issue #103).
 #[cfg(feature = "wevt_templates")]

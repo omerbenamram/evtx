@@ -5,6 +5,7 @@ use crate::binxml::tokens::{Stream, TokenSink, walk_tokens};
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
+use std::borrow::Cow;
 
 pub use jiff::Timestamp;
 #[allow(unused)]
@@ -128,30 +129,34 @@ impl<'a> EvtxRecord<'a> {
 
     /// Render the record through the compiled-template machinery: cached
     /// program when the record's templates compile (the common case), the
-    /// same materialized walker otherwise.
+    /// same materialized walker otherwise. With an `.MTA` file set, the
+    /// record's tree gets its `RenderingInfo` and is rendered instead.
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
         let settings = &self.chunk.settings;
-        match &self.content {
-            RecordContent::Tree(tree) => render_tree(tree, settings, json, data),
+        let mta = settings.get_mta();
+        let mut tree = match &self.content {
+            RecordContent::Tree(tree) => Cow::Borrowed(tree),
             RecordContent::Template(content) => {
-                let mut caches = self.chunk.render_caches.borrow_mut();
-                if crate::binxml::compiled::try_render_validated(
-                    content,
-                    self.chunk,
-                    &mut caches,
-                    json,
-                    data,
-                ) {
-                    return Ok(());
+                if mta.is_none() {
+                    let mut caches = self.chunk.render_caches.borrow_mut();
+                    if crate::binxml::compiled::try_render_validated(
+                        content,
+                        self.chunk,
+                        &mut caches,
+                        json,
+                        data,
+                    ) {
+                        return Ok(());
+                    }
                 }
-                render_tree(
-                    &content.materialize(&self.chunk.arena)?,
-                    settings,
-                    json,
-                    data,
-                )
+                Cow::Owned(content.materialize(&self.chunk.arena)?)
             }
+        };
+        if let Some(mta) = mta {
+            let arena = &self.chunk.arena;
+            crate::mta::add_rendering_info(tree.to_mut(), self.event_record_id, mta, arena);
         }
+        render_tree(&tree, settings, json, data)
     }
 
     fn render_bytes(self, json: bool) -> Result<SerializedEvtxRecord<Vec<u8>>> {
