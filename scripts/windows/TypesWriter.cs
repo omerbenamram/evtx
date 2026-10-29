@@ -118,13 +118,12 @@ public static class TypesWriter
             .SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]).Sid(sid).U32(hex32).U64(hex64);
     }
 
-    static P Arrays(string[] strings, string[] ansis, sbyte[] i8, byte[] u8, short[] i16, ushort[] u16,
+    static P Arrays(string[] strings, sbyte[] i8, byte[] u8, short[] i16, ushort[] u16,
         int[] i32, uint[] u32, long[] i64, ulong[] u64, float[] f32, double[] f64, int[] bools,
         string[] guids, ulong[] ptrs, DateTime[] fts, int[][] sts, string[] sids, uint[] hex32, ulong[] hex64)
     {
         P p = new P().U16((ushort)strings.Length);
         foreach (string v in strings) p.Str(v);
-        foreach (string v in ansis) p.Ansi(v);
         foreach (sbyte v in i8) p.I8(v);
         foreach (byte v in u8) p.U8(v);
         foreach (short v in i16) p.I16(v);
@@ -169,7 +168,7 @@ public static class TypesWriter
         int[] st1 = new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 };
         int[] st2 = new int[] { 2020, 2, 6, 29, 0, 0, 0, 1 };
         int[] st3 = new int[] { 1999, 12, 5, 31, 23, 59, 59, 999 };
-        add("EVT_ARRAYS", Arrays(new string[] { "a", "", "c,d" }, new string[] { "x", "", "y z" },
+        add("EVT_ARRAYS", Arrays(new string[] { "a", "", "c,d" },
             new sbyte[] { -1, 0, 1 }, new byte[] { 0, 1, 255 }, new short[] { -2, 0, 2 }, new ushort[] { 0, 1, 65535 },
             new int[] { -3, 0, 3 }, new uint[] { 0, 1, uint.MaxValue }, new long[] { -4, 0, 4 },
             new ulong[] { 0, 1, ulong.MaxValue }, new float[] { 0.5f, -1.25f, 1e10f }, new double[] { 0.1, -2.5, 1e100 },
@@ -179,14 +178,23 @@ public static class TypesWriter
             new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402), Utc(1601, 1, 1, 0, 0, 0, 0), Utc(2020, 2, 29, 0, 0, 0, 1) },
             new int[][] { st1, st2, st3 }, new string[] { "S-1-5-18", "S-1-5-19", "S-1-5-20" },
             new uint[] { 0, 0x1F, uint.MaxValue }, new ulong[] { 0, 0x80000000000000UL, ulong.MaxValue }));
-        add("EVT_ARRAYS", Arrays(new string[] { "only" }, new string[] { "one" }, new sbyte[] { 7 }, new byte[] { 7 },
+        add("EVT_ARRAYS", Arrays(new string[] { "only" }, new sbyte[] { 7 }, new byte[] { 7 },
             new short[] { 7 }, new ushort[] { 7 }, new int[] { 7 }, new uint[] { 7 }, new long[] { 7 }, new ulong[] { 7 },
             new float[] { 7f }, new double[] { 7 }, new int[] { 0 }, new string[] { "01234567-89ab-cdef-0123-456789abcdef" },
             new ulong[] { 7 }, new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402) }, new int[][] { st1 },
             new string[] { "S-1-5-18" }, new uint[] { 7 }, new ulong[] { 7 }));
-        add("EVT_ARRAYS", Arrays(new string[0], new string[0], new sbyte[0], new byte[0], new short[0], new ushort[0],
+        add("EVT_ARRAYS", Arrays(new string[0], new sbyte[0], new byte[0], new short[0], new ushort[0],
             new int[0], new uint[0], new long[0], new ulong[0], new float[0], new double[0], new int[0], new string[0],
             new ulong[0], new DateTime[0], new int[0][], new string[0], new uint[0], new ulong[0]));
+
+        foreach (string[] ansis in new string[][] { new string[] { "x", "", "y z" }, new string[] { "one" }, new string[0] })
+        {
+            P p = new P().U16((ushort)ansis.Length);
+            foreach (string v in ansis) p.Ansi(v);
+            add("EVT_ANSI_ARRAY", p);
+        }
+
+        add("EVT_USER_DATA", new P().Str("v < w & x"));
 
         add("EVT_BINARY_ARRAY", new P().U16(2).Raw(Hex("01020304")).Raw(Hex("A0B0C0D0")));
         add("EVT_BINARY_ARRAY", new P().U16(0));

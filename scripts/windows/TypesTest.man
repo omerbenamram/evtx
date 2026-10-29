@@ -34,6 +34,8 @@
           <event value="10" version="0" channel="Operational" level="win:Informational" template="T_SysTime" symbol="EVT_SYSTIME"/>
           <event value="11" version="0" channel="Operational" level="win:Informational" template="T_Float" symbol="EVT_FLOAT"/>
           <event value="12" version="0" channel="Operational" level="win:Informational" template="T_Bool" symbol="EVT_BOOL"/>
+          <event value="13" version="0" channel="Operational" level="win:Informational" template="T_AnsiArray" symbol="EVT_ANSI_ARRAY"/>
+          <event value="14" version="0" channel="Operational" level="win:Informational" template="T_UserData" symbol="EVT_USER_DATA"/>
         </events>
         <channels>
           <channel chid="Operational" name="EvtxTypes-Provider/Operational" type="Operational" enabled="true" symbol="CHANNEL_OPERATIONAL" message="$(string.Channel.Operational)"/>
@@ -66,7 +68,6 @@
           <template tid="T_Arrays">
             <data name="Count" inType="win:UInt16"/>
             <data name="UnicodeStrings" inType="win:UnicodeString" count="Count"/>
-            <data name="AnsiStrings" inType="win:AnsiString" count="Count"/>
             <data name="Int8s" inType="win:Int8" count="Count"/>
             <data name="UInt8s" inType="win:UInt8" count="Count"/>
             <data name="Int16s" inType="win:Int16" count="Count"/>
@@ -85,6 +86,23 @@
             <data name="SIDs" inType="win:SID" count="Count"/>
             <data name="HexInt32s" inType="win:HexInt32" count="Count"/>
             <data name="HexInt64s" inType="win:HexInt64" count="Count"/>
+          </template>
+          <!-- Apart from T_Arrays: Windows can't render ANSI string arrays (error 13), which would hide the other arrays. -->
+          <template tid="T_AnsiArray">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="AnsiStrings" inType="win:AnsiString" count="Count"/>
+          </template>
+          <!-- Template XML with entities, character references and CDATA, to see which BinXML tokens they become. -->
+          <template tid="T_UserData">
+            <data name="Value" inType="win:UnicodeString"/>
+            <UserData>
+              <TypesUserData xmlns="http://schemas.evtx.example/types">
+                <Literal>a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;</Literal>
+                <CharRef>&#65;&#x263A;</CharRef>
+                <Cdata><![CDATA[x < y & z]]></Cdata>
+                <Value>%1</Value>
+              </TypesUserData>
+            </UserData>
           </template>
           <template tid="T_BinaryArray">
             <data name="Count" inType="win:UInt16"/>
