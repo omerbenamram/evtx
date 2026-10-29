@@ -53,8 +53,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "$VERSION" --notes ""
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          # The version's CHANGELOG.md notes, then GitHub's list of merged PRs.
+          scripts/release-notes.sh "${VERSION#v}" > notes.md
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "$VERSION" \
+            --notes-file notes.md --generate-notes
 
   build-release:
     name: build-release
