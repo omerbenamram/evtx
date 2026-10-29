@@ -18,7 +18,7 @@ const row = (index: number) => ({ rowKey: String(index), eventId: index });
 beforeAll(async () => {
   connection = await openTestDatabase();
 });
-afterAll(() => connection.close());
+afterAll(() => connection?.close());
 beforeEach(() => {
   beginNewSession();
   connection.query(`DROP TABLE IF EXISTS logs;

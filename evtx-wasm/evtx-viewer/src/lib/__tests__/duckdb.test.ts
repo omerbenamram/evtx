@@ -30,7 +30,7 @@ const matched = (searchQuery: string) =>
 beforeAll(async () => {
   connection = await openTestDatabase();
 });
-afterAll(() => connection.close());
+afterAll(() => connection?.close());
 beforeEach(() => {
   connection.query(`DROP TABLE IF EXISTS logs; ${LOGS_TABLE_SQL}`);
   connection.query(`INSERT INTO logs (EventID, Level, Provider, Channel, TimeCreated, Computer, Raw) VALUES
