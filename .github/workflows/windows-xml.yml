@@ -28,6 +28,22 @@ jobs:
       - name: Render types.evtx
         shell: powershell
         run: ./scripts/windows/render-samples.ps1 -Samples "$env:RUNNER_TEMP\windows-xml\generated" -OutDir "$env:RUNNER_TEMP\windows-xml\generated"
+      # Probe branch only: checks the MTA scripts, which share code with scripts/windows.
+      - name: MTA probe of the committed fixtures
+        if: always()
+        shell: powershell
+        run: |
+          Copy-Item -Recurse "$env:GITHUB_WORKSPACE\samples\mta" "$env:RUNNER_TEMP\windows-xml\mta-committed"
+          Remove-Item -Recurse "$env:RUNNER_TEMP\windows-xml\mta-committed\windows", "$env:RUNNER_TEMP\windows-xml\mta-committed\SHA256SUMS"
+          ./scripts/mta/generate-mta-samples.ps1 -Phase Probe -OutDir "$env:RUNNER_TEMP\windows-xml\mta-committed" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
+      - name: MTA generate
+        if: always()
+        shell: powershell
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Generate -OutDir "$env:RUNNER_TEMP\windows-xml\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
+      - name: MTA probe
+        if: always()
+        shell: powershell
+        run: ./scripts/mta/generate-mta-samples.ps1 -Phase Probe -OutDir "$env:RUNNER_TEMP\windows-xml\mta-out" -RepoSamples "$env:GITHUB_WORKSPACE\samples"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
