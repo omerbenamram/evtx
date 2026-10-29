@@ -4,6 +4,8 @@
 // Compiled through Add-Type in Windows PowerShell 5.1, so it sticks to C# 5.
 using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -38,7 +40,7 @@ public static class TypesWriter
     // Returns a one-byte BOOLEAN, not a four-byte BOOL.
     [DllImport("advapi32.dll")]
     [return: MarshalAs(UnmanagedType.U1)]
-    static extern bool EventProviderEnabled(long regHandle, byte level, ulong keyword);
+    static extern bool EventEnabled(long regHandle, [In] ref EVENT_DESCRIPTOR descriptor);
 
     [DllImport("advapi32.dll")]
     static extern uint EventWrite(long regHandle, [In] ref EVENT_DESCRIPTOR descriptor, uint userDataCount, [In] EVENT_DATA_DESCRIPTOR[] userData);
@@ -76,9 +78,10 @@ public static class TypesWriter
         public P Guid(string g) { w.Write(new Guid(g).ToByteArray()); return this; }
         public P FileTime(long v) { w.Write(v); return this; }
         public P FileTime(DateTime utc) { w.Write(utc.ToFileTimeUtc()); return this; }
-        public P SysTime(int year, int month, int dow, int day, int hour, int minute, int second, int ms)
+        // year, month, day of week, day, hour, minute, second, milliseconds.
+        public P SysTime(int[] fields)
         {
-            foreach (int v in new int[] { year, month, dow, day, hour, minute, second, ms })
+            foreach (int v in fields)
             {
                 w.Write((ushort)v);
             }
@@ -116,20 +119,22 @@ public static class TypesWriter
         DateTime ft, int[] st, string sid, uint hex32, ulong hex64)
     {
         return new P().Str(s).Ansi(ansi).I8(i8).U8(u8).I16(i16).U16(u16).I32(i32).U32(u32).I64(i64).U64(u64)
-            .F32(f32).F64(f64).I32(boolean).Bin(bin).Guid(guid).U64(ptr).FileTime(ft)
-            .SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]).Sid(sid).U32(hex32).U64(hex64);
+            .F32(f32).F64(f64).I32(boolean).Bin(bin).Guid(guid).U64(ptr).FileTime(ft).SysTime(st).Sid(sid)
+            .U32(hex32).U64(hex64);
     }
 
-    // Every event to write, as (symbol, payload); a null payload writes no data.
-    static ArrayList Events()
+    // Every event to write, in event ID order, as (symbol, payload); a null payload
+    // writes no data.
+    static List<KeyValuePair<string, P>> Events()
     {
-        ArrayList e = new ArrayList();
-        Action<string, P> add = (symbol, p) => e.Add(new object[] { symbol, p });
+        List<KeyValuePair<string, P>> e = new List<KeyValuePair<string, P>>();
+        Action<string, P> add = (symbol, p) => e.Add(new KeyValuePair<string, P>(symbol, p));
+        DateTime stamp = Utc(2016, 7, 8, 18, 12, 51, 6816402);
 
         add("EVT_SCALARS", Scalars("hello", new byte[] { 0x63, 0x61, 0x66, 0xE9 }, -5, 200, -1234, 54321,
             -123456, 3000000000, -1234567890123, 12345678901234567890UL, 1.5f, 3.141592653589793, 1,
             Hex("DEADBEEF"), "01234567-89ab-cdef-0123-456789abcdef", 0x00007FF6A1B2C3D4UL,
-            Utc(2016, 7, 8, 18, 12, 51, 6816402), new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 },
+            stamp, new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 },
             "S-1-5-21-1004336348-1177238915-682003330-512", 0x1F, 0x80000000000000UL));
         add("EVT_SCALARS", Scalars("", new byte[0], sbyte.MinValue, 0, short.MinValue, 0, int.MinValue, 0,
             long.MinValue, 0, 0.0f, -0.0, 0, new byte[0], "00000000-0000-0000-0000-000000000000", 0,
@@ -139,65 +144,6 @@ public static class TypesWriter
             double.MaxValue, 1, Hex("000102030405060708090A0B0C0D0E0F"), "ffffffff-ffff-ffff-ffff-ffffffffffff",
             ulong.MaxValue, Utc(9999, 12, 31, 23, 59, 59, 9999999), new int[] { 9999, 12, 5, 31, 23, 59, 59, 999 },
             "S-1-5-18", uint.MaxValue, ulong.MaxValue));
-
-        // Three items of each array type, in T_Arrays' order. T_Arrays and T_A_<type> get the
-        // first 3, 1 and 0 of them.
-        int[][] systimes3 = new int[][] {
-            new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 },
-            new int[] { 2020, 2, 6, 29, 0, 0, 0, 1 },
-            new int[] { 1999, 12, 5, 31, 23, 59, 59, 999 } };
-        object[][] arrays = new object[][] {
-            new object[] { "EVT_A_UNICODESTRING", (Action<P, int>)((p, i) => p.Str(new string[] { "a", "", "c,d" }[i])) },
-            new object[] { "EVT_A_INT8", (Action<P, int>)((p, i) => p.I8(new sbyte[] { -1, 0, 1 }[i])) },
-            new object[] { "EVT_A_UINT8", (Action<P, int>)((p, i) => p.U8(new byte[] { 0, 1, 255 }[i])) },
-            new object[] { "EVT_A_INT16", (Action<P, int>)((p, i) => p.I16(new short[] { -2, 0, 2 }[i])) },
-            new object[] { "EVT_A_UINT16", (Action<P, int>)((p, i) => p.U16(new ushort[] { 0, 1, 65535 }[i])) },
-            new object[] { "EVT_A_INT32", (Action<P, int>)((p, i) => p.I32(new int[] { -3, 0, 3 }[i])) },
-            new object[] { "EVT_A_UINT32", (Action<P, int>)((p, i) => p.U32(new uint[] { 0, 1, uint.MaxValue }[i])) },
-            new object[] { "EVT_A_INT64", (Action<P, int>)((p, i) => p.I64(new long[] { -4, 0, 4 }[i])) },
-            new object[] { "EVT_A_UINT64", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i])) },
-            new object[] { "EVT_A_FLOAT", (Action<P, int>)((p, i) => p.F32(new float[] { 0.5f, -1.25f, 1e10f }[i])) },
-            new object[] { "EVT_A_DOUBLE", (Action<P, int>)((p, i) => p.F64(new double[] { 0.1, -2.5, 1e100 }[i])) },
-            new object[] { "EVT_A_BOOLEAN", (Action<P, int>)((p, i) => p.I32(new int[] { 1, 0, 2 }[i])) },
-            new object[] { "EVT_A_GUID", (Action<P, int>)((p, i) => p.Guid(new string[] { "01234567-89ab-cdef-0123-456789abcdef", "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff" }[i])) },
-            new object[] { "EVT_A_POINTER", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i])) },
-            new object[] { "EVT_A_FILETIME", (Action<P, int>)((p, i) => p.FileTime(new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402), Utc(1601, 1, 1, 0, 0, 0, 0), Utc(2020, 2, 29, 0, 0, 0, 1) }[i])) },
-            new object[] { "EVT_A_SYSTEMTIME", (Action<P, int>)((p, i) => { int[] st = systimes3[i]; p.SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]); }) },
-            new object[] { "EVT_A_SID", (Action<P, int>)((p, i) => p.Sid(new string[] { "S-1-5-18", "S-1-5-19", "S-1-5-20" }[i])) },
-            new object[] { "EVT_A_HEXINT32", (Action<P, int>)((p, i) => p.U32(new uint[] { 0, 0x1F, uint.MaxValue }[i])) },
-            new object[] { "EVT_A_HEXINT64", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 0x80000000000000UL, ulong.MaxValue }[i])) },
-        };
-        int[] counts = new int[] { 3, 1, 0 };
-        foreach (int n in counts)
-        {
-            P p = new P().U16((ushort)n);
-            foreach (object[] array in arrays)
-            {
-                for (int i = 0; i < n; i++) ((Action<P, int>)array[1])(p, i);
-            }
-            add("EVT_ARRAYS", p);
-        }
-        foreach (object[] array in arrays)
-        {
-            foreach (int n in counts)
-            {
-                P p = new P().U16((ushort)n);
-                for (int i = 0; i < n; i++) ((Action<P, int>)array[1])(p, i);
-                add((string)array[0], p);
-            }
-        }
-
-        foreach (string[] ansis in new string[][] { new string[] { "x", "", "y z" }, new string[] { "one" }, new string[0] })
-        {
-            P p = new P().U16((ushort)ansis.Length);
-            foreach (string v in ansis) p.Ansi(v);
-            add("EVT_ANSI_ARRAY", p);
-        }
-
-        add("EVT_USER_DATA", new P().Str("v < w & x"));
-
-        add("EVT_BINARY_ARRAY", new P().U16(2).Raw(Hex("01020304")).Raw(Hex("A0B0C0D0")));
-        add("EVT_BINARY_ARRAY", new P().U16(0));
 
         foreach (string xml in new string[] {
             "<Root a=\"1\"><Child>text &amp; more</Child><Empty/></Root>",
@@ -209,7 +155,7 @@ public static class TypesWriter
                 .I32(unchecked((int)0x80070005)).U32(1234).U16(0x5000).U32(0x0100007F)
                 .Raw(Hex("00000000000000000000000000000001"))
                 .Bin(Hex("02001F90C0A801010000000000000000"))
-                .FileTime(Utc(2016, 7, 8, 18, 12, 51, 6816402)).FileTime(Utc(2016, 7, 8, 18, 12, 51, 6816402)));
+                .FileTime(stamp).FileTime(stamp));
         }
 
         string[][] texts = new string[][] {
@@ -255,7 +201,7 @@ public static class TypesWriter
 
         long[] filetimes = new long[] {
             0, 1, 9999999, 10000000, 116444736000000000, 116444736000000001,
-            Utc(2016, 7, 8, 18, 12, 51, 6816402).ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6816400).ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6810000).ToFileTimeUtc(),
+            stamp.ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6816400).ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6810000).ToFileTimeUtc(),
             Utc(2016, 7, 8, 18, 12, 51, 0).ToFileTimeUtc(), Utc(9999, 12, 31, 23, 59, 59, 9999999).ToFileTimeUtc(),
             Utc(9999, 12, 31, 23, 59, 59, 9999999).ToFileTimeUtc() + 1, 0x7FFFFFFFFFFFFFFF, -1 };
         foreach (long ft in filetimes)
@@ -276,32 +222,82 @@ public static class TypesWriter
         };
         foreach (int[] st in systimes)
         {
-            add("EVT_SYSTIME", new P().Str(string.Join(",", Array.ConvertAll(st, x => x.ToString())))
-                .SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]));
+            add("EVT_SYSTIME", new P().Str(string.Join(",", Array.ConvertAll(st, x => x.ToString()))).SysTime(st));
         }
 
-        object[][] floats = new object[][] {
-            new object[] { "tenth", 0.1f, 0.1 },
-            new object[] { "one", 1.0f, 1.0 },
-            new object[] { "negative zero", -0.0f, -0.0 },
-            new object[] { "nan", float.NaN, double.NaN },
-            new object[] { "infinity", float.PositiveInfinity, double.NegativeInfinity },
-            new object[] { "subnormal", 1e-45f, 5e-324 },
-            new object[] { "large", 123456789f, 1e21 },
-            new object[] { "small", 1e-7f, 1e-7 },
-            new object[] { "max", float.MaxValue, double.MaxValue },
-            new object[] { "pi", 3.14159274f, 3.141592653589793 },
-        };
-        foreach (object[] f in floats)
-        {
-            add("EVT_FLOAT", new P().Str((string)f[0]).F32((float)f[1]).F64((double)f[2]));
-        }
+        Action<string, float, double> floats = (label, f, d) => add("EVT_FLOAT", new P().Str(label).F32(f).F64(d));
+        floats("tenth", 0.1f, 0.1);
+        floats("one", 1.0f, 1.0);
+        floats("negative zero", -0.0f, -0.0);
+        floats("nan", float.NaN, double.NaN);
+        floats("infinity", float.PositiveInfinity, double.NegativeInfinity);
+        floats("subnormal", 1e-45f, 5e-324);
+        floats("large", 123456789f, 1e21);
+        floats("small", 1e-7f, 1e-7);
+        floats("max", float.MaxValue, double.MaxValue);
+        floats("pi", 3.14159274f, 3.141592653589793);
 
         foreach (int b in new int[] { 0, 1, 2, -1, 0x10000 })
         {
             add("EVT_BOOL", new P().Str(b.ToString()).I32(b));
         }
+
+        add("EVT_USER_DATA", new P().Str("v < w & x"));
+
+        // Every input type as an array, with 3, 1 and 0 items; item(p, i) writes item i.
+        Action<string, Action<P, int>> array = (symbol, item) =>
+        {
+            foreach (int n in new int[] { 3, 1, 0 })
+            {
+                P p = new P().U16((ushort)n);
+                for (int i = 0; i < n; i++) item(p, i);
+                add(symbol, p);
+            }
+        };
+        int[][] systimes3 = new int[][] {
+            new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 },
+            new int[] { 2020, 2, 6, 29, 0, 0, 0, 1 },
+            new int[] { 1999, 12, 5, 31, 23, 59, 59, 999 } };
+        array("EVT_A_UNICODESTRING", (p, i) => p.Str(new string[] { "a", "", "c,d" }[i]));
+        array("EVT_A_ANSISTRING", (p, i) => p.Ansi(new string[] { "x", "", "y z" }[i]));
+        array("EVT_A_INT8", (p, i) => p.I8(new sbyte[] { -1, 0, 1 }[i]));
+        array("EVT_A_UINT8", (p, i) => p.U8(new byte[] { 0, 1, 255 }[i]));
+        array("EVT_A_INT16", (p, i) => p.I16(new short[] { -2, 0, 2 }[i]));
+        array("EVT_A_UINT16", (p, i) => p.U16(new ushort[] { 0, 1, 65535 }[i]));
+        array("EVT_A_INT32", (p, i) => p.I32(new int[] { -3, 0, 3 }[i]));
+        array("EVT_A_UINT32", (p, i) => p.U32(new uint[] { 0, 1, uint.MaxValue }[i]));
+        array("EVT_A_INT64", (p, i) => p.I64(new long[] { -4, 0, 4 }[i]));
+        array("EVT_A_UINT64", (p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i]));
+        array("EVT_A_FLOAT", (p, i) => p.F32(new float[] { 0.5f, -1.25f, 1e10f }[i]));
+        array("EVT_A_DOUBLE", (p, i) => p.F64(new double[] { 0.1, -2.5, 1e100 }[i]));
+        array("EVT_A_BOOLEAN", (p, i) => p.I32(new int[] { 1, 0, 2 }[i]));
+        array("EVT_A_BINARY", (p, i) => p.Raw(Hex(new string[] { "01020304", "A0B0C0D0", "FFFFFFFF" }[i])));
+        array("EVT_A_GUID", (p, i) => p.Guid(new string[] { "01234567-89ab-cdef-0123-456789abcdef", "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff" }[i]));
+        array("EVT_A_POINTER", (p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i]));
+        array("EVT_A_FILETIME", (p, i) => p.FileTime(new DateTime[] { stamp, Utc(1601, 1, 1, 0, 0, 0, 0), Utc(2020, 2, 29, 0, 0, 0, 1) }[i]));
+        array("EVT_A_SYSTEMTIME", (p, i) => p.SysTime(systimes3[i]));
+        array("EVT_A_SID", (p, i) => p.Sid(new string[] { "S-1-5-18", "S-1-5-19", "S-1-5-20" }[i]));
+        array("EVT_A_HEXINT32", (p, i) => p.U32(new uint[] { 0, 0x1F, uint.MaxValue }[i]));
+        array("EVT_A_HEXINT64", (p, i) => p.U64(new ulong[] { 0, 0x80000000000000UL, ulong.MaxValue }[i]));
         return e;
+    }
+
+    static EVENT_DESCRIPTOR Descriptor(Hashtable descriptors, string symbol)
+    {
+        ulong[] f = (ulong[])descriptors[symbol];
+        if (f == null)
+        {
+            throw new ArgumentException(symbol + " is not an event of TypesTest.man");
+        }
+        EVENT_DESCRIPTOR d = new EVENT_DESCRIPTOR();
+        d.Id = (ushort)f[0];
+        d.Version = (byte)f[1];
+        d.Channel = (byte)f[2];
+        d.Level = (byte)f[3];
+        d.Opcode = (byte)f[4];
+        d.Task = (ushort)f[5];
+        d.Keyword = f[6];
+        return d;
     }
 
     // descriptors maps each event symbol to the 7 fields of its EVENT_DESCRIPTOR
@@ -313,39 +309,31 @@ public static class TypesWriter
         {
             throw new InvalidOperationException("run from 64-bit PowerShell");
         }
+        List<KeyValuePair<string, P>> events = Events();
+        List<EVENT_DESCRIPTOR> ds = events.ConvertAll(ev => Descriptor(descriptors, ev.Key));
         Guid provider = new Guid(providerGuid);
         long handle;
         uint status = EventRegister(ref provider, IntPtr.Zero, IntPtr.Zero, out handle);
         if (status != 0)
         {
-            throw new System.ComponentModel.Win32Exception((int)status);
+            throw new Win32Exception((int)status);
         }
         try
         {
-            // The Event Log service enables the provider shortly after the manifest is installed.
+            // The Event Log service enables the events shortly after the manifest is installed.
             // Until then EventWrite succeeds without logging anything.
-            for (int i = 0; !EventProviderEnabled(handle, 4, 0); i++)
+            for (int i = 0; !ds.TrueForAll(d => EventEnabled(handle, ref d)); i++)
             {
                 if (i == 120)
                 {
-                    throw new TimeoutException("the provider was not enabled within 60 s");
+                    throw new TimeoutException("the events were not enabled within 60 s");
                 }
                 Thread.Sleep(500);
             }
-            int written = 0;
-            foreach (object[] ev in Events())
+            for (int k = 0; k < events.Count; k++)
             {
-                string symbol = (string)ev[0];
-                ulong[] f = (ulong[])descriptors[symbol];
-                EVENT_DESCRIPTOR d = new EVENT_DESCRIPTOR();
-                d.Id = (ushort)f[0];
-                d.Version = (byte)f[1];
-                d.Channel = (byte)f[2];
-                d.Level = (byte)f[3];
-                d.Opcode = (byte)f[4];
-                d.Task = (ushort)f[5];
-                d.Keyword = f[6];
-                P payload = (P)ev[1];
+                EVENT_DESCRIPTOR d = ds[k];
+                P payload = events[k].Value;
                 if (payload == null)
                 {
                     status = EventWrite(handle, ref d, 0, null);
@@ -368,11 +356,10 @@ public static class TypesWriter
                 }
                 if (status != 0)
                 {
-                    throw new System.ComponentModel.Win32Exception((int)status, "EventWrite " + symbol);
+                    throw new Win32Exception((int)status, "EventWrite " + events[k].Key);
                 }
-                written++;
             }
-            return written;
+            return events.Count;
         }
         finally
         {
