@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Test provider used by generate-types-sample.ps1. Its templates cover every
-  manifest input type, as scalars and as arrays, the output types that change
-  how Windows stores or renders a value, and strings with characters XML
-  cannot hold as they are. TypesWriter.cs writes the payloads byte by byte,
-  so they can hold values .NET would not encode (lone surrogates, NULs inside
-  counted strings, booleans other than 0 and 1).
+  manifest input type, as scalars and as arrays, output types (neither the
+  stored value type nor Windows' XML follows them), and strings with
+  characters XML cannot hold as they are. TypesWriter.cs writes the payloads
+  byte by byte, so they can hold values .NET would not encode (lone
+  surrogates, NULs inside counted strings, booleans other than 0 and 1).
 -->
 <instrumentationManifest
     xmlns="http://schemas.microsoft.com/win/2004/08/events"

@@ -17,7 +17,8 @@ public static class RenderProbe
     const int EvtQueryForwardDirection = 0x100;
     const int EvtRenderEventXml = 1;
     const int EvtRenderBookmark = 2;
-    const int EvtSeekRelativeToCurrent = 3;
+    const int EvtSeekRelativeToFirst = 1;
+    const int EvtSeekStrict = 0x10000;
     const int ERROR_INSUFFICIENT_BUFFER = 122;
     const int ERROR_NO_MORE_ITEMS = 259;
     // Give up on a file after this many EvtNext failures in a row.
@@ -44,22 +45,24 @@ public static class RenderProbe
     [DllImport("wevtapi.dll")]
     static extern bool EvtClose(IntPtr handle);
 
+    // Reused across calls; grows when wevtapi asks for more.
+    static char[] buffer = new char[16384];
+
     static string Render(IntPtr handle, int flags)
     {
         int used, props;
-        if (EvtRender(IntPtr.Zero, handle, flags, 0, null, out used, out props))
-        {
-            return "";
-        }
-        int err = Marshal.GetLastWin32Error();
-        if (err != ERROR_INSUFFICIENT_BUFFER)
-        {
-            throw new System.ComponentModel.Win32Exception(err);
-        }
-        char[] buffer = new char[used / 2 + 1];
         if (!EvtRender(IntPtr.Zero, handle, flags, buffer.Length * 2, buffer, out used, out props))
         {
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            int err = Marshal.GetLastWin32Error();
+            if (err != ERROR_INSUFFICIENT_BUFFER)
+            {
+                throw new System.ComponentModel.Win32Exception(err);
+            }
+            buffer = new char[used / 2 + 1];
+            if (!EvtRender(IntPtr.Zero, handle, flags, buffer.Length * 2, buffer, out used, out props))
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
         }
         return new string(buffer, 0, used / 2).TrimEnd('\0');
     }
@@ -124,6 +127,7 @@ public static class RenderProbe
         UTF8Encoding utf8 = new UTF8Encoding(false);
         using (StreamWriter writer = new StreamWriter(outPath, false, utf8))
         {
+            writer.NewLine = "\n";
             IntPtr query = EvtQuery(IntPtr.Zero, evtxPath, "*", EvtQueryFilePath | EvtQueryForwardDirection);
             if (query == IntPtr.Zero)
             {
@@ -146,8 +150,9 @@ public static class RenderProbe
                     }
                     StringBuilder e = new StringBuilder();
                     e.Append("{\"index\":").Append(index).Append(",\"next_error\":").Append(err);
-                    // Try to step over the event wevtapi could not read.
-                    bool seeked = EvtSeek(query, 1, IntPtr.Zero, 0, EvtSeekRelativeToCurrent);
+                    // Step over the event wevtapi could not read. Strict, so seeking past the
+                    // last event fails instead of landing on it again.
+                    bool seeked = EvtSeek(query, index + 1, IntPtr.Zero, 0, EvtSeekRelativeToFirst | EvtSeekStrict);
                     e.Append(",\"seek_error\":").Append(seeked ? 0 : Marshal.GetLastWin32Error()).Append("}");
                     writer.WriteLine(e.ToString());
                     index++;

@@ -21,9 +21,9 @@ byte by byte, so they can hold values .NET would not encode.
 | Event ID | Template | Events | What it has |
 | --- | --- | --- | --- |
 | 1 | `T_Scalars` | 3 | Every input type once: typical, minimum and maximum values. |
-| 2 | `T_Arrays` | 3 | Every input type except `AnsiString` as an array, with 3, 1 and 0 items. Windows renders only the empty one (error 13 for the others, because of the SID arrays). |
-| 3 | `T_BinaryArray` | 2 | A binary array. `EventWrite` stores `ProcessingErrorData` instead. |
-| 4 | `T_OutTypes` | 3 | The output types that change what is stored (`win:Xml`, `win:Utf8`, hex, IP and socket addresses, `xs:dateTime`). |
+| 2 | `T_Arrays` | 3 | Every input type except `AnsiString` and `Binary` as an array, with 3, 1 and 0 items. Windows renders only the empty one (error 13 for the others, because of the SID arrays). |
+| 3 | `T_BinaryArray` | 2 | A binary array. The Event Log service stores `ProcessingErrorData` (error 50, not supported) instead. |
+| 4 | `T_OutTypes` | 3 | Output types: `win:Xml`, `win:Utf8`, hex, IP and socket addresses, `xs:dateTime`. They change neither the stored value type nor Windows' XML, which renders each value by its input type. |
 | 5 | `T_Text` | 21 | Strings that are hard to render: C0 and C1 controls, CR/LF/tab, lone and reversed surrogates, U+FFFE and U+FFFF, markup and `]]>`, a surrogate pair, a BOM, `%1` and backslashes. |
 | 6 | `T_Counted` | 5 | Counted strings with NULs inside or at the end. |
 | 7 | `T_Ansi` | 5 | ANSI strings with bytes 0x80 to 0xFF, invalid and truncated UTF-8, and controls. |

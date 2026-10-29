@@ -32,8 +32,12 @@ function Write-Utf8([string] $path, [string] $text) {
 }
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Samples = [IO.Path]::GetFullPath($Samples)
-$OutDir = [IO.Path]::GetFullPath($OutDir)
+# Relative to the current location, not the process directory.
+function Resolve-FullPath([string] $path) {
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($path).TrimEnd('\', '/')
+}
+$Samples = Resolve-FullPath $Samples
+$OutDir = Resolve-FullPath $OutDir
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
 Add-Type -Path (Join-Path $here 'RenderProbe.cs')
@@ -44,7 +48,7 @@ Write-Utf8 (Join-Path $OutDir 'windows-info.txt') (
     "UI culture: $((Get-UICulture).Name), culture: $((Get-Culture).Name)`n")
 
 $sums = @()
-foreach ($log in Get-ChildItem -Path $Samples -Filter '*.evtx' -Recurse -File | Sort-Object FullName) {
+foreach ($log in Get-ChildItem -LiteralPath $Samples -Filter '*.evtx' -Recurse -File | Sort-Object FullName) {
     $relative = $log.FullName.Substring($Samples.Length + 1)
     $out = Join-Path $OutDir "$relative.jsonl"
     New-Item -ItemType Directory -Force (Split-Path -Parent $out) | Out-Null

@@ -35,7 +35,9 @@ public static class TypesWriter
     [DllImport("advapi32.dll")]
     static extern uint EventRegister([In] ref Guid providerId, IntPtr enableCallback, IntPtr callbackContext, out long regHandle);
 
+    // Returns a one-byte BOOLEAN, not a four-byte BOOL.
     [DllImport("advapi32.dll")]
+    [return: MarshalAs(UnmanagedType.U1)]
     static extern bool EventProviderEnabled(long regHandle, byte level, ulong keyword);
 
     [DllImport("advapi32.dll")]
@@ -118,33 +120,6 @@ public static class TypesWriter
             .SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]).Sid(sid).U32(hex32).U64(hex64);
     }
 
-    static P Arrays(string[] strings, sbyte[] i8, byte[] u8, short[] i16, ushort[] u16,
-        int[] i32, uint[] u32, long[] i64, ulong[] u64, float[] f32, double[] f64, int[] bools,
-        string[] guids, ulong[] ptrs, DateTime[] fts, int[][] sts, string[] sids, uint[] hex32, ulong[] hex64)
-    {
-        P p = new P().U16((ushort)strings.Length);
-        foreach (string v in strings) p.Str(v);
-        foreach (sbyte v in i8) p.I8(v);
-        foreach (byte v in u8) p.U8(v);
-        foreach (short v in i16) p.I16(v);
-        foreach (ushort v in u16) p.U16(v);
-        foreach (int v in i32) p.I32(v);
-        foreach (uint v in u32) p.U32(v);
-        foreach (long v in i64) p.I64(v);
-        foreach (ulong v in u64) p.U64(v);
-        foreach (float v in f32) p.F32(v);
-        foreach (double v in f64) p.F64(v);
-        foreach (int v in bools) p.I32(v);
-        foreach (string v in guids) p.Guid(v);
-        foreach (ulong v in ptrs) p.U64(v);
-        foreach (DateTime v in fts) p.FileTime(v);
-        foreach (int[] st in sts) p.SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
-        foreach (string v in sids) p.Sid(v);
-        foreach (uint v in hex32) p.U32(v);
-        foreach (ulong v in hex64) p.U64(v);
-        return p;
-    }
-
     // Every event to write, as (symbol, payload); a null payload writes no data.
     static ArrayList Events()
     {
@@ -165,29 +140,12 @@ public static class TypesWriter
             ulong.MaxValue, Utc(9999, 12, 31, 23, 59, 59, 9999999), new int[] { 9999, 12, 5, 31, 23, 59, 59, 999 },
             "S-1-5-18", uint.MaxValue, ulong.MaxValue));
 
-        int[] st1 = new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 };
-        int[] st2 = new int[] { 2020, 2, 6, 29, 0, 0, 0, 1 };
-        int[] st3 = new int[] { 1999, 12, 5, 31, 23, 59, 59, 999 };
-        add("EVT_ARRAYS", Arrays(new string[] { "a", "", "c,d" },
-            new sbyte[] { -1, 0, 1 }, new byte[] { 0, 1, 255 }, new short[] { -2, 0, 2 }, new ushort[] { 0, 1, 65535 },
-            new int[] { -3, 0, 3 }, new uint[] { 0, 1, uint.MaxValue }, new long[] { -4, 0, 4 },
-            new ulong[] { 0, 1, ulong.MaxValue }, new float[] { 0.5f, -1.25f, 1e10f }, new double[] { 0.1, -2.5, 1e100 },
-            new int[] { 1, 0, 1 },
-            new string[] { "01234567-89ab-cdef-0123-456789abcdef", "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff" },
-            new ulong[] { 0, 1, ulong.MaxValue },
-            new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402), Utc(1601, 1, 1, 0, 0, 0, 0), Utc(2020, 2, 29, 0, 0, 0, 1) },
-            new int[][] { st1, st2, st3 }, new string[] { "S-1-5-18", "S-1-5-19", "S-1-5-20" },
-            new uint[] { 0, 0x1F, uint.MaxValue }, new ulong[] { 0, 0x80000000000000UL, ulong.MaxValue }));
-        add("EVT_ARRAYS", Arrays(new string[] { "only" }, new sbyte[] { 7 }, new byte[] { 7 },
-            new short[] { 7 }, new ushort[] { 7 }, new int[] { 7 }, new uint[] { 7 }, new long[] { 7 }, new ulong[] { 7 },
-            new float[] { 7f }, new double[] { 7 }, new int[] { 0 }, new string[] { "01234567-89ab-cdef-0123-456789abcdef" },
-            new ulong[] { 7 }, new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402) }, new int[][] { st1 },
-            new string[] { "S-1-5-18" }, new uint[] { 7 }, new ulong[] { 7 }));
-        add("EVT_ARRAYS", Arrays(new string[0], new sbyte[0], new byte[0], new short[0], new ushort[0],
-            new int[0], new uint[0], new long[0], new ulong[0], new float[0], new double[0], new int[0], new string[0],
-            new ulong[0], new DateTime[0], new int[0][], new string[0], new uint[0], new ulong[0]));
-
-        // The same arrays one type per event, with 3, 1 and 0 items.
+        // Three items of each array type, in T_Arrays' order. T_Arrays and T_A_<type> get the
+        // first 3, 1 and 0 of them.
+        int[][] systimes3 = new int[][] {
+            new int[] { 2019, 3, 5, 1, 12, 34, 56, 789 },
+            new int[] { 2020, 2, 6, 29, 0, 0, 0, 1 },
+            new int[] { 1999, 12, 5, 31, 23, 59, 59, 999 } };
         object[][] arrays = new object[][] {
             new object[] { "EVT_A_UNICODESTRING", (Action<P, int>)((p, i) => p.Str(new string[] { "a", "", "c,d" }[i])) },
             new object[] { "EVT_A_INT8", (Action<P, int>)((p, i) => p.I8(new sbyte[] { -1, 0, 1 }[i])) },
@@ -204,14 +162,24 @@ public static class TypesWriter
             new object[] { "EVT_A_GUID", (Action<P, int>)((p, i) => p.Guid(new string[] { "01234567-89ab-cdef-0123-456789abcdef", "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff" }[i])) },
             new object[] { "EVT_A_POINTER", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i])) },
             new object[] { "EVT_A_FILETIME", (Action<P, int>)((p, i) => p.FileTime(new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402), Utc(1601, 1, 1, 0, 0, 0, 0), Utc(2020, 2, 29, 0, 0, 0, 1) }[i])) },
-            new object[] { "EVT_A_SYSTEMTIME", (Action<P, int>)((p, i) => { int[] st = new int[][] { st1, st2, st3 }[i]; p.SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]); }) },
+            new object[] { "EVT_A_SYSTEMTIME", (Action<P, int>)((p, i) => { int[] st = systimes3[i]; p.SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]); }) },
             new object[] { "EVT_A_SID", (Action<P, int>)((p, i) => p.Sid(new string[] { "S-1-5-18", "S-1-5-19", "S-1-5-20" }[i])) },
             new object[] { "EVT_A_HEXINT32", (Action<P, int>)((p, i) => p.U32(new uint[] { 0, 0x1F, uint.MaxValue }[i])) },
             new object[] { "EVT_A_HEXINT64", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 0x80000000000000UL, ulong.MaxValue }[i])) },
         };
+        int[] counts = new int[] { 3, 1, 0 };
+        foreach (int n in counts)
+        {
+            P p = new P().U16((ushort)n);
+            foreach (object[] array in arrays)
+            {
+                for (int i = 0; i < n; i++) ((Action<P, int>)array[1])(p, i);
+            }
+            add("EVT_ARRAYS", p);
+        }
         foreach (object[] array in arrays)
         {
-            foreach (int n in new int[] { 3, 1, 0 })
+            foreach (int n in counts)
             {
                 P p = new P().U16((ushort)n);
                 for (int i = 0; i < n; i++) ((Action<P, int>)array[1])(p, i);
@@ -286,8 +254,8 @@ public static class TypesWriter
         add("EVT_EMPTY", null);
 
         long[] filetimes = new long[] {
-            0, 1, 9999999, 10000000, 116444736000000000, 116444736000000001, 131125111716816402,
-            Utc(2016, 7, 8, 18, 12, 51, 6816400).ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6810000).ToFileTimeUtc(),
+            0, 1, 9999999, 10000000, 116444736000000000, 116444736000000001,
+            Utc(2016, 7, 8, 18, 12, 51, 6816402).ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6816400).ToFileTimeUtc(), Utc(2016, 7, 8, 18, 12, 51, 6810000).ToFileTimeUtc(),
             Utc(2016, 7, 8, 18, 12, 51, 0).ToFileTimeUtc(), Utc(9999, 12, 31, 23, 59, 59, 9999999).ToFileTimeUtc(),
             Utc(9999, 12, 31, 23, 59, 59, 9999999).ToFileTimeUtc() + 1, 0x7FFFFFFFFFFFFFFF, -1 };
         foreach (long ft in filetimes)
@@ -340,6 +308,11 @@ public static class TypesWriter
     // (id, version, channel, level, opcode, task, keyword), from mc's header.
     public static int WriteAll(string providerGuid, Hashtable descriptors)
     {
+        // Payloads write win:Pointer as 8 bytes; a 32-bit writer's events decode it as 4.
+        if (IntPtr.Size != 8)
+        {
+            throw new InvalidOperationException("run from 64-bit PowerShell");
+        }
         Guid provider = new Guid(providerGuid);
         long handle;
         uint status = EventRegister(ref provider, IntPtr.Zero, IntPtr.Zero, out handle);
@@ -350,8 +323,13 @@ public static class TypesWriter
         try
         {
             // The Event Log service enables the provider shortly after the manifest is installed.
-            for (int i = 0; i < 120 && !EventProviderEnabled(handle, 4, 0); i++)
+            // Until then EventWrite succeeds without logging anything.
+            for (int i = 0; !EventProviderEnabled(handle, 4, 0); i++)
             {
+                if (i == 120)
+                {
+                    throw new TimeoutException("the provider was not enabled within 60 s");
+                }
                 Thread.Sleep(500);
             }
             int written = 0;
