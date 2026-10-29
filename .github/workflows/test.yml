@@ -3,6 +3,16 @@ name: CI
 on: [pull_request]
 
 jobs:
+  release-notes:
+    name: Check release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check CHANGELOG.md has notes for the Cargo.toml version
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          scripts/release-notes.sh "$VERSION" > /dev/null
+
   build_and_test:
     name: Test EVTX Library
     runs-on: ${{ matrix.os }}

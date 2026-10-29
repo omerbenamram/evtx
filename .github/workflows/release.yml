@@ -47,14 +47,21 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version is: $VERSION"
 
+      - name: Write release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/release-notes.sh "${VERSION#v}" > notes.md
+
       - name: Create GitHub release (idempotent)
         if: ${{ inputs.dry_run != true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+        # GitHub's list of merged PRs goes after the notes.
         run: |
           gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-            || gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "$VERSION" --notes ""
+            || gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --title "$VERSION" \
+              --notes-file notes.md --generate-notes
 
   build-release:
     name: build-release
