@@ -23,38 +23,37 @@
                 message="$(string.Provider.Name)">
         <events>
           <event value="1" version="0" channel="Operational" level="win:Informational" template="T_Scalars" symbol="EVT_SCALARS"/>
-          <event value="2" version="0" channel="Operational" level="win:Informational" template="T_Arrays" symbol="EVT_ARRAYS"/>
-          <event value="3" version="0" channel="Operational" level="win:Informational" template="T_BinaryArray" symbol="EVT_BINARY_ARRAY"/>
-          <event value="4" version="0" channel="Operational" level="win:Informational" template="T_OutTypes" symbol="EVT_OUT_TYPES"/>
-          <event value="5" version="0" channel="Operational" level="win:Informational" template="T_Text" symbol="EVT_TEXT"/>
-          <event value="6" version="0" channel="Operational" level="win:Informational" template="T_Counted" symbol="EVT_COUNTED"/>
-          <event value="7" version="0" channel="Operational" level="win:Informational" template="T_Ansi" symbol="EVT_ANSI"/>
-          <event value="8" version="0" channel="Operational" level="win:Informational" symbol="EVT_EMPTY"/>
-          <event value="9" version="0" channel="Operational" level="win:Informational" template="T_FileTime" symbol="EVT_FILETIME"/>
-          <event value="10" version="0" channel="Operational" level="win:Informational" template="T_SysTime" symbol="EVT_SYSTIME"/>
-          <event value="11" version="0" channel="Operational" level="win:Informational" template="T_Float" symbol="EVT_FLOAT"/>
-          <event value="12" version="0" channel="Operational" level="win:Informational" template="T_Bool" symbol="EVT_BOOL"/>
-          <event value="13" version="0" channel="Operational" level="win:Informational" template="T_AnsiArray" symbol="EVT_ANSI_ARRAY"/>
-          <event value="14" version="0" channel="Operational" level="win:Informational" template="T_UserData" symbol="EVT_USER_DATA"/>
-          <event value="15" version="0" channel="Operational" level="win:Informational" template="T_A_UnicodeString" symbol="EVT_A_UNICODESTRING"/>
-          <event value="16" version="0" channel="Operational" level="win:Informational" template="T_A_Int8" symbol="EVT_A_INT8"/>
-          <event value="17" version="0" channel="Operational" level="win:Informational" template="T_A_UInt8" symbol="EVT_A_UINT8"/>
-          <event value="18" version="0" channel="Operational" level="win:Informational" template="T_A_Int16" symbol="EVT_A_INT16"/>
-          <event value="19" version="0" channel="Operational" level="win:Informational" template="T_A_UInt16" symbol="EVT_A_UINT16"/>
-          <event value="20" version="0" channel="Operational" level="win:Informational" template="T_A_Int32" symbol="EVT_A_INT32"/>
-          <event value="21" version="0" channel="Operational" level="win:Informational" template="T_A_UInt32" symbol="EVT_A_UINT32"/>
-          <event value="22" version="0" channel="Operational" level="win:Informational" template="T_A_Int64" symbol="EVT_A_INT64"/>
-          <event value="23" version="0" channel="Operational" level="win:Informational" template="T_A_UInt64" symbol="EVT_A_UINT64"/>
-          <event value="24" version="0" channel="Operational" level="win:Informational" template="T_A_Float" symbol="EVT_A_FLOAT"/>
-          <event value="25" version="0" channel="Operational" level="win:Informational" template="T_A_Double" symbol="EVT_A_DOUBLE"/>
-          <event value="26" version="0" channel="Operational" level="win:Informational" template="T_A_Boolean" symbol="EVT_A_BOOLEAN"/>
-          <event value="27" version="0" channel="Operational" level="win:Informational" template="T_A_GUID" symbol="EVT_A_GUID"/>
-          <event value="28" version="0" channel="Operational" level="win:Informational" template="T_A_Pointer" symbol="EVT_A_POINTER"/>
-          <event value="29" version="0" channel="Operational" level="win:Informational" template="T_A_FILETIME" symbol="EVT_A_FILETIME"/>
-          <event value="30" version="0" channel="Operational" level="win:Informational" template="T_A_SYSTEMTIME" symbol="EVT_A_SYSTEMTIME"/>
-          <event value="31" version="0" channel="Operational" level="win:Informational" template="T_A_SID" symbol="EVT_A_SID"/>
-          <event value="32" version="0" channel="Operational" level="win:Informational" template="T_A_HexInt32" symbol="EVT_A_HEXINT32"/>
-          <event value="33" version="0" channel="Operational" level="win:Informational" template="T_A_HexInt64" symbol="EVT_A_HEXINT64"/>
+          <event value="2" version="0" channel="Operational" level="win:Informational" template="T_OutTypes" symbol="EVT_OUT_TYPES"/>
+          <event value="3" version="0" channel="Operational" level="win:Informational" template="T_Text" symbol="EVT_TEXT"/>
+          <event value="4" version="0" channel="Operational" level="win:Informational" template="T_Counted" symbol="EVT_COUNTED"/>
+          <event value="5" version="0" channel="Operational" level="win:Informational" template="T_Ansi" symbol="EVT_ANSI"/>
+          <event value="6" version="0" channel="Operational" level="win:Informational" symbol="EVT_EMPTY"/>
+          <event value="7" version="0" channel="Operational" level="win:Informational" template="T_FileTime" symbol="EVT_FILETIME"/>
+          <event value="8" version="0" channel="Operational" level="win:Informational" template="T_SysTime" symbol="EVT_SYSTIME"/>
+          <event value="9" version="0" channel="Operational" level="win:Informational" template="T_Float" symbol="EVT_FLOAT"/>
+          <event value="10" version="0" channel="Operational" level="win:Informational" template="T_Bool" symbol="EVT_BOOL"/>
+          <event value="11" version="0" channel="Operational" level="win:Informational" template="T_UserData" symbol="EVT_USER_DATA"/>
+          <event value="12" version="0" channel="Operational" level="win:Informational" template="T_A_UnicodeString" symbol="EVT_A_UNICODESTRING"/>
+          <event value="13" version="0" channel="Operational" level="win:Informational" template="T_A_AnsiString" symbol="EVT_A_ANSISTRING"/>
+          <event value="14" version="0" channel="Operational" level="win:Informational" template="T_A_Int8" symbol="EVT_A_INT8"/>
+          <event value="15" version="0" channel="Operational" level="win:Informational" template="T_A_UInt8" symbol="EVT_A_UINT8"/>
+          <event value="16" version="0" channel="Operational" level="win:Informational" template="T_A_Int16" symbol="EVT_A_INT16"/>
+          <event value="17" version="0" channel="Operational" level="win:Informational" template="T_A_UInt16" symbol="EVT_A_UINT16"/>
+          <event value="18" version="0" channel="Operational" level="win:Informational" template="T_A_Int32" symbol="EVT_A_INT32"/>
+          <event value="19" version="0" channel="Operational" level="win:Informational" template="T_A_UInt32" symbol="EVT_A_UINT32"/>
+          <event value="20" version="0" channel="Operational" level="win:Informational" template="T_A_Int64" symbol="EVT_A_INT64"/>
+          <event value="21" version="0" channel="Operational" level="win:Informational" template="T_A_UInt64" symbol="EVT_A_UINT64"/>
+          <event value="22" version="0" channel="Operational" level="win:Informational" template="T_A_Float" symbol="EVT_A_FLOAT"/>
+          <event value="23" version="0" channel="Operational" level="win:Informational" template="T_A_Double" symbol="EVT_A_DOUBLE"/>
+          <event value="24" version="0" channel="Operational" level="win:Informational" template="T_A_Boolean" symbol="EVT_A_BOOLEAN"/>
+          <event value="25" version="0" channel="Operational" level="win:Informational" template="T_A_Binary" symbol="EVT_A_BINARY"/>
+          <event value="26" version="0" channel="Operational" level="win:Informational" template="T_A_GUID" symbol="EVT_A_GUID"/>
+          <event value="27" version="0" channel="Operational" level="win:Informational" template="T_A_Pointer" symbol="EVT_A_POINTER"/>
+          <event value="28" version="0" channel="Operational" level="win:Informational" template="T_A_FILETIME" symbol="EVT_A_FILETIME"/>
+          <event value="29" version="0" channel="Operational" level="win:Informational" template="T_A_SYSTEMTIME" symbol="EVT_A_SYSTEMTIME"/>
+          <event value="30" version="0" channel="Operational" level="win:Informational" template="T_A_SID" symbol="EVT_A_SID"/>
+          <event value="31" version="0" channel="Operational" level="win:Informational" template="T_A_HexInt32" symbol="EVT_A_HEXINT32"/>
+          <event value="32" version="0" channel="Operational" level="win:Informational" template="T_A_HexInt64" symbol="EVT_A_HEXINT64"/>
         </events>
         <channels>
           <channel chid="Operational" name="EvtxTypes-Provider/Operational" type="Operational" enabled="true" symbol="CHANNEL_OPERATIONAL" message="$(string.Channel.Operational)"/>
@@ -83,126 +82,6 @@
             <data name="SID" inType="win:SID"/>
             <data name="HexInt32" inType="win:HexInt32"/>
             <data name="HexInt64" inType="win:HexInt64"/>
-          </template>
-          <template tid="T_Arrays">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="UnicodeStrings" inType="win:UnicodeString" count="Count"/>
-            <data name="Int8s" inType="win:Int8" count="Count"/>
-            <data name="UInt8s" inType="win:UInt8" count="Count"/>
-            <data name="Int16s" inType="win:Int16" count="Count"/>
-            <data name="UInt16s" inType="win:UInt16" count="Count"/>
-            <data name="Int32s" inType="win:Int32" count="Count"/>
-            <data name="UInt32s" inType="win:UInt32" count="Count"/>
-            <data name="Int64s" inType="win:Int64" count="Count"/>
-            <data name="UInt64s" inType="win:UInt64" count="Count"/>
-            <data name="Floats" inType="win:Float" count="Count"/>
-            <data name="Doubles" inType="win:Double" count="Count"/>
-            <data name="Booleans" inType="win:Boolean" count="Count"/>
-            <data name="GUIDs" inType="win:GUID" count="Count"/>
-            <data name="Pointers" inType="win:Pointer" count="Count"/>
-            <data name="FILETIMEs" inType="win:FILETIME" count="Count"/>
-            <data name="SYSTEMTIMEs" inType="win:SYSTEMTIME" count="Count"/>
-            <data name="SIDs" inType="win:SID" count="Count"/>
-            <data name="HexInt32s" inType="win:HexInt32" count="Count"/>
-            <data name="HexInt64s" inType="win:HexInt64" count="Count"/>
-          </template>
-          <!-- One array type per event (T_AnsiArray is the ANSI one): Windows fails to render
-               T_Arrays when it has items (error 13), which hides how it renders each type. -->
-          <template tid="T_A_UnicodeString">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="UnicodeStrings" inType="win:UnicodeString" count="Count"/>
-          </template>
-          <template tid="T_A_Int8">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Int8s" inType="win:Int8" count="Count"/>
-          </template>
-          <template tid="T_A_UInt8">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="UInt8s" inType="win:UInt8" count="Count"/>
-          </template>
-          <template tid="T_A_Int16">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Int16s" inType="win:Int16" count="Count"/>
-          </template>
-          <template tid="T_A_UInt16">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="UInt16s" inType="win:UInt16" count="Count"/>
-          </template>
-          <template tid="T_A_Int32">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Int32s" inType="win:Int32" count="Count"/>
-          </template>
-          <template tid="T_A_UInt32">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="UInt32s" inType="win:UInt32" count="Count"/>
-          </template>
-          <template tid="T_A_Int64">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Int64s" inType="win:Int64" count="Count"/>
-          </template>
-          <template tid="T_A_UInt64">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="UInt64s" inType="win:UInt64" count="Count"/>
-          </template>
-          <template tid="T_A_Float">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Floats" inType="win:Float" count="Count"/>
-          </template>
-          <template tid="T_A_Double">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Doubles" inType="win:Double" count="Count"/>
-          </template>
-          <template tid="T_A_Boolean">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Booleans" inType="win:Boolean" count="Count"/>
-          </template>
-          <template tid="T_A_GUID">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="GUIDs" inType="win:GUID" count="Count"/>
-          </template>
-          <template tid="T_A_Pointer">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Pointers" inType="win:Pointer" count="Count"/>
-          </template>
-          <template tid="T_A_FILETIME">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="FILETIMEs" inType="win:FILETIME" count="Count"/>
-          </template>
-          <template tid="T_A_SYSTEMTIME">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="SYSTEMTIMEs" inType="win:SYSTEMTIME" count="Count"/>
-          </template>
-          <template tid="T_A_SID">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="SIDs" inType="win:SID" count="Count"/>
-          </template>
-          <template tid="T_A_HexInt32">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="HexInt32s" inType="win:HexInt32" count="Count"/>
-          </template>
-          <template tid="T_A_HexInt64">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="HexInt64s" inType="win:HexInt64" count="Count"/>
-          </template>
-          <template tid="T_AnsiArray">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="AnsiStrings" inType="win:AnsiString" count="Count"/>
-          </template>
-          <!-- Template XML with entities, character references and CDATA, to see which BinXML tokens they become. -->
-          <template tid="T_UserData">
-            <data name="Value" inType="win:UnicodeString"/>
-            <UserData>
-              <TypesUserData xmlns="http://schemas.evtx.example/types">
-                <Literal>a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;</Literal>
-                <CharRef>&#65;&#x263A;</CharRef>
-                <Cdata><![CDATA[x < y & z]]></Cdata>
-                <Value>%1</Value>
-              </TypesUserData>
-            </UserData>
-          </template>
-          <template tid="T_BinaryArray">
-            <data name="Count" inType="win:UInt16"/>
-            <data name="Binaries" inType="win:Binary" count="Count" length="4"/>
           </template>
           <template tid="T_OutTypes">
             <data name="Xml" inType="win:UnicodeString" outType="win:Xml"/>
@@ -253,6 +132,104 @@
           <template tid="T_Bool">
             <data name="Label" inType="win:UnicodeString"/>
             <data name="Boolean" inType="win:Boolean"/>
+          </template>
+          <!-- Template XML with entities, character references and CDATA, to see which BinXML tokens they become. -->
+          <template tid="T_UserData">
+            <data name="Value" inType="win:UnicodeString"/>
+            <UserData>
+              <TypesUserData xmlns="http://schemas.evtx.example/types">
+                <Literal>a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;</Literal>
+                <CharRef>&#65;&#x263A;</CharRef>
+                <Cdata><![CDATA[x < y & z]]></Cdata>
+                <Value>%1</Value>
+              </TypesUserData>
+            </UserData>
+          </template>
+          <!-- Every input type as an array, one type per event: Windows fails to render an
+               event when one of its arrays can't be rendered, which would hide the others. -->
+          <template tid="T_A_UnicodeString">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="UnicodeStrings" inType="win:UnicodeString" count="Count"/>
+          </template>
+          <template tid="T_A_AnsiString">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="AnsiStrings" inType="win:AnsiString" count="Count"/>
+          </template>
+          <template tid="T_A_Int8">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Int8s" inType="win:Int8" count="Count"/>
+          </template>
+          <template tid="T_A_UInt8">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="UInt8s" inType="win:UInt8" count="Count"/>
+          </template>
+          <template tid="T_A_Int16">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Int16s" inType="win:Int16" count="Count"/>
+          </template>
+          <template tid="T_A_UInt16">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="UInt16s" inType="win:UInt16" count="Count"/>
+          </template>
+          <template tid="T_A_Int32">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Int32s" inType="win:Int32" count="Count"/>
+          </template>
+          <template tid="T_A_UInt32">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="UInt32s" inType="win:UInt32" count="Count"/>
+          </template>
+          <template tid="T_A_Int64">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Int64s" inType="win:Int64" count="Count"/>
+          </template>
+          <template tid="T_A_UInt64">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="UInt64s" inType="win:UInt64" count="Count"/>
+          </template>
+          <template tid="T_A_Float">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Floats" inType="win:Float" count="Count"/>
+          </template>
+          <template tid="T_A_Double">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Doubles" inType="win:Double" count="Count"/>
+          </template>
+          <template tid="T_A_Boolean">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Booleans" inType="win:Boolean" count="Count"/>
+          </template>
+          <template tid="T_A_Binary">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Binaries" inType="win:Binary" count="Count" length="4"/>
+          </template>
+          <template tid="T_A_GUID">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="GUIDs" inType="win:GUID" count="Count"/>
+          </template>
+          <template tid="T_A_Pointer">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Pointers" inType="win:Pointer" count="Count"/>
+          </template>
+          <template tid="T_A_FILETIME">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="FILETIMEs" inType="win:FILETIME" count="Count"/>
+          </template>
+          <template tid="T_A_SYSTEMTIME">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="SYSTEMTIMEs" inType="win:SYSTEMTIME" count="Count"/>
+          </template>
+          <template tid="T_A_SID">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="SIDs" inType="win:SID" count="Count"/>
+          </template>
+          <template tid="T_A_HexInt32">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="HexInt32s" inType="win:HexInt32" count="Count"/>
+          </template>
+          <template tid="T_A_HexInt64">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="HexInt64s" inType="win:HexInt64" count="Count"/>
           </template>
         </templates>
       </provider>
