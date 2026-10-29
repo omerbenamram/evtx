@@ -7,13 +7,9 @@
 .DESCRIPTION
     Needs Windows PowerShell 5.1, an elevated shell, and mc.exe, rc.exe and
     link.exe on PATH (a Visual Studio developer environment). CI runs it from
-    .github/workflows/windows-xml.yml.
-
-    It installs the test provider in TypesTest.man, writes the events listed
-    in TypesWriter.cs through EventWrite, waits until the provider's channel
-    holds all of them, exports it to <OutDir>\types.evtx with `wevtutil epl`,
-    and uninstalls the provider. render-samples.ps1 then gives Windows' own
-    XML for each event.
+    .github/workflows/windows-xml.yml, and samples/windows/README.md says what
+    it does and what the events hold. render-samples.ps1 then gives Windows'
+    own XML for each event.
 #>
 param(
     [Parameter(Mandatory = $true)] [string] $OutDir
@@ -22,35 +18,17 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
-function Exec([string] $exe, [string[]] $argv) {
-    Write-Host "> $exe $($argv -join ' ')"
-    & $exe @argv
-    if ($LASTEXITCODE -ne 0) {
-        throw "$exe exited with $LASTEXITCODE"
-    }
-}
-
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-# Relative to the current location, not the process directory.
-$OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
-$providerDir = 'C:\EvtxTypes'
+. (Join-Path $here 'Common.ps1')
+
+$OutDir = Resolve-FullPath $OutDir
 $manifest = Join-Path $here 'TypesTest.man'
 $provider = ([xml](Get-Content -Raw $manifest)).instrumentationManifest.instrumentation.events.provider
-$channel = "$($provider.name)/Operational"
+$channel = $provider.channels.channel.name
 $build = Join-Path $env:TEMP 'types-build'
-New-Item -ItemType Directory -Force $OutDir, $providerDir, $build | Out-Null
+New-Item -ItemType Directory -Force $OutDir | Out-Null
 
-Copy-Item $manifest $providerDir
-Push-Location $build
-try {
-    Exec 'mc.exe' @('-h', $build, '-r', $build, "$providerDir\TypesTest.man")
-    Exec 'rc.exe' @('/nologo', '/fo', 'TypesTest.res', 'TypesTest.rc')
-    Exec 'link.exe' @('/nologo', '/dll', '/noentry', '/machine:x64', "/out:$providerDir\TypesTest.dll", 'TypesTest.res')
-} finally {
-    Pop-Location
-}
-Exec 'icacls.exe' @($providerDir, '/grant', '*S-1-1-0:(OI)(CI)RX')
-Exec 'wevtutil.exe' @('im', "$providerDir\TypesTest.man")
+$installed = Install-Manifest $manifest $build
 try {
     # Events left by an earlier run would be exported too.
     Exec 'wevtutil.exe' @('cl', $channel)
@@ -83,5 +61,5 @@ try {
 
     Exec 'wevtutil.exe' @('epl', $channel, (Join-Path $OutDir 'types.evtx'), '/ow:true')
 } finally {
-    & wevtutil.exe um "$providerDir\TypesTest.man"
+    & wevtutil.exe um $installed
 }

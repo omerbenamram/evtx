@@ -16,18 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Generate types.evtx
-        continue-on-error: true
-        shell: powershell
-        run: ./scripts/windows/generate-types-sample.ps1 -OutDir "$env:RUNNER_TEMP\generated"
       - name: Render samples
         shell: powershell
-        run: |
-          ./scripts/windows/render-samples.ps1 -Samples "$env:GITHUB_WORKSPACE\samples" -OutDir "$env:RUNNER_TEMP\windows-xml\samples"
-          if (Test-Path "$env:RUNNER_TEMP\generated\types.evtx") {
-            ./scripts/windows/render-samples.ps1 -Samples "$env:RUNNER_TEMP\generated" -OutDir "$env:RUNNER_TEMP\windows-xml\generated"
-            Copy-Item "$env:RUNNER_TEMP\generated\types.evtx" "$env:RUNNER_TEMP\windows-xml\generated\"
-          }
+        run: ./scripts/windows/render-samples.ps1 -Samples "$env:GITHUB_WORKSPACE\samples" -OutDir "$env:RUNNER_TEMP\windows-xml\samples"
+      - name: Generate types.evtx
+        shell: powershell
+        run: ./scripts/windows/generate-types-sample.ps1 -OutDir "$env:RUNNER_TEMP\windows-xml\generated"
+      - name: Render types.evtx
+        shell: powershell
+        run: ./scripts/windows/render-samples.ps1 -Samples "$env:RUNNER_TEMP\windows-xml\generated" -OutDir "$env:RUNNER_TEMP\windows-xml\generated"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

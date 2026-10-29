@@ -47,20 +47,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
-function Exec([string] $exe, [string[]] $argv) {
-    Write-Host "> $exe $($argv -join ' ')"
-    & $exe @argv
-    if ($LASTEXITCODE -ne 0) {
-        throw "$exe exited with $LASTEXITCODE"
-    }
-}
-
-function Write-Utf8([string] $path, [string] $text) {
-    [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))
-}
-
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$OutDir = [IO.Path]::GetFullPath($OutDir)
+. (Join-Path $here '..\windows\Common.ps1')
+
+$OutDir = Resolve-FullPath $OutDir
 $providerDir = 'C:\MtaTest'
 $provider = 'MtaTest-Provider'
 $archives = @{
@@ -76,7 +66,7 @@ $archives = @{
 function Evtx([string] $name) { Join-Path $OutDir "$name.evtx" }
 
 if ($Phase -eq 'Probe') {
-    Add-Type -Path (Join-Path $here 'MtaProbe.cs') -ReferencedAssemblies 'System.Xml'
+    Add-Type -Path (Join-Path $here '..\windows\Wevtapi.cs'), (Join-Path $here 'MtaProbe.cs') -ReferencedAssemblies 'System.Xml'
     $windows = Join-Path $OutDir 'windows'
     New-Item -ItemType Directory -Force $windows | Out-Null
     function Probe([string] $evtx, [int] $lcid) {
@@ -90,35 +80,17 @@ if ($Phase -eq 'Probe') {
         }
     }
     Probe (Join-Path $RepoSamples 'mta\setup-export.evtx') 1033
-    $sums = Get-ChildItem -Recurse $OutDir -File | Sort-Object FullName | ForEach-Object {
-        '{0}  {1}' -f (Get-FileHash $_.FullName).Hash.ToLower(), $_.FullName.Substring($OutDir.Length + 1).Replace('\', '/')
-    }
-    Write-Utf8 (Join-Path $OutDir 'SHA256SUMS') (($sums -join "`n") + "`n")
+    Write-Sha256Sums $OutDir $OutDir (Get-ChildItem -Recurse $OutDir -File | Sort-Object FullName)
     return
 }
 
-New-Item -ItemType Directory -Force $OutDir, $providerDir | Out-Null
-
-$os = Get-CimInstance Win32_OperatingSystem
-Write-Utf8 (Join-Path $OutDir 'windows-info.txt') (
-    "$($os.Caption) $($os.Version) (build $($os.BuildNumber))`n" +
-    "UI culture: $((Get-UICulture).Name), culture: $((Get-Culture).Name)`n")
+New-Item -ItemType Directory -Force $OutDir | Out-Null
+Write-WindowsInfo $OutDir
 
 # --- Test provider -----------------------------------------------------------
 
 $build = Join-Path $env:TEMP 'mta-build'
-New-Item -ItemType Directory -Force $build | Out-Null
-Copy-Item (Join-Path $here 'MtaTest.man') $providerDir
-Push-Location $build
-try {
-    Exec 'mc.exe' @('-h', $build, '-r', $build, "$providerDir\MtaTest.man")
-    Exec 'rc.exe' @('/nologo', '/fo', 'MtaTest.res', 'MtaTest.rc')
-    Exec 'link.exe' @('/nologo', '/dll', '/noentry', '/machine:x64', "/out:$providerDir\MtaTest.dll", 'MtaTest.res')
-} finally {
-    Pop-Location
-}
-Exec 'icacls.exe' @($providerDir, '/grant', '*S-1-1-0:(OI)(CI)RX')
-Exec 'wevtutil.exe' @('im', "$providerDir\MtaTest.man")
+$installed = Install-Manifest (Join-Path $here 'MtaTest.man') $build
 
 function Write-Custom([int] $id, [object[]] $payload) {
     if ($payload) {
@@ -196,7 +168,7 @@ foreach ($name in $archives.Keys) {
 
 # --- Remove what we installed ------------------------------------------------
 
-Exec 'wevtutil.exe' @('um', "$providerDir\MtaTest.man")
+Exec 'wevtutil.exe' @('um', $installed)
 Remove-EventLog -Source 'MtaTestClassic'
 Remove-EventLog -Source 'MtaTestClassicMissing'
 # This process may still have the resource DLL mapped, which blocks deleting
