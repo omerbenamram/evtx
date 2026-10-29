@@ -14,6 +14,9 @@ and this project adheres to
   writes such values: in the Shell-Core sample, events 161 and 968 hold their
   event data and then a `RenderingInfo` element, which evtx dropped. Every
   element now renders, in XML and JSON, as Windows renders them.
+- A BinXML value holding no element rendered as an empty `Event` element
+  (`"Event": null` in JSON), as in record 17 of the LanguagePackSetup sample. It
+  now renders nothing.
 
 ### Security
 
