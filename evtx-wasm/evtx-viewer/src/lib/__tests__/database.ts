@@ -1,17 +1,22 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { createDuckDB, NODE_RUNTIME, VoidLogger } from "@duckdb/duckdb-wasm/blocking";
+import {
+  createDuckDB,
+  type DuckDBConnection,
+  NODE_RUNTIME,
+  VoidLogger,
+} from "@duckdb/duckdb-wasm/blocking";
 
-type TestConnection = ReturnType<Awaited<ReturnType<typeof createDuckDB>>["connect"]>;
+export type { DuckDBConnection };
 
 const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 // Pass to the beforeAll that calls openTestDatabase: a cold cache downloads the extension.
 export const OPEN_TIMEOUT_MS = DOWNLOAD_TIMEOUT_MS + 10_000;
 
-export async function openTestDatabase() {
+export async function openTestDatabase(): Promise<DuckDBConnection> {
   const require = createRequire(import.meta.url);
   const database = await createDuckDB(
     {
@@ -44,7 +49,7 @@ export async function openTestDatabase() {
 // Downloading it first into the cache that loader reads turns that into a fast, clear error.
 // The cache layout is duckdb-wasm's own (its Node loader in duckdb-node-blocking.cjs), so
 // check it still matches when bumping the pinned @duckdb/duckdb-wasm version.
-async function cacheJsonExtension(connection: TestConnection) {
+async function cacheJsonExtension(connection: DuckDBConnection) {
   const [{ version, platform }] = connection
     .query(
       "SELECT library_version AS version, (SELECT platform FROM pragma_platform()) AS platform FROM pragma_version()",
@@ -52,7 +57,7 @@ async function cacheJsonExtension(connection: TestConnection) {
     .toArray();
   const path = `${version}/${platform}/json.duckdb_extension.wasm`;
   const file = join(homedir(), ".duckdb/extensions/extensions.duckdb.org", path);
-  if (isWasm(readCached(file))) return;
+  if (isCachedWasm(file)) return;
   const url = `https://extensions.duckdb.org/${path}`;
   let bytes: Uint8Array;
   try {
@@ -75,19 +80,24 @@ async function cacheJsonExtension(connection: TestConnection) {
   renameSync(partial, file);
 }
 
-function readCached(file: string) {
-  try {
-    return new Uint8Array(readFileSync(file));
-  } catch {
-    return undefined;
-  }
+// A file a killed run left half-written, or an error page, would make DuckDB fail to load it.
+function isWasm(bytes: Uint8Array) {
+  return bytes.length > 8 && WASM_MAGIC.every((byte, i) => bytes[i] === byte);
 }
 
-// A file a killed run left half-written, or an error page, would make DuckDB fail to load it.
-function isWasm(bytes: Uint8Array | undefined) {
-  return (
-    bytes !== undefined && bytes.length > 8 && WASM_MAGIC.every((byte, i) => bytes[i] === byte)
-  );
+function isCachedWasm(file: string) {
+  let fd: number;
+  try {
+    fd = openSync(file, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const head = new Uint8Array(9);
+    return isWasm(head.subarray(0, readSync(fd, head)));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function deferred() {

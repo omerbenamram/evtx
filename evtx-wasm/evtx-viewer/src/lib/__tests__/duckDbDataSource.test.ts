@@ -8,9 +8,9 @@ import {
 } from "../duckDbDataSource";
 import { beginNewSession, getSessionId } from "../duckdb";
 import type { FilterOptions } from "../types";
-import { deferred, OPEN_TIMEOUT_MS, openTestDatabase } from "./database";
+import { deferred, type DuckDBConnection, OPEN_TIMEOUT_MS, openTestDatabase } from "./database";
 
-let connection: Awaited<ReturnType<typeof openTestDatabase>>;
+let connection: DuckDBConnection;
 const query = async (sql: string) => connection.query(sql);
 const columns = [{ id: "eventId", header: "Event ID" }];
 const row = (index: number) => ({ rowKey: String(index), eventId: index });

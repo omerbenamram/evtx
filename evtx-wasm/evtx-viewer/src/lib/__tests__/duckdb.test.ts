@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EvtxWasmParser, initSync } from "../../wasm/evtx_wasm.js";
 import { getEventDataFields, type ParsedQuery } from "../types";
-import { OPEN_TIMEOUT_MS, openTestDatabase } from "./database";
+import { type DuckDBConnection, OPEN_TIMEOUT_MS, openTestDatabase } from "./database";
 import {
   buildWhere,
   countRecords,
@@ -19,7 +19,7 @@ import { withTerm } from "../searchQuery";
 import { formatTimeBucket, parseTimeRangeKey } from "../timeZone";
 import { getTimeHistogram } from "../timeline";
 
-let connection: Awaited<ReturnType<typeof openTestDatabase>>;
+let connection: DuckDBConnection;
 const query = async (sql: string) => connection.query(sql);
 const count = (searchQuery: string) => countRecords({ searchQuery }, query);
 const columns = [{ id: "eventId", header: "Event ID" }];
