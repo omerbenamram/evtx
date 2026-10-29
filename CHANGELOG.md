@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.14.0 - 2026-10-29]
+
 ### Added
 
 - `evtx::mta` reads the localized strings Windows saves next to an exported log
@@ -18,6 +20,13 @@ and this project adheres to
   keyword names, matched to events the way Windows matches them.
   `MtaFile::rendering_info` looks the strings up without rendering. See
   `docs/mta.md`. Thanks @dev-joss for the original work and samples in #284.
+
+### Fixed
+
+- JSON output could repeat a key when an element held two substitutions whose
+  nested templates (or other BinXML fragments) had elements with the same name.
+  Such templates now render through the materialized path, which numbers
+  repeated names (`Name`, `Name_1`) as it does elsewhere (#302).
 
 ## [0.13.0 - 2026-10-22]
 
