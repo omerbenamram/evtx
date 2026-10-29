@@ -18,6 +18,18 @@ on:
         type: boolean
         required: false
         default: false
+  # Called by auto-tag.yml after it pushes the tag; there github.ref is master, not the tag.
+  workflow_call:
+    inputs:
+      version:
+        description: "Release tag (vX.Y.Z)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build all matrix legs but skip release creation and asset upload"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -36,11 +48,14 @@ jobs:
 
       - name: Resolve release version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        # Inputs first: a call from auto-tag.yml sees the caller's `push` event on master.
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          elif [ "${{ github.event_name }}" = "push" ]; then
             VERSION="$GITHUB_REF_NAME"
-          elif [ -n "${{ inputs.version }}" ]; then
-            VERSION="${{ inputs.version }}"
           else
             VERSION="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
           fi
