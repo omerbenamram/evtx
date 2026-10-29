@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A BinXML value holding more than one element kept only the first. Windows
+  writes such values: in the Shell-Core sample, events 161 and 968 hold their
+  event data and then a `RenderingInfo` element, which evtx dropped. Every
+  element now renders, in XML and JSON, as Windows renders them.
+
 ### Security
 
 - Refreshed lockfiles to clear Dependabot alerts: `crossbeam-epoch` 0.9.21
