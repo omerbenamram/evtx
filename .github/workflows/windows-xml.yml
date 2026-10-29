@@ -6,9 +6,12 @@ name: Windows XML
 # over samples/windows to update the fixtures there.
 on:
   workflow_dispatch:
+  # Probe branch only (never merged): runs on push and pushes results to a branch.
+  push:
+    branches: [claude/project-thread-j03xxp-winxml-probe]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   render:
@@ -33,3 +36,14 @@ jobs:
         with:
           name: windows-xml
           path: ${{ runner.temp }}/windows-xml
+      - name: Push results to a branch
+        if: always() && github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$(cygpath "$RUNNER_TEMP")/windows-xml"
+          git init -q -b results
+          git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "Windows XML for $GITHUB_SHA (run $GITHUB_RUN_ID)"
+          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "results:refs/heads/claude/project-thread-j03xxp-winxml-$GITHUB_RUN_ID"
