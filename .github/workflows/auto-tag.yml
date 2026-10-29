@@ -1,7 +1,7 @@
 name: Auto-tag
 
 # Merging a release PR (one that bumps the version in Cargo.toml) tags that commit
-# `vX.Y.Z` and runs release.yml for it. Other pushes find the tag already exists and stop.
+# `vX.Y.Z` and runs release.yml on the tag. Other pushes find the tag already exists and stop.
 on:
   push:
     branches:
@@ -10,25 +10,30 @@ on:
       - Cargo.toml
 
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 jobs:
   tag:
     name: Tag new version
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+    # Two quick merges must not both see the tag as missing.
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
-      - name: Tag the Cargo.toml version if it has no tag
-        id: tag
+      - name: Tag the Cargo.toml version and start the release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          [ -n "$VERSION" ] || { echo "no version found in Cargo.toml"; exit 1; }
+          TAG="v$VERSION"
+          EXISTING="$(git ls-remote --tags origin "refs/tags/$TAG")"
+          if [ -n "$EXISTING" ]; then
             echo "$TAG already exists, nothing to release"
             exit 0
           fi
@@ -36,16 +41,5 @@ jobs:
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               tag -a "$TAG" -m "$TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-  # A tag pushed with GITHUB_TOKEN doesn't trigger release.yml's `push: tags`, so call it directly.
-  release:
-    name: Release
-    needs: tag
-    if: needs.tag.outputs.tag != ''
-    permissions:
-      contents: write
-    uses: ./.github/workflows/release.yml
-    with:
-      version: ${{ needs.tag.outputs.tag }}
-    secrets: inherit
+          # A tag pushed with GITHUB_TOKEN doesn't trigger `push: tags`, but a dispatch does.
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"

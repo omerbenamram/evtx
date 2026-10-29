@@ -17,12 +17,15 @@ binaries attached to a GitHub release.
 3. Merge it.
 
 The merge runs `.github/workflows/auto-tag.yml`. It sees a `Cargo.toml` version with no tag,
-pushes the `vX.Y.Z` tag on the merge commit, and calls `.github/workflows/release.yml`:
-GitHub release, binaries, then `cargo publish` last.
+pushes the `vX.Y.Z` tag on the merge commit, and runs `.github/workflows/release.yml` on the
+tag: GitHub release, binaries, then `cargo publish` last.
 
 Pushing a `vX.Y.Z` tag by hand, or running `release.yml` from the Actions tab, still works;
-auto-tag skips a version whose tag exists. To retry a failed release, re-run the failed jobs of
-its run.
+auto-tag skips a version whose tag exists. If auto-tag pushed the tag but no release started,
+run `release.yml` on the tag from the Actions tab. To retry a failed release, re-run the failed
+jobs of its `release.yml` run. If it failed because of the code, leave the tag where it is and
+ship the fix as the next patch release; the crates.io publish runs last, so that version never
+reached crates.io.
 
 The Python bindings ([pyevtx-rs](https://github.com/omerbenamram/pyevtx-rs)) release next,
 once the crate is on crates.io.
