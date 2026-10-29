@@ -4,7 +4,7 @@
 for each of its events. Together they show how Windows stores and renders every manifest input
 type, so evtx's rendering can be checked against Windows instead of against another parser.
 
-Both come from run [40966226170](https://github.com/omerbenamram/evtx/actions/runs/40966226170)
+Both come from run [40969797567](https://github.com/omerbenamram/evtx/actions/runs/40969797567)
 of [`windows-xml.yml`](../../.github/workflows/windows-xml.yml), on the Windows version in
 `windows-info.txt`. `SHA256SUMS` has the log's hash. To make new ones, run the workflow and copy
 the `generated/` folder of its `windows-xml` artifact over this folder. The artifact's `samples/`
