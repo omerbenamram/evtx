@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Test provider used by generate-types-sample.ps1. Its templates cover every
+  manifest input type, as scalars and as arrays, the output types that change
+  how Windows stores or renders a value, and strings with characters XML
+  cannot hold as they are. TypesWriter.cs writes the payloads byte by byte,
+  so they can hold values .NET would not encode (lone surrogates, NULs inside
+  counted strings, booleans other than 0 and 1).
+-->
+<instrumentationManifest
+    xmlns="http://schemas.microsoft.com/win/2004/08/events"
+    xmlns:win="http://manifests.microsoft.com/win/2004/08/windows/events"
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://schemas.microsoft.com/win/2004/08/events eventman.xsd">
+  <instrumentation>
+    <events>
+      <provider name="EvtxTypes-Provider"
+                guid="{B6E3F0A1-7C2D-4E5F-8A9B-0C1D2E3F4A5B}"
+                symbol="EVTXTYPES_PROVIDER"
+                resourceFileName="C:\EvtxTypes\TypesTest.dll"
+                messageFileName="C:\EvtxTypes\TypesTest.dll"
+                message="$(string.Provider.Name)">
+        <events>
+          <event value="1" version="0" channel="Operational" level="win:Informational" template="T_Scalars" symbol="EVT_SCALARS"/>
+          <event value="2" version="0" channel="Operational" level="win:Informational" template="T_Arrays" symbol="EVT_ARRAYS"/>
+          <event value="3" version="0" channel="Operational" level="win:Informational" template="T_BinaryArray" symbol="EVT_BINARY_ARRAY"/>
+          <event value="4" version="0" channel="Operational" level="win:Informational" template="T_OutTypes" symbol="EVT_OUT_TYPES"/>
+          <event value="5" version="0" channel="Operational" level="win:Informational" template="T_Text" symbol="EVT_TEXT"/>
+          <event value="6" version="0" channel="Operational" level="win:Informational" template="T_Counted" symbol="EVT_COUNTED"/>
+          <event value="7" version="0" channel="Operational" level="win:Informational" template="T_Ansi" symbol="EVT_ANSI"/>
+          <event value="8" version="0" channel="Operational" level="win:Informational" symbol="EVT_EMPTY"/>
+          <event value="9" version="0" channel="Operational" level="win:Informational" template="T_FileTime" symbol="EVT_FILETIME"/>
+          <event value="10" version="0" channel="Operational" level="win:Informational" template="T_SysTime" symbol="EVT_SYSTIME"/>
+          <event value="11" version="0" channel="Operational" level="win:Informational" template="T_Float" symbol="EVT_FLOAT"/>
+          <event value="12" version="0" channel="Operational" level="win:Informational" template="T_Bool" symbol="EVT_BOOL"/>
+        </events>
+        <channels>
+          <channel chid="Operational" name="EvtxTypes-Provider/Operational" type="Operational" enabled="true" symbol="CHANNEL_OPERATIONAL" message="$(string.Channel.Operational)"/>
+        </channels>
+        <templates>
+          <template tid="T_Scalars">
+            <data name="UnicodeString" inType="win:UnicodeString"/>
+            <data name="AnsiString" inType="win:AnsiString"/>
+            <data name="Int8" inType="win:Int8"/>
+            <data name="UInt8" inType="win:UInt8"/>
+            <data name="Int16" inType="win:Int16"/>
+            <data name="UInt16" inType="win:UInt16"/>
+            <data name="Int32" inType="win:Int32"/>
+            <data name="UInt32" inType="win:UInt32"/>
+            <data name="Int64" inType="win:Int64"/>
+            <data name="UInt64" inType="win:UInt64"/>
+            <data name="Float" inType="win:Float"/>
+            <data name="Double" inType="win:Double"/>
+            <data name="Boolean" inType="win:Boolean"/>
+            <data name="BinaryLength" inType="win:UInt32"/>
+            <data name="Binary" inType="win:Binary" length="BinaryLength"/>
+            <data name="GUID" inType="win:GUID"/>
+            <data name="Pointer" inType="win:Pointer"/>
+            <data name="FILETIME" inType="win:FILETIME"/>
+            <data name="SYSTEMTIME" inType="win:SYSTEMTIME"/>
+            <data name="SID" inType="win:SID"/>
+            <data name="HexInt32" inType="win:HexInt32"/>
+            <data name="HexInt64" inType="win:HexInt64"/>
+          </template>
+          <template tid="T_Arrays">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="UnicodeStrings" inType="win:UnicodeString" count="Count"/>
+            <data name="AnsiStrings" inType="win:AnsiString" count="Count"/>
+            <data name="Int8s" inType="win:Int8" count="Count"/>
+            <data name="UInt8s" inType="win:UInt8" count="Count"/>
+            <data name="Int16s" inType="win:Int16" count="Count"/>
+            <data name="UInt16s" inType="win:UInt16" count="Count"/>
+            <data name="Int32s" inType="win:Int32" count="Count"/>
+            <data name="UInt32s" inType="win:UInt32" count="Count"/>
+            <data name="Int64s" inType="win:Int64" count="Count"/>
+            <data name="UInt64s" inType="win:UInt64" count="Count"/>
+            <data name="Floats" inType="win:Float" count="Count"/>
+            <data name="Doubles" inType="win:Double" count="Count"/>
+            <data name="Booleans" inType="win:Boolean" count="Count"/>
+            <data name="GUIDs" inType="win:GUID" count="Count"/>
+            <data name="Pointers" inType="win:Pointer" count="Count"/>
+            <data name="FILETIMEs" inType="win:FILETIME" count="Count"/>
+            <data name="SYSTEMTIMEs" inType="win:SYSTEMTIME" count="Count"/>
+            <data name="SIDs" inType="win:SID" count="Count"/>
+            <data name="HexInt32s" inType="win:HexInt32" count="Count"/>
+            <data name="HexInt64s" inType="win:HexInt64" count="Count"/>
+          </template>
+          <template tid="T_BinaryArray">
+            <data name="Count" inType="win:UInt16"/>
+            <data name="Binaries" inType="win:Binary" count="Count" length="4"/>
+          </template>
+          <template tid="T_OutTypes">
+            <data name="Xml" inType="win:UnicodeString" outType="win:Xml"/>
+            <data name="Utf8" inType="win:AnsiString" outType="win:Utf8"/>
+            <data name="HexInt8" inType="win:UInt8" outType="win:HexInt8"/>
+            <data name="HexInt16" inType="win:UInt16" outType="win:HexInt16"/>
+            <data name="HexInt32" inType="win:UInt32" outType="win:HexInt32"/>
+            <data name="HexInt64" inType="win:UInt64" outType="win:HexInt64"/>
+            <data name="Win32Error" inType="win:UInt32" outType="win:Win32Error"/>
+            <data name="NTSTATUS" inType="win:UInt32" outType="win:NTSTATUS"/>
+            <data name="HResult" inType="win:Int32" outType="win:HResult"/>
+            <data name="PID" inType="win:UInt32" outType="win:PID"/>
+            <data name="Port" inType="win:UInt16" outType="win:Port"/>
+            <data name="IPv4" inType="win:UInt32" outType="win:IPv4"/>
+            <data name="IPv6" inType="win:Binary" outType="win:IPv6" length="16"/>
+            <data name="SocketAddressLength" inType="win:UInt32"/>
+            <data name="SocketAddress" inType="win:Binary" outType="win:SocketAddress" length="SocketAddressLength"/>
+            <data name="DateTime" inType="win:FILETIME" outType="xs:dateTime"/>
+            <data name="DateTimeCultureInsensitive" inType="win:FILETIME" outType="win:DateTimeCultureInsensitive"/>
+          </template>
+          <template tid="T_Text">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="Text" inType="win:UnicodeString"/>
+          </template>
+          <template tid="T_Counted">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="Length" inType="win:UInt16"/>
+            <data name="Text" inType="win:UnicodeString" length="Length"/>
+          </template>
+          <template tid="T_Ansi">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="Ansi" inType="win:AnsiString"/>
+            <data name="Utf8" inType="win:AnsiString" outType="win:Utf8"/>
+          </template>
+          <template tid="T_FileTime">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="FILETIME" inType="win:FILETIME"/>
+          </template>
+          <template tid="T_SysTime">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="SYSTEMTIME" inType="win:SYSTEMTIME"/>
+          </template>
+          <template tid="T_Float">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="Float" inType="win:Float"/>
+            <data name="Double" inType="win:Double"/>
+          </template>
+          <template tid="T_Bool">
+            <data name="Label" inType="win:UnicodeString"/>
+            <data name="Boolean" inType="win:Boolean"/>
+          </template>
+        </templates>
+      </provider>
+    </events>
+  </instrumentation>
+  <localization>
+    <resources culture="en-US">
+      <stringTable>
+        <string id="Provider.Name" value="evtx value type test provider"/>
+        <string id="Channel.Operational" value="evtx value types"/>
+      </stringTable>
+    </resources>
+  </localization>
+</instrumentationManifest>
