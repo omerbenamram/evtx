@@ -1,7 +1,22 @@
+import { closeSync, mkdirSync, openSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { createDuckDB, NODE_RUNTIME, VoidLogger } from "@duckdb/duckdb-wasm/blocking";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import {
+  createDuckDB,
+  type DuckDBConnection,
+  NODE_RUNTIME,
+  VoidLogger,
+} from "@duckdb/duckdb-wasm/blocking";
 
-export async function openTestDatabase() {
+export type { DuckDBConnection };
+
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+// Pass to the beforeAll that calls openTestDatabase: a cold cache downloads the extension.
+export const OPEN_TIMEOUT_MS = DOWNLOAD_TIMEOUT_MS + 10_000;
+
+export async function openTestDatabase(): Promise<DuckDBConnection> {
   const require = createRequire(import.meta.url);
   const database = await createDuckDB(
     {
@@ -18,7 +33,71 @@ export async function openTestDatabase() {
     NODE_RUNTIME,
   );
   await database.instantiate();
-  return database.connect();
+  const connection = database.connect();
+  try {
+    await cacheJsonExtension(connection);
+  } catch (error) {
+    connection.close();
+    throw error;
+  }
+  return connection;
+}
+
+// DuckDB autoloads its json extension on first use. In Node, the blocking build fetches it
+// on a helper thread while the main thread waits in Atomics.wait with no timeout, so an
+// unreachable extensions.duckdb.org (an offline machine, a proxy) hangs the run forever.
+// Downloading it first into the cache that loader reads turns that into a fast, clear error.
+// The cache layout is duckdb-wasm's own (its Node loader in duckdb-node-blocking.cjs), so
+// check it still matches when bumping the pinned @duckdb/duckdb-wasm version.
+async function cacheJsonExtension(connection: DuckDBConnection) {
+  const [{ version, platform }] = connection
+    .query(
+      "SELECT library_version AS version, (SELECT platform FROM pragma_platform()) AS platform FROM pragma_version()",
+    )
+    .toArray();
+  const path = `${version}/${platform}/json.duckdb_extension.wasm`;
+  const file = join(homedir(), ".duckdb/extensions/extensions.duckdb.org", path);
+  if (isCachedWasm(file)) return;
+  const url = `https://extensions.duckdb.org/${path}`;
+  let bytes: Uint8Array;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+    if (!isWasm(bytes)) throw new Error("response is not a wasm module");
+  } catch (cause) {
+    throw new Error(
+      `Could not download DuckDB's json extension from ${url}. The DuckDB tests need network ` +
+        `access to extensions.duckdb.org (behind a proxy, set NODE_USE_ENV_PROXY=1), or the file ` +
+        `already at ${file}.`,
+      { cause },
+    );
+  }
+  mkdirSync(dirname(file), { recursive: true });
+  // Test files run in parallel, so publish the file atomically.
+  const partial = `${file}.${process.pid}.partial`;
+  writeFileSync(partial, bytes);
+  renameSync(partial, file);
+}
+
+// A file a killed run left half-written, or an error page, would make DuckDB fail to load it.
+function isWasm(bytes: Uint8Array) {
+  return bytes.length > 8 && WASM_MAGIC.every((byte, i) => bytes[i] === byte);
+}
+
+function isCachedWasm(file: string) {
+  let fd: number;
+  try {
+    fd = openSync(file, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const head = new Uint8Array(9);
+    return isWasm(head.subarray(0, readSync(fd, head)));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function deferred() {

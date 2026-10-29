@@ -30,3 +30,31 @@ jobs:
         run: cargo test
       - name: Run utf16-simd tests
         run: cargo test --manifest-path utf16-simd/Cargo.toml
+
+  viewer:
+    name: Check web viewer
+    runs-on: ubuntu-latest
+    # A DuckDB test that can't reach its extension used to block forever; never wait six hours on that again.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: evtx-wasm
+      - name: Install wasm-pack
+        run: |
+          curl -sSfL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz \
+            | sudo tar xz --strip-components=1 -C /usr/local/bin --wildcards '*/wasm-pack'
+      - name: Build evtx-wasm
+        run: wasm-pack build evtx-wasm --target web --out-dir evtx-viewer/src/wasm --out-name evtx_wasm --release
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: evtx-wasm/evtx-viewer/package.json
+      - name: Check viewer
+        working-directory: evtx-wasm/evtx-viewer
+        run: |
+          bun install --frozen-lockfile
+          bun run check
