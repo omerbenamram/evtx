@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Security
+
+- Refreshed lockfiles to clear Dependabot alerts: `crossbeam-epoch` 0.9.21
+  (RUSTSEC-2026-0204) and `anyhow` 1.0.104 (RUSTSEC-2026-0190), `rkyv` 0.8.18 in the
+  `utf16-simd` benches, and `zod` 4.6.7, `vite` 8.3.5, `vitest` 5.0.5 and
+  `source-map-js` 1.2.2 in the web viewer.
+
 ## [0.14.0 - 2026-10-29]
 
 ### Added
