@@ -153,13 +153,13 @@ fn test_irregular_boolean_values_are_preserved() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum() {
-    test_full_sample(sample_with_a_bad_checksum(), 1910, 4)
+    test_full_sample(sample_with_a_bad_checksum(), 1950, 27)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2() {
     // TODO: investigate 2 failing records
-    test_full_sample(sample_with_a_bad_checksum_2(), 1774, 2)
+    test_full_sample(sample_with_a_bad_checksum_2(), 1795, 2)
 }
 
 #[test]
@@ -235,7 +235,8 @@ fn test_sample_with_zero_data_size_event() {
         }
         count += 1;
     }
-    assert_eq!(count, 336, "Single threaded iteration failed");
+    // The corrupt record does not hide the 114 live records after it.
+    assert_eq!(count, 450, "Single threaded iteration failed");
 }
 
 /// Chunks share compiled templates, but a template body can reference a name

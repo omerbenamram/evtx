@@ -56,9 +56,9 @@ fn recovers_records_from_cleared_chunk() {
 
 #[test]
 fn recovers_records_from_chunk_slack() {
-    // Has corrupt live records: with recovery on, the walk resyncs past them and the
-    // 21 records it finds before `free_space_offset` stay live.
+    // Has corrupt live records: the walk resyncs past them and the 21 records it finds
+    // before `free_space_offset` stay live, with or without recovery.
     let path = sample_with_a_bad_checksum_2();
-    assert_eq!(counts(&path, false), [(1774, 0); 2]);
+    assert_eq!(counts(&path, false), [(1795, 0); 2]);
     assert_eq!(counts(&path, true), [(1795, 245); 2]);
 }

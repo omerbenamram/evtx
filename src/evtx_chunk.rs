@@ -277,7 +277,8 @@ pub(crate) struct IterRawRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
     exhausted: bool,
-    /// Carved records before this offset are live (resynced after a corrupt record).
+    /// After a corrupt record, the end of the live area (`free_space_offset`): records carved
+    /// before it are live ones the walk resynced on, not stale ones.
     live_until: u64,
 }
 
@@ -298,22 +299,30 @@ impl<'a> Iterator for IterRawRecords<'a> {
             }
         }
         self.exhausted = true;
-        if !self.chunk.settings.should_recover_records() {
-            return None;
-        }
-        self.carve_record().map(Ok)
+        // Past a corrupt record, resync on the next record of the live area; with
+        // `recover_records`, carve stale records to the end of the chunk too.
+        let limit = if self.chunk.settings.should_recover_records() {
+            self.chunk.data.len() as u64
+        } else {
+            self.live_until
+        };
+        self.carve_record(limit).map(Ok)
     }
 }
 
 impl<'a> IterRawRecords<'a> {
-    /// Scan the rest of the chunk (past the last valid record, or from 512 in a cleared chunk)
-    /// for stale records. A hit needs the record magic and a matching trailing size copy.
-    fn carve_record(&mut self) -> Option<RawRecord<'a>> {
+    /// Scan the chunk from the current offset (a corrupt record, the last valid record, or 512
+    /// in a cleared chunk) for records starting before `limit`. A hit needs the record magic
+    /// and a matching trailing size copy.
+    fn carve_record(&mut self, limit: u64) -> Option<RawRecord<'a>> {
         let data = self.chunk.data;
+        let limit = (limit as usize).min(data.len());
         loop {
-            let from = (self.offset_from_chunk_start as usize).min(data.len());
-            let Some(hit) = data[from..].windows(4).position(|w| w == EVTX_RECORD_MAGIC) else {
-                self.offset_from_chunk_start = data.len() as u64;
+            let from = (self.offset_from_chunk_start as usize).min(limit);
+            // A magic starting before `limit` may end after it.
+            let window = &data[from..(limit + EVTX_RECORD_MAGIC.len() - 1).min(data.len())];
+            let Some(hit) = window.windows(4).position(|w| w == EVTX_RECORD_MAGIC) else {
+                self.offset_from_chunk_start = limit as u64;
                 return None;
             };
             let pos = (from + hit) as u64;

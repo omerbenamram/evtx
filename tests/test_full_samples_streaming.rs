@@ -69,13 +69,13 @@ fn test_parses_sample_with_irregular_boolean_values_streaming() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_streaming() {
-    test_full_sample_streaming(sample_with_a_bad_checksum(), 1910, 4)
+    test_full_sample_streaming(sample_with_a_bad_checksum(), 1950, 27)
 }
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2_streaming() {
     // TODO: investigate 2 failing records
-    test_full_sample_streaming(sample_with_a_bad_checksum_2(), 1774, 2)
+    test_full_sample_streaming(sample_with_a_bad_checksum_2(), 1795, 2)
 }
 
 #[test]

@@ -17,6 +17,10 @@ and this project adheres to
 - A BinXML value holding no element rendered as an empty `Event` element
   (`"Event": null` in JSON), as in record 17 of the LanguagePackSetup sample. It
   now renders nothing.
+- A record with a corrupt header ended its chunk: the live records after it were
+  lost unless `--recover-records` was set. The walk now resyncs on the next
+  record before the chunk's free space in every mode, which brings back 175
+  records in the samples. Only `--recover-records` carves stale records past it.
 
 ### Security
 
