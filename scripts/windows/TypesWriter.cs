@@ -187,6 +187,38 @@ public static class TypesWriter
             new int[0], new uint[0], new long[0], new ulong[0], new float[0], new double[0], new int[0], new string[0],
             new ulong[0], new DateTime[0], new int[0][], new string[0], new uint[0], new ulong[0]));
 
+        // The same arrays one type per event, with 3, 1 and 0 items.
+        object[][] arrays = new object[][] {
+            new object[] { "EVT_A_UNICODESTRING", (Action<P, int>)((p, i) => p.Str(new string[] { "a", "", "c,d" }[i])) },
+            new object[] { "EVT_A_INT8", (Action<P, int>)((p, i) => p.I8(new sbyte[] { -1, 0, 1 }[i])) },
+            new object[] { "EVT_A_UINT8", (Action<P, int>)((p, i) => p.U8(new byte[] { 0, 1, 255 }[i])) },
+            new object[] { "EVT_A_INT16", (Action<P, int>)((p, i) => p.I16(new short[] { -2, 0, 2 }[i])) },
+            new object[] { "EVT_A_UINT16", (Action<P, int>)((p, i) => p.U16(new ushort[] { 0, 1, 65535 }[i])) },
+            new object[] { "EVT_A_INT32", (Action<P, int>)((p, i) => p.I32(new int[] { -3, 0, 3 }[i])) },
+            new object[] { "EVT_A_UINT32", (Action<P, int>)((p, i) => p.U32(new uint[] { 0, 1, uint.MaxValue }[i])) },
+            new object[] { "EVT_A_INT64", (Action<P, int>)((p, i) => p.I64(new long[] { -4, 0, 4 }[i])) },
+            new object[] { "EVT_A_UINT64", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i])) },
+            new object[] { "EVT_A_FLOAT", (Action<P, int>)((p, i) => p.F32(new float[] { 0.5f, -1.25f, 1e10f }[i])) },
+            new object[] { "EVT_A_DOUBLE", (Action<P, int>)((p, i) => p.F64(new double[] { 0.1, -2.5, 1e100 }[i])) },
+            new object[] { "EVT_A_BOOLEAN", (Action<P, int>)((p, i) => p.I32(new int[] { 1, 0, 2 }[i])) },
+            new object[] { "EVT_A_GUID", (Action<P, int>)((p, i) => p.Guid(new string[] { "01234567-89ab-cdef-0123-456789abcdef", "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff" }[i])) },
+            new object[] { "EVT_A_POINTER", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 1, ulong.MaxValue }[i])) },
+            new object[] { "EVT_A_FILETIME", (Action<P, int>)((p, i) => p.FileTime(new DateTime[] { Utc(2016, 7, 8, 18, 12, 51, 6816402), Utc(1601, 1, 1, 0, 0, 0, 0), Utc(2020, 2, 29, 0, 0, 0, 1) }[i])) },
+            new object[] { "EVT_A_SYSTEMTIME", (Action<P, int>)((p, i) => { int[] st = new int[][] { st1, st2, st3 }[i]; p.SysTime(st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]); }) },
+            new object[] { "EVT_A_SID", (Action<P, int>)((p, i) => p.Sid(new string[] { "S-1-5-18", "S-1-5-19", "S-1-5-20" }[i])) },
+            new object[] { "EVT_A_HEXINT32", (Action<P, int>)((p, i) => p.U32(new uint[] { 0, 0x1F, uint.MaxValue }[i])) },
+            new object[] { "EVT_A_HEXINT64", (Action<P, int>)((p, i) => p.U64(new ulong[] { 0, 0x80000000000000UL, ulong.MaxValue }[i])) },
+        };
+        foreach (object[] array in arrays)
+        {
+            foreach (int n in new int[] { 3, 1, 0 })
+            {
+                P p = new P().U16((ushort)n);
+                for (int i = 0; i < n; i++) ((Action<P, int>)array[1])(p, i);
+                add((string)array[0], p);
+            }
+        }
+
         foreach (string[] ansis in new string[][] { new string[] { "x", "", "y z" }, new string[] { "one" }, new string[0] })
         {
             P p = new P().U16((ushort)ansis.Length);
