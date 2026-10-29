@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { EvtxWasmParser, initSync } from "../../wasm/evtx_wasm.js";
 import { getEventDataFields, type ParsedQuery } from "../types";
-import { openTestDatabase } from "./database";
+import { OPEN_TIMEOUT_MS, openTestDatabase } from "./database";
 import {
   buildWhere,
   countRecords,
@@ -29,7 +29,7 @@ const matched = (searchQuery: string) =>
   );
 beforeAll(async () => {
   connection = await openTestDatabase();
-});
+}, OPEN_TIMEOUT_MS);
 afterAll(() => connection?.close());
 beforeEach(() => {
   connection.query(`DROP TABLE IF EXISTS logs; ${LOGS_TABLE_SQL}`);
