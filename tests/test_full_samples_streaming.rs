@@ -74,7 +74,7 @@ fn test_dirty_sample_with_a_bad_checksum_streaming() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2_streaming() {
-    // TODO: investigate 2 failing records
+    // See test_full_samples.rs.
     test_full_sample_streaming(sample_with_a_bad_checksum_2(), 1795, 2)
 }
 

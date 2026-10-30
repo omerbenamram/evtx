@@ -21,10 +21,11 @@ and this project adheres to
   were lost unless `--recover-records` was set. In every mode, the walk now
   reports the bad header and resyncs on the next record whose ID is in the chunk
   header's range, which brings back 166 records in the samples. With
-  `--recover-records`, the records of the log's other pass over a chunk (IDs
-  outside that range) now come out as recovered instead of live, and the 23 of
-  them whose templates were overwritten are skipped like other carved noise
-  instead of reported as errors.
+  `--recover-records`, every record carved before the free space used to count
+  as live. The ones the resync skips, such as records of the log's other pass
+  over a chunk, now come out as recovered, and the 23 of them whose templates
+  were overwritten are skipped like other carved noise instead of reported as
+  errors.
 
 ### Security
 

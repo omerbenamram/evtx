@@ -171,8 +171,8 @@ impl<'chunk> EvtxChunk<'chunk> {
     pub(crate) fn iter_raw(&self) -> IterRawRecords<'_> {
         IterRawRecords {
             chunk: self,
-            offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-            state: RawState::Walk,
+            walk: Some(EVTX_CHUNK_HEADER_SIZE as u64),
+            carve: 0..0,
         }
     }
 
@@ -280,20 +280,10 @@ pub(crate) struct RawRecord<'a> {
 /// records between and after them.
 pub(crate) struct IterRawRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
-    offset_from_chunk_start: u64,
-    state: RawState,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RawState {
-    /// The next live record starts at the offset.
-    Walk,
-    /// Carving stale records that end by `until`, then walking from `until` if `walk_after`.
-    Carve {
-        until: u64,
-        walk_after: bool,
-    },
-    Done,
+    /// Where the next live record starts, or `None` past the live area.
+    walk: Option<u64>,
+    /// The span left to carve for stale records before walking on (`recover_records`).
+    carve: std::ops::Range<u64>,
 }
 
 impl<'a> Iterator for IterRawRecords<'a> {
@@ -301,42 +291,33 @@ impl<'a> Iterator for IterRawRecords<'a> {
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         loop {
-            match self.state {
-                RawState::Walk => {
-                    if self.offset_from_chunk_start >= self.live_end() {
-                        self.end_live_area();
-                        continue;
-                    }
-                    match self.record_at(self.offset_from_chunk_start, false) {
-                        Ok((raw, end)) => {
-                            self.offset_from_chunk_start = end;
-                            if raw.event_record_id == self.chunk.header.last_event_record_id {
-                                self.end_live_area();
-                            }
-                            return Some(Ok(raw));
-                        }
-                        // Zeroes where a record should start are where the free space really
-                        // starts when the header's `free_space_offset` is too large (issue
-                        // #197), unless live records follow them.
-                        Err(err) => {
-                            if self.resync() || !is_blank(&err) {
-                                return Some(Err(err));
-                            }
-                        }
-                    }
-                }
-                RawState::Carve { until, walk_after } => {
-                    if let Some(raw) = self.carve_record(until) {
-                        return Some(Ok(raw));
-                    }
-                    if walk_after {
-                        self.offset_from_chunk_start = until;
-                        self.state = RawState::Walk;
+            if let Some(raw) = self.carve_record() {
+                return Some(Ok(raw));
+            }
+            let offset = self.walk?;
+            if offset >= self.live_end() {
+                self.skip_to(offset, None);
+                continue;
+            }
+            match self.record_at(offset, false) {
+                Ok((raw, end)) => {
+                    if raw.event_record_id == self.chunk.header.last_event_record_id {
+                        self.skip_to(end, None);
                     } else {
-                        self.state = RawState::Done;
+                        self.walk = Some(end);
+                    }
+                    return Some(Ok(raw));
+                }
+                Err(err) => {
+                    let next = self.find_live_record(offset + 1);
+                    self.skip_to(offset, next);
+                    // Zeroes where a record should start are where the free space really
+                    // starts when the header's `free_space_offset` is too large (issue
+                    // #197), unless live records follow them.
+                    if next.is_some() || !is_blank(&err) {
+                        return Some(Err(err));
                     }
                 }
-                RawState::Done => return None,
             }
         }
     }
@@ -360,35 +341,13 @@ impl<'a> IterRawRecords<'a> {
         u64::from(self.chunk.header.free_space_offset).min(self.chunk.data.len() as u64)
     }
 
-    /// No more live records: carve the rest of the chunk with `recover_records`.
-    fn end_live_area(&mut self) {
-        self.state = if self.chunk.settings.should_recover_records() {
-            RawState::Carve {
-                until: self.chunk.data.len() as u64,
-                walk_after: false,
-            }
-        } else {
-            RawState::Done
-        };
-    }
-
-    /// Past the unreadable record at the offset, walk on from the next live record; with
-    /// `recover_records`, carve the stale records before it first. False when no live
-    /// record follows.
-    fn resync(&mut self) -> bool {
-        let Some(next) = self.find_live_record(self.offset_from_chunk_start + 1) else {
-            self.end_live_area();
-            return false;
-        };
+    /// Walk on from `next` (`None`: no more live records). With `recover_records`, carve
+    /// the stale records from `from` up to it, or to the chunk's end, first.
+    fn skip_to(&mut self, from: u64, next: Option<u64>) {
+        self.walk = next;
         if self.chunk.settings.should_recover_records() {
-            self.state = RawState::Carve {
-                until: next,
-                walk_after: true,
-            };
-        } else {
-            self.offset_from_chunk_start = next;
+            self.carve = from..next.unwrap_or(self.chunk.data.len() as u64);
         }
-        true
     }
 
     /// The offset of the next live record at or after `from`: a record magic whose header
@@ -400,10 +359,11 @@ impl<'a> IterRawRecords<'a> {
         let header = &self.chunk.header;
         let ids = header.first_event_record_id..=header.last_event_record_id;
         let live_end = self.live_end();
-        while let Some(pos) = self.find_magic(from, live_end) {
+        // Search up to the magic of a record at the last record's offset.
+        let search_end = live_end.min(u64::from(header.last_event_record_data_offset) + 4);
+        while let Some(pos) = self.find_magic(from, search_end) {
             if let Ok((raw, end)) = self.record_at(pos, true)
                 && end <= live_end
-                && pos <= u64::from(header.last_event_record_data_offset)
                 && ids.contains(&raw.event_record_id)
             {
                 return Some(pos);
@@ -421,25 +381,28 @@ impl<'a> IterRawRecords<'a> {
         memchr::memmem::find(&data[from..until], EVTX_RECORD_MAGIC).map(|hit| (from + hit) as u64)
     }
 
-    /// Carve the next stale record from the offset that ends by `until`, and move past it.
-    fn carve_record(&mut self, until: u64) -> Option<RawRecord<'a>> {
-        while let Some(pos) = self.find_magic(self.offset_from_chunk_start, until) {
+    /// Carve the next stale record that ends in the carve span, and move past it.
+    fn carve_record(&mut self) -> Option<RawRecord<'a>> {
+        if self.carve.is_empty() {
+            return None;
+        }
+        while let Some(pos) = self.find_magic(self.carve.start, self.carve.end) {
             match self.record_at(pos, true) {
-                Ok((raw, end)) if end <= until => {
-                    self.offset_from_chunk_start = end;
+                Ok((raw, end)) if end <= self.carve.end => {
+                    self.carve.start = end;
                     return Some(raw);
                 }
-                _ => self.offset_from_chunk_start = pos + 1,
+                _ => self.carve.start = pos + 1,
             }
         }
-        self.offset_from_chunk_start = until;
+        self.carve.start = self.carve.end;
         None
     }
 
     /// Resume carving just after `raw`'s magic, for a hit that turned out to be noise
     /// (real records may sit inside the span it claimed).
     pub(crate) fn rescan_after(&mut self, raw: &RawRecord<'_>) {
-        self.offset_from_chunk_start = raw.binxml_offset - EVTX_RECORD_HEADER_SIZE as u64 + 1;
+        self.carve.start = raw.binxml_offset - EVTX_RECORD_HEADER_SIZE as u64 + 1;
     }
 
     /// The record at `record_start` and the offset it ends at. A carved one must also end
@@ -758,5 +721,41 @@ mod tests {
                 .chain(live(32..=91))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn walk_resyncs_on_records_up_to_the_last_records_offset_only() {
+        // The chunk header puts its last record at record 35's offset.
+        let (mut data, at) = security_chunk();
+        data[44..48].copy_from_slice(&(at[35] as u32).to_le_bytes());
+        data[at[36]] = b'X';
+        let before = || live(1..=35).chain([None]);
+        assert_eq!(
+            raw_records(data.clone(), false),
+            before().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            raw_records(data, true),
+            before()
+                .chain((37..=91).map(|id| Some((id, true))))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn walk_follows_record_sizes_whatever_the_ids() {
+        // Only the resync checks IDs: record 40, which record 39 leads to, stays live with an
+        // ID from another pass of the log over the chunk, as in libevtx.
+        let (mut data, at) = security_chunk();
+        data[at[30]] = b'X';
+        data[at[40] + 8..at[40] + 16].copy_from_slice(&1000_u64.to_le_bytes());
+        let expected: Vec<_> = live(1..=29)
+            .chain([None])
+            .chain(live(31..=39))
+            .chain([Some((1000, false))])
+            .chain(live(41..=91))
+            .collect();
+        assert_eq!(raw_records(data.clone(), false), expected);
+        assert_eq!(raw_records(data, true), expected);
     }
 }
