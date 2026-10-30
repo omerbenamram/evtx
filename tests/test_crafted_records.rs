@@ -322,6 +322,71 @@ fn visits_are_capped() {
     assert_fails_everywhere(&null_attributes(3, 64, 1, 6500), NODES_ERROR);
 }
 
+/// A record whose template holds `count` values, each a fragment of an `<F>` around an
+/// instance of a template that uses its value, an element with 2,000 NULL attributes, 150
+/// times: 600,000 nodes to walk in each.
+fn fragments(count: u16) -> Vec<u8> {
+    let element = || {
+        value(0x21, |fragment| {
+            fragment.fragment_header();
+            null_attributes_element(fragment, false, 2000, 1);
+            fragment.eof();
+        })
+    };
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("R", true).close_start();
+                    for slot in 0..count {
+                        match slot {
+                            0 => root.open("A", true),
+                            _ => root.reopen(true),
+                        }
+                        .close_start()
+                        .substitution(slot, 0x21)
+                        .end_element();
+                    }
+                    root.end_element();
+                },
+                (0..count)
+                    .map(|slot| {
+                        value(0x21, move |fragment| {
+                            fragment.fragment_header().open("F", false).close_start();
+                            if slot == 0 {
+                                fragment.template_instance(
+                                    |uses| {
+                                        uses.open("U", true).close_start();
+                                        for _ in 0..150 {
+                                            uses.substitution(0, 0x21);
+                                        }
+                                        uses.end_element();
+                                    },
+                                    vec![element()],
+                                );
+                            } else {
+                                fragment.template_ref(vec![element()]);
+                            }
+                            fragment.end_element().eof();
+                        })
+                    })
+                    .collect(),
+            )
+            .eof();
+    })
+}
+
+#[test]
+fn the_fragments_of_a_record_share_its_cap() {
+    // The compiled XML lanes walk each fragment of a record on its own, within what the record
+    // has left: one renders, and two fail.
+    let (xml, json) = render_record(&fragments(1), 1);
+    assert_eq!(xml.matches("<X").count(), 150);
+    assert_eq!(json.matches(r#""X"#).count(), 150);
+    assert_fails_everywhere(&fragments(2), NODES_ERROR);
+}
+
 /// A record whose template uses its value, a string of `chars` characters, `uses` times between
 /// what `open` and `close` write.
 fn repeated_value(
@@ -480,25 +545,36 @@ fn shared_names_are_capped() {
             .eof();
     });
     assert_fails_everywhere(&evtx, SIZE_ERROR);
-    // One element with 3,000 attributes that share an 11,500-character name: 35 MB.
-    let evtx = synthetic_evtx(|record| {
-        record
-            .fragment_header()
-            .template_instance(
-                |root| {
-                    root.open_with_attributes("R", true)
-                        .attribute(&"N".repeat(11500))
-                        .text("x");
-                    for _ in 1..3000 {
-                        root.reattribute().text("x");
-                    }
-                    root.close_empty();
-                },
-                vec![],
-            )
-            .eof();
-    });
-    assert_fails_everywhere(&evtx, SIZE_ERROR);
+    // One element with 3,000 attributes that share an 11,500-character name: 35 MB. Their
+    // values are strings, then numbers, which JSON writes without quotes.
+    let values: [fn(&mut BinXml); 2] = [
+        |attribute| {
+            attribute.text("x");
+        },
+        |attribute| {
+            attribute.uint32(1);
+        },
+    ];
+    for write_value in values {
+        let evtx = synthetic_evtx(|record| {
+            record
+                .fragment_header()
+                .template_instance(
+                    |root| {
+                        root.open_with_attributes("R", true)
+                            .attribute(&"N".repeat(11500));
+                        write_value(root);
+                        for _ in 1..3000 {
+                            write_value(root.reattribute());
+                        }
+                        root.close_empty();
+                    },
+                    vec![],
+                )
+                .eof();
+        });
+        assert_fails_everywhere(&evtx, SIZE_ERROR);
+    }
 }
 
 /// Each pass through a chunk of `evtx`'s: how many records render before its records start to

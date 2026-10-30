@@ -289,6 +289,11 @@ impl BinXml {
             .utf16(text)
     }
 
+    /// A UInt32 value.
+    pub fn uint32(&mut self, v: u32) -> &mut Self {
+        self.u8(0x05).u8(0x08).u32(v)
+    }
+
     /// A normal substitution of value `id`, of type `value_type`.
     pub fn substitution(&mut self, id: u16, value_type: u8) -> &mut Self {
         self.u8(0x0d).u16(id).u8(value_type)
