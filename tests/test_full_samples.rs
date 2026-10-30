@@ -158,10 +158,11 @@ fn test_dirty_sample_with_a_bad_checksum() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2() {
-    // Chunk 1 was caught while the log reused it: up to offset 0x8000 it holds records of
-    // the next pass (IDs 463xxx), and after it the old pass's (401576 on). Record 463011
-    // straddles 0x8000, so its BinXML runs into an old record, and where the record after it
-    // should start is that old record's text: 2 errors. The walk resyncs on record 401576.
+    // Chunk 1 was caught while the log reused it: its 16 KiB from 0x4000 to 0x8000 are from
+    // the log's next pass, where the walk reads records 462980 to 463011 (both passes wrote
+    // 496-byte records). Record 463011 straddles 0x8000, so its BinXML runs into an old
+    // record, and where the record after it should start is that old record's text: 2
+    // errors. The walk resyncs on record 401576.
     test_full_sample(sample_with_a_bad_checksum_2(), 1795, 2)
 }
 
