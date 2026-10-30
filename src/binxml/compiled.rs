@@ -37,16 +37,22 @@ use std::sync::Arc;
 const INDENT_WIDTH: u16 = 2;
 const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 
-/// Output past which rendering an element fails its record. Real records render to a few
-/// KiB, but a crafted one can use a value in several places of a template, at every level of
-/// nesting, and so render to a size exponential in its own. The compiled lanes leave values
-/// used twice to the tree walkers (see `Preflight::scan_instance`), which check the size
-/// before each element's children.
+/// Output past which rendering fails its record. Real records render to a few KiB, but a
+/// crafted one can repeat a value or a name many times over, at every level of nesting, and
+/// so render to a size exponential in its own. The tree walkers check the size as they go (see
+/// `XmlCompiler::check_size`); the compiled lanes render each value once (see
+/// `each_slot_once`) from programs of at most `MAX_PROGRAM_SIZE`, and check it before each
+/// instance.
 const MAX_RECORD_OUTPUT: usize = 16 << 20;
+
+/// Most literal bytes a compiled program may hold. Real templates compile to a few KiB, but a
+/// crafted one can give thousands of elements one long name.
+const MAX_PROGRAM_SIZE: usize = 1 << 20;
 
 /// Deepest element nesting the tree walkers render, recursing once per level: the cap on
 /// one BinXML stream. Values nest streams, so a crafted record could otherwise be tens of
-/// thousands of elements deep and overflow the stack.
+/// thousands of elements deep and overflow the stack. The compiled lanes don't recurse per
+/// element.
 const MAX_RENDER_DEPTH: u16 = MAX_ELEMENT_DEPTH as u16;
 
 /// A `lits` byte range.
@@ -65,7 +71,7 @@ type SlotRange = (u32, u32);
 /// Duplicate-key `_N` suffix counter: 0 the first time `name` is seen (no
 /// suffix), then 1, 2, … for repeats. Shared by the JSON compiler (compile
 /// time) and the materialized layer (per record) so the rule cannot drift.
-fn next_name_suffix<K: PartialEq>(name: K, counts: &mut Vec<(K, u16)>) -> u16 {
+fn next_name_suffix<K: PartialEq>(name: K, counts: &mut Vec<(K, u32)>) -> u32 {
     if let Some((_, c)) = counts.iter_mut().find(|(n, _)| *n == name) {
         let suffix = *c;
         *c += 1;
@@ -123,6 +129,20 @@ enum XOp {
         tail_empty: LitRange,
         tail_elem: LitRange,
     },
+}
+
+impl XOp {
+    /// The slot this op renders.
+    fn slot(&self) -> Option<u16> {
+        match self {
+            XOp::Lit(_) => None,
+            XOp::Val { slot, .. }
+            | XOp::AttrVal { slot, .. }
+            | XOp::Body { slot, .. }
+            | XOp::ChildSlot { slot, .. }
+            | XOp::Expand { slot, .. } => Some(*slot),
+        }
+    }
 }
 
 /// A compiled template program for one (def offset, base indent, root?) key.
@@ -370,6 +390,7 @@ impl StoredProgram for XmlProgram {
             &[fragment.root()],
             INDENT_WIDTH,
             indent,
+            out.len() + MAX_RECORD_OUTPUT,
             out,
         );
         out.extend_from_slice(close);
@@ -399,7 +420,8 @@ impl StoredProgram for JsonProgram {
             return false;
         }
         out.truncate(out.len() - 2);
-        let mut c = JsonCompiler::new(Some(fragment), std::mem::take(out), false);
+        let out_limit = out.len() + MAX_RECORD_OUTPUT;
+        let mut c = JsonCompiler::new(Some(fragment), std::mem::take(out), false, out_limit);
         let rendered = c.render_member_plain();
         *out = c.lits;
         out.extend_from_slice(b"}}");
@@ -543,6 +565,7 @@ impl TemplateProgram for XmlProgram {
             &[tree.root()],
             0,
             settings.should_indent(),
+            out.len() + MAX_RECORD_OUTPUT,
             out,
         )
     }
@@ -593,15 +616,21 @@ struct XmlCompiler<'t, 'a> {
     /// sites are errors instead of ops, and any error is a real record error.
     /// When false (template compilation), any error just means "not cacheable".
     materialized: bool,
-    /// How long `lits` may grow (see [`MAX_RECORD_OUTPUT`]).
+    /// How long `lits` may grow (see [`MAX_RECORD_OUTPUT`] and [`MAX_PROGRAM_SIZE`]).
     out_limit: usize,
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
-    fn new(arena: &'t IrArena<'a>, lits: Vec<u8>, indent_on: bool, materialized: bool) -> Self {
+    fn new(
+        arena: &'t IrArena<'a>,
+        lits: Vec<u8>,
+        indent_on: bool,
+        materialized: bool,
+        out_limit: usize,
+    ) -> Self {
         XmlCompiler {
             arena,
-            out_limit: lits.len() + MAX_RECORD_OUTPUT,
+            out_limit,
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -666,13 +695,14 @@ fn compile_xml_template(
         Vec::with_capacity(512),
         settings.should_indent(),
         false,
+        MAX_PROGRAM_SIZE,
     );
     c.ops.reserve(32);
     if is_root {
         c.lits.extend_from_slice(XML_DECL);
     }
     match c.compile_element(tree.root(), base_indent) {
-        Ok(()) => {
+        Ok(()) if each_slot_once(c.ops.iter().filter_map(XOp::slot).collect()) => {
             c.flush_lit_run();
             Some(XmlProgram {
                 lits: c.lits,
@@ -684,8 +714,20 @@ fn compile_xml_template(
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
         }
-        Err(_) => None,
+        _ => None,
     }
+}
+
+/// Whether no slot repeats. The compiled lanes render each value in one place: a nested
+/// instance's program is compiled for that place (its indentation), and a value used in
+/// several places at every level of nesting renders a number of times exponential in the
+/// record's size. Templates that use a value twice (none in the samples) render through the
+/// tree walkers, which share the value's elements and check the output's size as they go.
+fn each_slot_once(mut slots: Vec<u16>) -> bool {
+    let uses = slots.len();
+    slots.sort_unstable();
+    slots.dedup();
+    slots.len() == uses
 }
 
 /// `render_fragment_xml` behind one pointer, keeping the executor's call at six arguments.
@@ -695,20 +737,23 @@ fn render_fragment_roots_xml(
     roots: &&[ElementId],
     indent: u16,
     indent_on: bool,
+    out_limit: usize,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    render_fragment_xml(arena, roots, indent, indent_on, out)
+    render_fragment_xml(arena, roots, indent, indent_on, out_limit, out)
 }
 
-/// Render a materialized fragment's top-level elements at `indent` (executor cold path).
+/// Render a materialized fragment's top-level elements at `indent` (executor cold path), as
+/// long as `out` stays under `out_limit`.
 fn render_fragment_xml(
     arena: &IrArena<'_>,
     roots: &[ElementId],
     indent: u16,
     indent_on: bool,
+    out_limit: usize,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    let mut c = XmlCompiler::new(arena, std::mem::take(out), indent_on, true);
+    let mut c = XmlCompiler::new(arena, std::mem::take(out), indent_on, true, out_limit);
     let res = roots
         .iter()
         .try_for_each(|&root| c.compile_element(root, indent));
@@ -737,7 +782,20 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         }
     }
 
+    /// Fails once `lits` has grown past `out_limit`. Checked before each element, and before
+    /// each node of a longer list of attributes or content nodes: one name or node renders to
+    /// a few hundred KiB at most, but a materialized tree shares a value's elements among the
+    /// places it is used in, and a template can give one element thousands of attributes that
+    /// share a long name, or use a long value thousands of times.
+    fn check_size(&self) -> Result<()> {
+        if self.lits.len() > self.out_limit {
+            return Err(output_too_large());
+        }
+        Ok(())
+    }
+
     fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
+        self.check_size()?;
         let element = self.element_ref(id);
 
         // Attribute-less single-hole `<Data>` elements are the array
@@ -761,6 +819,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             .extend_from_slice(element.name.as_str().as_bytes());
 
         for attr in &element.attrs {
+            if element.attrs.len() > 1 {
+                self.check_size()?;
+            }
             self.compile_attr(attr)?;
         }
 
@@ -819,6 +880,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 let nodes = &element.children;
                 let mut idx = 0;
                 while idx < nodes.len() {
+                    if nodes.len() > 1 {
+                        self.check_size()?;
+                    }
                     match &nodes[idx] {
                         // Mirror `render_nodes`' processing-instruction
                         // pairing: `<?target data?>` / `<?target?>`.
@@ -844,13 +908,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 self.close_tag_inline(element);
             }
             ChildrenKind::StaticLines => {
-                // A materialized tree shares a value's elements among the places it is used
-                // in, which can repeat them many times over, and nests them there.
-                if indent / INDENT_WIDTH + 1 >= MAX_RENDER_DEPTH {
+                // A materialized tree nests values' elements where they are used.
+                if self.materialized && indent / INDENT_WIDTH >= MAX_RENDER_DEPTH {
                     return Err(nested_too_deeply());
-                }
-                if self.lits.len() > self.out_limit {
-                    return Err(output_too_large());
                 }
                 self.lits.push(b'>');
                 self.newline();
@@ -874,6 +934,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                             });
                         }
                         other => {
+                            self.check_size()?;
                             self.indent_str(indent + INDENT_WIDTH);
                             self.compile_literal_content_node(other, false)?;
                             self.newline();
@@ -949,6 +1010,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             self.lits.extend_from_slice(attr.name.as_str().as_bytes());
             self.lits.extend_from_slice(b"=\"");
             for node in attr.value.iter() {
+                if attr.value.len() > 1 {
+                    self.check_size()?;
+                }
                 self.compile_literal_content_node(node, true)?;
             }
             self.lits.push(b'"');
@@ -961,6 +1025,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             self.lits.extend_from_slice(attr.name.as_str().as_bytes());
             self.lits.extend_from_slice(b"=\"");
             for node in attr.value.iter() {
+                if attr.value.len() > 1 {
+                    self.check_size()?;
+                }
                 match node {
                     Node::Placeholder(ph) => {
                         self.flush_lit_run();
@@ -1550,12 +1617,7 @@ impl Preflight {
             if ends_stream(frag, nend - s.off as usize) != Some(true) {
                 return Err(PreflightBail);
             }
-            // A nested instance's program is compiled for the one place it renders in (its
-            // indentation), and a value used in several places at every level of nesting
-            // would be scanned once per path through the templates: the slow lane renders
-            // values used twice.
-            if self.nested.len() >= usize::from(u16::MAX) || self.slots[idx].nested_idx().is_some()
-            {
+            if self.nested.len() >= usize::from(u16::MAX) {
                 return Err(PreflightBail);
             }
             self.slots[idx].nested = self.nested.len() as u16;
@@ -1982,14 +2044,14 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     if let Some(inst) = pf.nested(s) {
+        // Instances can share a program.
+        if out.len() > pf.out_limit() {
+            return Err(output_too_large());
+        }
         return exec(inst, progs, pf, chunk, cache, vr, out);
     }
-    // A fragment used in several places of a template renders in each.
-    if out.len() > pf.out_limit() {
-        return Err(output_too_large());
-    }
     if let Some((arena, roots)) = pf.fragment(s) {
-        return render_fragment_roots_xml(arena, roots, indent, indent_on, out);
+        return render_fragment_roots_xml(arena, roots, indent, indent_on, pf.out_limit(), out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
     let Some(cache) = cache else {
@@ -1997,7 +2059,7 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
     };
     let frag = pf.bytes(s).ok_or_else(unresolved_placeholder)?;
     let (arena, roots) = build_fragment_from_binxml_bytes(frag, chunk, cache)?;
-    render_fragment_xml(&arena, roots, indent, indent_on, out)
+    render_fragment_xml(&arena, roots, indent, indent_on, pf.out_limit(), out)
 }
 
 // ---------------------------------------------------------------------------
@@ -2041,10 +2103,27 @@ enum JOp {
         slot: u16,
         /// `(name bytes in lits, static emission count)` of preceding static
         /// members, for `_N` suffix seeding.
-        static_names: Box<[(LitRange, u16)]>,
+        static_names: Box<[(LitRange, u32)]>,
         /// Whether any object member unconditionally precedes this op.
         lead_comma: bool,
     },
+}
+
+impl JOp {
+    /// The slots this op renders.
+    fn slots(&self, out: &mut Vec<u16>) {
+        match self {
+            JOp::Lit(_) => {}
+            JOp::LeafVal { slot, .. } | JOp::SlotChild { slot, .. } => out.push(*slot),
+            JOp::Elem { attrs, content, .. } => {
+                out.extend(attrs.iter().filter_map(|part| match part {
+                    JAttrPart::Placeholder { slot, .. } => Some(*slot),
+                    JAttrPart::Literal(_) => None,
+                }));
+                out.extend(*content);
+            }
+        }
+    }
 }
 
 /// A compiled JSON template program.
@@ -2100,10 +2179,12 @@ impl TemplateProgram for JsonProgram {
     }
     /// The single-walker slow lane, honoring `--separate-json-attributes`.
     fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
+        let out_limit = out.len() + MAX_RECORD_OUTPUT;
         let mut c = JsonCompiler::new(
             Some(tree),
             std::mem::take(out),
             settings.should_separate_json_attributes(),
+            out_limit,
         );
         let res = c.render_root_plain();
         debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
@@ -2123,17 +2204,17 @@ struct JsonCompiler<'t, 'a> {
     vr: ValueRenderer,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
     separate: bool,
-    /// How long `lits` may grow (see [`MAX_RECORD_OUTPUT`]).
+    /// How long `lits` may grow (see [`MAX_RECORD_OUTPUT`] and [`MAX_PROGRAM_SIZE`]).
     out_limit: usize,
     /// Elements open in the materialized walk (see [`MAX_RENDER_DEPTH`]).
     depth: u16,
 }
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
-    fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool) -> Self {
+    fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool, out_limit: usize) -> Self {
         JsonCompiler {
             tree,
-            out_limit: lits.len() + MAX_RECORD_OUTPUT,
+            out_limit,
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -2158,14 +2239,19 @@ fn compile_json_template(
     }
     let root = tree.root_element();
     let root_container = is_data_container_name(root.name.as_str());
-    let mut c = JsonCompiler::new(Some(tree), Vec::with_capacity(512), false);
+    let mut c = JsonCompiler::new(Some(tree), Vec::with_capacity(512), false, MAX_PROGRAM_SIZE);
     c.ops.reserve(32);
     if is_root {
         c.lits.push(b'{');
         c.key_with_suffix_plain(root.name.as_str(), 0);
     }
-    match c.compile_element_value(tree.root(), root_container) {
-        Ok(()) => {
+    let compiled = c.compile_element_value(tree.root(), root_container);
+    let mut slots = Vec::new();
+    for op in &c.ops {
+        op.slots(&mut slots);
+    }
+    match compiled {
+        Ok(()) if each_slot_once(slots) => {
             if is_root {
                 c.lits.push(b'}');
             }
@@ -2180,7 +2266,7 @@ fn compile_json_template(
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
         }
-        Err(Bail) => None,
+        _ => None,
     }
 }
 
@@ -2308,6 +2394,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut parts: Vec<JAttrPart> = Vec::with_capacity(element.attrs.len());
         self.flush_lit_run();
         for attr in &element.attrs {
+            if self.lits.len() > self.out_limit {
+                return Err(Bail);
+            }
             let n_ph = attr
                 .value
                 .iter()
@@ -2423,10 +2512,13 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut positional_emitted = false;
 
         // Compile-time `_N` suffix counting for static members.
-        let mut static_names: Vec<(&[u8], u16)> = Vec::new();
+        let mut static_names: Vec<(&[u8], u32)> = Vec::new();
 
         let mut seen_slot_child = false;
         for node in &element.children {
+            if self.lits.len() > self.out_limit {
+                return Err(Bail);
+            }
             match node {
                 Node::Element(id) => {
                     if seen_slot_child {
@@ -2468,6 +2560,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             } else {
                                 self.lits.push(b'[');
                                 for (i, did) in positional_data.iter().enumerate() {
+                                    if self.lits.len() > self.out_limit {
+                                        return Err(Bail);
+                                    }
                                     if i > 0 {
                                         self.lits.push(b',');
                                     }
@@ -2500,7 +2595,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     }
                     // Dynamic member: nested-instance value (or absent).
                     self.flush_lit_run();
-                    let name_ranges: Vec<(LitRange, u16)> = static_names
+                    let name_ranges: Vec<(LitRange, u32)> = static_names
                         .iter()
                         .map(|(n, c)| {
                             let r = self.side_range(|cc| cc.lits.extend_from_slice(n));
@@ -2836,10 +2931,6 @@ impl<'a> DecodedValues<'_, 'a> {
             let (id, child_indent) = progs.programs[prog].elem_slots()[item];
             match input.values.get(usize::from(id)) {
                 Some(ValidatedValue::Template(id)) => {
-                    // Used twice: see `Preflight::scan_instance`.
-                    if self.nested[*id].is_some() {
-                        return None;
-                    }
                     let child = self.prepare(*id, depth + 1, child_indent, false, chunk, progs)?;
                     self.nested[*id] = Some(child);
                 }
@@ -2907,6 +2998,10 @@ fn exec_json<'a, V: ValueSource<'a>>(
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    // Instances can share a program.
+    if out.len() > pf.out_limit() {
+        return Err(output_too_large());
+    }
     let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
     let slots = pf.slots(instance.slots);
@@ -3048,7 +3143,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
                 };
                 let name = progs.programs[inst.prog].root_name.as_slice();
                 // `_N` suffix: static members first, then prior dynamics.
-                let mut count: u16 = 0;
+                let mut count: u32 = 0;
                 for (r, c) in static_names.iter() {
                     if &lits[r.0 as usize..r.1 as usize] == name {
                         count = *c;
@@ -3077,7 +3172,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
 /// Benchmark-only entry to the JSON text-content path.
 #[cfg(feature = "bench")]
 pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> Result<()> {
-    let mut c = JsonCompiler::new(None, std::mem::take(out), false);
+    let mut c = JsonCompiler::new(None, std::mem::take(out), false, usize::MAX);
     let res = c.text_content_plain(nodes, false);
     *out = c.lits;
     res
@@ -3128,9 +3223,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         self.tree().arena().get(id).expect("invalid element id")
     }
 
+    /// As `XmlCompiler::check_size`.
+    fn check_size(&self) -> Result<()> {
+        if self.lits.len() > self.out_limit {
+            return Err(output_too_large());
+        }
+        Ok(())
+    }
+
     // --- small writers ---
 
-    fn key_with_suffix_plain(&mut self, name: &str, suffix: u16) {
+    fn key_with_suffix_plain(&mut self, name: &str, suffix: u32) {
         self.lits.push(b'"');
         self.lits.extend_from_slice(name.as_bytes());
         if suffix > 0 {
@@ -3222,6 +3325,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Mirrors `write_json_text_content` (no surrounding quotes).
     fn text_content_plain(&mut self, nodes: &[Node<'a>], skip_elements: bool) -> Result<()> {
         for node in nodes {
+            if nodes.len() > 1 {
+                self.check_size()?;
+            }
             match node {
                 Node::Text(text) | Node::CData(text) => self.json_text_plain(text)?,
                 Node::Value(value) => {
@@ -3355,6 +3461,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 continue;
             }
             if !first {
+                self.check_size()?;
                 self.lits.push(b',');
             }
             first = false;
@@ -3385,7 +3492,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     /// Mirrors `render_separate_attributes_for_element`.
-    fn render_separate_attrs_plain(&mut self, element: &Element<'a>, suffix: u16) -> Result<bool> {
+    fn render_separate_attrs_plain(&mut self, element: &Element<'a>, suffix: u32) -> Result<bool> {
         if element.attrs.is_empty() {
             return Ok(false);
         }
@@ -3516,13 +3623,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         omit_attributes: bool,
         has_text: bool,
     ) -> Result<()> {
-        // A materialized tree shares a value's elements among the places it is used in,
-        // which can repeat them many times over, and nests them there.
-        if self.depth >= MAX_RENDER_DEPTH {
+        // A materialized tree nests values' elements where they are used.
+        if self.depth >= MAX_RENDER_DEPTH
+            && element
+                .children
+                .iter()
+                .any(|n| matches!(n, Node::Element(_)))
+        {
             return Err(nested_too_deeply());
-        }
-        if self.lits.len() > self.out_limit {
-            return Err(output_too_large());
         }
         self.depth += 1;
 
@@ -3550,7 +3658,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             }
         }
 
-        let mut name_counts: Vec<(&'t str, u16)> = Vec::new();
+        let mut name_counts: Vec<(&'t str, u32)> = Vec::new();
 
         self.lits.push(b'{');
         let mut wrote_any = false;
@@ -3587,6 +3695,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         for node in &element.children {
             let Node::Element(id) = node else { continue };
+            self.check_size()?;
             let child = self.element_ref(*id);
 
             if in_data_container && is_data_element_name(child.name.as_str()) {
@@ -3624,6 +3733,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         let mut first = true;
                         for node2 in &element.children {
                             let Node::Element(id2) = node2 else { continue };
+                            self.check_size()?;
                             let candidate = self.element_ref(*id2);
                             if !is_data_element_name(candidate.name.as_str()) {
                                 continue;

@@ -143,9 +143,19 @@ pub fn render_record(evtx: &[u8], id: u64) -> (String, String) {
 pub struct BinXml {
     bytes: Vec<u8>,
     base: u32,
-    /// The template definition `template_instance` wrote last, here or in an enclosing
-    /// stream, for `template_ref`.
+    /// The template definition `template_instance` wrote last, here or in an enclosing or
+    /// earlier stream, for `template_ref`.
     definition: Option<u32>,
+    /// The name `open` or `attribute` wrote last, for `reopen` and `reattribute`.
+    name: Option<u32>,
+}
+
+/// A template value: its type, and what writes its bytes at the offset they land at.
+pub type Value<'v> = (u8, Box<dyn FnOnce(&mut BinXml) + 'v>);
+
+/// A template value of type `value_type` that `write` writes.
+pub fn value<'v>(value_type: u8, write: impl FnOnce(&mut BinXml) + 'v) -> Value<'v> {
+    (value_type, Box::new(write))
 }
 
 impl BinXml {
@@ -154,6 +164,7 @@ impl BinXml {
             bytes: Vec::new(),
             base,
             definition: None,
+            name: None,
         }
     }
 
@@ -195,14 +206,39 @@ impl BinXml {
 
     /// An element start without attributes. Template definitions also carry a dependency ID.
     pub fn open(&mut self, name: &str, in_template_definition: bool) -> &mut Self {
-        self.u8(0x01);
-        if in_template_definition {
-            self.u16(0xffff);
-        }
-        // The element's data size, which readers skip.
-        self.u32(0);
-        // A name reference whose string follows inline: next string, hash, length, UTF-16, NUL.
+        self.element_start(in_template_definition).name(name)
+    }
+
+    /// An element start like `open`'s, with attributes to follow.
+    pub fn open_with_attributes(&mut self, name: &str, in_template_definition: bool) -> &mut Self {
+        let token = self.bytes.len();
+        self.open(name, in_template_definition);
+        self.bytes[token] |= 0x40;
+        // The attribute list's size, which readers skip.
+        self.u32(0)
+    }
+
+    /// An element start sharing the name `open` or `attribute` wrote last.
+    pub fn reopen(&mut self, in_template_definition: bool) -> &mut Self {
+        let name = self.name.expect("a name first");
+        self.element_start(in_template_definition).u32(name)
+    }
+
+    /// An attribute, whose value follows.
+    pub fn attribute(&mut self, name: &str) -> &mut Self {
+        self.u8(0x06).name(name)
+    }
+
+    /// An attribute sharing the name `open` or `attribute` wrote last.
+    pub fn reattribute(&mut self) -> &mut Self {
+        let name = self.name.expect("a name first");
+        self.u8(0x06).u32(name)
+    }
+
+    /// A name reference whose string follows inline: next string, hash, length, UTF-16, NUL.
+    fn name(&mut self, name: &str) -> &mut Self {
         let name_offset = self.pos() + 4;
+        self.name = Some(name_offset);
         self.u32(name_offset)
             .u32(0)
             .u16(0)
@@ -211,8 +247,21 @@ impl BinXml {
             .u16(0)
     }
 
+    fn element_start(&mut self, in_template_definition: bool) -> &mut Self {
+        self.u8(0x01);
+        if in_template_definition {
+            self.u16(0xffff);
+        }
+        // The element's data size, which readers skip.
+        self.u32(0)
+    }
+
     pub fn close_start(&mut self) -> &mut Self {
         self.u8(0x02)
+    }
+
+    pub fn close_empty(&mut self) -> &mut Self {
+        self.u8(0x03)
     }
 
     pub fn end_element(&mut self) -> &mut Self {
@@ -221,12 +270,18 @@ impl BinXml {
 
     /// `<name>text</name>`, outside template definitions.
     pub fn text_element(&mut self, name: &str, text: &str) -> &mut Self {
-        self.open(name, false).close_start();
+        self.open(name, false)
+            .close_start()
+            .text(text)
+            .end_element()
+    }
+
+    /// A string value.
+    pub fn text(&mut self, text: &str) -> &mut Self {
         self.u8(0x05)
             .u8(0x01)
             .u16(text.encode_utf16().count() as u16)
-            .utf16(text);
-        self.end_element()
+            .utf16(text)
     }
 
     /// A normal substitution of value `id`, of type `value_type`.
@@ -235,13 +290,11 @@ impl BinXml {
     }
 
     /// A template instance whose definition follows inline: `definition` writes its element,
-    /// between the fragment header and EOF. Its one value, of type `value_type`, is written by
-    /// `value` at the offset its bytes land at.
+    /// between the fragment header and EOF. Then its values.
     pub fn template_instance(
         &mut self,
         definition: impl FnOnce(&mut BinXml),
-        value_type: u8,
-        value: impl FnOnce(&mut BinXml),
+        values: Vec<Value<'_>>,
     ) -> &mut Self {
         self.u8(0x0c).u8(0x01).u32(1);
         let definition_offset = self.pos() + 4;
@@ -252,27 +305,37 @@ impl BinXml {
         body.eof();
         self.u32(body.bytes.len() as u32).raw(&body.bytes);
         self.definition = Some(definition_offset);
-        self.value(value_type, value)
+        self.values(values)
     }
 
-    /// An instance of the template `template_instance` defined last, with one value.
-    pub fn template_ref(&mut self, value_type: u8, value: impl FnOnce(&mut BinXml)) -> &mut Self {
+    /// An instance of the template `template_instance` defined last.
+    pub fn template_ref(&mut self, values: Vec<Value<'_>>) -> &mut Self {
         let definition = self.definition.expect("a template_instance first");
         self.u8(0x0c).u8(0x01).u32(1).u32(definition);
-        self.value(value_type, value)
+        self.values(values)
     }
 
-    /// A template instance's values: their count and descriptor (size, type, padding), then
-    /// the one value.
-    fn value(&mut self, value_type: u8, value: impl FnOnce(&mut BinXml)) -> &mut Self {
-        self.u32(1);
-        let mut bytes = BinXml::at(self.pos() + 4);
-        bytes.definition = self.definition;
-        value(&mut bytes);
-        self.u16(bytes.bytes.len() as u16)
-            .u8(value_type)
-            .u8(0)
-            .raw(&bytes.bytes)
+    /// A template instance's values: their count and descriptors (size, type, padding), then
+    /// their bytes.
+    fn values(&mut self, values: Vec<Value<'_>>) -> &mut Self {
+        let mut at = self.pos() + 4 + 4 * values.len() as u32;
+        let mut written = Vec::with_capacity(values.len());
+        for (value_type, write) in values {
+            let mut bytes = BinXml::at(at);
+            bytes.definition = self.definition;
+            write(&mut bytes);
+            self.definition = bytes.definition;
+            at += bytes.bytes.len() as u32;
+            written.push((value_type, bytes.bytes));
+        }
+        self.u32(written.len() as u32);
+        for (value_type, bytes) in &written {
+            self.u16(bytes.len() as u16).u8(*value_type).u8(0);
+        }
+        for (_, bytes) in &written {
+            self.raw(bytes);
+        }
+        self
     }
 }
 
