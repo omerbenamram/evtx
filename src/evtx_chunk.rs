@@ -241,9 +241,12 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 Err(err) => return Some(Err(err)),
             };
 
-            let content = match build_record_content(raw.bytes, chunk, &mut self.ir_template_cache)
-            {
-                Ok(content) => content,
+            let cache = &mut self.ir_template_cache;
+            let built = chunk
+                .render_budget
+                .build(|budget| build_record_content(raw.bytes, chunk, cache, budget));
+            let (content, nodes) = match built {
+                Ok(built) => built,
                 // Carved hits that don't parse are noise, not errors.
                 Err(err) if raw.recovered => {
                     debug!("Skipping carved record {}: {err:?}", raw.event_record_id);
@@ -258,6 +261,7 @@ impl<'a> Iterator for IterChunkRecords<'a> {
                 event_record_id: raw.event_record_id,
                 timestamp: raw.timestamp,
                 content,
+                nodes,
                 binxml_offset: raw.binxml_offset,
                 binxml_size: raw.bytes.len() as u32,
                 recovered: raw.recovered,
