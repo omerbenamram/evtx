@@ -1,0 +1,32 @@
+name: Windows XML
+
+# Asks Windows for its own XML of every event in samples/ and in types.evtx,
+# a log of typed test events written on the runner (see scripts/windows), and
+# uploads the result as an artifact. Copy the artifact's generated/ folder
+# over samples/windows to update the fixtures there.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Render samples
+        shell: powershell
+        run: ./scripts/windows/render-samples.ps1 -Samples "$env:GITHUB_WORKSPACE\samples" -OutDir "$env:RUNNER_TEMP\windows-xml\samples"
+      - name: Generate types.evtx
+        shell: powershell
+        run: ./scripts/windows/generate-types-sample.ps1 -OutDir "$env:RUNNER_TEMP\windows-xml\generated"
+      - name: Render types.evtx
+        shell: powershell
+        run: ./scripts/windows/render-samples.ps1 -Samples "$env:RUNNER_TEMP\windows-xml\generated" -OutDir "$env:RUNNER_TEMP\windows-xml\generated"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-xml
+          path: ${{ runner.temp }}/windows-xml
