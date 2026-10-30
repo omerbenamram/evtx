@@ -69,7 +69,7 @@ fn test_parses_sample_with_irregular_boolean_values_streaming() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_streaming() {
-    test_full_sample_streaming(sample_with_a_bad_checksum(), 1950, 27)
+    test_full_sample_streaming(sample_with_a_bad_checksum(), 1910, 4)
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn test_dirty_sample_with_a_chunk_past_zeros_streaming() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic_streaming() {
-    test_full_sample_streaming(sample_with_a_bad_chunk_magic(), 270, 2)
+    test_full_sample_streaming(sample_with_a_bad_chunk_magic(), 301, 3)
 }
 
 #[test]

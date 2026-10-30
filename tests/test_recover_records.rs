@@ -62,3 +62,22 @@ fn recovers_records_from_chunk_slack() {
     assert_eq!(counts(&path, false), [(1795, 0); 2]);
     assert_eq!(counts(&path, true), [(1795, 245); 2]);
 }
+
+#[test]
+fn resyncs_on_records_the_chunk_header_describes() {
+    // Chunks 0 and 13 end with a 16 KiB block from the log's next pass over them. Past the
+    // corrupt record where that block starts, its records have IDs outside the chunk header's
+    // range, so they are stale.
+    let path = sample_with_a_bad_checksum();
+    assert_eq!(counts(&path, false), [(1910, 0); 2]);
+    assert_eq!(counts(&path, true), [(1910, 56); 2]);
+}
+
+#[test]
+fn resyncs_past_zeroed_records() {
+    // A zeroed 16 KiB block inside chunk 7's live area took records 47641 to 47674; the walk
+    // picks up again at 47675.
+    let path = sample_with_a_bad_chunk_magic();
+    assert_eq!(counts(&path, false), [(301, 0); 2]);
+    assert_eq!(counts(&path, true), [(301, 50); 2]);
+}

@@ -153,7 +153,7 @@ fn test_irregular_boolean_values_are_preserved() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum() {
-    test_full_sample(sample_with_a_bad_checksum(), 1950, 27)
+    test_full_sample(sample_with_a_bad_checksum(), 1910, 4)
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn test_dirty_sample_with_a_chunk_past_zeros() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic() {
-    test_full_sample(sample_with_a_bad_chunk_magic(), 270, 2)
+    test_full_sample(sample_with_a_bad_chunk_magic(), 301, 3)
 }
 
 #[test]

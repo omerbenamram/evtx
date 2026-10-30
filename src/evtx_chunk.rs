@@ -172,8 +172,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         IterRawRecords {
             chunk: self,
             offset_from_chunk_start: EVTX_CHUNK_HEADER_SIZE as u64,
-            exhausted: false,
-            live_until: 0,
+            state: RawState::Walk,
         }
     }
 
@@ -273,66 +272,168 @@ pub(crate) struct RawRecord<'a> {
 }
 
 /// Iterator over raw record windows. Created by [`EvtxChunk::iter_raw`].
+///
+/// It walks the chunk's live records one after another, from the chunk header to the free
+/// space (`free_space_offset`) or the last record (`last_event_record_id`). Past a record it
+/// can't read, it reports the error and resyncs on the next live record (see
+/// [`IterRawRecords::find_live_record`]). With `recover_records`, it also carves the stale
+/// records between and after them.
 pub(crate) struct IterRawRecords<'a> {
     chunk: &'a EvtxChunk<'a>,
     offset_from_chunk_start: u64,
-    exhausted: bool,
-    /// After a corrupt record, the end of the live area (`free_space_offset`): records carved
-    /// before it are live ones the walk resynced on, not stale ones.
-    live_until: u64,
+    state: RawState,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RawState {
+    /// The next live record starts at the offset.
+    Walk,
+    /// Carving stale records that end by `until`, then walking from `until` if `walk_after`.
+    Carve {
+        until: u64,
+        walk_after: bool,
+    },
+    Done,
 }
 
 impl<'a> Iterator for IterRawRecords<'a> {
     type Item = std::result::Result<RawRecord<'a>, EvtxError>;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        let free_space_offset = u64::from(self.chunk.header.free_space_offset);
-        if !self.exhausted && self.offset_from_chunk_start < free_space_offset {
-            match self.read_record(false) {
-                Some(Ok(raw)) => return Some(Ok(raw)),
-                Some(Err(err)) => {
-                    self.exhausted = true;
-                    self.live_until = free_space_offset;
-                    return Some(Err(err));
+        loop {
+            match self.state {
+                RawState::Walk => {
+                    if self.offset_from_chunk_start >= self.live_end() {
+                        self.end_live_area();
+                        continue;
+                    }
+                    match self.record_at(self.offset_from_chunk_start, false) {
+                        Ok((raw, end)) => {
+                            self.offset_from_chunk_start = end;
+                            if raw.event_record_id == self.chunk.header.last_event_record_id {
+                                self.end_live_area();
+                            }
+                            return Some(Ok(raw));
+                        }
+                        // Zeroes where a record should start are where the free space really
+                        // starts when the header's `free_space_offset` is too large (issue
+                        // #197), unless live records follow them.
+                        Err(err) => {
+                            if self.resync() || !is_blank(&err) {
+                                return Some(Err(err));
+                            }
+                        }
+                    }
                 }
-                None => {}
+                RawState::Carve { until, walk_after } => {
+                    if let Some(raw) = self.carve_record(until) {
+                        return Some(Ok(raw));
+                    }
+                    if walk_after {
+                        self.offset_from_chunk_start = until;
+                        self.state = RawState::Walk;
+                    } else {
+                        self.state = RawState::Done;
+                    }
+                }
+                RawState::Done => return None,
             }
         }
-        self.exhausted = true;
-        // Past a corrupt record, resync on the next record of the live area; with
-        // `recover_records`, carve stale records to the end of the chunk too.
-        let limit = if self.chunk.settings.should_recover_records() {
-            self.chunk.data.len() as u64
-        } else {
-            self.live_until
-        };
-        self.carve_record(limit).map(Ok)
     }
 }
 
+/// A zeroed or truncated record header.
+fn is_blank(err: &EvtxError) -> bool {
+    matches!(
+        err,
+        EvtxError::DeserializationError(
+            DeserializationError::InvalidEvtxRecordHeaderMagic {
+                magic: [0, 0, 0, 0]
+            } | DeserializationError::Truncated { .. }
+        )
+    )
+}
+
 impl<'a> IterRawRecords<'a> {
-    /// Scan the chunk from the current offset (a corrupt record, the last valid record, or 512
-    /// in a cleared chunk) for records starting before `limit`. A hit needs the record magic
-    /// and a matching trailing size copy.
-    fn carve_record(&mut self, limit: u64) -> Option<RawRecord<'a>> {
-        let data = self.chunk.data;
-        let limit = (limit as usize).min(data.len());
-        loop {
-            let from = (self.offset_from_chunk_start as usize).min(limit);
-            // A magic starting before `limit` may end after it.
-            let window = &data[from..(limit + EVTX_RECORD_MAGIC.len() - 1).min(data.len())];
-            let Some(hit) = window.windows(4).position(|w| w == EVTX_RECORD_MAGIC) else {
-                self.offset_from_chunk_start = limit as u64;
-                return None;
-            };
-            let pos = (from + hit) as u64;
-            self.offset_from_chunk_start = pos;
-            // On success `read_record` advances past the record.
-            if let Some(Ok(raw)) = self.read_record(true) {
-                return Some(raw);
+    /// End of the live area: the free space, or the chunk's end when it says more.
+    fn live_end(&self) -> u64 {
+        u64::from(self.chunk.header.free_space_offset).min(self.chunk.data.len() as u64)
+    }
+
+    /// No more live records: carve the rest of the chunk with `recover_records`.
+    fn end_live_area(&mut self) {
+        self.state = if self.chunk.settings.should_recover_records() {
+            RawState::Carve {
+                until: self.chunk.data.len() as u64,
+                walk_after: false,
             }
-            self.offset_from_chunk_start = pos + 1;
+        } else {
+            RawState::Done
+        };
+    }
+
+    /// Past the unreadable record at the offset, walk on from the next live record; with
+    /// `recover_records`, carve the stale records before it first. False when no live
+    /// record follows.
+    fn resync(&mut self) -> bool {
+        let Some(next) = self.find_live_record(self.offset_from_chunk_start + 1) else {
+            self.end_live_area();
+            return false;
+        };
+        if self.chunk.settings.should_recover_records() {
+            self.state = RawState::Carve {
+                until: next,
+                walk_after: true,
+            };
+        } else {
+            self.offset_from_chunk_start = next;
         }
+        true
+    }
+
+    /// The offset of the next live record at or after `from`: a record magic whose header
+    /// and trailing size copy check out, whose record starts by the chunk's last record and
+    /// ends in the live area, and whose ID is in the chunk header's range. A chunk caught
+    /// while it was being reused (a volume shadow copy's, say) also holds records of the
+    /// log's other pass over it, whose IDs are outside that range.
+    fn find_live_record(&self, mut from: u64) -> Option<u64> {
+        let header = &self.chunk.header;
+        let ids = header.first_event_record_id..=header.last_event_record_id;
+        let live_end = self.live_end();
+        while let Some(pos) = self.find_magic(from, live_end) {
+            if let Ok((raw, end)) = self.record_at(pos, true)
+                && end <= live_end
+                && pos <= u64::from(header.last_event_record_data_offset)
+                && ids.contains(&raw.event_record_id)
+            {
+                return Some(pos);
+            }
+            from = pos + 1;
+        }
+        None
+    }
+
+    /// The next record magic in `[from, until)`.
+    fn find_magic(&self, from: u64, until: u64) -> Option<u64> {
+        let data = self.chunk.data;
+        let until = (until as usize).min(data.len());
+        let from = (from as usize).min(until);
+        memchr::memmem::find(&data[from..until], EVTX_RECORD_MAGIC).map(|hit| (from + hit) as u64)
+    }
+
+    /// Carve the next stale record from the offset that ends by `until`, and move past it.
+    fn carve_record(&mut self, until: u64) -> Option<RawRecord<'a>> {
+        while let Some(pos) = self.find_magic(self.offset_from_chunk_start, until) {
+            match self.record_at(pos, true) {
+                Ok((raw, end)) if end <= until => {
+                    self.offset_from_chunk_start = end;
+                    return Some(raw);
+                }
+                _ => self.offset_from_chunk_start = pos + 1,
+            }
+        }
+        self.offset_from_chunk_start = until;
+        None
     }
 
     /// Resume carving just after `raw`'s magic, for a hit that turned out to be noise
@@ -341,76 +442,50 @@ impl<'a> IterRawRecords<'a> {
         self.offset_from_chunk_start = raw.binxml_offset - EVTX_RECORD_HEADER_SIZE as u64 + 1;
     }
 
-    fn read_record(
-        &mut self,
+    /// The record at `record_start` and the offset it ends at. A carved one must also end
+    /// with the copy of its size.
+    fn record_at(
+        &self,
+        record_start: u64,
         carving: bool,
-    ) -> Option<std::result::Result<RawRecord<'a>, EvtxError>> {
+    ) -> std::result::Result<(RawRecord<'a>, u64), EvtxError> {
         let chunk = self.chunk;
-        let record_start = self.offset_from_chunk_start;
-        // `free_space_offset` comes from the file and may point past the chunk;
-        // running off the end is a truncated header, which ends the chunk below.
-        let record_header = match EvtxRecordHeader::from_bytes_at(chunk.data, record_start as usize)
-        {
-            Ok(record_header) => record_header,
-            // Some producers write incorrect `free_space_offset` / `last_event_record_id`.
-            // In such cases we may attempt to parse the chunk slack area, which is typically
-            // zero-padded. Treat an all-zero "magic" as a clean end-of-chunk instead of
-            // emitting an error (see issue #197).
-            Err(DeserializationError::InvalidEvtxRecordHeaderMagic {
-                magic: [0, 0, 0, 0],
-            }) => {
-                return None;
-            }
-            // Truncated record header near the end-of-chunk: treat as clean end-of-chunk.
-            Err(DeserializationError::Truncated { .. }) => return None,
-            Err(err) => return Some(Err(EvtxError::DeserializationError(err))),
-        };
+        let record_header = EvtxRecordHeader::from_bytes_at(chunk.data, record_start as usize)?;
 
         trace!(
             "Record id - {} header - {:?}",
             record_header.event_record_id, record_header
         );
 
-        let binxml_data_size = match record_header.record_data_size() {
-            Ok(size) => size,
-            Err(err) => return Some(Err(err)),
-        };
+        let binxml_data_size = record_header.record_data_size()?;
 
         trace!("Need to deserialize {} bytes of binxml", binxml_data_size);
 
         let binxml_start = record_start + EVTX_RECORD_HEADER_SIZE as u64;
         let binxml_end = binxml_start.saturating_add(binxml_data_size as u64);
         if binxml_end > chunk.data.len() as u64 {
-            return Some(Err(EvtxError::record(
+            return Err(EvtxError::record(
                 record_header.event_record_id,
                 EvtxError::FailedToCreateRecordModel("record BinXML slice is out of bounds"),
-            )));
+            ));
         }
 
-        // A carved hit must also end with the copy of its size.
         if carving
             && bytes::read_u32_le(chunk.data, binxml_end as usize) != Some(record_header.data_size)
         {
-            return Some(Err(EvtxError::FailedToCreateRecordModel(
+            return Err(EvtxError::FailedToCreateRecordModel(
                 "carved record size copy mismatch",
-            )));
+            ));
         }
 
-        let bytes = &chunk.data[binxml_start as usize..binxml_end as usize];
-
-        self.offset_from_chunk_start += u64::from(record_header.data_size);
-
-        if chunk.header.last_event_record_id == record_header.event_record_id {
-            self.exhausted = true;
-        }
-
-        Some(Ok(RawRecord {
+        let raw = RawRecord {
             event_record_id: record_header.event_record_id,
             timestamp: record_header.timestamp,
             binxml_offset: binxml_start,
-            bytes,
-            recovered: carving && record_start >= self.live_until,
-        }))
+            bytes: &chunk.data[binxml_start as usize..binxml_end as usize],
+            recovered: carving,
+        };
+        Ok((raw, record_start + u64::from(record_header.data_size)))
     }
 }
 
@@ -618,5 +693,70 @@ mod tests {
         };
 
         assert_eq!(corrupted_count, baseline_count);
+    }
+
+    /// Chunk 0 of security.evtx (records 1 to 91), and the offset of each record by ID.
+    fn security_chunk() -> (Vec<u8>, Vec<usize>) {
+        let file = include_bytes!("../samples/security.evtx");
+        let data = file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE].to_vec();
+        let mut offsets = vec![0, EVTX_CHUNK_HEADER_SIZE];
+        for id in 1..91 {
+            let size = bytes::read_u32_le(&data, offsets[id] + 4).unwrap();
+            offsets.push(offsets[id] + size as usize);
+        }
+        (data, offsets)
+    }
+
+    /// The raw records of a chunk: `(ID, recovered)` for each, `None` for an error.
+    fn raw_records(data: Vec<u8>, recover: bool) -> Vec<Option<(u64, bool)>> {
+        let mut chunk_data = EvtxChunkData::new(data, false).unwrap();
+        let settings = Arc::new(ParserSettings::new().recover_records(recover));
+        let chunk = chunk_data.parse(settings).unwrap();
+        chunk
+            .iter_raw()
+            .map(|raw| raw.ok().map(|raw| (raw.event_record_id, raw.recovered)))
+            .collect()
+    }
+
+    fn live(ids: std::ops::RangeInclusive<u64>) -> impl Iterator<Item = Option<(u64, bool)>> {
+        ids.map(|id| Some((id, false)))
+    }
+
+    #[test]
+    fn walk_resyncs_past_a_corrupt_record() {
+        let (mut data, at) = security_chunk();
+        data[at[30]] = b'X';
+        let expected: Vec<_> = live(1..=29).chain([None]).chain(live(31..=91)).collect();
+        assert_eq!(raw_records(data.clone(), false), expected);
+        assert_eq!(raw_records(data, true), expected);
+    }
+
+    #[test]
+    fn walk_resyncs_past_zeroed_records() {
+        let (mut data, at) = security_chunk();
+        data[at[30]..at[41]].fill(0);
+        let expected: Vec<_> = live(1..=29).chain([None]).chain(live(41..=91)).collect();
+        assert_eq!(raw_records(data.clone(), false), expected);
+        assert_eq!(raw_records(data, true), expected);
+    }
+
+    #[test]
+    fn walk_resyncs_on_records_in_the_chunk_header_range_only() {
+        // Record 31 now has an ID from another pass of the log over the chunk.
+        let (mut data, at) = security_chunk();
+        data[at[30]] = b'X';
+        data[at[31] + 8..at[31] + 16].copy_from_slice(&1000_u64.to_le_bytes());
+        let before = || live(1..=29).chain([None]);
+        assert_eq!(
+            raw_records(data.clone(), false),
+            before().chain(live(32..=91)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            raw_records(data, true),
+            before()
+                .chain([Some((1000, true))])
+                .chain(live(32..=91))
+                .collect::<Vec<_>>()
+        );
     }
 }
