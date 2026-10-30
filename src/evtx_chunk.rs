@@ -123,6 +123,8 @@ pub struct EvtxChunk<'chunk> {
     pub(crate) settings: Arc<ParserSettings>,
     /// Lazily-populated per-chunk program caches for `EvtxRecord::into_*`.
     pub(crate) render_caches: std::cell::RefCell<crate::binxml::compiled::RenderCaches>,
+    /// What `EvtxRecord::into_*` may still spend on this pass over the chunk's records.
+    pub(crate) render_budget: crate::binxml::compiled::ChunkBudget,
     /// Cross-chunk compiled-program store (per parser run; fresh per chunk
     /// when constructed through the public standalone-chunk API).
     pub(crate) program_store: std::sync::Arc<crate::binxml::compiled::ProgramStore>,
@@ -162,6 +164,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             arena,
             settings,
             render_caches: Default::default(),
+            render_budget: Default::default(),
             program_store,
         })
     }
@@ -189,6 +192,8 @@ impl<'chunk> EvtxChunk<'chunk> {
     /// See `IterChunkRecords` for a more detailed explanation regarding the lifetime scopes of the
     /// resulting records.
     pub fn iter(&mut self) -> IterChunkRecords<'_> {
+        // Each pass renders its records within a budget of its own.
+        self.render_budget = Default::default();
         let estimated_template_buckets = self.estimated_template_buckets();
         IterChunkRecords {
             raw: self.iter_raw(),

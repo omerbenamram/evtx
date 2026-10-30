@@ -254,7 +254,7 @@ const MAX_BINXML_NESTING: usize = 64;
 
 /// Hard cap on open-element depth within one BinXML stream, bounding tree
 /// depth (and the walkers' recursion over it) on crafted input.
-const MAX_ELEMENT_DEPTH: usize = 512;
+pub(crate) const MAX_ELEMENT_DEPTH: usize = 512;
 
 /// Streaming token consumer that builds the IR tree.
 ///
