@@ -18,8 +18,8 @@ use crate::ChunkOffset;
 use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
-    binxml_slice_offset_in, build_tree_from_binxml_bytes_direct,
-    read_template_definition_header_at, template_body_at,
+    binxml_slice_offset_in, build_fragment_from_binxml_bytes, read_template_definition_header_at,
+    template_body_at,
 };
 use crate::binxml::name::read_name_link;
 use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
@@ -353,8 +353,13 @@ impl StoredProgram for XmlProgram {
         }
         // The fragment goes before the closing tag.
         out.truncate(out.len() - close.len());
-        let rendered =
-            render_fragment_xml(fragment.arena(), fragment.root(), INDENT_WIDTH, indent, out);
+        let rendered = render_fragment_xml(
+            fragment.arena(),
+            &[fragment.root()],
+            INDENT_WIDTH,
+            indent,
+            out,
+        );
         out.extend_from_slice(close);
         rendered.is_ok()
     }
@@ -521,7 +526,13 @@ impl TemplateProgram for XmlProgram {
     /// zero placeholder sites.
     fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
         out.extend_from_slice(XML_DECL);
-        render_fragment_xml(tree.arena(), tree.root(), 0, settings.should_indent(), out)
+        render_fragment_xml(
+            tree.arena(),
+            &[tree.root()],
+            0,
+            settings.should_indent(),
+            out,
+        )
     }
 }
 
@@ -652,16 +663,30 @@ fn compile_xml_template(
     }
 }
 
-/// Render a materialized fragment subtree at `indent` (executor cold path).
+/// `render_fragment_xml` behind one pointer, keeping the executor's call at six arguments.
+#[inline(never)]
+fn render_fragment_roots_xml(
+    arena: &IrArena<'_>,
+    roots: &&[ElementId],
+    indent: u16,
+    indent_on: bool,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    render_fragment_xml(arena, roots, indent, indent_on, out)
+}
+
+/// Render a materialized fragment's top-level elements at `indent` (executor cold path).
 fn render_fragment_xml(
     arena: &IrArena<'_>,
-    root: ElementId,
+    roots: &[ElementId],
     indent: u16,
     indent_on: bool,
     out: &mut Vec<u8>,
 ) -> Result<()> {
     let mut c = XmlCompiler::new(arena, std::mem::take(out), indent_on, true);
-    let res = c.compile_element(root, indent);
+    let res = roots
+        .iter()
+        .try_for_each(|&root| c.compile_element(root, indent));
     debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
     *out = c.lits;
     res
@@ -1919,16 +1944,16 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
     if let Some(inst) = pf.nested(s) {
         return exec(inst, progs, pf, chunk, cache, vr, out);
     }
-    if let Some((arena, root)) = pf.fragment(s) {
-        return render_fragment_xml(arena, root, indent, indent_on, out);
+    if let Some((arena, roots)) = pf.fragment(s) {
+        return render_fragment_roots_xml(arena, roots, indent, indent_on, out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
     let Some(cache) = cache else {
         return Err(unresolved_placeholder());
     };
     let frag = pf.bytes(s).ok_or_else(unresolved_placeholder)?;
-    let tree = build_tree_from_binxml_bytes_direct(frag, chunk, cache)?;
-    render_fragment_xml(tree.arena(), tree.root(), indent, indent_on, out)
+    let (arena, roots) = build_fragment_from_binxml_bytes(frag, chunk, cache)?;
+    render_fragment_xml(&arena, roots, indent, indent_on, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -2503,7 +2528,11 @@ pub(crate) trait ValueSource<'a> {
         mode: StringEscapeMode,
     ) -> Result<()>;
     fn nested(&self, slot: &Self::Value) -> Option<Instance<Self::Scope>>;
-    fn fragment(&self, _slot: &Self::Value) -> Option<(&IrArena<'a>, ElementId)> {
+    /// A decoded embedded fragment: its arena and top-level elements.
+    fn fragment<'s>(
+        &'s self,
+        _slot: &'s Self::Value,
+    ) -> Option<(&'s IrArena<'a>, &'s &'a [ElementId])> {
         None
     }
     fn bytes(&self, _slot: &Self::Value) -> Option<&'a [u8]> {
@@ -2671,9 +2700,12 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
         }
     }
     #[inline(always)]
-    fn fragment(&self, s: &Self::Value) -> Option<(&IrArena<'a>, ElementId)> {
+    fn fragment<'s>(
+        &'s self,
+        s: &'s Self::Value,
+    ) -> Option<(&'s IrArena<'a>, &'s &'a [ElementId])> {
         match s {
-            ValidatedValue::Fragment(id) => Some((&self.content.frags, *id)),
+            ValidatedValue::Fragment(roots) => Some((&self.content.frags, roots)),
             _ => None,
         }
     }

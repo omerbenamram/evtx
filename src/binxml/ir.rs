@@ -17,12 +17,14 @@
 //! - **`BuildMode::TemplateDefinition`**:
 //!   - `SubstitutionDescriptor` tokens are recorded as `Node::Placeholder` nodes.
 //!   - Template instances are rejected (a template definition can't contain instances).
-//!   - Exactly one root element is required (hard error otherwise).
+//!   - Exactly one root element is required (hard error otherwise, in `build_template_in`).
 //!
 //! - **`BuildMode::Record`**:
 //!   - Template instances are instantiated immediately and inserted into the tree.
 //!   - `SubstitutionDescriptor` tokens are rejected (they only occur in template defs).
-//!   - Multiple top-level fragments are tolerated (fail-soft; first root wins).
+//!   - Every top-level element is kept, in order: an embedded fragment can hold several (a
+//!     nested instance followed by `RenderingInfo`, for one) or none. A record's own stream
+//!     has one; the record tree is rooted at the first.
 //!
 //! Templates are parsed once and cached per chunk iterator (`IrTemplateCache`) as IR trees
 //! containing placeholders.
@@ -41,8 +43,9 @@
 //!
 //! There are *two* layers of splicing during template instantiation:
 //!
-//! 1. **Placeholder splicing**: each `Node::Placeholder` expands to **0 or 1** `Node`s in the
-//!    output `IrVec` (0 when `optional` and the value is empty, 1 when resolved).
+//! 1. **Placeholder splicing**: each `Node::Placeholder` expands to the `Node`s of its value
+//!    in the output `IrVec`: none when `optional` and the value is empty, one for a scalar,
+//!    and one `Node::Element` per top-level element of an embedded fragment.
 //! 2. **Array substitution splicing** (MS-EVEN6 §3.1.4.7.5): if a resolved substitution is an
 //!    **array** value (e.g. `StringArrayType`), the *containing element is repeated* once per
 //!    array item. In IR terms, cloning a single `Node::Element` from the template can yield
@@ -86,6 +89,7 @@ use crate::model::ir::{
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
 use bumpalo::Bump;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 
 /// Incremental element builder for streaming token parsing.
@@ -273,7 +277,37 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     depth: usize,
     stack: IrVec<'a, ElementId>,
     current_element: Option<ElementBuilder<'a>>,
+    /// The first top-level element.
     root: Option<ElementId>,
+    /// Top-level elements after the first, in order (rare).
+    more_roots: IrVec<'a, ElementId>,
+}
+
+/// A stream's top-level elements: the first, then the rest.
+#[derive(Clone, Copy)]
+struct Roots<'a> {
+    first: Option<ElementId>,
+    more: &'a [ElementId],
+}
+
+impl<'a> Roots<'a> {
+    /// All roots as one bump slice.
+    fn into_slice(self, bump: &'a Bump) -> &'a [ElementId] {
+        match self.first {
+            None => &[],
+            Some(first) if self.more.is_empty() => std::slice::from_ref(bump.alloc(first)),
+            Some(first) => Self::concat(first, self.more, bump),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn concat(first: ElementId, more: &[ElementId], bump: &'a Bump) -> &'a [ElementId] {
+        let mut all = IrVec::with_capacity_in(more.len() + 1, bump);
+        all.push(first);
+        all.extend_from_slice(more);
+        all.into_bump_slice()
+    }
 }
 
 impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
@@ -325,6 +359,7 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
         self.attach(element_id)
     }
 
+    #[inline]
     fn close_element(&mut self) -> Result<()> {
         let element_id = self.stack.pop().ok_or_else(|| {
             EvtxError::FailedToCreateRecordModel("close element - Bad parser state")
@@ -355,22 +390,14 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
                     ));
                 }
                 // A `BinXmlType` value is an embedded BinXML fragment. We parse it into a normal
-                // IR subtree and then attach the resulting element at the current location.
+                // IR subtree and then attach the resulting elements at the current location.
                 //
                 // This is another form of "splicing": the fragment becomes regular child elements
                 // rather than being kept as a typed value node.
                 if bytes.is_empty() {
                     return Ok(());
                 }
-                let element_id = build_in(
-                    self.src,
-                    bytes,
-                    self.cache,
-                    self.arena,
-                    BuildMode::Record,
-                    self.depth + 1,
-                )?;
-                self.attach(element_id)
+                self.splice_fragment(bytes)
             }
             BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
                 "Unimplemented - EvtXml",
@@ -422,11 +449,12 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
 }
 
 impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
-    /// Attach an element to the current parent (or set it as root).
+    /// Attach an element to the current parent (or add it as a root).
     ///
     /// Used by element closure and by splicing (template instances, nested `BinXmlType`
-    /// fragments). With no open parent the first root wins; additional roots are ignored in
-    /// records (fail-soft for corrupted records) and rejected in template definitions.
+    /// fragments). Every root is kept: an embedded fragment can hold several elements (a
+    /// nested instance followed by `RenderingInfo`, for one).
+    #[inline]
     fn attach(&mut self, element_id: ElementId) -> Result<()> {
         if let Some(&parent_id) = self.stack.last() {
             let parent = self
@@ -436,11 +464,34 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             parent.push_child(Node::Element(element_id));
         } else if self.root.is_none() {
             self.root = Some(element_id);
-        } else if self.mode == BuildMode::TemplateDefinition {
-            return Err(EvtxError::FailedToCreateRecordModel(
-                "multiple root elements",
-            ));
+        } else {
+            return self.attach_more_root(element_id);
         }
+        Ok(())
+    }
+
+    /// Build an embedded fragment and attach its top-level elements here.
+    #[inline(never)]
+    fn splice_fragment(&mut self, bytes: &'a [u8]) -> Result<()> {
+        let roots = build_in(
+            self.src,
+            bytes,
+            self.cache,
+            self.arena,
+            BuildMode::Record,
+            self.depth + 1,
+        )?;
+        if let Some(first) = roots.first {
+            self.attach(first)?;
+        }
+        roots.more.iter().try_for_each(|&root| self.attach(root))
+    }
+
+    /// A top-level element after the first: rare, so kept out of `attach`.
+    #[cold]
+    #[inline(never)]
+    fn attach_more_root(&mut self, element_id: ElementId) -> Result<()> {
+        self.more_roots.push(element_id);
         Ok(())
     }
 
@@ -469,7 +520,8 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         }
     }
 
-    fn finish(self) -> Result<ElementId> {
+    /// The stream's top-level elements, in order.
+    fn finish(self) -> Result<Roots<'a>> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "unfinished element start",
@@ -482,27 +534,15 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             ));
         }
 
-        if let Some(root) = self.root {
-            return Ok(root);
-        }
-
-        match self.mode {
-            BuildMode::Record => {
-                // Some corrupted records can contain an empty/invalid BinXML fragment (e.g. only
-                // an EOF token). Keep iteration fail-soft by synthesizing an empty root element.
-                let name = Name::new("Event");
-                let element = Element::new_in(name, self.src.bump);
-                let root = self.arena.new_node(element);
-                Ok(root)
-            }
-            BuildMode::TemplateDefinition => {
-                Err(EvtxError::FailedToCreateRecordModel("missing root element"))
-            }
-        }
+        Ok(Roots {
+            first: self.root,
+            more: self.more_roots.into_bump_slice(),
+        })
     }
 }
 
-/// Parse a BinXML byte slice (a sub-slice of `src.data`) into an IR element tree.
+/// Parse a BinXML byte slice (a sub-slice of `src.data`) into IR elements and return the
+/// stream's top-level elements in order.
 ///
 /// [`walk_tokens`] parses the tokens and [`TreeBuilder`] builds the tree. Splicing shows up
 /// via token types:
@@ -521,7 +561,7 @@ fn build_in<'a>(
     arena: &mut IrArena<'a>,
     mode: BuildMode,
     depth: usize,
-) -> Result<ElementId> {
+) -> Result<Roots<'a>> {
     // Only template definitions carry dependency IDs on element start tokens.
     let has_dep_id = mode == BuildMode::TemplateDefinition;
     if depth > MAX_BINXML_NESTING {
@@ -539,12 +579,29 @@ fn build_in<'a>(
         stack: IrVec::new_in(src.bump),
         current_element: None,
         root: None,
+        more_roots: IrVec::new_in(src.bump),
     };
     walk_tokens(src, offset as usize, bytes.len(), has_dep_id, &mut builder)?;
     builder.finish()
 }
 
-/// Build an IR tree directly from BinXML bytes without an iterator.
+/// Build a record's own BinXML stream into `arena` and return its root: the stream's first
+/// top-level element (a record has one), or an empty `Event` when it has none, which keeps
+/// iteration fail-soft on corrupted records whose stream is only an EOF token.
+fn build_record_root_in<'a>(
+    src: Stream<'a>,
+    bytes: &'a [u8],
+    cache: &mut IrTemplateCache<'a>,
+    arena: &mut IrArena<'a>,
+) -> Result<ElementId> {
+    let roots = build_in(src, bytes, cache, arena, BuildMode::Record, 0)?;
+    Ok(match roots.first {
+        Some(root) => root,
+        None => arena.new_node(Element::new_in(Name::new("Event"), src.bump)),
+    })
+}
+
+/// Build an IR tree directly from a record's BinXML bytes without an iterator.
 pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
@@ -552,9 +609,25 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
 ) -> Result<IrTree<'a>> {
     let mut arena =
         IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), &chunk.arena);
-    let src = Stream::chunk(chunk, &chunk.arena);
-    let root = build_in(src, bytes, cache, &mut arena, BuildMode::Record, 0)?;
+    let root = build_record_root_in(Stream::chunk(chunk, &chunk.arena), bytes, cache, &mut arena)?;
     Ok(IrTree::new(arena, root))
+}
+
+/// Build an embedded BinXML fragment, returning its arena and its top-level elements in
+/// order (none when it holds no element).
+#[cold]
+#[inline(never)]
+pub(crate) fn build_fragment_from_binxml_bytes<'a>(
+    bytes: &'a [u8],
+    chunk: &'a EvtxChunk<'a>,
+    cache: &mut IrTemplateCache<'a>,
+) -> Result<(ManuallyDrop<IrArena<'a>>, &'a [ElementId])> {
+    let mut arena =
+        IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), &chunk.arena);
+    let src = Stream::chunk(chunk, &chunk.arena);
+    let roots = build_in(src, bytes, cache, &mut arena, BuildMode::Record, 0)?.into_slice(src.bump);
+    // Like `IrTree`, skip the arena's drop glue: its memory lives in the chunk's bump.
+    Ok((ManuallyDrop::new(arena), roots))
 }
 
 /// Parsed content retains the values and fragments checked before yielding a
@@ -569,7 +642,8 @@ pub(crate) enum RecordContent<'a> {
 pub(crate) enum ValidatedValue<'a> {
     Scalar(BinXmlValue<'a>),
     Template(usize),
-    Fragment(ElementId),
+    /// The top-level elements of an embedded BinXML fragment, in order.
+    Fragment(&'a [ElementId]),
 }
 
 #[derive(Debug, Clone)]
@@ -587,7 +661,7 @@ pub(crate) struct ValidatedInstance<'a> {
 pub(crate) struct TemplateContent<'a> {
     pub(crate) root: ValidatedInstance<'a>,
     pub(crate) nested: Vec<ValidatedInstance<'a>>,
-    pub(crate) frags: std::mem::ManuallyDrop<IrArena<'a>>,
+    pub(crate) frags: ManuallyDrop<IrArena<'a>>,
 }
 
 impl<'a> TemplateContent<'a> {
@@ -628,12 +702,10 @@ fn materialize_instance<'a>(
         let mut copy = IrVec::with_capacity_in(instance.values.len(), bump);
         for value in &instance.values {
             copy.push(match value {
-                ValidatedValue::Template(id) => ValidatedValue::Fragment(materialize_instance(
-                    &nested[*id],
-                    nested,
-                    bump,
-                    arena,
-                )?),
+                ValidatedValue::Template(id) => {
+                    let root = materialize_instance(&nested[*id], nested, bump, arena)?;
+                    ValidatedValue::Fragment(std::slice::from_ref(bump.alloc(root)))
+                }
                 other => other.clone(),
             });
         }
@@ -667,7 +739,7 @@ pub(crate) fn build_record_content<'a>(
         return Ok(RecordContent::Template(TemplateContent {
             root,
             nested,
-            frags: std::mem::ManuallyDrop::new(frags),
+            frags: ManuallyDrop::new(frags),
         }));
     }
     build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
@@ -722,14 +794,9 @@ fn validate_tpl_instance<'a>(
             continue;
         }
         let src = Stream::chunk(chunk, &chunk.arena);
-        *value = ValidatedValue::Fragment(build_in(
-            src,
-            bytes,
-            cache,
-            frags,
-            BuildMode::Record,
-            depth + 1,
-        )?);
+        *value = ValidatedValue::Fragment(
+            build_in(src, bytes, cache, frags, BuildMode::Record, depth + 1)?.into_slice(src.bump),
+        );
     }
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
@@ -791,14 +858,27 @@ fn build_template_in<'a>(
     depth: usize,
 ) -> Result<IrTree<'a>> {
     let mut arena = IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), src.bump);
-    let root = build_in(
+    let root = match build_in(
         src,
         bytes,
         cache,
         &mut arena,
         BuildMode::TemplateDefinition,
         depth,
-    )?;
+    )? {
+        Roots {
+            first: Some(root),
+            more: [],
+        } => root,
+        Roots { first: None, .. } => {
+            return Err(EvtxError::FailedToCreateRecordModel("missing root element"));
+        }
+        Roots { .. } => {
+            return Err(EvtxError::FailedToCreateRecordModel(
+                "multiple root elements",
+            ));
+        }
+    };
     Ok(IrTree::new(arena, root))
 }
 
@@ -994,7 +1074,8 @@ fn clone_and_resolve<'a>(
 ///
 /// This function is intentionally "append-only" because some input nodes expand to multiple
 /// output nodes:
-/// - `Node::Placeholder(..)` → 0 or 1 nodes (optional empties disappear).
+/// - `Node::Placeholder(..)` → 0 or more nodes (optional empties disappear; a fragment gives
+///   one node per top-level element).
 /// - `Node::Element(..)` → 1 or many nodes (array substitution expansion may repeat the element).
 /// - Everything else → exactly 1 node (shallow clone).
 fn resolve_node_into<'a>(
@@ -1039,7 +1120,8 @@ fn resolve_node_into<'a>(
 ///
 /// - **out of bounds**: treat as missing → emit nothing (fail-soft)
 /// - **optional + empty**: emit nothing (this is the common "omitted" path)
-/// - **embedded BinXML**: emit `Node::Element(id)` (subtree already parsed in record arena)
+/// - **embedded BinXML**: emit `Node::Element(id)` for each of its top-level elements (subtrees
+///   already parsed in the record arena)
 /// - **scalar value**: convert via `value_to_node` and emit `Text`/`Value`
 ///
 /// Note that placeholder resolution itself does **not** perform array-substitution expansion.
@@ -1064,7 +1146,7 @@ fn resolve_placeholder_into<'a>(
         return Ok(());
     };
     match value {
-        ValidatedValue::Fragment(element_id) => out.push(Node::Element(*element_id)),
+        ValidatedValue::Fragment(roots) => out.extend(roots.iter().map(|&id| Node::Element(id))),
         ValidatedValue::Scalar(value) if placeholder.optional && is_optional_empty(value) => {}
         ValidatedValue::Scalar(BinXmlValue::EvtXml) => {
             return Err(EvtxError::FailedToCreateRecordModel(
@@ -1156,12 +1238,5 @@ pub(crate) fn bench_build_tree_from_binxml_bytes_direct<'a>(
     bump: &'a Bump,
 ) -> Result<ElementId> {
     let mut arena = IrArena::new_in(bump);
-    build_in(
-        Stream::chunk(chunk, bump),
-        bytes,
-        cache,
-        &mut arena,
-        BuildMode::Record,
-        0,
-    )
+    build_record_root_in(Stream::chunk(chunk, bump), bytes, cache, &mut arena)
 }

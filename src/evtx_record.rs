@@ -296,34 +296,29 @@ mod validated_content_tests {
         let mut child = Element::new_in(Name::new("Child"), bump);
         child.push_child(Node::Text(Text::utf8("validated-fragment")));
         let child = frags.new_node(child);
+        // A fragment can hold several elements; all of them render.
+        let mut sibling = Element::new_in(Name::new("Sibling"), bump);
+        sibling.push_child(Node::Text(Text::utf8("second-root")));
+        let sibling = frags.new_node(sibling);
         record.content = RecordContent::Template(TemplateContent {
             root: ValidatedInstance {
                 offset: u32::MAX,
                 template: Rc::new(IrTree::new(template, root)),
                 has_literal_array: false,
                 has_arrays: false,
-                values: vec![ValidatedValue::Fragment(child)],
+                values: vec![ValidatedValue::Fragment(
+                    bump.alloc_slice_copy(&[child, sibling]),
+                )],
             },
             nested: Vec::new(),
             frags: ManuallyDrop::new(frags),
         });
         // This content has no corresponding wire bytes. XML uses the compiled
         // fragment path; JSON's generic-fragment fallback materializes it.
-        assert!(
-            record
-                .clone()
-                .into_xml()
-                .unwrap()
-                .data
-                .contains("validated-fragment")
-        );
-        assert!(
-            record
-                .into_json()
-                .unwrap()
-                .data
-                .contains("validated-fragment")
-        );
+        let xml = record.clone().into_xml().unwrap().data;
+        assert!(xml.contains("validated-fragment") && xml.contains("second-root"));
+        let json = record.into_json().unwrap().data;
+        assert!(json.contains("validated-fragment") && json.contains("second-root"));
     }
 
     #[test]
