@@ -62,6 +62,24 @@ pub struct RenderedChunk {
     pub items: Vec<RenderedChunkItem>,
 }
 
+impl RenderedChunk {
+    /// Each rendered record's ID and bytes, without the trailing `\n`.
+    pub fn records(&self) -> impl Iterator<Item = (u64, &[u8])> {
+        let mut start = 0;
+        self.items.iter().filter_map(move |item| match *item {
+            RenderedChunkItem::Record {
+                event_record_id,
+                end,
+            } => {
+                let record = &self.data[start..end - 1];
+                start = end;
+                Some((event_record_id, record))
+            }
+            RenderedChunkItem::Failed(_) => None,
+        })
+    }
+}
+
 /// Render all of a parsed chunk's records into a single buffer, in `P`'s format.
 fn render_chunk<P: StoredProgram>(
     chunk: &mut EvtxChunk<'_>,

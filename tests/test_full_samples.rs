@@ -244,12 +244,12 @@ fn test_sample_with_zero_data_size_event() {
 /// leak into the other chunk, whichever chunk is rendered first.
 #[test]
 fn test_shared_template_names_do_not_leak_across_chunks() {
-    const CHUNK: usize = 0x10000;
     let mut bytes = include_bytes!("../samples/2-vss_7-System.evtx").to_vec();
     // `Keywords` -> `Keyɷords` in chunk 1's string table.
-    bytes[0x1000 + CHUNK + 0x475] = 0x02;
+    bytes[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE + 0x475] = 0x02;
     let mut swapped = bytes.clone();
-    swapped[0x1000..0x1000 + 2 * CHUNK].rotate_left(CHUNK);
+    swapped[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
+        .rotate_left(EVTX_CHUNK_SIZE);
 
     let parser = |bytes: &[u8]| {
         EvtxParser::from_buffer(bytes.to_vec())

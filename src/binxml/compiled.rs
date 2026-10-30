@@ -663,6 +663,18 @@ fn compile_xml_template(
     }
 }
 
+/// `render_fragment_xml` behind one pointer, keeping the executor's call at six arguments.
+#[inline(never)]
+fn render_fragment_roots_xml(
+    arena: &IrArena<'_>,
+    roots: &&[ElementId],
+    indent: u16,
+    indent_on: bool,
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    render_fragment_xml(arena, roots, indent, indent_on, out)
+}
+
 /// Render a materialized fragment's top-level elements at `indent` (executor cold path).
 fn render_fragment_xml(
     arena: &IrArena<'_>,
@@ -1933,7 +1945,7 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
         return exec(inst, progs, pf, chunk, cache, vr, out);
     }
     if let Some((arena, roots)) = pf.fragment(s) {
-        return render_fragment_xml(arena, roots, indent, indent_on, out);
+        return render_fragment_roots_xml(arena, roots, indent, indent_on, out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
     let Some(cache) = cache else {
@@ -2517,7 +2529,10 @@ pub(crate) trait ValueSource<'a> {
     ) -> Result<()>;
     fn nested(&self, slot: &Self::Value) -> Option<Instance<Self::Scope>>;
     /// A decoded embedded fragment: its arena and top-level elements.
-    fn fragment(&self, _slot: &Self::Value) -> Option<(&IrArena<'a>, &[ElementId])> {
+    fn fragment<'s>(
+        &'s self,
+        _slot: &'s Self::Value,
+    ) -> Option<(&'s IrArena<'a>, &'s &'a [ElementId])> {
         None
     }
     fn bytes(&self, _slot: &Self::Value) -> Option<&'a [u8]> {
@@ -2685,9 +2700,12 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
         }
     }
     #[inline(always)]
-    fn fragment(&self, s: &Self::Value) -> Option<(&IrArena<'a>, &[ElementId])> {
+    fn fragment<'s>(
+        &'s self,
+        s: &'s Self::Value,
+    ) -> Option<(&'s IrArena<'a>, &'s &'a [ElementId])> {
         match s {
-            ValidatedValue::Fragment(roots) => Some((&self.content.frags, *roots)),
+            ValidatedValue::Fragment(roots) => Some((&self.content.frags, roots)),
             _ => None,
         }
     }

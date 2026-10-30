@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::Once;
 
+use evtx::{EvtxParser, ParserSettings};
+
 static LOGGER_INIT: Once = Once::new();
 
 // CLI tests can behave flakily when multiple `evtx_dump` subprocesses run concurrently
@@ -93,47 +95,57 @@ pub fn sample_with_invalid_flags_in_header() -> PathBuf {
     samples_dir().join("post-Security.evtx")
 }
 
-/// Splits `evtx_dump`'s chunk output into `(event_record_id, rendered record)` pairs.
-pub fn rendered_records(chunks: impl Iterator<Item = evtx::RenderedChunk>) -> Vec<(u64, String)> {
-    let mut records = Vec::new();
-    for chunk in chunks {
-        let mut start = 0;
-        for item in chunk.items {
-            if let evtx::RenderedChunkItem::Record {
-                event_record_id,
-                end,
-            } = item
-            {
-                // Each record's bytes end with a newline.
-                let data = String::from_utf8(chunk.data[start..end - 1].to_vec()).unwrap();
-                records.push((event_record_id, data));
-                start = end;
-            }
-        }
-    }
-    records
+/// The EVTX layout (the crate keeps its own copies private).
+pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
+pub const EVTX_CHUNK_SIZE: usize = 65536;
+pub const EVTX_CHUNK_HEADER_SIZE: usize = 512;
+pub const EVTX_RECORD_HEADER_SIZE: usize = 24;
+pub const EVTX_RECORD_MAGIC: &[u8; 4] = b"**\0\0";
+/// A template definition's header: next template, GUID, data size.
+pub const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
+
+/// Record `id` of `evtx` as XML and JSON, from the records API. evtx_dump's chunk renderer
+/// must give the same bytes.
+pub fn render_record(evtx: &[u8], id: u64) -> (String, String) {
+    let parser = || {
+        EvtxParser::from_buffer(evtx.to_vec())
+            .unwrap()
+            .with_configuration(ParserSettings::new().num_threads(1))
+    };
+    let rendered = |chunks: Vec<evtx::RenderedChunk>| {
+        let (_, record) = chunks
+            .iter()
+            .flat_map(|chunk| chunk.records())
+            .find(|&(record_id, _)| record_id == id)
+            .expect("the chunk renderer to render the record");
+        String::from_utf8(record.to_vec()).unwrap()
+    };
+
+    let xml = parser()
+        .records()
+        .map(Result::unwrap)
+        .find(|record| record.event_record_id == id)
+        .expect("the record to render")
+        .data;
+    assert_eq!(rendered(parser().chunks_xml_bytes(false).collect()), xml);
+    let json = parser()
+        .records_json()
+        .map(Result::unwrap)
+        .find(|record| record.event_record_id == id)
+        .expect("the record to render")
+        .data;
+    assert_eq!(rendered(parser().chunks_json_bytes(false).collect()), json);
+    (xml, json)
 }
-
-/// Chunk offset of the BinXML of [`synthetic_evtx`]'s record, after the chunk header and the
-/// record header.
-pub const SYNTHETIC_BINXML_OFFSET: u32 = 512 + 24;
-
-/// A template instance's substitution value: its type and a writer for its bytes.
-pub type SubstitutionValue<'v> = (u8, &'v dyn Fn(&mut BinXml));
 
 /// BinXML for synthetic records, written at a known chunk offset: inline names and inline
 /// template definitions point at their own offset.
 pub struct BinXml {
-    pub bytes: Vec<u8>,
+    bytes: Vec<u8>,
     base: u32,
 }
 
 impl BinXml {
-    /// The BinXML of [`synthetic_evtx`]'s record.
-    pub fn record() -> Self {
-        Self::at(SYNTHETIC_BINXML_OFFSET)
-    }
-
     fn at(base: u32) -> Self {
         BinXml {
             bytes: Vec::new(),
@@ -219,80 +231,78 @@ impl BinXml {
     }
 
     /// A template instance whose definition follows inline: `definition` writes its element,
-    /// between the fragment header and EOF. Each value's writer is called at the offset its
-    /// bytes land at.
+    /// between the fragment header and EOF. Its one value, of type `value_type`, is written by
+    /// `value` at the offset its bytes land at.
     pub fn template_instance(
         &mut self,
         definition: impl FnOnce(&mut BinXml),
-        values: &[SubstitutionValue<'_>],
+        value_type: u8,
+        value: impl FnOnce(&mut BinXml),
     ) -> &mut Self {
         self.u8(0x0c).u8(0x01).u32(1);
         let definition_offset = self.pos() + 4;
-        // The definition's header: next template, GUID, data size.
         self.u32(definition_offset).u32(0).raw(&[0xab; 16]);
-        let mut body = BinXml::at(definition_offset + 24);
+        let mut body = BinXml::at(definition_offset + TEMPLATE_DEFINITION_HEADER_SIZE as u32);
         body.fragment_header();
         definition(&mut body);
         body.eof();
         self.u32(body.bytes.len() as u32).raw(&body.bytes);
 
-        self.u32(values.len() as u32);
-        let mut value_offset = self.pos() + 4 * values.len() as u32;
-        let mut written = Vec::new();
-        for (value_type, write) in values {
-            let mut value = BinXml::at(value_offset);
-            write(&mut value);
-            value_offset += value.bytes.len() as u32;
-            self.u16(value.bytes.len() as u16).u8(*value_type).u8(0);
-            written.push(value.bytes);
-        }
-        for value in written {
-            self.raw(&value);
-        }
-        self
+        // The value count and descriptor (size, type, padding), then the value.
+        self.u32(1);
+        let mut bytes = BinXml::at(self.pos() + 4);
+        value(&mut bytes);
+        self.u16(bytes.bytes.len() as u16)
+            .u8(value_type)
+            .u8(0)
+            .raw(&bytes.bytes)
     }
 }
 
-/// A one-chunk EVTX file with one record (ID 1) holding `binxml`, which must have been
-/// written at [`SYNTHETIC_BINXML_OFFSET`] (see [`BinXml::record`]).
-pub fn synthetic_evtx(binxml: &[u8]) -> Vec<u8> {
+/// A one-chunk EVTX file with one record (ID 1), whose BinXML `record` writes.
+pub fn synthetic_evtx(record: impl FnOnce(&mut BinXml)) -> Vec<u8> {
     fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
         buf[at..at + bytes.len()].copy_from_slice(bytes);
     }
-    let mut file = vec![0; 4096 + 65536];
+    let record_start = EVTX_CHUNK_HEADER_SIZE;
+    let mut binxml = BinXml::at((record_start + EVTX_RECORD_HEADER_SIZE) as u32);
+    record(&mut binxml);
+
+    let mut file = vec![0; EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
     put(&mut file, 0, b"ElfFile\0");
     put(&mut file, 24, &2u64.to_le_bytes()); // next record ID
     put(&mut file, 32, &128u32.to_le_bytes()); // header size
     put(&mut file, 36, &1u16.to_le_bytes()); // minor version
     put(&mut file, 38, &3u16.to_le_bytes()); // major version
-    put(&mut file, 40, &4096u16.to_le_bytes()); // header block size
+    put(&mut file, 40, &(EVTX_FILE_HEADER_SIZE as u16).to_le_bytes()); // header block size
     put(&mut file, 42, &1u16.to_le_bytes()); // chunk count
     let checksum = evtx::checksum_ieee(&file[..120]);
     put(&mut file, 124, &checksum.to_le_bytes());
 
-    let chunk = &mut file[4096..];
-    let record_size = (24 + binxml.len() + 4) as u32;
-    let free_space = 512 + record_size;
+    let chunk = &mut file[EVTX_FILE_HEADER_SIZE..];
+    let record_size = EVTX_RECORD_HEADER_SIZE + binxml.bytes.len() + 4;
+    let free_space = record_start + record_size;
     put(chunk, 0, b"ElfChnk\0");
     // First and last record numbers and IDs.
     for at in [8, 16, 24, 32] {
         put(chunk, at, &1u64.to_le_bytes());
     }
     put(chunk, 40, &128u32.to_le_bytes()); // header size
-    put(chunk, 44, &512u32.to_le_bytes()); // last record offset
-    put(chunk, 48, &free_space.to_le_bytes());
+    put(chunk, 44, &(record_start as u32).to_le_bytes()); // last record offset
+    put(chunk, 48, &(free_space as u32).to_le_bytes());
 
-    let record = &mut chunk[512..free_space as usize];
-    put(record, 0, b"**\0\0");
-    put(record, 4, &record_size.to_le_bytes());
+    let record = &mut chunk[record_start..free_space];
+    put(record, 0, EVTX_RECORD_MAGIC);
+    put(record, 4, &(record_size as u32).to_le_bytes());
     put(record, 8, &1u64.to_le_bytes());
     put(record, 16, &131_000_000_000_000_000u64.to_le_bytes()); // 2016-02-15T08:53:20Z
-    put(record, 24, binxml);
-    put(record, record_size as usize - 4, &record_size.to_le_bytes());
+    put(record, EVTX_RECORD_HEADER_SIZE, &binxml.bytes);
+    put(record, record_size - 4, &(record_size as u32).to_le_bytes());
 
-    let events_checksum = evtx::checksum_ieee(&chunk[512..free_space as usize]);
+    let events_checksum = evtx::checksum_ieee(&chunk[record_start..free_space]);
     put(chunk, 52, &events_checksum.to_le_bytes());
-    let header_checksum = evtx::checksum_ieee(&[&chunk[..120], &chunk[128..512]].concat());
+    let header_checksum =
+        evtx::checksum_ieee(&[&chunk[..120], &chunk[128..EVTX_CHUNK_HEADER_SIZE]].concat());
     put(chunk, 124, &header_checksum.to_le_bytes());
     file
 }

@@ -1307,7 +1307,7 @@ mod tests {
     /// compiled templates, and through the record API, which adds it to each record's tree.
     /// Returns how many renderings had one.
     fn compare_renderers(path: &Path) -> usize {
-        use crate::{EvtxParser, ParserSettings, RenderedChunkItem};
+        use crate::{EvtxParser, ParserSettings};
         use std::sync::Arc;
 
         const RECORDS: usize = 2000;
@@ -1339,18 +1339,11 @@ mod tests {
             };
             let mut compiled = Vec::new();
             for chunk in chunks {
-                let mut start = 0;
-                for item in chunk.items {
-                    if let RenderedChunkItem::Record {
-                        event_record_id,
-                        end,
-                    } = item
-                    {
-                        let data = std::str::from_utf8(&chunk.data[start..end - 1]).unwrap();
-                        compiled.push((event_record_id, data.to_string()));
-                        start = end;
-                    }
-                }
+                compiled.extend(
+                    chunk
+                        .records()
+                        .map(|(id, data)| (id, String::from_utf8(data.to_vec()).unwrap())),
+                );
                 if compiled.len() >= RECORDS {
                     break;
                 }

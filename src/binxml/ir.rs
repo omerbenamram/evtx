@@ -17,7 +17,7 @@
 //! - **`BuildMode::TemplateDefinition`**:
 //!   - `SubstitutionDescriptor` tokens are recorded as `Node::Placeholder` nodes.
 //!   - Template instances are rejected (a template definition can't contain instances).
-//!   - Exactly one root element is required (hard error otherwise).
+//!   - Exactly one root element is required (hard error otherwise, in `build_template_in`).
 //!
 //! - **`BuildMode::Record`**:
 //!   - Template instances are instantiated immediately and inserted into the tree.
@@ -277,8 +277,37 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     depth: usize,
     stack: IrVec<'a, ElementId>,
     current_element: Option<ElementBuilder<'a>>,
-    /// Top-level elements in stream order.
-    roots: IrVec<'a, ElementId>,
+    /// The first top-level element.
+    root: Option<ElementId>,
+    /// Top-level elements after the first, in order (rare).
+    more_roots: IrVec<'a, ElementId>,
+}
+
+/// A stream's top-level elements: the first, then the rest.
+#[derive(Clone, Copy)]
+struct Roots<'a> {
+    first: Option<ElementId>,
+    more: &'a [ElementId],
+}
+
+impl<'a> Roots<'a> {
+    /// All roots as one bump slice.
+    fn into_slice(self, bump: &'a Bump) -> &'a [ElementId] {
+        match self.first {
+            None => &[],
+            Some(first) if self.more.is_empty() => std::slice::from_ref(bump.alloc(first)),
+            Some(first) => Self::concat(first, self.more, bump),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn concat(first: ElementId, more: &[ElementId], bump: &'a Bump) -> &'a [ElementId] {
+        let mut all = IrVec::with_capacity_in(more.len() + 1, bump);
+        all.push(first);
+        all.extend_from_slice(more);
+        all.into_bump_slice()
+    }
 }
 
 impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
@@ -330,6 +359,7 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
         self.attach(element_id)
     }
 
+    #[inline]
     fn close_element(&mut self) -> Result<()> {
         let element_id = self.stack.pop().ok_or_else(|| {
             EvtxError::FailedToCreateRecordModel("close element - Bad parser state")
@@ -367,15 +397,7 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
                 if bytes.is_empty() {
                     return Ok(());
                 }
-                let roots = build_in(
-                    self.src,
-                    bytes,
-                    self.cache,
-                    self.arena,
-                    BuildMode::Record,
-                    self.depth + 1,
-                )?;
-                roots.iter().try_for_each(|&root| self.attach(root))
+                self.splice_fragment(bytes)
             }
             BinXmlValue::EvtXml => Err(EvtxError::FailedToCreateRecordModel(
                 "Unimplemented - EvtXml",
@@ -430,9 +452,9 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     /// Attach an element to the current parent (or add it as a root).
     ///
     /// Used by element closure and by splicing (template instances, nested `BinXmlType`
-    /// fragments). Records keep every root: an embedded fragment can hold several elements
-    /// (a nested instance followed by `RenderingInfo`, for one). Template definitions reject
-    /// a second root.
+    /// fragments). Every root is kept: an embedded fragment can hold several elements (a
+    /// nested instance followed by `RenderingInfo`, for one).
+    #[inline]
     fn attach(&mut self, element_id: ElementId) -> Result<()> {
         if let Some(&parent_id) = self.stack.last() {
             let parent = self
@@ -440,13 +462,36 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
                 .get_mut(parent_id)
                 .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid parent element id"))?;
             parent.push_child(Node::Element(element_id));
-        } else if self.roots.is_empty() || self.mode == BuildMode::Record {
-            self.roots.push(element_id);
+        } else if self.root.is_none() {
+            self.root = Some(element_id);
         } else {
-            return Err(EvtxError::FailedToCreateRecordModel(
-                "multiple root elements",
-            ));
+            return self.attach_more_root(element_id);
         }
+        Ok(())
+    }
+
+    /// Build an embedded fragment and attach its top-level elements here.
+    #[inline(never)]
+    fn splice_fragment(&mut self, bytes: &'a [u8]) -> Result<()> {
+        let roots = build_in(
+            self.src,
+            bytes,
+            self.cache,
+            self.arena,
+            BuildMode::Record,
+            self.depth + 1,
+        )?;
+        if let Some(first) = roots.first {
+            self.attach(first)?;
+        }
+        roots.more.iter().try_for_each(|&root| self.attach(root))
+    }
+
+    /// A top-level element after the first: rare, so kept out of `attach`.
+    #[cold]
+    #[inline(never)]
+    fn attach_more_root(&mut self, element_id: ElementId) -> Result<()> {
+        self.more_roots.push(element_id);
         Ok(())
     }
 
@@ -475,8 +520,8 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
         }
     }
 
-    /// The stream's top-level elements, in order (exactly one for template definitions).
-    fn finish(self) -> Result<&'a [ElementId]> {
+    /// The stream's top-level elements, in order.
+    fn finish(self) -> Result<Roots<'a>> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "unfinished element start",
@@ -489,15 +534,15 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             ));
         }
 
-        if self.mode == BuildMode::TemplateDefinition && self.roots.is_empty() {
-            return Err(EvtxError::FailedToCreateRecordModel("missing root element"));
-        }
-        Ok(self.roots.into_bump_slice())
+        Ok(Roots {
+            first: self.root,
+            more: self.more_roots.into_bump_slice(),
+        })
     }
 }
 
 /// Parse a BinXML byte slice (a sub-slice of `src.data`) into IR elements and return the
-/// stream's top-level elements in order (exactly one for template definitions).
+/// stream's top-level elements in order.
 ///
 /// [`walk_tokens`] parses the tokens and [`TreeBuilder`] builds the tree. Splicing shows up
 /// via token types:
@@ -516,7 +561,7 @@ fn build_in<'a>(
     arena: &mut IrArena<'a>,
     mode: BuildMode,
     depth: usize,
-) -> Result<&'a [ElementId]> {
+) -> Result<Roots<'a>> {
     // Only template definitions carry dependency IDs on element start tokens.
     let has_dep_id = mode == BuildMode::TemplateDefinition;
     if depth > MAX_BINXML_NESTING {
@@ -533,7 +578,8 @@ fn build_in<'a>(
         depth,
         stack: IrVec::new_in(src.bump),
         current_element: None,
-        roots: IrVec::new_in(src.bump),
+        root: None,
+        more_roots: IrVec::new_in(src.bump),
     };
     walk_tokens(src, offset as usize, bytes.len(), has_dep_id, &mut builder)?;
     builder.finish()
@@ -549,8 +595,8 @@ fn build_record_root_in<'a>(
     arena: &mut IrArena<'a>,
 ) -> Result<ElementId> {
     let roots = build_in(src, bytes, cache, arena, BuildMode::Record, 0)?;
-    Ok(match roots.first() {
-        Some(&root) => root,
+    Ok(match roots.first {
+        Some(root) => root,
         None => arena.new_node(Element::new_in(Name::new("Event"), src.bump)),
     })
 }
@@ -569,6 +615,8 @@ pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
 
 /// Build an embedded BinXML fragment, returning its arena and its top-level elements in
 /// order (none when it holds no element).
+#[cold]
+#[inline(never)]
 pub(crate) fn build_fragment_from_binxml_bytes<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
@@ -577,7 +625,7 @@ pub(crate) fn build_fragment_from_binxml_bytes<'a>(
     let mut arena =
         IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), &chunk.arena);
     let src = Stream::chunk(chunk, &chunk.arena);
-    let roots = build_in(src, bytes, cache, &mut arena, BuildMode::Record, 0)?;
+    let roots = build_in(src, bytes, cache, &mut arena, BuildMode::Record, 0)?.into_slice(src.bump);
     // Like `IrTree`, skip the arena's drop glue: its memory lives in the chunk's bump.
     Ok((ManuallyDrop::new(arena), roots))
 }
@@ -746,14 +794,9 @@ fn validate_tpl_instance<'a>(
             continue;
         }
         let src = Stream::chunk(chunk, &chunk.arena);
-        *value = ValidatedValue::Fragment(build_in(
-            src,
-            bytes,
-            cache,
-            frags,
-            BuildMode::Record,
-            depth + 1,
-        )?);
+        *value = ValidatedValue::Fragment(
+            build_in(src, bytes, cache, frags, BuildMode::Record, depth + 1)?.into_slice(src.bump),
+        );
     }
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
@@ -815,15 +858,28 @@ fn build_template_in<'a>(
     depth: usize,
 ) -> Result<IrTree<'a>> {
     let mut arena = IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), src.bump);
-    let roots = build_in(
+    let root = match build_in(
         src,
         bytes,
         cache,
         &mut arena,
         BuildMode::TemplateDefinition,
         depth,
-    )?;
-    Ok(IrTree::new(arena, roots[0]))
+    )? {
+        Roots {
+            first: Some(root),
+            more: [],
+        } => root,
+        Roots { first: None, .. } => {
+            return Err(EvtxError::FailedToCreateRecordModel("missing root element"));
+        }
+        Roots { .. } => {
+            return Err(EvtxError::FailedToCreateRecordModel(
+                "multiple root elements",
+            ));
+        }
+    };
+    Ok(IrTree::new(arena, root))
 }
 
 /// Instantiate a template-definition IR tree by resolving all placeholders.

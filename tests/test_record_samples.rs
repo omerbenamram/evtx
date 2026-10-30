@@ -342,51 +342,17 @@ fn test_event_json_missing_string_cache_entry() {
 #[test]
 fn test_event_with_rendering_info_after_nested_template() {
     ensure_env_logger_initialized();
-    let parser = || {
-        EvtxParser::from_path(sample_with_multiple_xml_fragments())
-            .unwrap()
-            .with_configuration(ParserSettings::new().num_threads(1))
-    };
-    let record_161 = |records: Vec<(u64, String)>| {
-        records
-            .into_iter()
-            .find(|(id, _)| *id == 161)
-            .expect("record 161 to render")
-            .1
-    };
-    let records_api = |json: bool| {
-        let mut parser = parser();
-        let records: Vec<_> = if json {
-            parser.records_json().map(|r| r.unwrap()).collect()
-        } else {
-            parser.records().map(|r| r.unwrap()).collect()
-        };
-        record_161(
-            records
-                .into_iter()
-                .map(|record| (record.event_record_id, record.data))
-                .collect(),
-        )
-    };
-
-    let xml = records_api(false);
+    let evtx = std::fs::read(sample_with_multiple_xml_fragments()).unwrap();
+    let (xml, json) = render_record(&evtx, 161);
     insta::assert_snapshot!(xml);
 
-    let json: Value = serde_json::from_str(&records_api(true)).unwrap();
+    let json: Value = serde_json::from_str(&json).unwrap();
     let event = &json["Event"];
     assert_eq!(
         event["EventData"]["SelectionData"],
         "Region Codes:US \nSKUs:6 \nGroup Cell Width:6\n"
     );
     assert_eq!(event["RenderingInfo"]["Task"], "TraceLayoutSelectionData");
-
-    // evtx_dump's chunk renderer gives the same output.
-    assert_eq!(
-        record_161(rendered_records(parser().chunks_xml_bytes(false))),
-        xml
-    );
-    let rendered = record_161(rendered_records(parser().chunks_json_bytes(false)));
-    assert_eq!(serde_json::from_str::<Value>(&rendered).unwrap(), json);
 }
 
 /// A BinXML value that is neither a template instance nor a single element: evtx_dump's
@@ -394,31 +360,28 @@ fn test_event_with_rendering_info_after_nested_template() {
 #[test]
 fn test_value_with_several_elements_renders_them_all() {
     ensure_env_logger_initialized();
-    let mut binxml = BinXml::record();
-    binxml.fragment_header().template_instance(
-        |root| {
-            root.open("Root", true)
-                .close_start()
-                .substitution(0, 0x21)
-                .end_element();
-        },
-        &[(0x21, &|value: &mut BinXml| {
-            value
-                .fragment_header()
-                .text_element("A", "1")
-                .text_element("B", "2")
-                .eof();
-        })],
-    );
-    binxml.eof();
-    let evtx = synthetic_evtx(&binxml.bytes);
-    let parser = || {
-        EvtxParser::from_buffer(evtx.clone())
-            .unwrap()
-            .with_configuration(ParserSettings::new().num_threads(1))
-    };
-
-    let xml = parser().records().next().unwrap().unwrap().data;
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Root", true)
+                        .close_start()
+                        .substitution(0, 0x21)
+                        .end_element();
+                },
+                0x21,
+                |value| {
+                    value
+                        .fragment_header()
+                        .text_element("A", "1")
+                        .text_element("B", "2")
+                        .eof();
+                },
+            )
+            .eof();
+    });
+    let (xml, json) = render_record(&evtx, 1);
     insta::assert_snapshot!(xml, @r#"
     <?xml version="1.0" encoding="utf-8"?>
     <Root>
@@ -426,62 +389,19 @@ fn test_value_with_several_elements_renders_them_all() {
       <B>2</B>
     </Root>
     "#);
-    assert_eq!(
-        rendered_records(parser().chunks_xml_bytes(false)),
-        vec![(1, xml)]
-    );
-
-    let json = parser().records_json().next().unwrap().unwrap().data;
-    let value: Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value, serde_json::json!({"Root": {"A": "1", "B": "2"}}));
-    let rendered = rendered_records(parser().chunks_json_bytes(false));
-    assert_eq!(
-        serde_json::from_str::<Value>(&rendered[0].1).unwrap(),
-        value
-    );
+    let json: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::json!({"Root": {"A": "1", "B": "2"}}));
 }
 
-/// A BinXML value with no element in it (only EOF) renders nothing, in every output path.
+/// Record 17's last value is BinXML with no element in it (an EOF token, then zeroes): it
+/// renders nothing, in every output path.
 #[test]
 fn test_value_without_elements_renders_nothing() {
     ensure_env_logger_initialized();
-    let mut binxml = BinXml::record();
-    binxml.fragment_header().template_instance(
-        |root| {
-            root.open("Root", true)
-                .close_start()
-                .substitution(0, 0x21)
-                .end_element();
-        },
-        &[(0x21, &|value: &mut BinXml| {
-            value.fragment_header().eof();
-        })],
-    );
-    binxml.eof();
-    let evtx = synthetic_evtx(&binxml.bytes);
-    let parser = || {
-        EvtxParser::from_buffer(evtx.clone())
-            .unwrap()
-            .with_configuration(ParserSettings::new().num_threads(1))
-    };
-
-    let xml = parser().records().next().unwrap().unwrap().data;
-    insta::assert_snapshot!(xml, @r#"
-    <?xml version="1.0" encoding="utf-8"?>
-    <Root>
-    </Root>
-    "#);
-    assert_eq!(
-        rendered_records(parser().chunks_xml_bytes(false)),
-        vec![(1, xml)]
-    );
-
-    let json = parser().records_json().next().unwrap().unwrap().data;
-    let value: Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value, serde_json::json!({"Root": null}));
-    let rendered = rendered_records(parser().chunks_json_bytes(false));
-    assert_eq!(
-        serde_json::from_str::<Value>(&rendered[0].1).unwrap(),
-        value
-    );
+    let evtx = std::fs::read(sample_binxml_with_incomplete_template()).unwrap();
+    let (xml, json) = render_record(&evtx, 17);
+    assert!(xml.trim_end().ends_with("  </System>\n</Event>"), "{xml}");
+    let json: Value = serde_json::from_str(&json).unwrap();
+    let event = json["Event"].as_object().unwrap();
+    assert_eq!(event.keys().collect::<Vec<_>>(), ["#attributes", "System"]);
 }
