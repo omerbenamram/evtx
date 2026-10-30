@@ -1,3 +1,5 @@
+mod fixtures;
+
 #[cfg(feature = "wevt_templates")]
 mod wevt_cache_fallback {
     use std::sync::Arc;
@@ -6,8 +8,7 @@ mod wevt_cache_fallback {
     use evtx::ParserSettings;
     use evtx::wevt_templates::WevtCache;
 
-    const EVTX_FILE_HEADER_SIZE: usize = 4096;
-    const EVTX_CHUNK_SIZE: usize = 65536;
+    use super::fixtures::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
 
     #[test]
     fn cache_errors_remain_exhaustive() {
