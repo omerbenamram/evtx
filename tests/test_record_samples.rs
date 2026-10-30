@@ -336,3 +336,72 @@ fn test_event_json_missing_string_cache_entry() {
     let value: Value = serde_json::from_str(&record.data).expect("to parse correctly");
     insta::assert_json_snapshot!(&value);
 }
+
+/// Record 161's event data is one BinXML value holding a nested template instance followed by
+/// a `RenderingInfo` element. Windows renders both; so must every output path.
+#[test]
+fn test_event_with_rendering_info_after_nested_template() {
+    ensure_env_logger_initialized();
+    let evtx = std::fs::read(sample_with_multiple_xml_fragments()).unwrap();
+    let (xml, json) = render_record(&evtx, 161);
+    insta::assert_snapshot!(xml);
+
+    let json: Value = serde_json::from_str(&json).unwrap();
+    let event = &json["Event"];
+    assert_eq!(
+        event["EventData"]["SelectionData"],
+        "Region Codes:US \nSKUs:6 \nGroup Cell Width:6\n"
+    );
+    assert_eq!(event["RenderingInfo"]["Task"], "TraceLayoutSelectionData");
+}
+
+/// A BinXML value that is neither a template instance nor a single element: evtx_dump's
+/// chunk renderer builds it from the record bytes, and must render all of its elements.
+#[test]
+fn test_value_with_several_elements_renders_them_all() {
+    ensure_env_logger_initialized();
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Root", true)
+                        .close_start()
+                        .substitution(0, 0x21)
+                        .end_element();
+                },
+                0x21,
+                |value| {
+                    value
+                        .fragment_header()
+                        .text_element("A", "1")
+                        .text_element("B", "2")
+                        .eof();
+                },
+            )
+            .eof();
+    });
+    let (xml, json) = render_record(&evtx, 1);
+    insta::assert_snapshot!(xml, @r#"
+    <?xml version="1.0" encoding="utf-8"?>
+    <Root>
+      <A>1</A>
+      <B>2</B>
+    </Root>
+    "#);
+    let json: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json, serde_json::json!({"Root": {"A": "1", "B": "2"}}));
+}
+
+/// Record 17's last value is BinXML with no element in it (an EOF token, then zeroes): it
+/// renders nothing, in every output path.
+#[test]
+fn test_value_without_elements_renders_nothing() {
+    ensure_env_logger_initialized();
+    let evtx = std::fs::read(sample_binxml_with_incomplete_template()).unwrap();
+    let (xml, json) = render_record(&evtx, 17);
+    assert!(xml.trim_end().ends_with("  </System>\n</Event>"), "{xml}");
+    let json: Value = serde_json::from_str(&json).unwrap();
+    let event = json["Event"].as_object().unwrap();
+    assert_eq!(event.keys().collect::<Vec<_>>(), ["#attributes", "System"]);
+}

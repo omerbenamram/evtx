@@ -132,8 +132,8 @@ fn render(evtx: &Path, mta: Arc<MtaFile>) -> Vec<Value> {
         for item in &chunk.items {
             assert!(matches!(item, RenderedChunkItem::Record { .. }), "{item:?}");
         }
-        for line in chunk.data.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-            chunked.push(serde_json::from_slice::<Value>(line).unwrap());
+        for (_, record) in chunk.records() {
+            chunked.push(serde_json::from_slice::<Value>(record).unwrap());
         }
     }
     assert_eq!(records, chunked, "{}", evtx.display());
