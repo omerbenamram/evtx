@@ -158,8 +158,12 @@ fn test_dirty_sample_with_a_bad_checksum() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2() {
-    // TODO: investigate 2 failing records
-    test_full_sample(sample_with_a_bad_checksum_2(), 1774, 2)
+    // Chunk 1 was caught while the log reused it: its 16 KiB from 0x4000 to 0x8000 are from
+    // the log's next pass, where the walk reads records 462980 to 463011 (both passes wrote
+    // 496-byte records). Record 463011 straddles 0x8000, so its BinXML runs into an old
+    // record, and where the record after it should start is that old record's text: 2
+    // errors. The walk resyncs on record 401576.
+    test_full_sample(sample_with_a_bad_checksum_2(), 1795, 2)
 }
 
 #[test]
@@ -169,7 +173,7 @@ fn test_dirty_sample_with_a_chunk_past_zeros() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic() {
-    test_full_sample(sample_with_a_bad_chunk_magic(), 270, 2)
+    test_full_sample(sample_with_a_bad_chunk_magic(), 301, 3)
 }
 
 #[test]
@@ -235,7 +239,8 @@ fn test_sample_with_zero_data_size_event() {
         }
         count += 1;
     }
-    assert_eq!(count, 336, "Single threaded iteration failed");
+    // The corrupt record does not hide the 114 live records after it.
+    assert_eq!(count, 450, "Single threaded iteration failed");
 }
 
 /// Chunks share compiled templates, but a template body can reference a name

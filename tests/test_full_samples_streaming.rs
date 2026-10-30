@@ -74,8 +74,8 @@ fn test_dirty_sample_with_a_bad_checksum_streaming() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_checksum_2_streaming() {
-    // TODO: investigate 2 failing records
-    test_full_sample_streaming(sample_with_a_bad_checksum_2(), 1774, 2)
+    // See test_full_samples.rs.
+    test_full_sample_streaming(sample_with_a_bad_checksum_2(), 1795, 2)
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn test_dirty_sample_with_a_chunk_past_zeros_streaming() {
 
 #[test]
 fn test_dirty_sample_with_a_bad_chunk_magic_streaming() {
-    test_full_sample_streaming(sample_with_a_bad_chunk_magic(), 270, 2)
+    test_full_sample_streaming(sample_with_a_bad_chunk_magic(), 301, 3)
 }
 
 #[test]

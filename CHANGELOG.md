@@ -17,6 +17,15 @@ and this project adheres to
 - A BinXML value holding no element rendered as an empty `Event` element
   (`"Event": null` in JSON), as in record 17 of the LanguagePackSetup sample. It
   now renders nothing.
+- A corrupt or zeroed record header ended its chunk: the live records after it
+  were lost unless `--recover-records` was set. In every mode, the walk now
+  reports the bad header and resyncs on the next record whose ID is in the chunk
+  header's range, which brings back 166 records in the samples. With
+  `--recover-records`, every record carved before the free space used to count
+  as live. The ones the resync skips, such as records of the log's other pass
+  over a chunk, now come out as recovered, and the 23 of them whose templates
+  were overwritten are skipped like other carved noise instead of reported as
+  errors.
 - A crafted record could make evtx do work exponential in its size: a template
   that uses a value in several places, whose value holds another instance of
   the template, and so on a few levels down. A 600-byte record rendered to
