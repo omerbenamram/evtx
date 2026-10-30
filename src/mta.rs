@@ -54,6 +54,7 @@ use thiserror::Error;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrArena, IrTree, Name, Node, Text};
 use crate::utils::bytes::{read_array, read_u32_le, read_u64_le};
+use crate::utils::heap_size;
 
 const MAGIC: &[u8; 8] = b"MTAFile\0";
 const HEADER_SIZE: usize = 24;
@@ -736,8 +737,7 @@ impl SystemFields {
             Some(Source::Literal(name)) => name.len(),
             _ => 0,
         };
-        let slots = self.event_slots.capacity() + self.system_slots.capacity();
-        slots * std::mem::size_of::<u16>() + provider
+        heap_size(&self.event_slots) + heap_size(&self.system_slots) + provider
     }
 
     /// Whether a record has elements in a substitution where they could change its fields.

@@ -141,18 +141,17 @@ impl<'a> EvtxRecord<'a> {
             let mut tree = match &self.content {
                 RecordContent::Tree(tree) => Cow::Borrowed(tree),
                 RecordContent::Template(content) => {
-                    if mta.is_none() {
-                        let mut caches = self.chunk.render_caches.borrow_mut();
-                        if crate::binxml::compiled::try_render_validated(
+                    if mta.is_none()
+                        && crate::binxml::compiled::try_render_validated(
                             content,
                             self.chunk,
-                            &mut caches,
+                            &mut self.chunk.render_caches.borrow_mut(),
                             json,
                             budget,
                             data,
-                        )? {
-                            return Ok(());
-                        }
+                        )?
+                    {
+                        return Ok(());
                     }
                     Cow::Owned(content.materialize(&self.chunk.arena)?)
                 }

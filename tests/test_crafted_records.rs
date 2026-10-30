@@ -23,20 +23,6 @@ fn fan_out(instances: u32, uses: usize, depth: usize) -> Vec<u8> {
 
 /// As `fan_out`, with the root and the value's elements named `names`.
 fn fan_out_named(names: [&str; 2], instances: u32, uses: usize, depth: usize) -> Vec<u8> {
-    fn level<'v>(below: u32) -> Value<'v> {
-        if below == 0 {
-            value(0x01, |text| {
-                text.utf16("x");
-            })
-        } else {
-            value(0x21, move |fragment| {
-                fragment
-                    .fragment_header()
-                    .template_ref(vec![level(below - 1)])
-                    .eof();
-            })
-        }
-    }
     synthetic_evtx(|record| {
         record
             .fragment_header()
@@ -55,18 +41,31 @@ fn fan_out_named(names: [&str; 2], instances: u32, uses: usize, depth: usize) ->
                         root.end_element();
                     }
                 },
-                vec![level(instances - 1)],
+                vec![nested_refs(instances - 1, string_x)],
             )
             .eof();
     })
 }
 
-/// Record 1 of `evtx` through the records API and evtx_dump's chunk renderer, in XML and
-/// JSON: the rendered size, or the error with its causes.
-fn render_everywhere(evtx: &[u8]) -> Vec<Result<usize, String>> {
-    // For each record here, the checks that stop a record as it renders keep its output under
-    // twice the cap.
-    render_passes(evtx, 32 << 20).concat()
+/// A value that holds an instance of the template defined last, whose value holds another,
+/// `instances` deep, and then the value `leaf` makes.
+fn nested_refs<'v>(instances: u32, leaf: impl Fn() -> Value<'v> + Copy + 'v) -> Value<'v> {
+    if instances == 0 {
+        return leaf();
+    }
+    value(0x21, move |fragment| {
+        fragment
+            .fragment_header()
+            .template_ref(vec![nested_refs(instances - 1, leaf)])
+            .eof();
+    })
+}
+
+/// The string `x`.
+fn string_x<'v>() -> Value<'v> {
+    value(0x01, |text| {
+        text.utf16("x");
+    })
 }
 
 /// Each record of `evtx` through the records API in XML and JSON, then evtx_dump's chunk
@@ -129,24 +128,65 @@ fn render_passes_with(
     ]
 }
 
+/// `result` is an error that says `error`.
+fn assert_error(result: &Result<usize, String>, error: &str) {
+    let err = result.as_ref().unwrap_err();
+    assert!(err.contains(error), "{err}");
+}
+
 fn assert_fails_everywhere(evtx: &[u8], error: &str) {
     assert_fails_as(evtx, Some(error), Some(error));
 }
 
-/// Record 1 of `evtx` fails with `xml` in XML and `json` in JSON, in both APIs. `None` for a
-/// format that renders it, within the cap.
+/// The one record of `evtx` fails with `xml` in XML and `json` in JSON, in both APIs. `None`
+/// for a format that renders it, within the cap.
 fn assert_fails_as(evtx: &[u8], xml: Option<&str>, json: Option<&str>) {
-    let results = render_everywhere(evtx);
-    assert_eq!(results.len(), 4);
-    for (result, error) in results.into_iter().zip([xml, json, xml, json]) {
+    // For each record here, the checks that stop a record as it renders keep its output under
+    // twice the cap.
+    let passes = render_passes(evtx, 32 << 20);
+    for (pass, error) in passes.iter().zip([xml, json, xml, json]) {
+        let [result] = pass.as_slice() else {
+            panic!("{} records", pass.len());
+        };
         match error {
-            Some(error) => {
-                let err = result.unwrap_err();
-                assert!(err.contains(error), "{err}");
-            }
-            None => assert!(result.unwrap() <= 16 << 20),
+            Some(error) => assert_error(result, error),
+            None => assert!(*result.as_ref().unwrap() <= 16 << 20),
         }
     }
+}
+
+/// Each of `passes` renders `records` records: the first `failing` fail with `error`, and the
+/// others with `CHUNK_ERROR`.
+fn assert_chunk_spent(
+    passes: [Vec<Result<usize, String>>; 4],
+    records: usize,
+    failing: usize,
+    error: &str,
+) {
+    for pass in passes {
+        assert_eq!(pass.len(), records);
+        for (i, result) in pass.iter().enumerate() {
+            assert_error(result, if i < failing { error } else { CHUNK_ERROR });
+        }
+    }
+}
+
+/// `count` records that each hold an instance of one template, which `definition` writes, with
+/// the values `values` makes. The first record defines it.
+fn records_of_one_template<'v>(
+    count: usize,
+    definition: impl Fn(&mut BinXml),
+    values: impl Fn() -> Vec<Value<'v>>,
+) -> Vec<u8> {
+    synthetic_evtx_records(count, |i, record| {
+        record.fragment_header();
+        if i == 0 {
+            record.template_instance(&definition, values());
+        } else {
+            record.template_ref(values());
+        }
+        record.eof();
+    })
 }
 
 #[test]
@@ -229,26 +269,13 @@ fn fan_out_is_capped() {
 /// NULL values each, `uses` times. The value holds another instance of the template, `instances`
 /// deep: the element is visited `uses.pow(instances)` times, and renders to a few bytes.
 fn null_attributes(instances: u32, uses: usize, attributes: usize, values: usize) -> Vec<u8> {
-    fn level<'v>(below: u32, attributes: usize, values: usize) -> Value<'v> {
+    let element = move || {
         value(0x21, move |fragment| {
             fragment.fragment_header();
-            if below == 0 {
-                fragment.open_with_attributes("X", false).attribute("A");
-                for attribute in 0..attributes {
-                    if attribute > 0 {
-                        fragment.reattribute();
-                    }
-                    for _ in 0..values {
-                        fragment.raw(&[0x05, 0x00]);
-                    }
-                }
-                fragment.close_empty();
-            } else {
-                fragment.template_ref(vec![level(below - 1, attributes, values)]);
-            }
+            null_attributes_element(fragment, false, attributes, values);
             fragment.eof();
         })
-    }
+    };
     synthetic_evtx(|record| {
         record
             .fragment_header()
@@ -260,10 +287,31 @@ fn null_attributes(instances: u32, uses: usize, attributes: usize, values: usize
                     }
                     root.end_element();
                 },
-                vec![level(instances - 1, attributes, values)],
+                vec![nested_refs(instances - 1, element)],
             )
             .eof();
     })
+}
+
+/// An empty `<X>` with `attributes` attributes that share the name `A`, of `values` NULL values
+/// each.
+fn null_attributes_element(
+    x: &mut BinXml,
+    in_template_definition: bool,
+    attributes: usize,
+    values: usize,
+) {
+    x.open_with_attributes("X", in_template_definition)
+        .attribute("A");
+    for attribute in 0..attributes {
+        if attribute > 0 {
+            x.reattribute();
+        }
+        for _ in 0..values {
+            x.null();
+        }
+    }
+    x.close_empty();
 }
 
 #[test]
@@ -417,21 +465,18 @@ fn shared_names(root: &mut BinXml, elements: usize, with_value: bool) {
 #[test]
 fn shared_names_are_capped() {
     // 9 instances of a template naming 1,000 elements with one long name: 72 MB.
-    fn level<'v>(below: u32) -> Value<'v> {
-        value(0x21, move |fragment| {
-            fragment.fragment_header();
-            if below == 0 {
-                fragment.text_element("Z", "z");
-            } else {
-                fragment.template_ref(vec![level(below - 1)]);
-            }
-            fragment.eof();
+    let z = || {
+        value(0x21, |fragment| {
+            fragment.fragment_header().text_element("Z", "z").eof();
         })
-    }
+    };
     let evtx = synthetic_evtx(|record| {
         record
             .fragment_header()
-            .template_instance(|root| shared_names(root, 1000, true), vec![level(8)])
+            .template_instance(
+                |root| shared_names(root, 1000, true),
+                vec![nested_refs(8, z)],
+            )
             .eof();
     });
     assert_fails_everywhere(&evtx, SIZE_ERROR);
@@ -466,8 +511,7 @@ fn rendered_before_chunk_error(evtx: &[u8]) -> Vec<(usize, usize)> {
             let chunk_errors = &pass[first_error..];
             assert!(chunk_errors.len() > 1);
             for err in chunk_errors {
-                let err = err.as_ref().unwrap_err();
-                assert!(err.contains(CHUNK_ERROR), "{err}");
+                assert_error(err, CHUNK_ERROR);
             }
             let rendered = &pass[..first_error];
             (
@@ -482,66 +526,27 @@ fn rendered_before_chunk_error(evtx: &[u8]) -> Vec<(usize, usize)> {
 fn chunks_are_capped() {
     // Records share their chunk's templates: each of these 40 instances of a template that names
     // 1,000 elements with one long name renders 8 MB of XML, 320 MB in all.
-    let evtx = synthetic_evtx_records(40, |i, record| {
-        record.fragment_header();
-        if i == 0 {
-            record.template_instance(|root| shared_names(root, 1000, false), vec![]);
-        } else {
-            record.template_ref(vec![]);
-        }
-        record.eof();
-    });
+    let evtx = records_of_one_template(40, |root| shared_names(root, 1000, false), Vec::new);
     for (rendered, bytes) in rendered_before_chunk_error(&evtx) {
         assert!(rendered >= 4, "{rendered}");
         assert!(bytes <= 64 << 20, "{bytes}");
     }
     // Records that fail on the node cap count too, and so do the nodes of records that render
     // little: each of these visits an element of 2,000 NULL attributes 64^3 times.
-    fn level<'v>(below: u32) -> Value<'v> {
-        if below == 0 {
-            value(0x00, |_| {})
-        } else {
-            value(0x21, move |fragment| {
-                fragment
-                    .fragment_header()
-                    .template_ref(vec![level(below - 1)])
-                    .eof();
-            })
-        }
-    }
-    let evtx = synthetic_evtx_records(10, |i, record| {
-        record.fragment_header();
-        if i == 0 {
-            record.template_instance(
-                |root| {
-                    root.open("R", true).close_start();
-                    root.open_with_attributes("X", true)
-                        .attribute("A")
-                        .raw(&[0x05, 0x00]);
-                    for _ in 1..2000 {
-                        root.reattribute().raw(&[0x05, 0x00]);
-                    }
-                    root.close_empty();
-                    for _ in 0..64 {
-                        root.substitution(0, 0x21);
-                    }
-                    root.end_element();
-                },
-                vec![level(3)],
-            );
-        } else {
-            record.template_ref(vec![level(3)]);
-        }
-        record.eof();
-    });
-    for pass in render_passes(&evtx, 32 << 20) {
-        assert_eq!(pass.len(), 10);
-        for (i, result) in pass.iter().enumerate() {
-            let err = result.as_ref().unwrap_err();
-            let error = if i < 4 { NODES_ERROR } else { CHUNK_ERROR };
-            assert!(err.contains(error), "record {}: {err}", i + 1);
-        }
-    }
+    let null = || value(0x00, |_| {});
+    let evtx = records_of_one_template(
+        10,
+        |root| {
+            root.open("R", true).close_start();
+            null_attributes_element(root, true, 2000, 1);
+            for _ in 0..64 {
+                root.substitution(0, 0x21);
+            }
+            root.end_element();
+        },
+        || vec![nested_refs(3, null)],
+    );
+    assert_chunk_spent(render_passes(&evtx, 32 << 20), 10, 4, NODES_ERROR);
     // A compiled template's fragment renders through the walkers, whose nodes count too: each of
     // these records visits 270,000 nodes in its `<F>`.
     let evtx = synthetic_evtx_records(16, |_, record| {
@@ -567,7 +572,7 @@ fn chunks_are_capped() {
                                 }
                                 root.end_element();
                             },
-                            vec![level(2)],
+                            vec![nested_refs(2, null)],
                         )
                         .end_element()
                         .eof();
@@ -580,27 +585,13 @@ fn chunks_are_capped() {
     }
     // So do records that the compiled lanes fail on the size cap.
     let evtx = synthetic_evtx_records(4, |_, record| shared_program(record));
-    for pass in render_passes(&evtx, 128 << 20) {
-        for (i, result) in pass.iter().enumerate() {
-            let err = result.as_ref().unwrap_err();
-            let error = if i < 3 { SIZE_ERROR } else { CHUNK_ERROR };
-            assert!(err.contains(error), "record {}: {err}", i + 1);
-        }
-    }
+    assert_chunk_spent(render_passes(&evtx, 128 << 20), 4, 3, SIZE_ERROR);
 }
 
 #[test]
 fn each_pass_over_a_chunk_has_its_budget() {
     // As in `chunks_are_capped`: 8 MB of XML a record.
-    let evtx = synthetic_evtx_records(10, |i, record| {
-        record.fragment_header();
-        if i == 0 {
-            record.template_instance(|root| shared_names(root, 1000, false), vec![]);
-        } else {
-            record.template_ref(vec![]);
-        }
-        record.eof();
-    });
+    let evtx = records_of_one_template(10, |root| shared_names(root, 1000, false), Vec::new);
     let mut parser = EvtxParser::from_buffer(evtx).unwrap();
     let mut data = parser.chunks().next().unwrap().unwrap();
     let mut chunk = data.parse(Arc::new(ParserSettings::new())).unwrap();
@@ -634,29 +625,13 @@ fn long_level_name() -> ParserSettings {
 
 #[test]
 fn rendering_info_counts_toward_the_caps() {
-    let evtx = synthetic_evtx_records(5, |i, record| {
-        record.fragment_header();
-        if i == 0 {
-            record.template_instance(
-                |event| {
-                    open_event(event);
-                    event.end_element();
-                },
-                vec![],
-            );
-        } else {
-            record.template_ref(vec![]);
-        }
-        record.eof();
-    });
-    for pass in render_passes_with(&evtx, 100 << 20, long_level_name()) {
-        assert_eq!(pass.len(), 5);
-        for (i, result) in pass.iter().enumerate() {
-            let err = result.as_ref().unwrap_err();
-            let error = if i < 3 { SIZE_ERROR } else { CHUNK_ERROR };
-            assert!(err.contains(error), "record {}: {err}", i + 1);
-        }
-    }
+    let event = |event: &mut BinXml| {
+        open_event(event);
+        event.end_element();
+    };
+    let evtx = records_of_one_template(5, event, Vec::new);
+    let passes = render_passes_with(&evtx, 100 << 20, long_level_name());
+    assert_chunk_spent(passes, 5, 3, SIZE_ERROR);
 }
 
 /// A record whose 100 values each hold an instance of one template that renders to 800 KB of
@@ -729,14 +704,7 @@ fn visits_then_output(a: u16, b: u16) -> Vec<u8> {
                             fragment.fragment_header();
                             if slot == 0 {
                                 fragment.template_instance(
-                                    |x| {
-                                        (x.open_with_attributes("X", true).attribute("A"))
-                                            .raw(&[0x05, 0x00]);
-                                        for _ in 1..2000 {
-                                            x.reattribute().raw(&[0x05, 0x00]);
-                                        }
-                                        x.close_empty();
-                                    },
+                                    |x| null_attributes_element(x, true, 2000, 1),
                                     vec![],
                                 );
                             } else if slot == a {
@@ -759,18 +727,15 @@ fn visits_then_output(a: u16, b: u16) -> Vec<u8> {
 #[test]
 fn size_errors_are_not_rendered_again_from_the_tree() {
     // The compiled lanes don't count nodes, and fail this record on its `<B>`s: 40 MB of XML,
-    // 20 MB of JSON. Rendering it again from its tree would first build the 1.2 million
-    // attributes of its `<A>`s, and then fail on their visits.
-    assert_fails_everywhere(&visits_then_output(600, 50), SIZE_ERROR);
+    // 20 MB of JSON. Rendering it again from its tree would first build the 600,000 attributes
+    // of its `<A>`s, and then fail on their visits.
+    assert_fails_everywhere(&visits_then_output(300, 50), SIZE_ERROR);
     // Nor is a record that its `RenderingInfo` takes past the cap. The records API renders a
     // record from its tree when it has an `.MTA` file, so there this one fails on the visits.
-    let passes = render_passes_with(&visits_then_output(600, 0), 100 << 20, long_level_name());
-    for (pass, error) in passes
-        .iter()
-        .zip([NODES_ERROR, NODES_ERROR, SIZE_ERROR, SIZE_ERROR])
-    {
-        let err = pass[0].as_ref().unwrap_err();
-        assert!(err.contains(error), "{err}");
+    let passes = render_passes_with(&visits_then_output(300, 0), 100 << 20, long_level_name());
+    let errors = [NODES_ERROR, NODES_ERROR, SIZE_ERROR, SIZE_ERROR];
+    for (pass, error) in passes.iter().zip(errors) {
+        assert_error(&pass[0], error);
     }
 }
 
@@ -817,20 +782,6 @@ fn array_items_are_capped() {
 fn output_after_instances(uses: u16) -> Vec<u8> {
     let name = "N".repeat(4000);
     let name = &name;
-    fn link<'v>(below: u32) -> Value<'v> {
-        if below == 0 {
-            value(0x01, |text| {
-                text.utf16("x");
-            })
-        } else {
-            value(0x21, move |fragment| {
-                fragment
-                    .fragment_header()
-                    .template_ref(vec![link(below - 1)])
-                    .eof();
-            })
-        }
-    }
     synthetic_evtx(|record| {
         record
             .fragment_header()
@@ -877,7 +828,7 @@ fn output_after_instances(uses: u16) -> Vec<u8> {
                                         }
                                         t.end_element();
                                     },
-                                    vec![link(7)],
+                                    vec![nested_refs(7, string_x)],
                                 );
                             }
                             fragment.eof();

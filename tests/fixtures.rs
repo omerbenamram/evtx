@@ -276,6 +276,11 @@ impl BinXml {
             .end_element()
     }
 
+    /// A NULL value.
+    pub fn null(&mut self) -> &mut Self {
+        self.u8(0x05).u8(0x00)
+    }
+
     /// A string value.
     pub fn text(&mut self, text: &str) -> &mut Self {
         self.u8(0x05)
@@ -410,47 +415,46 @@ pub fn synthetic_evtx_records(count: usize, mut record: impl FnMut(usize, &mut B
 
 /// An `.MTA` file with one publisher, `provider`, whose level 0 is named `level`.
 pub fn mta_naming_level(provider: &str, level: &str) -> Vec<u8> {
-    fn utf16(text: &str) -> Vec<u8> {
-        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    // `text` in UTF-16, after its size in bytes.
+    fn counted(text: &str) -> Vec<u8> {
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut counted = (utf16.len() as u32).to_le_bytes().to_vec();
+        counted.extend(utf16);
+        counted
     }
     // One page whose one entry, number 0, follows its header. Its next page is itself: the last.
     fn section(entry: Vec<u8>) -> Vec<u8> {
         const PAGE_HEADER_SIZE: usize = 888;
+        // Where the page header lists the offsets of the page's entries.
+        const PAGE_ENTRIES: usize = 88;
         let mut page = vec![0; PAGE_HEADER_SIZE];
         page[..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        page[88..96].copy_from_slice(&(PAGE_HEADER_SIZE as u64).to_le_bytes());
+        page[PAGE_ENTRIES..][..8].copy_from_slice(&(PAGE_HEADER_SIZE as u64).to_le_bytes());
         page.extend(0u32.to_le_bytes());
         page.extend((entry.len() as u32).to_le_bytes());
         page.extend(entry);
         page
     }
-    let mut message = (utf16(level).len() as u32).to_le_bytes().to_vec();
-    message.extend(utf16(level));
     // Level 0 named by message 0, then no tasks, opcodes or keywords, then the name.
     let mut publisher: Vec<u8> = [1u32, 0, 0, 0, 0, 0].map(u32::to_le_bytes).concat();
-    publisher.extend((utf16(provider).len() as u32).to_le_bytes());
-    publisher.extend(utf16(provider));
-
+    publisher.extend(counted(provider));
     let sections = [
-        ("EVT", Vec::new()),
-        ("MSG", section(message)),
-        ("PUB", section(publisher)),
+        (counted("EVT"), Vec::new()),
+        (counted("MSG"), section(counted(level))),
+        (counted("PUB"), section(publisher)),
     ];
-    let table: usize = sections
-        .iter()
-        .map(|(name, _)| 20 + utf16(name).len())
-        .sum();
+    // Each section's descriptor: its offset and size (u64 each), then its name.
+    let table: usize = sections.iter().map(|(name, _)| 16 + name.len()).sum();
     let mut file = b"MTAFile\0".to_vec();
     // Version 1.1, then the size and length of the section table.
     for value in [1, 1, table as u32, sections.len() as u32] {
         file.extend(u32::to_le_bytes(value));
     }
-    let mut offset = 24 + table;
+    let mut offset = file.len() + table;
     for (name, data) in &sections {
         file.extend((offset as u64).to_le_bytes());
         file.extend((data.len() as u64).to_le_bytes());
-        file.extend((utf16(name).len() as u32).to_le_bytes());
-        file.extend(utf16(name));
+        file.extend(name);
         offset += data.len();
     }
     for (_, data) in sections {
