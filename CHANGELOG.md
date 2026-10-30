@@ -17,6 +17,16 @@ and this project adheres to
 - A BinXML value holding no element rendered as an empty `Event` element
   (`"Event": null` in JSON), as in record 17 of the LanguagePackSetup sample. It
   now renders nothing.
+- A crafted record could make evtx do work exponential in its size: a template
+  that uses a value in several places, whose value holds another instance of
+  the template, and so on a few levels down. A 600-byte record rendered to
+  600 MB of XML, and the records API could take hours to start rendering such a
+  record. A record now fails with an error once its output passes 16 MiB, and
+  the records API no longer stalls. A record whose values nest elements more
+  than 512 levels deep, which overflowed the stack and aborted the process, now
+  fails with an error too.
+- A BinXML value used in two places of its template, at different depths, was
+  indented in both as in the last one.
 
 ### Security
 

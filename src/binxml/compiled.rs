@@ -17,9 +17,9 @@
 use crate::ChunkOffset;
 use crate::ParserSettings;
 use crate::binxml::ir::{
-    IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
-    binxml_slice_offset_in, build_fragment_from_binxml_bytes, read_template_definition_header_at,
-    template_body_at,
+    IrTemplateCache, MAX_ELEMENT_DEPTH, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent,
+    ValidatedValue, binxml_slice_offset_in, build_fragment_from_binxml_bytes,
+    read_template_definition_header_at, template_body_at,
 };
 use crate::binxml::name::read_name_link;
 use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
@@ -36,6 +36,18 @@ use std::sync::Arc;
 
 const INDENT_WIDTH: u16 = 2;
 const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+
+/// Output past which rendering an element fails its record. Real records render to a few
+/// KiB, but a crafted one can use a value in several places of a template, at every level of
+/// nesting, and so render to a size exponential in its own. The compiled lanes leave values
+/// used twice to the tree walkers (see `Preflight::scan_instance`), which check the size
+/// before each element's children.
+const MAX_RECORD_OUTPUT: usize = 16 << 20;
+
+/// Deepest element nesting the tree walkers render, recursing once per level: the cap on
+/// one BinXML stream. Values nest streams, so a crafted record could otherwise be tens of
+/// thousands of elements deep and overflow the stack.
+const MAX_RENDER_DEPTH: u16 = MAX_ELEMENT_DEPTH as u16;
 
 /// A `lits` byte range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -581,12 +593,15 @@ struct XmlCompiler<'t, 'a> {
     /// sites are errors instead of ops, and any error is a real record error.
     /// When false (template compilation), any error just means "not cacheable".
     materialized: bool,
+    /// How long `lits` may grow (see [`MAX_RECORD_OUTPUT`]).
+    out_limit: usize,
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
     fn new(arena: &'t IrArena<'a>, lits: Vec<u8>, indent_on: bool, materialized: bool) -> Self {
         XmlCompiler {
             arena,
+            out_limit: lits.len() + MAX_RECORD_OUTPUT,
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -618,6 +633,16 @@ fn element_in_text() -> EvtxError {
 
 fn unresolved_nested_json() -> EvtxError {
     model_err("unresolved nested instance in compiled JSON")
+}
+
+#[cold]
+fn output_too_large() -> EvtxError {
+    model_err("record renders to more than 16 MiB")
+}
+
+#[cold]
+fn nested_too_deeply() -> EvtxError {
+    model_err("rendered elements nested too deeply")
 }
 
 fn model_err(msg: &'static str) -> EvtxError {
@@ -699,6 +724,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
     lit_run_methods!(XOp);
 
+    #[inline(always)]
     fn indent_str(&mut self, level: u16) {
         if self.indent_on {
             self.lits.extend(std::iter::repeat_n(b' ', level as usize));
@@ -818,6 +844,14 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 self.close_tag_inline(element);
             }
             ChildrenKind::StaticLines => {
+                // A materialized tree shares a value's elements among the places it is used
+                // in, which can repeat them many times over, and nests them there.
+                if indent / INDENT_WIDTH + 1 >= MAX_RENDER_DEPTH {
+                    return Err(nested_too_deeply());
+                }
+                if self.lits.len() > self.out_limit {
+                    return Err(output_too_large());
+                }
                 self.lits.push(b'>');
                 self.newline();
                 for node in &element.children {
@@ -1516,7 +1550,12 @@ impl Preflight {
             if ends_stream(frag, nend - s.off as usize) != Some(true) {
                 return Err(PreflightBail);
             }
-            if self.nested.len() >= usize::from(u16::MAX) {
+            // A nested instance's program is compiled for the one place it renders in (its
+            // indentation), and a value used in several places at every level of nesting
+            // would be scanned once per path through the templates: the slow lane renders
+            // values used twice.
+            if self.nested.len() >= usize::from(u16::MAX) || self.slots[idx].nested_idx().is_some()
+            {
                 return Err(PreflightBail);
             }
             self.slots[idx].nested = self.nested.len() as u16;
@@ -1640,6 +1679,7 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     let values = RawValues {
         pf,
         data: chunk.data,
+        out_limit: out.len() + MAX_RECORD_OUTPUT,
     };
     let rendering_info = match chunk.settings.get_mta() {
         None => None,
@@ -1944,6 +1984,10 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
     if let Some(inst) = pf.nested(s) {
         return exec(inst, progs, pf, chunk, cache, vr, out);
     }
+    // A fragment used in several places of a template renders in each.
+    if out.len() > pf.out_limit() {
+        return Err(output_too_large());
+    }
     if let Some((arena, roots)) = pf.fragment(s) {
         return render_fragment_roots_xml(arena, roots, indent, indent_on, out);
     }
@@ -2079,12 +2123,17 @@ struct JsonCompiler<'t, 'a> {
     vr: ValueRenderer,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
     separate: bool,
+    /// How long `lits` may grow (see [`MAX_RECORD_OUTPUT`]).
+    out_limit: usize,
+    /// Elements open in the materialized walk (see [`MAX_RENDER_DEPTH`]).
+    depth: u16,
 }
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
     fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool) -> Self {
         JsonCompiler {
             tree,
+            out_limit: lits.len() + MAX_RECORD_OUTPUT,
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -2093,6 +2142,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             expand_slots: Vec::new(),
             vr: ValueRenderer::new(),
             separate,
+            depth: 0,
         }
     }
 }
@@ -2538,11 +2588,14 @@ pub(crate) trait ValueSource<'a> {
     fn bytes(&self, _slot: &Self::Value) -> Option<&'a [u8]> {
         None
     }
+    /// How long `out` may grow while rendering this record (see [`MAX_RECORD_OUTPUT`]).
+    fn out_limit(&self) -> usize;
 }
 
 struct RawValues<'s, 'a> {
     pf: &'s Preflight,
     data: &'a [u8],
+    out_limit: usize,
 }
 
 impl<'a> RawValues<'_, 'a> {
@@ -2636,11 +2689,16 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
     fn bytes(&self, s: &RawSlot) -> Option<&'a [u8]> {
         Some(s.bytes(self.data))
     }
+    #[inline(always)]
+    fn out_limit(&self) -> usize {
+        self.out_limit
+    }
 }
 
 struct DecodedValues<'s, 'a> {
     content: &'s TemplateContent<'a>,
     nested: &'s mut Vec<Option<Instance<usize>>>,
+    out_limit: usize,
 }
 
 impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
@@ -2709,6 +2767,10 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
             _ => None,
         }
     }
+    #[inline(always)]
+    fn out_limit(&self) -> usize {
+        self.out_limit
+    }
 }
 
 impl<'a> DecodedValues<'_, 'a> {
@@ -2774,6 +2836,10 @@ impl<'a> DecodedValues<'_, 'a> {
             let (id, child_indent) = progs.programs[prog].elem_slots()[item];
             match input.values.get(usize::from(id)) {
                 Some(ValidatedValue::Template(id)) => {
+                    // Used twice: see `Preflight::scan_instance`.
+                    if self.nested[*id].is_some() {
+                        return None;
+                    }
                     let child = self.prepare(*id, depth + 1, child_indent, false, chunk, progs)?;
                     self.nested[*id] = Some(child);
                 }
@@ -2804,6 +2870,7 @@ pub(crate) fn try_render_validated<'a>(
     let mut values = DecodedValues {
         content,
         nested: &mut caches.nested,
+        out_limit: out.len() + MAX_RECORD_OUTPUT,
     };
     if json {
         values.render(chunk, &mut caches.json, out)
@@ -3449,6 +3516,16 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         omit_attributes: bool,
         has_text: bool,
     ) -> Result<()> {
+        // A materialized tree shares a value's elements among the places it is used in,
+        // which can repeat them many times over, and nests them there.
+        if self.depth >= MAX_RENDER_DEPTH {
+            return Err(nested_too_deeply());
+        }
+        if self.lits.len() > self.out_limit {
+            return Err(output_too_large());
+        }
+        self.depth += 1;
+
         // Flatten detection: one non-empty `Data[@Name]` selects named form.
         let mut should_flatten_named_data = false;
         if in_data_container {
@@ -3593,6 +3670,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
 
         self.lits.push(b'}');
+        self.depth -= 1;
         Ok(())
     }
 }

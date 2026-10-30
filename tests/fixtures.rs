@@ -143,6 +143,9 @@ pub fn render_record(evtx: &[u8], id: u64) -> (String, String) {
 pub struct BinXml {
     bytes: Vec<u8>,
     base: u32,
+    /// The template definition `template_instance` wrote last, here or in an enclosing
+    /// stream, for `template_ref`.
+    definition: Option<u32>,
 }
 
 impl BinXml {
@@ -150,6 +153,7 @@ impl BinXml {
         BinXml {
             bytes: Vec::new(),
             base,
+            definition: None,
         }
     }
 
@@ -174,7 +178,7 @@ impl BinXml {
         self.raw(&v.to_le_bytes())
     }
 
-    fn utf16(&mut self, s: &str) -> &mut Self {
+    pub fn utf16(&mut self, s: &str) -> &mut Self {
         for unit in s.encode_utf16() {
             self.u16(unit);
         }
@@ -247,10 +251,23 @@ impl BinXml {
         definition(&mut body);
         body.eof();
         self.u32(body.bytes.len() as u32).raw(&body.bytes);
+        self.definition = Some(definition_offset);
+        self.value(value_type, value)
+    }
 
-        // The value count and descriptor (size, type, padding), then the value.
+    /// An instance of the template `template_instance` defined last, with one value.
+    pub fn template_ref(&mut self, value_type: u8, value: impl FnOnce(&mut BinXml)) -> &mut Self {
+        let definition = self.definition.expect("a template_instance first");
+        self.u8(0x0c).u8(0x01).u32(1).u32(definition);
+        self.value(value_type, value)
+    }
+
+    /// A template instance's values: their count and descriptor (size, type, padding), then
+    /// the one value.
+    fn value(&mut self, value_type: u8, value: impl FnOnce(&mut BinXml)) -> &mut Self {
         self.u32(1);
         let mut bytes = BinXml::at(self.pos() + 4);
+        bytes.definition = self.definition;
         value(&mut bytes);
         self.u16(bytes.bytes.len() as u16)
             .u8(value_type)
