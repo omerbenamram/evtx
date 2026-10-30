@@ -119,7 +119,7 @@ fn render_chunk<P: StoredProgram>(
             let _ = writeln!(&mut data, "Record {}{}", event_record_id, suffix);
         }
         let body_start = data.len();
-        let compiled_done = try_render_compiled(
+        let rendered = try_render_compiled(
             raw.bytes,
             event_record_id,
             chunk_ref,
@@ -128,15 +128,15 @@ fn render_chunk<P: StoredProgram>(
             &mut preflight,
             &mut value_renderer,
             &mut data,
-        );
-        let rendered = if compiled_done {
-            Ok(())
-        } else {
+        )
+        .and_then(|compiled| {
+            if compiled {
+                return Ok(());
+            }
             // Slow lane: fully materialize, then run the same walker the
             // compiler uses — one output semantics for every record shape.
-            // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
-            build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)
-                .and_then(|mut tree| {
+            build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache).and_then(
+                |mut tree| {
                     if let Some(mta) = mta {
                         crate::mta::add_rendering_info(
                             &mut tree,
@@ -146,9 +146,11 @@ fn render_chunk<P: StoredProgram>(
                         );
                     }
                     P::render_tree(&tree, settings, &mut data)
-                })
-                .map_err(|err| EvtxError::record(event_record_id, err))
-        };
+                },
+            )
+        })
+        // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
+        .map_err(|err| EvtxError::record(event_record_id, err));
         match rendered {
             Ok(()) => {
                 if raw.recovered {

@@ -145,7 +145,7 @@ impl<'a> EvtxRecord<'a> {
                         &mut caches,
                         json,
                         data,
-                    ) {
+                    )? {
                         return Ok(());
                     }
                 }
@@ -376,7 +376,8 @@ mod validated_content_tests {
         let mut caches = RenderCaches::default();
         let compiled = [false, true].map(|json| {
             let mut output = b"prefix".to_vec();
-            let compiled = try_render_validated(&content, &chunk, &mut caches, json, &mut output);
+            let compiled =
+                try_render_validated(&content, &chunk, &mut caches, json, &mut output).unwrap();
             if !compiled {
                 assert_eq!(output, b"prefix", "partial output must be rolled back");
                 let mut materialized = Vec::new();

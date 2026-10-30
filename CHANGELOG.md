@@ -23,14 +23,27 @@ and this project adheres to
   600 MB of XML, and the records API could take hours to start rendering such a
   record. A template that uses one long value or one long name thousands of
   times, or many instances of such a template, could also render a record to
-  gigabytes. A record now fails with an error once its output passes 16 MiB,
-  and the records API no longer stalls. A record whose values nest elements
-  more than 512 levels deep, which overflowed the stack and aborted the
-  process, now fails with an error too.
+  gigabytes, and an array of thousands of items deep in a record to hundreds
+  of megabytes. A record now fails with an error once its output passes
+  16 MiB, whichever API and format renders it, and the records API no longer
+  stalls. A record also fails once rendering it visits more than 2^20 nodes,
+  counting a value's nodes once for each place the value is used: elements
+  with thousands of empty attributes render nothing, and kept evtx busy for a
+  minute per record.
+- A record whose values nest elements more than 512 levels deep overflowed the
+  stack and aborted the process. It now fails with an error, unless evtx
+  renders it from a compiled template, which doesn't recurse per element and
+  renders it in full.
+- Crafted templates could make evtx keep hundreds of megabytes of compiled
+  templates per chunk for the rest of the parse. Each chunk now compiles at
+  most 16 MiB of them and renders the records that would need more the slower
+  way, and at most 64 MiB are kept for reuse across chunks.
 - A BinXML value used in two places of its template, at different depths, was
   indented in both as in the last one.
 - In JSON, an element with more than 65,536 children of one name numbered them
-  from the start again, repeating keys. Debug builds panicked.
+  from the start again, repeating keys. Debug builds panicked. Numbering the
+  children of an element with thousands of names took time quadratic in their
+  number.
 
 ### Security
 

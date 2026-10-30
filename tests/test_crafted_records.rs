@@ -8,6 +8,7 @@ use evtx::{EvtxParser, ParserSettings, RenderedChunkItem};
 use fixtures::*;
 
 const SIZE_ERROR: &str = "record renders to more than 16 MiB";
+const NODES_ERROR: &str = "record renders more than 2^20 nodes";
 const DEPTH_ERROR: &str = "rendered elements nested too deeply";
 
 /// A record whose template nests its root `depth` elements deep, around `uses` elements that
@@ -82,6 +83,13 @@ fn render_everywhere(evtx: &[u8]) -> Vec<Result<usize, String>> {
         .chunks_xml_bytes(false)
         .chain(parser().chunks_json_bytes(false))
     {
+        // The chunk's buffer keeps the capacity its records took. For each record here, the
+        // checks that stop a record as it renders keep its output under twice the cap.
+        assert!(
+            chunk.data.capacity() <= 32 << 20,
+            "{} bytes",
+            chunk.data.capacity()
+        );
         let mut start = 0;
         for item in &chunk.items {
             results.push(match item {
@@ -98,11 +106,22 @@ fn render_everywhere(evtx: &[u8]) -> Vec<Result<usize, String>> {
 }
 
 fn assert_fails_everywhere(evtx: &[u8], error: &str) {
+    assert_fails_as(evtx, Some(error), Some(error));
+}
+
+/// Record 1 of `evtx` fails with `xml` in XML and `json` in JSON, in both APIs. `None` for a
+/// format that renders it, within the cap.
+fn assert_fails_as(evtx: &[u8], xml: Option<&str>, json: Option<&str>) {
     let results = render_everywhere(evtx);
     assert_eq!(results.len(), 4);
-    for result in results {
-        let err = result.unwrap_err();
-        assert!(err.contains(error), "{err}");
+    for (result, error) in results.into_iter().zip([xml, json, xml, json]) {
+        match error {
+            Some(error) => {
+                let err = result.unwrap_err();
+                assert!(err.contains(error), "{err}");
+            }
+            None => assert!(result.unwrap() <= 16 << 20),
+        }
     }
 }
 
@@ -174,48 +193,106 @@ fn value_used_at_two_depths_renders_at_each() {
 fn fan_out_is_capped() {
     // 64 uses, 8 instances deep: the string would render 64^8 times, and preparing the
     // records API's compiled lanes took 64^7 steps.
-    assert_fails_everywhere(&fan_out(8, 64, 1), SIZE_ERROR);
-    // Past the nesting the compiled lanes take, each instance doubles the output.
-    assert_fails_everywhere(&fan_out(40, 2, 1), SIZE_ERROR);
+    assert_fails_everywhere(&fan_out(8, 64, 1), NODES_ERROR);
+    // Past the nesting the compiled lanes take, each instance doubles the output. XML indents
+    // it, so it reaches 16 MiB first.
+    assert_fails_as(&fan_out(40, 2, 1), Some(SIZE_ERROR), Some(NODES_ERROR));
     // JSON renders unnamed `Data` in an `EventData` as one array.
-    assert_fails_everywhere(&fan_out_named(["EventData", "Data"], 8, 64, 1), SIZE_ERROR);
+    assert_fails_everywhere(&fan_out_named(["EventData", "Data"], 8, 64, 1), NODES_ERROR);
 }
 
-/// A record whose template uses its value, a 4,000-character string, 8,000 times between what
-/// `open` and `close` write: 32 MB.
-fn repeated_value(open: fn(&mut BinXml), close: fn(&mut BinXml)) -> Vec<u8> {
+/// A record whose template uses its value, an element with `attributes` attributes of `values`
+/// NULL values each, `uses` times. The value holds another instance of the template, `instances`
+/// deep: the element is visited `uses.pow(instances)` times, and renders to a few bytes.
+fn null_attributes(instances: u32, uses: usize, attributes: usize, values: usize) -> Vec<u8> {
+    fn level<'v>(below: u32, attributes: usize, values: usize) -> Value<'v> {
+        value(0x21, move |fragment| {
+            fragment.fragment_header();
+            if below == 0 {
+                fragment.open_with_attributes("X", false).attribute("A");
+                for attribute in 0..attributes {
+                    if attribute > 0 {
+                        fragment.reattribute();
+                    }
+                    for _ in 0..values {
+                        fragment.raw(&[0x05, 0x00]);
+                    }
+                }
+                fragment.close_empty();
+            } else {
+                fragment.template_ref(vec![level(below - 1, attributes, values)]);
+            }
+            fragment.eof();
+        })
+    }
     synthetic_evtx(|record| {
         record
             .fragment_header()
             .template_instance(
-                |l| {
-                    open(l);
-                    for _ in 0..8000 {
-                        l.substitution(0, 0x01);
+                |root| {
+                    root.open("R", true).close_start();
+                    for _ in 0..uses {
+                        root.substitution(0, 0x21);
                     }
-                    close(l);
+                    root.end_element();
                 },
-                vec![value(0x01, |text| {
-                    text.utf16(&"x".repeat(4000));
-                })],
+                vec![level(instances - 1, attributes, values)],
             )
             .eof();
     })
 }
 
 #[test]
+fn visits_are_capped() {
+    // 64^4 visits of 6,500 attributes that render nothing kept the walkers busy for a minute.
+    assert_fails_everywhere(&null_attributes(4, 64, 6500, 1), NODES_ERROR);
+    // 64^3 visits of one attribute of 6,500 values: 1.7 billion values read.
+    assert_fails_everywhere(&null_attributes(3, 64, 1, 6500), NODES_ERROR);
+}
+
+/// A record whose template uses its value, a string of `chars` characters, `uses` times between
+/// what `open` and `close` write.
+fn repeated_value(
+    uses: usize,
+    chars: usize,
+    open: fn(&mut BinXml),
+    close: fn(&mut BinXml),
+) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |l| {
+                    open(l);
+                    for _ in 0..uses {
+                        l.substitution(0, 0x01);
+                    }
+                    close(l);
+                },
+                vec![value(0x01, |text| {
+                    text.utf16(&"x".repeat(chars));
+                })],
+            )
+            .eof();
+    })
+}
+
+fn open_l(l: &mut BinXml) {
+    l.open("L", true).close_start();
+}
+
+fn close_l(l: &mut BinXml) {
+    l.end_element();
+}
+
+#[test]
 fn repeated_values_are_capped() {
-    // In an element, in an attribute, and after an element.
-    let in_element = repeated_value(
-        |l| {
-            l.open("L", true).close_start();
-        },
-        |l| {
-            l.end_element();
-        },
-    );
-    assert_fails_everywhere(&in_element, SIZE_ERROR);
+    // A 4,500-character string 8,000 times, 36 MB: in an element, in an attribute, and after an
+    // element.
+    assert_fails_everywhere(&repeated_value(8000, 4500, open_l, close_l), SIZE_ERROR);
     let in_attribute = repeated_value(
+        8000,
+        4500,
         |l| {
             l.open_with_attributes("L", true).attribute("A");
         },
@@ -225,15 +302,15 @@ fn repeated_values_are_capped() {
     );
     assert_fails_everywhere(&in_attribute, SIZE_ERROR);
     let after_element = repeated_value(
+        8000,
+        4500,
         |l| {
             l.open("L", true)
                 .close_start()
                 .open("E", true)
                 .close_empty();
         },
-        |l| {
-            l.end_element();
-        },
+        close_l,
     );
     assert_fails_everywhere(&after_element, SIZE_ERROR);
     // 50 places hold an element that holds a 1,000-character string 1,000 times: 50 MB.
@@ -269,7 +346,7 @@ fn repeated_values_are_capped() {
             .eof();
     });
     assert_fails_everywhere(&evtx, SIZE_ERROR);
-    // 4,096 places in an `EventData` hold 16 `Data` of 300 characters: 20 MB, which JSON
+    // 4,096 places in an `EventData` hold 16 `Data` of 600 characters: 40 MB, which JSON
     // renders as one array.
     let evtx = synthetic_evtx(|record| {
         record
@@ -286,7 +363,7 @@ fn repeated_values_are_capped() {
                 vec![value(0x21, |fragment| {
                     fragment.fragment_header();
                     for _ in 0..16 {
-                        fragment.text_element("Data", &"x".repeat(300));
+                        fragment.text_element("Data", &"x".repeat(600));
                     }
                     fragment.eof();
                 })],
@@ -315,7 +392,7 @@ fn shared_names(root: &mut BinXml, elements: usize, with_value: bool) {
 
 #[test]
 fn shared_names_are_capped() {
-    // 8 instances of a template naming 1,000 elements with one long name: 64 MB.
+    // 9 instances of a template naming 1,000 elements with one long name: 72 MB.
     fn level<'v>(below: u32) -> Value<'v> {
         value(0x21, move |fragment| {
             fragment.fragment_header();
@@ -330,18 +407,18 @@ fn shared_names_are_capped() {
     let evtx = synthetic_evtx(|record| {
         record
             .fragment_header()
-            .template_instance(|root| shared_names(root, 1000, true), vec![level(7)])
+            .template_instance(|root| shared_names(root, 1000, true), vec![level(8)])
             .eof();
     });
     assert_fails_everywhere(&evtx, SIZE_ERROR);
-    // One element with 3,000 attributes that share an 8,000-character name: 24 MB.
+    // One element with 3,000 attributes that share an 11,500-character name: 35 MB.
     let evtx = synthetic_evtx(|record| {
         record
             .fragment_header()
             .template_instance(
                 |root| {
                     root.open_with_attributes("R", true)
-                        .attribute(&"N".repeat(8000))
+                        .attribute(&"N".repeat(11500))
                         .text("x");
                     for _ in 1..3000 {
                         root.reattribute().text("x");
@@ -357,14 +434,14 @@ fn shared_names_are_capped() {
 
 #[test]
 fn programs_shared_by_many_instances_are_capped() {
-    // 60 values each hold an instance of one template that renders to 800 KB of XML.
+    // 100 values each hold an instance of one template that renders to 800 KB of XML.
     let evtx = synthetic_evtx(|record| {
         record
             .fragment_header()
             .template_instance(
                 |root| {
                     root.open("R", true).close_start();
-                    for slot in 0..60 {
+                    for slot in 0..100 {
                         root.open("A", true)
                             .close_start()
                             .substitution(slot, 0x21)
@@ -372,7 +449,7 @@ fn programs_shared_by_many_instances_are_capped() {
                     }
                     root.end_element();
                 },
-                (0..60)
+                (0..100)
                     .map(|slot| {
                         value(0x21, move |fragment| {
                             fragment.fragment_header();
@@ -392,6 +469,166 @@ fn programs_shared_by_many_instances_are_capped() {
             .eof();
     });
     assert_fails_everywhere(&evtx, SIZE_ERROR);
+}
+
+/// A template that nests `<Data>` `depth` elements deep (their indentation is in its compiled
+/// program) and gives it an array of `items` empty strings.
+fn deep_array(depth: usize, items: usize) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("R", true).close_start();
+                    for _ in 1..depth {
+                        root.reopen(true).close_start();
+                    }
+                    root.open("Data", true)
+                        .close_start()
+                        .substitution(0, 0x81)
+                        .end_element();
+                    for _ in 0..depth {
+                        root.end_element();
+                    }
+                },
+                vec![value(0x81, move |array| {
+                    for _ in 0..items {
+                        array.raw(&[0, 0]);
+                    }
+                })],
+            )
+            .eof();
+    })
+}
+
+#[test]
+fn array_items_are_capped() {
+    // A 59 KB record: each of its 26,000 items repeats 1,022 spaces of indentation twice, 54 MB
+    // in all. JSON doesn't indent.
+    assert_fails_as(&deep_array(511, 26000), Some(SIZE_ERROR), None);
+}
+
+/// A record whose template holds `uses + 1` values: `uses` instances of a template of 124
+/// elements that share a 4,000-character name, then a chain of 8 instances of a template that
+/// ends with 110 more of them, after the value it holds.
+fn output_after_instances(uses: u16) -> Vec<u8> {
+    let name = "N".repeat(4000);
+    let name = &name;
+    fn link<'v>(below: u32) -> Value<'v> {
+        if below == 0 {
+            value(0x01, |text| {
+                text.utf16("x");
+            })
+        } else {
+            value(0x21, move |fragment| {
+                fragment
+                    .fragment_header()
+                    .template_ref(vec![link(below - 1)])
+                    .eof();
+            })
+        }
+    }
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Q", true).close_start();
+                    for slot in 0..=uses {
+                        root.open("P", true)
+                            .close_start()
+                            .substitution(slot, 0x21)
+                            .end_element();
+                    }
+                    root.end_element();
+                },
+                (0..=uses)
+                    .map(|slot| {
+                        value(0x21, move |fragment| {
+                            fragment.fragment_header();
+                            if slot == 0 {
+                                fragment.template_instance(
+                                    |u| {
+                                        u.open("U", true).close_start();
+                                        u.open(name, true).close_empty();
+                                        for _ in 1..124 {
+                                            u.reopen(true).close_empty();
+                                        }
+                                        u.end_element();
+                                    },
+                                    vec![],
+                                );
+                            } else if slot < uses {
+                                fragment.template_ref(vec![]);
+                            } else {
+                                fragment.template_instance(
+                                    |t| {
+                                        t.open("T", true).close_start();
+                                        t.open("A", true)
+                                            .close_start()
+                                            .substitution(0, 0x21)
+                                            .end_element();
+                                        t.open(name, true).close_empty();
+                                        for _ in 1..110 {
+                                            t.reopen(true).close_empty();
+                                        }
+                                        t.end_element();
+                                    },
+                                    vec![link(7)],
+                                );
+                            }
+                            fragment.eof();
+                        })
+                    })
+                    .collect(),
+            )
+            .eof();
+    })
+}
+
+#[test]
+fn output_after_the_last_instance_is_capped() {
+    // 16 instances of 1 MB take the output to just under 16 MiB, then each instance of the
+    // chain writes 880 KB more once the one it holds is rendered: 23 MB. JSON writes each name
+    // once, 11 MB.
+    assert_fails_as(&output_after_instances(16), Some(SIZE_ERROR), None);
+}
+
+/// A template that nests `depth` elements that share a name of `chars` CJK characters.
+fn long_named_nest(depth: usize, chars: usize) -> Vec<u8> {
+    let name = "\u{4e2d}".repeat(chars);
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open(&name, true).close_start();
+                    for _ in 2..depth {
+                        root.reopen(true).close_start();
+                    }
+                    root.reopen(true).close_empty();
+                    for _ in 1..depth {
+                        root.end_element();
+                    }
+                },
+                vec![],
+            )
+            .eof();
+    })
+}
+
+#[test]
+fn closing_tags_are_capped() {
+    // 348 elements whose name renders to 48 KB, too long to compile: opening them takes 16 MB
+    // and closing them 16 MB more. JSON writes each name once.
+    assert_fails_as(&long_named_nest(348, 16000), Some(SIZE_ERROR), None);
+}
+
+#[test]
+fn the_last_node_is_capped() {
+    // A 2,397-character string 7,000 times in an element: the output is under 16 MiB before
+    // the last one, and 1,800 bytes over after it.
+    assert_fails_everywhere(&repeated_value(7000, 2397, open_l, close_l), SIZE_ERROR);
 }
 
 /// A template that nests `outer` elements around two uses of its value, a template that
@@ -474,4 +711,57 @@ fn many_children_of_one_name_get_distinct_keys() {
         "{}",
         &json[json.len() - 100..]
     );
+}
+
+#[test]
+fn children_of_many_names_get_distinct_keys() {
+    // Each of 20 names twice, more names than real elements have: in the template, where a
+    // value adds two more, and in a value.
+    let names: Vec<String> = (0..20).map(|i| format!("N{i}")).collect();
+    let children = |parent: &mut BinXml, in_template_definition| {
+        for name in names.iter().chain(&names) {
+            parent.open(name, in_template_definition).close_empty();
+        }
+    };
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("R", true).close_start();
+                    root.open("T", true).close_start();
+                    children(root, true);
+                    root.substitution(0, 0x21).end_element();
+                    root.open("V", true)
+                        .close_start()
+                        .substitution(1, 0x21)
+                        .end_element();
+                    root.end_element();
+                },
+                vec![
+                    value(0x21, |fragment| {
+                        fragment.fragment_header();
+                        fragment.open("N0", false).close_empty();
+                        fragment.open("N19", false).close_empty();
+                        fragment.eof();
+                    }),
+                    value(0x21, |fragment| {
+                        fragment.fragment_header();
+                        children(fragment, false);
+                        fragment.eof();
+                    }),
+                ],
+            )
+            .eof();
+    });
+    let (_, json) = render_record(&evtx, 1);
+    let members: Vec<String> = (names.iter().map(|name| format!(r#""{name}":null"#)))
+        .chain(names.iter().map(|name| format!(r#""{name}_1":null"#)))
+        .collect();
+    let members = members.join(",");
+    assert!(
+        json.contains(&format!(r#""T":{{{members},"N0_2":null,"N19_2":null}}"#)),
+        "{json}"
+    );
+    assert!(json.contains(&format!(r#""V":{{{members}}}"#)), "{json}");
 }
