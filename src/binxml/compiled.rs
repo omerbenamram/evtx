@@ -48,22 +48,29 @@ const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 /// `MAX_PROGRAM_SIZE`.
 const MAX_RECORD_OUTPUT: usize = 16 << 20;
 
-/// Nodes the tree walkers may visit for one record: an element costs one, plus one for each of
-/// its attributes, their value nodes (charged as the walkers read them) and its children. A
-/// materialized tree shares a value's elements among the places it is used in, so a crafted
-/// record can make the walkers visit an element far more often than its output shows: an
-/// attribute with an empty value renders nothing. Real records cost a few thousand. The
-/// compiled lanes don't count nodes: they render each value once, from programs of bounded
-/// size, so their output bounds their work.
-const MAX_RENDER_NODES: usize = 1 << 20;
+/// Nodes one record may build and visit, which bounds its tree to about 30 MB. The samples'
+/// records cost at most 198. Each instance of a template copies its elements, so a crafted
+/// record can build a tree far larger than itself, and a tree can place a value's elements in
+/// several places, which the walkers then visit once for each. Building charges the nodes it
+/// creates: a template's nodes for each instance (an element the template shares once for
+/// each copy), a value's top-level elements where they are placed, and an element's nodes for
+/// each copy an array makes. Nodes parsed from the record's own bytes cost nothing: its size
+/// bounds them. On a tree that shares elements (see `IrArena::shared`), the walkers also charge
+/// their visits: an element costs one, plus one for each of its attributes, their value nodes
+/// (charged as the walkers read them) and its children. A crafted record could otherwise make
+/// them visit an element far more often than its output shows: an attribute with an empty
+/// value renders nothing. On any other tree they visit each node once, and building paid for
+/// it. The compiled lanes count only the templates and fragments they build: they render each
+/// value once, from programs of bounded size, so their output bounds the rest of their work.
+pub(crate) const MAX_RENDER_NODES: usize = 1 << 18;
 
 /// Output one pass over a chunk's records may render, failed records' included. Records share
 /// their chunk's templates, so a crafted chunk can hold hundreds of small records that each
 /// render close to `MAX_RECORD_OUTPUT`, and both chunk renderers hold a chunk's output until
-/// its last record. The samples' chunks render at most 234 KB and visit at most 16,300 nodes.
+/// its last record. The samples' chunks render at most 234 KB and cost at most 16,545 nodes.
 const MAX_CHUNK_OUTPUT: usize = 4 * MAX_RECORD_OUTPUT;
 
-/// Nodes one pass over a chunk's records may visit (see `MAX_CHUNK_OUTPUT`).
+/// Nodes one pass over a chunk's records may build and visit (see `MAX_CHUNK_OUTPUT`).
 const MAX_CHUNK_NODES: usize = 4 * MAX_RENDER_NODES;
 
 /// Most literal bytes a compiled program may hold. Real templates compile to a few KiB, but a
@@ -90,8 +97,9 @@ const MAX_RENDER_DEPTH: u16 = MAX_ELEMENT_DEPTH as u16;
 pub(crate) struct Budget {
     /// How long the output may grow (see [`MAX_RECORD_OUTPUT`] and [`MAX_PROGRAM_SIZE`]).
     out_limit: usize,
-    /// Nodes the tree walkers may still visit (see [`MAX_RENDER_NODES`]), shared by the
-    /// fragments a compiled lane hands them and the walk of the record's tree.
+    /// Nodes the record may still build and visit (see [`MAX_RENDER_NODES`]), shared by all
+    /// it builds and walks: its content at parse time, the fragments a compiled lane builds
+    /// and walks, and the record's tree.
     nodes: Cell<usize>,
 }
 
@@ -135,6 +143,13 @@ impl Budget {
         let left = self.nodes.get_mut();
         *left = left.saturating_sub(nodes);
     }
+
+    /// Charges building `nodes` nodes, before they are built (see [`MAX_RENDER_NODES`]).
+    pub(crate) fn build(&self, nodes: usize) -> Result<()> {
+        let left = self.nodes.get().checked_sub(nodes);
+        self.nodes.set(left.ok_or_else(too_many_nodes)?);
+        Ok(())
+    }
 }
 
 /// What one pass over a chunk's records may still spend (see [`MAX_CHUNK_OUTPUT`]).
@@ -154,26 +169,51 @@ impl Default for ChunkBudget {
 }
 
 impl ChunkBudget {
-    /// Renders a record into `out` with `render`, given a whole record's budget while the chunk
-    /// has that much left, and charges the chunk what it took: the bytes it left in `out`, a
-    /// failed record's partial output included, and the nodes it visited. Callers discard a
+    /// Builds a record's content with `build` before it is rendered, given a whole record's
+    /// budget while the chunk has that much left, and charges the chunk the nodes it built.
+    /// Returns the content with the nodes the record has left, for `render`.
+    pub(crate) fn build<T>(&self, build: impl FnOnce(&Budget) -> Result<T>) -> Result<(T, usize)> {
+        self.admit(MAX_RENDER_NODES)?;
+        let budget = Budget::new(0);
+        let built = build(&budget);
+        let left = budget.nodes.get();
+        self.nodes
+            .set(self.nodes.get().saturating_sub(MAX_RENDER_NODES - left));
+        Ok((built?, left))
+    }
+
+    /// Renders a record into `out` with `render`, given a whole record's output and the `nodes`
+    /// it has left (all of [`MAX_RENDER_NODES`] unless `build` built it) while the chunk has
+    /// that much left, and charges the chunk what it took: the bytes it left in `out`, a failed
+    /// record's partial output included, and the nodes it built and visited. Callers discard a
     /// failed record's output.
     pub(crate) fn render(
         &self,
+        nodes: usize,
         out: &mut Vec<u8>,
         render: impl FnOnce(&Budget, &mut Vec<u8>) -> Result<()>,
     ) -> Result<()> {
-        if self.out.get() < MAX_RECORD_OUTPUT || self.nodes.get() < MAX_RENDER_NODES {
-            return Err(chunk_spent());
-        }
+        self.admit(nodes)?;
         let start = out.len();
-        let budget = Budget::new(start);
+        let budget = Budget {
+            nodes: Cell::new(nodes),
+            ..Budget::new(start)
+        };
         let rendered = render(&budget, out);
         let written = out.len().saturating_sub(start);
         self.out.set(self.out.get().saturating_sub(written));
-        let visited = MAX_RENDER_NODES - budget.nodes.get();
-        self.nodes.set(self.nodes.get().saturating_sub(visited));
+        let spent = nodes - budget.nodes.get();
+        self.nodes.set(self.nodes.get().saturating_sub(spent));
         rendered
+    }
+
+    /// Fails unless the chunk has a whole record's output and `nodes` nodes left, so that a
+    /// record's errors are its own.
+    fn admit(&self, nodes: usize) -> Result<()> {
+        if self.out.get() < MAX_RECORD_OUTPUT || self.nodes.get() < nodes {
+            return Err(chunk_spent());
+        }
+        Ok(())
     }
 }
 
@@ -860,6 +900,9 @@ struct XmlCompiler<'t, 'a> {
     materialized: bool,
     /// What the walk may still spend: how long `lits` may grow, and the nodes it may visit.
     budget: Budget,
+    /// Whether the tree shares elements, so that the walk counts the nodes it visits (see
+    /// [`MAX_RENDER_NODES`]).
+    shared: bool,
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
@@ -873,6 +916,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         XmlCompiler {
             arena,
             budget,
+            shared: arena.shared(),
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -919,8 +963,8 @@ fn nested_too_deeply() -> EvtxError {
 
 #[cold]
 fn too_many_nodes() -> EvtxError {
-    const _: () = assert!(MAX_RENDER_NODES == 1 << 20, "update the message");
-    model_err("record renders more than 2^20 nodes")
+    const _: () = assert!(MAX_RENDER_NODES == 1 << 18, "update the message");
+    model_err("record renders more than 2^18 nodes")
 }
 
 #[cold]
@@ -1061,9 +1105,11 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.budget.check(self.lits.len())
     }
 
-    /// Charges a visit of `element`, then checks the size.
+    /// Charges a visit of `element` on a tree that shares elements, then checks the size.
     fn visit(&mut self, element: &Element<'_>) -> Result<()> {
-        self.budget.visit(element)?;
+        if self.shared {
+            self.budget.visit(element)?;
+        }
         self.check_size()
     }
 
@@ -1237,7 +1283,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     }
 
     fn compile_attr(&mut self, attr: &Attr<'a>) -> Result<()> {
-        self.budget.charge(attr.value.len());
+        if self.shared {
+            self.budget.charge(attr.value.len());
+        }
         // Placeholders are dynamic; everything else is compile-time constant.
         // Mirrors `attribute_value_is_empty` + `render_nodes`.
         let mut has_nonempty_const = false;
@@ -1659,7 +1707,7 @@ const MAX_FAST_LANE_NESTING: usize = 8;
 
 /// Sanity cap on a template instance's substitution count (the wire could
 /// claim up to `u32::MAX`; nothing legitimate comes close).
-const MAX_SUBSTITUTIONS: usize = 4096;
+pub(crate) const MAX_SUBSTITUTIONS: usize = 4096;
 
 struct PreflightBail;
 
@@ -1714,7 +1762,7 @@ impl Preflight {
 
     /// Scan a `TemplateInstance` whose header starts at absolute `pos` (the
     /// byte after the 0x0c token). Appends slots/nested entries and returns
-    /// `(instance, end_pos)`.
+    /// `(instance, end_pos)`. Templates it parses charge the record's `budget`.
     #[allow(clippy::too_many_arguments)]
     fn scan_instance<'a, P: StoredProgram>(
         &mut self,
@@ -1722,6 +1770,7 @@ impl Preflight {
         pos: usize,
         depth: usize,
         cache: &mut IrTemplateCache<'a>,
+        budget: &Budget,
         progs: &mut ProgramCache<P>,
         base_indent: u16,
         is_root: bool,
@@ -1755,7 +1804,7 @@ impl Preflight {
             chunk,
             (def_offset, base_indent, is_root),
             progs,
-            TemplateSource::Bytes(cache),
+            TemplateSource::Bytes(cache, budget),
         )
         .ok_or(PreflightBail)?;
 
@@ -1877,6 +1926,7 @@ impl Preflight {
                 s.off as usize + inst_off,
                 depth + 1,
                 cache,
+                budget,
                 progs,
                 child_indent,
                 false,
@@ -1914,7 +1964,8 @@ impl Preflight {
 }
 
 enum TemplateSource<'s, 'a> {
-    Bytes(&'s mut IrTemplateCache<'a>),
+    /// The chunk's template, parsed into the cache at the record's expense.
+    Bytes(&'s mut IrTemplateCache<'a>, &'s Budget),
     Validated(&'s IrTree<'a>, bool),
 }
 
@@ -1962,8 +2013,8 @@ fn get_or_compile<'a, P: StoredProgram>(
             budget,
         )
         .map(Arc::new),
-        TemplateSource::Bytes(cache) => cache
-            .template_for_compile(chunk, def_offset)
+        TemplateSource::Bytes(cache, record) => cache
+            .template_for_compile(chunk, def_offset, record)
             .ok()
             .and_then(|(tree, has_literal_array)| {
                 P::compile(
@@ -2018,9 +2069,16 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     };
     let stream_offset = stream_offset as usize;
     pf.clear();
-    let Ok((instance, end)) =
-        pf.scan_instance(chunk, stream_offset + inst_off, 0, cache, progs, 0, true)
-    else {
+    let Ok((instance, end)) = pf.scan_instance(
+        chunk,
+        stream_offset + inst_off,
+        0,
+        cache,
+        budget,
+        progs,
+        0,
+        true,
+    ) else {
         return Ok(false);
     };
     // Anything after the instance other than EOF is unhandled here, and so
@@ -2356,7 +2414,7 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
         return Err(unresolved_placeholder());
     };
     let frag = pf.bytes(s).ok_or_else(unresolved_placeholder)?;
-    let (arena, roots) = build_fragment_from_binxml_bytes(frag, chunk, cache)?;
+    let (arena, roots) = build_fragment_from_binxml_bytes(frag, chunk, cache, pf.budget())?;
     render_fragment_xml(&arena, roots, indent, indent_on, pf.budget(), out)
 }
 
@@ -2524,6 +2582,8 @@ struct JsonCompiler<'t, 'a> {
     separate: bool,
     /// As in `XmlCompiler`.
     budget: Budget,
+    /// As in `XmlCompiler`.
+    shared: bool,
     /// Elements open in the materialized walk (see [`MAX_RENDER_DEPTH`]).
     depth: u16,
 }
@@ -2533,6 +2593,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         JsonCompiler {
             tree,
             budget,
+            shared: tree.is_some_and(|tree| tree.arena().shared()),
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -3236,7 +3297,7 @@ impl<'a> DecodedValues<'_, 'a> {
             chunk,
             (input.offset, indent, root),
             progs,
-            TemplateSource::Validated(&input.template, input.has_literal_array),
+            TemplateSource::Validated(&input.template, input.stats.has_literal_array),
         )?;
         if input.has_arrays {
             for (i, value) in input.values.iter().enumerate() {
@@ -3562,7 +3623,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
     /// As `XmlCompiler::visit`.
     fn visit(&mut self, element: &Element<'_>) -> Result<()> {
-        self.budget.visit(element)?;
+        if self.shared {
+            self.budget.visit(element)?;
+        }
         self.check_size()
     }
 
@@ -3622,9 +3685,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     /// Whether `nodes` has text. Every scan of an attribute's value starts here, so it charges
-    /// the value's nodes.
+    /// the value's nodes on a tree that shares elements.
     fn has_text_content_plain(&mut self, nodes: &[Node<'_>]) -> bool {
-        self.budget.charge(nodes.len());
+        if self.shared {
+            self.budget.charge(nodes.len());
+        }
         nodes.iter().any(Self::node_is_content_plain)
     }
 

@@ -23,6 +23,8 @@ pub struct EvtxRecord<'a> {
     pub event_record_id: RecordId,
     pub timestamp: Timestamp,
     pub(crate) content: RecordContent<'a>,
+    /// The nodes it has left to render with, once its content is built (see `ChunkBudget`).
+    pub(crate) nodes: usize,
     pub binxml_offset: u64,
     pub binxml_size: u32,
     /// Carved from unallocated chunk space (see `ParserSettings::recover_records`).
@@ -137,7 +139,8 @@ impl<'a> EvtxRecord<'a> {
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
         let settings = &self.chunk.settings;
         let mta = settings.get_mta();
-        self.chunk.render_budget.render(data, |budget, data| {
+        let chunk_budget = &self.chunk.render_budget;
+        chunk_budget.render(self.nodes, data, |budget, data| {
             let mut tree = match &self.content {
                 RecordContent::Tree(tree) => Cow::Borrowed(tree),
                 RecordContent::Template(content) => {
@@ -153,7 +156,7 @@ impl<'a> EvtxRecord<'a> {
                     {
                         return Ok(());
                     }
-                    Cow::Owned(content.materialize(&self.chunk.arena)?)
+                    Cow::Owned(content.materialize(&self.chunk.arena, budget)?)
                 }
             };
             if let Some(mta) = mta {
@@ -282,7 +285,7 @@ mod validated_content_tests {
 
     #[test]
     fn rendering_reuses_validated_fragments() {
-        use crate::binxml::ir::{TemplateContent, ValidatedInstance};
+        use crate::binxml::ir::{TemplateContent, TemplateStats, ValidatedInstance};
         use crate::model::ir::{Element, IrArena, IrTree, Name, Node, Placeholder, Text};
         use std::{mem::ManuallyDrop, rc::Rc};
 
@@ -305,11 +308,12 @@ mod validated_content_tests {
         let mut sibling = Element::new_in(Name::new("Sibling"), bump);
         sibling.push_child(Node::Text(Text::utf8("second-root")));
         let sibling = frags.new_node(sibling);
+        let template = Rc::new(IrTree::new(template, root));
         record.content = RecordContent::Template(TemplateContent {
             root: ValidatedInstance {
                 offset: u32::MAX,
-                template: Rc::new(IrTree::new(template, root)),
-                has_literal_array: false,
+                stats: TemplateStats::of(&template).unwrap(),
+                template,
                 has_arrays: false,
                 values: vec![ValidatedValue::Fragment(
                     bump.alloc_slice_copy(&[child, sibling]),
@@ -331,7 +335,7 @@ mod validated_content_tests {
         use crate::binxml::compiled::{
             Budget, JsonProgram, RenderCaches, TemplateProgram, XmlProgram, try_render_validated,
         };
-        use crate::binxml::ir::{TemplateContent, ValidatedInstance};
+        use crate::binxml::ir::{TemplateContent, TemplateStats, ValidatedInstance};
         use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
         use crate::utils::Utf16LeSlice;
         use std::{mem::ManuallyDrop, rc::Rc};
@@ -367,18 +371,19 @@ mod validated_content_tests {
         let root = arena.new_node(root);
         let items =
             bump.alloc_slice_copy(&[Utf16LeSlice::new(b"x\0", 1), Utf16LeSlice::new(b"y\0", 1)]);
+        let template = Rc::new(IrTree::new(arena, root));
         let content = TemplateContent {
             root: ValidatedInstance {
                 offset: u32::MAX,
-                template: Rc::new(IrTree::new(arena, root)),
-                has_literal_array: false,
+                stats: TemplateStats::of(&template).unwrap(),
+                template,
                 has_arrays: true,
                 values: vec![ValidatedValue::Scalar(BinXmlValue::StringArrayType(items))],
             },
             nested: Vec::new(),
             frags: ManuallyDrop::new(IrArena::new_in(bump)),
         };
-        let tree = content.materialize(bump).unwrap();
+        let tree = content.materialize(bump, &Budget::new(0)).unwrap();
         let mut caches = RenderCaches::default();
         let compiled = [false, true].map(|json| {
             let mut output = b"prefix".to_vec();
