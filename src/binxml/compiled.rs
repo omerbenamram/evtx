@@ -31,6 +31,8 @@ use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placehol
 use crate::mta::{self, RenderingInfo, SystemFields};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 use ahash::AHashMap;
+use std::cell::Cell;
+use std::collections::hash_map::Entry;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
@@ -51,8 +53,19 @@ const MAX_RECORD_OUTPUT: usize = 16 << 20;
 /// its attributes, their value nodes (charged as the walkers read them) and its children. A
 /// materialized tree shares a value's elements among the places it is used in, so a crafted
 /// record can make the walkers visit an element far more often than its output shows: an
-/// attribute with an empty value renders nothing. Real records cost a few thousand.
+/// attribute with an empty value renders nothing. Real records cost a few thousand. The
+/// compiled lanes don't count nodes: they render each value once, from programs of bounded
+/// size, so their output bounds their work.
 const MAX_RENDER_NODES: usize = 1 << 20;
+
+/// Output one pass over a chunk's records may render, failed records' included. Records share
+/// their chunk's templates, so a crafted chunk can hold hundreds of small records that each
+/// render close to `MAX_RECORD_OUTPUT`, and both chunk renderers hold a chunk's output until
+/// its last record. The samples' chunks render at most 234 KB and visit at most 16,300 nodes.
+const MAX_CHUNK_OUTPUT: usize = 4 * MAX_RECORD_OUTPUT;
+
+/// Nodes one pass over a chunk's records may visit (see `MAX_CHUNK_OUTPUT`).
+const MAX_CHUNK_NODES: usize = 4 * MAX_RENDER_NODES;
 
 /// Most literal bytes a compiled program may hold. Real templates compile to a few KiB, but a
 /// crafted one can give thousands of elements one long name.
@@ -74,21 +87,62 @@ const MAX_STORED_PROGRAMS: usize = 64 << 20;
 const MAX_RENDER_DEPTH: u16 = MAX_ELEMENT_DEPTH as u16;
 
 /// What rendering one record may still spend.
+#[derive(Clone)]
 pub(crate) struct Budget {
     /// How long the output may grow (see [`MAX_RECORD_OUTPUT`]).
     out_limit: usize,
     /// Nodes the tree walkers may still visit (see [`MAX_RENDER_NODES`]), shared by the
-    /// fragments a compiled lane hands them.
-    nodes: std::cell::Cell<usize>,
+    /// fragments a compiled lane hands them and the walk of the record's tree.
+    nodes: Cell<usize>,
 }
 
 impl Budget {
     /// The budget of a record whose output starts at `start`.
-    fn new(start: usize) -> Self {
+    pub(crate) fn new(start: usize) -> Self {
         Budget {
             out_limit: start + MAX_RECORD_OUTPUT,
-            nodes: std::cell::Cell::new(MAX_RENDER_NODES),
+            nodes: Cell::new(MAX_RENDER_NODES),
         }
+    }
+}
+
+/// What one pass over a chunk's records may still spend (see [`MAX_CHUNK_OUTPUT`]).
+#[derive(Debug)]
+pub(crate) struct ChunkBudget {
+    out: Cell<usize>,
+    nodes: Cell<usize>,
+}
+
+impl Default for ChunkBudget {
+    fn default() -> Self {
+        ChunkBudget {
+            out: Cell::new(MAX_CHUNK_OUTPUT),
+            nodes: Cell::new(MAX_CHUNK_NODES),
+        }
+    }
+}
+
+impl ChunkBudget {
+    /// Renders a record into `out` with `render`, given a whole record's budget while the chunk
+    /// has that much left, and charges the chunk what it took: the bytes it left in `out`, a
+    /// failed record's partial output included, and the nodes it visited. Callers discard a
+    /// failed record's output.
+    pub(crate) fn render(
+        &self,
+        out: &mut Vec<u8>,
+        render: impl FnOnce(&Budget, &mut Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        if self.out.get() < MAX_RECORD_OUTPUT || self.nodes.get() < MAX_RENDER_NODES {
+            return Err(chunk_spent());
+        }
+        let start = out.len();
+        let budget = Budget::new(start);
+        let rendered = render(&budget, out);
+        let written = out.len().saturating_sub(start);
+        self.out.set(self.out.get().saturating_sub(written));
+        let visited = MAX_RENDER_NODES - budget.nodes.get();
+        self.nodes.set(self.nodes.get().saturating_sub(visited));
+        rendered
     }
 }
 
@@ -96,6 +150,11 @@ impl Budget {
 /// attributes: see [`MAX_RENDER_NODES`].
 fn visit_cost(element: &Element<'_>) -> usize {
     1 + element.attrs.len() + element.children.len()
+}
+
+/// The bytes `v` allocated.
+fn heap_size<T>(v: &Vec<T>) -> usize {
+    v.capacity() * std::mem::size_of::<T>()
 }
 
 /// A `lits` byte range.
@@ -310,11 +369,15 @@ impl ProgramStore {
                 let refs = NameRefs::of(chunk, def_offset, body.len()).map(Arc::new);
                 let size = std::mem::size_of::<(TemplateKey, Option<Arc<NameRefs>>)>()
                     + refs.as_ref().map_or(0, |refs| refs.size());
-                if self.reserve(size) {
-                    self.names
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(template, refs.clone());
+                let mut names = self
+                    .names
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                // Another chunk may have stored them since the read: count them once.
+                if let Entry::Vacant(entry) = names.entry(template)
+                    && self.reserve(size)
+                {
+                    entry.insert(refs.clone());
                 }
                 refs
             }
@@ -326,17 +389,19 @@ impl ProgramStore {
     /// each chunk compiles the templates it uses itself.
     fn reserve(&self, size: usize) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
+        // `fetch_update` is deprecated for `try_update`, which is newer than the toolchain the
+        // release builds use.
         let mut stored = self.stored.load(Relaxed);
-        while stored + size <= MAX_STORED_PROGRAMS {
-            match self
-                .stored
-                .compare_exchange_weak(stored, stored + size, Relaxed, Relaxed)
-            {
+        loop {
+            let Some(total) = (stored.checked_add(size)).filter(|&n| n <= MAX_STORED_PROGRAMS)
+            else {
+                return false;
+            };
+            match (self.stored).compare_exchange_weak(stored, total, Relaxed, Relaxed) {
                 Ok(_) => return true,
                 Err(now) => stored = now,
             }
         }
-        false
     }
 }
 
@@ -612,7 +677,8 @@ pub(crate) trait TemplateProgram: Sized {
         settings: &ParserSettings,
         budget: &mut usize,
     ) -> Option<Self>;
-    /// About how many bytes the program holds, for `ProgramStore::reserve`.
+    /// About how many bytes the program holds, for `ProgramStore::reserve` and the chunk's
+    /// `ProgramCache::budget`.
     fn size(&self) -> usize;
     /// Run a prepared instance. Errors may leave partial output.
     fn exec<'a, V: ValueSource<'a>>(
@@ -624,8 +690,13 @@ pub(crate) trait TemplateProgram: Sized {
         vr: &mut ValueRenderer,
         out: &mut Vec<u8>,
     ) -> Result<()>;
-    /// The materialized walker for this format (the slow lane).
-    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()>;
+    /// The materialized walker for this format (the slow lane), within the record's `budget`.
+    fn render_tree(
+        tree: &IrTree<'_>,
+        settings: &ParserSettings,
+        budget: &Budget,
+        out: &mut Vec<u8>,
+    ) -> Result<()>;
 }
 
 impl TemplateProgram for XmlProgram {
@@ -661,9 +732,12 @@ impl TemplateProgram for XmlProgram {
     }
     fn size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.lits.len()
-            + std::mem::size_of_val(self.ops.as_slice())
-            + std::mem::size_of_val(self.elem_slots.as_slice())
+            + heap_size(&self.lits)
+            + heap_size(&self.ops)
+            + heap_size(&self.elem_slots)
+            + heap_size(&self.expand_slots)
+            + heap_size(&self.root_name)
+            + (self.system_fields.as_ref()).map_or(0, SystemFields::heap_size)
     }
     fn exec<'a, V: ValueSource<'a>>(
         instance: Instance<V::Scope>,
@@ -680,15 +754,19 @@ impl TemplateProgram for XmlProgram {
     /// materialization), writing straight into `out`. Byte-compatible with
     /// the cached-program lane by construction: it IS the same walk, with
     /// zero placeholder sites.
-    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
-        let budget = Budget::new(out.len());
+    fn render_tree(
+        tree: &IrTree<'_>,
+        settings: &ParserSettings,
+        budget: &Budget,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
         out.extend_from_slice(XML_DECL);
         render_fragment_xml(
             tree.arena(),
             &[tree.root()],
             0,
             settings.should_indent(),
-            &budget,
+            budget,
             out,
         )
     }
@@ -792,6 +870,7 @@ fn unresolved_nested_json() -> EvtxError {
 
 #[cold]
 fn output_too_large() -> EvtxError {
+    const _: () = assert!(MAX_RECORD_OUTPUT == 16 << 20, "update the message");
     model_err("record renders to more than 16 MiB")
 }
 
@@ -802,7 +881,13 @@ fn nested_too_deeply() -> EvtxError {
 
 #[cold]
 fn too_many_nodes() -> EvtxError {
+    const _: () = assert!(MAX_RENDER_NODES == 1 << 20, "update the message");
     model_err("record renders more than 2^20 nodes")
+}
+
+#[cold]
+fn chunk_spent() -> EvtxError {
+    model_err("earlier records of the chunk spent its render budget")
 }
 
 fn model_err(msg: &'static str) -> EvtxError {
@@ -834,13 +919,18 @@ fn compile_xml_template(
         c.lits.extend_from_slice(XML_DECL);
     }
     let compiled = c.compile_element(tree.root(), base_indent);
-    *budget = budget.saturating_sub(c.lits.len() + std::mem::size_of_val(c.ops.as_slice()));
-    match compiled {
+    let written = c.lits.len() + std::mem::size_of_val(c.ops.as_slice());
+    let program = match compiled {
         Ok(())
             if each_slot_once(c.ops.iter().filter_map(XOp::slot).collect())
                 && c.check_size().is_ok() =>
         {
             c.flush_lit_run();
+            // Programs live as long as their chunk or the parse: no spare capacity.
+            c.lits.shrink_to_fit();
+            c.ops.shrink_to_fit();
+            c.elem_slots.shrink_to_fit();
+            c.expand_slots.shrink_to_fit();
             Some(XmlProgram {
                 lits: c.lits,
                 ops: c.ops,
@@ -852,7 +942,9 @@ fn compile_xml_template(
             })
         }
         _ => None,
-    }
+    };
+    *budget = budget.saturating_sub(program.as_ref().map_or(written, XmlProgram::size));
+    program
 }
 
 /// Whether no slot repeats. The compiled lanes render each value in one place: a nested
@@ -1872,15 +1964,18 @@ fn get_or_compile<'a, P: StoredProgram>(
                 .map(Arc::new)
             }),
     };
-    let size = std::mem::size_of::<(StoreKey, Option<Arc<P>>)>()
-        + compiled.as_ref().map_or(0, |program| program.size());
-    if let Some(sk) = store_key
-        && store.reserve(size)
-    {
-        P::shard(store)
+    if let Some(sk) = store_key {
+        let size = std::mem::size_of::<(StoreKey, Option<Arc<P>>)>()
+            + compiled.as_ref().map_or(0, |program| program.size());
+        let mut shard = P::shard(store)
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(sk, compiled.clone());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Another chunk may have compiled it since the read: count it once.
+        if let Entry::Vacant(entry) = shard.entry(sk)
+            && store.reserve(size)
+        {
+            entry.insert(compiled.clone());
+        }
     }
     progs.insert(key, compiled)
 }
@@ -1889,13 +1984,15 @@ fn get_or_compile<'a, P: StoredProgram>(
 // Per-record entry + executor
 // ---------------------------------------------------------------------------
 
-/// Try to render one record's BinXML via the compiled-template path.
+/// Try to render one record's BinXML via the compiled-template path, within `budget`.
 ///
 /// Returns `Ok(false)` with `out` untouched when the record isn't covered (the
 /// caller then uses the regular path). On `Ok(true)` the record was rendered
 /// byte-identically to `P::render_tree` over the materialized record, with
-/// `mta::add_rendering_info` applied when an `.MTA` file is set. A record that
-/// renders past `MAX_RECORD_OUTPUT` fails here, as it would there.
+/// `mta::add_rendering_info` applied when an `.MTA` file is set, except that only
+/// the walkers count nodes (see `MAX_RENDER_NODES`): a record that visits too many
+/// there can render here. A record that renders past `MAX_RECORD_OUTPUT` fails
+/// here, as it would there, and leaves its partial output in `out`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     bytes: &[u8],
@@ -1905,6 +2002,7 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     progs: &mut ProgramCache<P>,
     pf: &mut Preflight,
     vr: &mut ValueRenderer,
+    budget: &Budget,
     out: &mut Vec<u8>,
 ) -> Result<bool> {
     // Single-instance stream shape (mirrors `read_single_instance_stream`).
@@ -1929,7 +2027,7 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     let values = RawValues {
         pf,
         data: chunk.data,
-        budget: Budget::new(out.len()),
+        budget: budget.clone(),
     };
     let rendering_info = match chunk.settings.get_mta() {
         None => None,
@@ -1946,19 +2044,19 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
         }
     };
     let start = out.len();
-    if !exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out)? {
+    let rendered = exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out);
+    budget.nodes.set(values.budget.nodes.get());
+    if !rendered? {
         return Ok(false);
     }
     if let Some(info) = rendering_info {
         let appended = append_rendering_info::<P>(&info, chunk, start, out);
-        let too_large = out.len() > values.budget().out_limit;
-        if !appended || too_large {
+        if out.len() > values.budget().out_limit {
+            return Err(output_too_large());
+        }
+        if !appended {
             out.truncate(start);
-            return if too_large {
-                Err(output_too_large())
-            } else {
-                Ok(false)
-            };
+            return Ok(false);
         }
         #[cfg(test)]
         MTA_SPLICES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1990,7 +2088,8 @@ fn append_rendering_info<'a, P: StoredProgram>(
 /// caller to render the record's tree, which fails the same way: errors are unreachable after
 /// a successful preflight except for attribute-position BinXml elements, which the regular
 /// path also rejects per record, and the caps of the fragments it walks (see `Budget`).
-/// Output past `MAX_RECORD_OUTPUT` fails the record here, without rendering it again.
+/// Output past `MAX_RECORD_OUTPUT` fails the record here, without rendering it again, and
+/// stays in `out` for `ChunkBudget::render` to charge.
 fn exec_or_rollback<'a, P: TemplateProgram, V: ValueSource<'a>>(
     instance: Instance<V::Scope>,
     progs: &ProgramCache<P>,
@@ -2002,12 +2101,11 @@ fn exec_or_rollback<'a, P: TemplateProgram, V: ValueSource<'a>>(
 ) -> Result<bool> {
     let start = out.len();
     let ok = P::exec(instance, progs, values, chunk, cache, vr, out).is_ok();
-    let too_large = out.len() > values.budget().out_limit;
-    if !ok || too_large {
-        out.truncate(start);
-    }
-    if too_large {
+    if out.len() > values.budget().out_limit {
         return Err(output_too_large());
+    }
+    if !ok {
+        out.truncate(start);
     }
     Ok(ok)
 }
@@ -2373,9 +2471,13 @@ impl TemplateProgram for JsonProgram {
     }
     fn size(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.lits.len()
-            + std::mem::size_of_val(self.ops.as_slice())
-            + std::mem::size_of_val(self.elem_slots.as_slice())
+            + heap_size(&self.lits)
+            + heap_size(&self.ops)
+            + heap_size(&self.elem_slots)
+            + heap_size(&self.constraints)
+            + heap_size(&self.expand_slots)
+            + heap_size(&self.root_name)
+            + (self.system_fields.as_ref()).map_or(0, SystemFields::heap_size)
     }
     fn exec<'a, V: ValueSource<'a>>(
         instance: Instance<V::Scope>,
@@ -2389,16 +2491,22 @@ impl TemplateProgram for JsonProgram {
         exec_json(instance, progs, values, vr, out)
     }
     /// The single-walker slow lane, honoring `--separate-json-attributes`.
-    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
-        let out_limit = out.len() + MAX_RECORD_OUTPUT;
+    fn render_tree(
+        tree: &IrTree<'_>,
+        settings: &ParserSettings,
+        budget: &Budget,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
         let mut c = JsonCompiler::new(
             Some(tree),
             std::mem::take(out),
             settings.should_separate_json_attributes(),
-            out_limit,
+            budget.out_limit,
         );
+        c.nodes = budget.nodes.get();
         let res = c.render_root_plain();
         debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+        budget.nodes.set(c.nodes);
         *out = c.lits;
         res
     }
@@ -2461,17 +2569,23 @@ fn compile_json_template(
         c.key_with_suffix_plain(root.name.as_str(), 0);
     }
     let compiled = c.compile_element_value(tree.root(), root_container);
-    *budget = budget.saturating_sub(c.lits.len() + std::mem::size_of_val(c.ops.as_slice()));
+    let written = c.lits.len() + std::mem::size_of_val(c.ops.as_slice());
     let mut slots = Vec::new();
     for op in &c.ops {
         op.slots(&mut slots);
     }
-    match compiled {
+    let program = match compiled {
         Ok(()) if each_slot_once(slots) && !c.over_limit() => {
             if is_root {
                 c.lits.push(b'}');
             }
             c.flush_lit_run();
+            // As in `compile_xml_template`.
+            c.lits.shrink_to_fit();
+            c.ops.shrink_to_fit();
+            c.elem_slots.shrink_to_fit();
+            c.constraints.shrink_to_fit();
+            c.expand_slots.shrink_to_fit();
             Some(JsonProgram {
                 lits: c.lits,
                 ops: c.ops,
@@ -2483,7 +2597,9 @@ fn compile_json_template(
             })
         }
         _ => None,
-    }
+    };
+    *budget = budget.saturating_sub(program.as_ref().map_or(written, JsonProgram::size));
+    program
 }
 
 fn is_data_container_name(name: &str) -> bool {
@@ -2906,6 +3022,8 @@ pub(crate) trait ValueSource<'a> {
 struct RawValues<'s, 'a> {
     pf: &'s Preflight,
     data: &'a [u8],
+    /// A copy of the record's budget: the executors run faster with one of their own (0.8% of
+    /// the instructions on `security_big_sample.evtx`).
     budget: Budget,
 }
 
@@ -3009,6 +3127,7 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
 struct DecodedValues<'s, 'a> {
     content: &'s TemplateContent<'a>,
     nested: &'s mut Vec<Option<Instance<usize>>>,
+    /// As in `RawValues`.
     budget: Budget,
 }
 
@@ -3054,11 +3173,12 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
         let ValidatedValue::Scalar(value) = s else {
             return Err(unresolved_placeholder());
         };
-        if matches!(value, BinXmlValue::StringArrayType(_)) {
-            // Reused array slots must expand at every occurrence. Scalar ops
-            // fall back to materialization, matching the raw source.
-            return Err(model_err("array substitution outside its expand op"));
-        }
+        // `prepare` takes arrays only at expand slots, which have no other op (see
+        // `each_slot_once`).
+        debug_assert!(
+            !matches!(value, BinXmlValue::StringArrayType(_)),
+            "array substitution outside its expand op"
+        );
         vr.write_value_text(out, value, mode)
     }
     #[inline(always)]
@@ -3170,6 +3290,7 @@ pub(crate) fn try_render_validated<'a>(
     chunk: &'a EvtxChunk<'a>,
     caches: &mut RenderCaches,
     json: bool,
+    budget: &Budget,
     out: &mut Vec<u8>,
 ) -> Result<bool> {
     caches.nested.clear();
@@ -3177,13 +3298,15 @@ pub(crate) fn try_render_validated<'a>(
     let mut values = DecodedValues {
         content,
         nested: &mut caches.nested,
-        budget: Budget::new(out.len()),
+        budget: budget.clone(),
     };
-    if json {
+    let rendered = if json {
         values.render(chunk, &mut caches.json, out)
     } else {
         values.render(chunk, &mut caches.xml, out)
-    }
+    };
+    budget.nodes.set(values.budget.nodes.get());
+    rendered
 }
 
 /// Whether `ty` renders as a bare JSON number/bool (`write_value_as_number`).
@@ -4062,6 +4185,53 @@ mod tests {
                 .is_none(),
             "multiple dynamic child slots need runtime name-suffix state; use the materialized path"
         );
+    }
+
+    /// A program's size counts what it keeps, which has no spare capacity, and compiling it
+    /// charges the chunk that much.
+    #[test]
+    fn programs_charge_what_they_keep() {
+        use std::mem::{size_of, size_of_val};
+
+        let name = "N".repeat(1000);
+        let bump = Bump::new();
+        let mut arena = IrArena::new_in(&bump);
+        let mut root = Element::new_in(Name::new(&name), &bump);
+        root.push_child(binxml_placeholder(0));
+        let root = arena.new_node(root);
+        let tree = IrTree::new(arena, root);
+        let settings = ParserSettings::default();
+
+        let mut budget = MAX_CHUNK_PROGRAMS;
+        let xml = compile_xml_template(&tree, false, 0, true, &settings, &mut budget).unwrap();
+        let kept = size_of::<XmlProgram>()
+            + size_of_val(xml.lits.as_slice())
+            + size_of_val(xml.ops.as_slice())
+            + size_of_val(xml.elem_slots.as_slice())
+            + size_of_val(xml.expand_slots.as_slice())
+            + xml.root_name.len();
+        assert_eq!((xml.size(), budget), (kept, MAX_CHUNK_PROGRAMS - kept));
+
+        let mut budget = MAX_CHUNK_PROGRAMS;
+        let json = compile_json_template(&tree, false, true, &settings, &mut budget).unwrap();
+        let kept = size_of::<JsonProgram>()
+            + size_of_val(json.lits.as_slice())
+            + size_of_val(json.ops.as_slice())
+            + size_of_val(json.elem_slots.as_slice())
+            + size_of_val(json.constraints.as_slice())
+            + size_of_val(json.expand_slots.as_slice())
+            + json.root_name.len();
+        assert_eq!((json.size(), budget), (kept, MAX_CHUNK_PROGRAMS - kept));
+    }
+
+    #[test]
+    fn the_store_stops_at_its_cap() {
+        let store = ProgramStore::default();
+        assert!(store.reserve(MAX_STORED_PROGRAMS - 1));
+        assert!(!store.reserve(2));
+        assert!(store.reserve(1));
+        assert!(!store.reserve(1));
+        assert!(!store.reserve(usize::MAX));
     }
 
     /// Embedded BinXML names elements the body's name walk does not see, so

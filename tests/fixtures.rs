@@ -341,16 +341,20 @@ impl BinXml {
 
 /// A one-chunk EVTX file with one record (ID 1), whose BinXML `record` writes.
 pub fn synthetic_evtx(record: impl FnOnce(&mut BinXml)) -> Vec<u8> {
+    let mut record = Some(record);
+    synthetic_evtx_records(1, |_, binxml| record.take().expect("one record")(binxml))
+}
+
+/// A one-chunk EVTX file with `count` records, IDs 1 to `count`, whose BinXML `record(i, ..)`
+/// writes for the record at index `i`. `template_ref` can use a template an earlier record
+/// defined.
+pub fn synthetic_evtx_records(count: usize, mut record: impl FnMut(usize, &mut BinXml)) -> Vec<u8> {
     fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
         buf[at..at + bytes.len()].copy_from_slice(bytes);
     }
-    let record_start = EVTX_CHUNK_HEADER_SIZE;
-    let mut binxml = BinXml::at((record_start + EVTX_RECORD_HEADER_SIZE) as u32);
-    record(&mut binxml);
-
     let mut file = vec![0; EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
     put(&mut file, 0, b"ElfFile\0");
-    put(&mut file, 24, &2u64.to_le_bytes()); // next record ID
+    put(&mut file, 24, &(count as u64 + 1).to_le_bytes()); // next record ID
     put(&mut file, 32, &128u32.to_le_bytes()); // header size
     put(&mut file, 36, &1u16.to_le_bytes()); // minor version
     put(&mut file, 38, &3u16.to_le_bytes()); // major version
@@ -360,29 +364,97 @@ pub fn synthetic_evtx(record: impl FnOnce(&mut BinXml)) -> Vec<u8> {
     put(&mut file, 124, &checksum.to_le_bytes());
 
     let chunk = &mut file[EVTX_FILE_HEADER_SIZE..];
-    let record_size = EVTX_RECORD_HEADER_SIZE + binxml.bytes.len() + 4;
-    let free_space = record_start + record_size;
+    let mut record_start = EVTX_CHUNK_HEADER_SIZE;
+    let mut last_record = record_start;
+    let mut definition = None;
+    for i in 0..count {
+        let mut binxml = BinXml::at((record_start + EVTX_RECORD_HEADER_SIZE) as u32);
+        binxml.definition = definition;
+        record(i, &mut binxml);
+        definition = binxml.definition;
+        let record_size = EVTX_RECORD_HEADER_SIZE + binxml.bytes.len() + 4;
+        let end = record_start + record_size;
+        assert!(
+            end <= EVTX_CHUNK_SIZE,
+            "record {} overflows the chunk",
+            i + 1
+        );
+        let record = &mut chunk[record_start..end];
+        put(record, 0, EVTX_RECORD_MAGIC);
+        put(record, 4, &(record_size as u32).to_le_bytes());
+        put(record, 8, &(i as u64 + 1).to_le_bytes());
+        put(record, 16, &131_000_000_000_000_000u64.to_le_bytes()); // 2016-02-15T08:53:20Z
+        put(record, EVTX_RECORD_HEADER_SIZE, &binxml.bytes);
+        put(record, record_size - 4, &(record_size as u32).to_le_bytes());
+        last_record = record_start;
+        record_start = end;
+    }
+    let free_space = record_start;
+
     put(chunk, 0, b"ElfChnk\0");
-    // First and last record numbers and IDs.
-    for at in [8, 16, 24, 32] {
-        put(chunk, at, &1u64.to_le_bytes());
+    // First and last record numbers, then IDs.
+    for (at, id) in [(8, 1), (16, count), (24, 1), (32, count)] {
+        put(chunk, at, &(id as u64).to_le_bytes());
     }
     put(chunk, 40, &128u32.to_le_bytes()); // header size
-    put(chunk, 44, &(record_start as u32).to_le_bytes()); // last record offset
+    put(chunk, 44, &(last_record as u32).to_le_bytes()); // last record offset
     put(chunk, 48, &(free_space as u32).to_le_bytes());
 
-    let record = &mut chunk[record_start..free_space];
-    put(record, 0, EVTX_RECORD_MAGIC);
-    put(record, 4, &(record_size as u32).to_le_bytes());
-    put(record, 8, &1u64.to_le_bytes());
-    put(record, 16, &131_000_000_000_000_000u64.to_le_bytes()); // 2016-02-15T08:53:20Z
-    put(record, EVTX_RECORD_HEADER_SIZE, &binxml.bytes);
-    put(record, record_size - 4, &(record_size as u32).to_le_bytes());
-
-    let events_checksum = evtx::checksum_ieee(&chunk[record_start..free_space]);
+    let events_checksum = evtx::checksum_ieee(&chunk[EVTX_CHUNK_HEADER_SIZE..free_space]);
     put(chunk, 52, &events_checksum.to_le_bytes());
     let header_checksum =
         evtx::checksum_ieee(&[&chunk[..120], &chunk[128..EVTX_CHUNK_HEADER_SIZE]].concat());
     put(chunk, 124, &header_checksum.to_le_bytes());
+    file
+}
+
+/// An `.MTA` file with one publisher, `provider`, whose level 0 is named `level`.
+pub fn mta_naming_level(provider: &str, level: &str) -> Vec<u8> {
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+    // One page whose one entry, number 0, follows its header. Its next page is itself: the last.
+    fn section(entry: Vec<u8>) -> Vec<u8> {
+        const PAGE_HEADER_SIZE: usize = 888;
+        let mut page = vec![0; PAGE_HEADER_SIZE];
+        page[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        page[88..96].copy_from_slice(&(PAGE_HEADER_SIZE as u64).to_le_bytes());
+        page.extend(0u32.to_le_bytes());
+        page.extend((entry.len() as u32).to_le_bytes());
+        page.extend(entry);
+        page
+    }
+    let mut message = (utf16(level).len() as u32).to_le_bytes().to_vec();
+    message.extend(utf16(level));
+    // Level 0 named by message 0, then no tasks, opcodes or keywords, then the name.
+    let mut publisher: Vec<u8> = [1u32, 0, 0, 0, 0, 0].map(u32::to_le_bytes).concat();
+    publisher.extend((utf16(provider).len() as u32).to_le_bytes());
+    publisher.extend(utf16(provider));
+
+    let sections = [
+        ("EVT", Vec::new()),
+        ("MSG", section(message)),
+        ("PUB", section(publisher)),
+    ];
+    let table: usize = sections
+        .iter()
+        .map(|(name, _)| 20 + utf16(name).len())
+        .sum();
+    let mut file = b"MTAFile\0".to_vec();
+    // Version 1.1, then the size and length of the section table.
+    for value in [1, 1, table as u32, sections.len() as u32] {
+        file.extend(u32::to_le_bytes(value));
+    }
+    let mut offset = 24 + table;
+    for (name, data) in &sections {
+        file.extend((offset as u64).to_le_bytes());
+        file.extend((data.len() as u64).to_le_bytes());
+        file.extend((utf16(name).len() as u32).to_le_bytes());
+        file.extend(utf16(name));
+        offset += data.len();
+    }
+    for (_, data) in sections {
+        file.extend(data);
+    }
     file
 }

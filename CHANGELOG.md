@@ -35,10 +35,20 @@ and this project adheres to
   gigabytes, and an array of thousands of items deep in a record to hundreds
   of megabytes. A record now fails with an error once its output passes
   16 MiB, whichever API and format renders it, and the records API no longer
-  stalls. A record also fails once rendering it visits more than 2^20 nodes,
-  counting a value's nodes once for each place the value is used: elements
-  with thousands of empty attributes render nothing, and kept evtx busy for a
-  minute per record.
+  stalls. Records that render the slower way, from their tree, also fail once
+  that visits more than 2^20 nodes, counting a value's nodes once for each
+  place the value is used: elements with thousands of empty attributes render
+  nothing, and kept evtx busy for a minute per record. Records take that way
+  when their templates don't compile, in JSON with `--separate-json-attributes`,
+  and in the records API with an `.MTA` file. The faster way renders each value
+  once, so its output bounds its work.
+- Records share their chunk's templates, so hundreds of small records in a
+  crafted chunk could each render close to 16 MiB, and both the records API and
+  evtx_dump hold a chunk's output until its last record: a 68 KB file needed
+  9 GB and aborted. A pass over a chunk now renders up to 64 MiB, failed
+  records included, and visits up to 2^22 nodes the slower way. Once less than
+  one record's worth is left, the chunk's later records fail with an error. The
+  samples' chunks render at most 234 KB.
 - A record whose values nest elements more than 512 levels deep overflowed the
   stack and aborted the process. It now fails with an error, unless evtx
   renders it from a compiled template, which doesn't recurse per element and

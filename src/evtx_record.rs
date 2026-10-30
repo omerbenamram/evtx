@@ -1,5 +1,6 @@
 use crate::EvtxChunk;
 use crate::binxml::BinXmlTemplateValues;
+use crate::binxml::compiled::Budget;
 use crate::binxml::ir::RecordContent;
 use crate::binxml::tokens::{Stream, TokenSink, walk_tokens};
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
@@ -96,18 +97,19 @@ impl EvtxRecordHeader {
     }
 }
 
-/// Render a materialized tree as JSON or XML.
+/// Render a materialized tree as JSON or XML, within the record's `budget`.
 pub(crate) fn render_tree(
     tree: &crate::model::ir::IrTree<'_>,
     settings: &crate::ParserSettings,
     json: bool,
+    budget: &Budget,
     out: &mut Vec<u8>,
 ) -> Result<()> {
     use crate::binxml::compiled::{JsonProgram, TemplateProgram, XmlProgram};
     if json {
-        JsonProgram::render_tree(tree, settings, out)
+        JsonProgram::render_tree(tree, settings, budget, out)
     } else {
-        XmlProgram::render_tree(tree, settings, out)
+        XmlProgram::render_tree(tree, settings, budget, out)
     }
 }
 
@@ -130,33 +132,37 @@ impl<'a> EvtxRecord<'a> {
     /// Render the record through the compiled-template machinery: cached
     /// program when the record's templates compile (the common case), the
     /// same materialized walker otherwise. With an `.MTA` file set, the
-    /// record's tree gets its `RenderingInfo` and is rendered instead.
+    /// record's tree gets its `RenderingInfo` and is rendered instead. The
+    /// chunk's render budget pays for it (see `ChunkBudget`).
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
         let settings = &self.chunk.settings;
         let mta = settings.get_mta();
-        let mut tree = match &self.content {
-            RecordContent::Tree(tree) => Cow::Borrowed(tree),
-            RecordContent::Template(content) => {
-                if mta.is_none() {
-                    let mut caches = self.chunk.render_caches.borrow_mut();
-                    if crate::binxml::compiled::try_render_validated(
-                        content,
-                        self.chunk,
-                        &mut caches,
-                        json,
-                        data,
-                    )? {
-                        return Ok(());
+        self.chunk.render_budget.render(data, |budget, data| {
+            let mut tree = match &self.content {
+                RecordContent::Tree(tree) => Cow::Borrowed(tree),
+                RecordContent::Template(content) => {
+                    if mta.is_none() {
+                        let mut caches = self.chunk.render_caches.borrow_mut();
+                        if crate::binxml::compiled::try_render_validated(
+                            content,
+                            self.chunk,
+                            &mut caches,
+                            json,
+                            budget,
+                            data,
+                        )? {
+                            return Ok(());
+                        }
                     }
+                    Cow::Owned(content.materialize(&self.chunk.arena)?)
                 }
-                Cow::Owned(content.materialize(&self.chunk.arena)?)
+            };
+            if let Some(mta) = mta {
+                let arena = &self.chunk.arena;
+                crate::mta::add_rendering_info(tree.to_mut(), self.event_record_id, mta, arena);
             }
-        };
-        if let Some(mta) = mta {
-            let arena = &self.chunk.arena;
-            crate::mta::add_rendering_info(tree.to_mut(), self.event_record_id, mta, arena);
-        }
-        render_tree(&tree, settings, json, data)
+            render_tree(&tree, settings, json, budget, data)
+        })
     }
 
     fn render_bytes(self, json: bool) -> Result<SerializedEvtxRecord<Vec<u8>>> {
@@ -324,7 +330,7 @@ mod validated_content_tests {
     #[test]
     fn repeated_array_slots_fall_back_in_both_formats() {
         use crate::binxml::compiled::{
-            JsonProgram, RenderCaches, TemplateProgram, XmlProgram, try_render_validated,
+            Budget, JsonProgram, RenderCaches, TemplateProgram, XmlProgram, try_render_validated,
         };
         use crate::binxml::ir::{TemplateContent, ValidatedInstance};
         use crate::model::ir::{Attr, Element, IrArena, IrTree, IrVec, Name, Node, Placeholder};
@@ -343,7 +349,8 @@ mod validated_content_tests {
             optional: false,
         });
         // The same array is used in an attribute, ordinary text, and a Data
-        // expansion site. Every occurrence must expand, not become "x,y".
+        // expansion site. Every occurrence must expand, not become "x,y": the
+        // compiled lanes don't take templates that use a value twice.
         for name in ["Sub", "Other", "Data"] {
             let mut element = Element::new_in(Name::new(name), bump);
             if name == "Sub" {
@@ -376,15 +383,20 @@ mod validated_content_tests {
         let mut caches = RenderCaches::default();
         let compiled = [false, true].map(|json| {
             let mut output = b"prefix".to_vec();
+            let budget = Budget::new(output.len());
             let compiled =
-                try_render_validated(&content, &chunk, &mut caches, json, &mut output).unwrap();
+                try_render_validated(&content, &chunk, &mut caches, json, &budget, &mut output)
+                    .unwrap();
             if !compiled {
                 assert_eq!(output, b"prefix", "partial output must be rolled back");
                 let mut materialized = Vec::new();
+                let budget = Budget::new(0);
                 if json {
-                    JsonProgram::render_tree(&tree, &chunk.settings, &mut materialized).unwrap();
+                    JsonProgram::render_tree(&tree, &chunk.settings, &budget, &mut materialized)
+                        .unwrap();
                 } else {
-                    XmlProgram::render_tree(&tree, &chunk.settings, &mut materialized).unwrap();
+                    XmlProgram::render_tree(&tree, &chunk.settings, &budget, &mut materialized)
+                        .unwrap();
                 }
                 assert!(!String::from_utf8(materialized).unwrap().contains("x,y"));
             }

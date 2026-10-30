@@ -85,7 +85,7 @@ fn render_chunk<P: StoredProgram>(
     chunk: &mut EvtxChunk<'_>,
     record_numbers: bool,
 ) -> RenderedChunk {
-    use crate::binxml::compiled::{Preflight, ProgramCache, try_render_compiled};
+    use crate::binxml::compiled::{ChunkBudget, Preflight, ProgramCache, try_render_compiled};
     use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
     use crate::binxml::value_render::ValueRenderer;
 
@@ -99,6 +99,7 @@ fn render_chunk<P: StoredProgram>(
     let mut progs = ProgramCache::<P>::default();
     let mut preflight = Preflight::default();
     let mut value_renderer = ValueRenderer::new();
+    let budget = ChunkBudget::default();
 
     let mut raw_records = chunk_ref.iter_raw();
     while let Some(raw) = raw_records.next() {
@@ -119,38 +120,38 @@ fn render_chunk<P: StoredProgram>(
             let _ = writeln!(&mut data, "Record {}{}", event_record_id, suffix);
         }
         let body_start = data.len();
-        let rendered = try_render_compiled(
-            raw.bytes,
-            event_record_id,
-            chunk_ref,
-            &mut ir_cache,
-            &mut progs,
-            &mut preflight,
-            &mut value_renderer,
-            &mut data,
-        )
-        .and_then(|compiled| {
-            if compiled {
-                return Ok(());
-            }
-            // Slow lane: fully materialize, then run the same walker the
-            // compiler uses — one output semantics for every record shape.
-            build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache).and_then(
-                |mut tree| {
-                    if let Some(mta) = mta {
-                        crate::mta::add_rendering_info(
-                            &mut tree,
-                            event_record_id,
-                            mta,
-                            &chunk_ref.arena,
-                        );
-                    }
-                    P::render_tree(&tree, settings, &mut data)
-                },
-            )
-        })
-        // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
-        .map_err(|err| EvtxError::record(event_record_id, err));
+        let rendered = budget
+            .render(&mut data, |budget, data| {
+                let compiled = try_render_compiled(
+                    raw.bytes,
+                    event_record_id,
+                    chunk_ref,
+                    &mut ir_cache,
+                    &mut progs,
+                    &mut preflight,
+                    &mut value_renderer,
+                    budget,
+                    data,
+                )?;
+                if compiled {
+                    return Ok(());
+                }
+                // Slow lane: fully materialize, then run the same walker the
+                // compiler uses — one output semantics for every record shape.
+                let mut tree =
+                    build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)?;
+                if let Some(mta) = mta {
+                    crate::mta::add_rendering_info(
+                        &mut tree,
+                        event_record_id,
+                        mta,
+                        &chunk_ref.arena,
+                    );
+                }
+                P::render_tree(&tree, settings, budget, data)
+            })
+            // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
+            .map_err(|err| EvtxError::record(event_record_id, err));
         match rendered {
             Ok(()) => {
                 if raw.recovered {

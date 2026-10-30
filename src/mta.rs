@@ -730,6 +730,16 @@ impl SystemFields {
         Some(fields)
     }
 
+    /// The bytes it allocated, for the size of the program that keeps it.
+    pub(crate) fn heap_size(&self) -> usize {
+        let provider = match self.sources.as_ref().map(|sources| &sources.provider) {
+            Some(Source::Literal(name)) => name.len(),
+            _ => 0,
+        };
+        let slots = self.event_slots.capacity() + self.system_slots.capacity();
+        slots * std::mem::size_of::<u16>() + provider
+    }
+
     /// Whether a record has elements in a substitution where they could change its fields.
     /// `value` gives the record's substitution values.
     pub(crate) fn needs_tree<'v>(&self, value: impl Fn(u16) -> Value<'v>) -> bool {
