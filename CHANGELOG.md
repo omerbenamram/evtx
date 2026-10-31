@@ -16,9 +16,19 @@ and this project adheres to
   values, which store milliseconds, render as `.7890000Z`, as in Windows. This
   covers XML and JSON, `TimeCreated` included, so code that parses evtx's
   timestamps with exactly six digits needs to accept seven.
+- `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
+  `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
+  can't represent still render. `to_timestamp()` converts them.
 
 ### Fixed
 
+- A record holding a FILETIME or SYSTEMTIME value that jiff can't represent
+  failed with `InvalidDateTimeError`: a FILETIME from 9999-12-30T22:00 UTC on,
+  and a SYSTEMTIME with a field out of range. Such values now render as Windows
+  renders them. Years past 9999 keep their last four digits, a FILETIME past
+  `i64::MAX` renders as `0000-00-00T00:00:00.0000000Z`, and an invalid
+  SYSTEMTIME as `1601-01-01T00:00:00.0000000Z`, as an unset one already did.
+  10 records of the Windows types sample failed this way.
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with

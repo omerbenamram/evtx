@@ -1,11 +1,10 @@
 use crate::AnsiCodec;
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::utils::invalid_data;
-use crate::utils::windows::{filetime_to_timestamp, read_systime, systime_from_bytes};
+pub use crate::utils::windows::{FileTime, SysTime};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use bumpalo::Bump;
-use jiff::Timestamp;
 use log::trace;
 use std::borrow::Cow;
 use std::fmt::{self, Display};
@@ -86,8 +85,8 @@ pub enum BinXmlValue<'a> {
     BinaryType(&'a [u8]),
     GuidType([u8; 16]),
     SizeTType(usize),
-    FileTimeType(Timestamp),
-    SysTimeType(Timestamp),
+    FileTimeType(FileTime),
+    SysTimeType(SysTime),
     SidType(SidRef<'a>),
     HexInt32Type(u32),
     HexInt64Type(u64),
@@ -114,8 +113,8 @@ pub enum BinXmlValue<'a> {
     BinaryArrayType,
     GuidArrayType(&'a [[u8; 16]]),
     SizeTArrayType,
-    FileTimeArrayType(&'a [Timestamp]),
-    SysTimeArrayType(&'a [Timestamp]),
+    FileTimeArrayType(&'a [FileTime]),
+    SysTimeArrayType(&'a [SysTime]),
     SidArrayType(&'a [SidRef<'a>]),
     HexInt32ArrayType(&'a [u32]),
     HexInt64ArrayType(&'a [u64]),
@@ -392,10 +391,13 @@ impl<'a> BinXmlValue<'a> {
 
             (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(cursor.array::<16>("guid")?),
 
+            // Kept as stored: Windows renders values that are no valid time, and so does evtx.
             (BinXmlValueType::FileTimeType, _) => {
-                BinXmlValue::FileTimeType(filetime_to_timestamp(cursor.u64()?)?)
+                BinXmlValue::FileTimeType(FileTime(cursor.u64()?))
             }
-            (BinXmlValueType::SysTimeType, _) => BinXmlValue::SysTimeType(read_systime(cursor)?),
+            (BinXmlValueType::SysTimeType, _) => {
+                BinXmlValue::SysTimeType(SysTime::from_bytes(&cursor.array::<16>("systime")?))
+            }
             (BinXmlValueType::SidType, _) => BinXmlValue::SidType(cursor.read_sid_ref()?),
 
             (BinXmlValueType::SizeTType, Some(4)) => {
@@ -509,7 +511,7 @@ impl<'a> BinXmlValue<'a> {
                     sz,
                     "filetime_array",
                     arena,
-                    |_off, b| filetime_to_timestamp(u64::from_le_bytes(*b)),
+                    |_off, b| Ok(FileTime(u64::from_le_bytes(*b))),
                 )?;
                 BinXmlValue::FileTimeArrayType(out)
             }
@@ -518,7 +520,7 @@ impl<'a> BinXmlValue<'a> {
                     sz,
                     "systime_array",
                     arena,
-                    |_off, b| systime_from_bytes(b),
+                    |_off, b| Ok(SysTime::from_bytes(b)),
                 )?;
                 BinXmlValue::SysTimeArrayType(out)
             }
