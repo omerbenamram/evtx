@@ -34,6 +34,11 @@ and this project adheres to
   `win:AnsiString` field with a `count`, failed because evtx didn't implement
   that value type. Each string now renders as an element of its own, as Windows
   renders them. 3 records of the Windows types sample failed this way.
+- A record whose template holds a CDATA section or a character reference failed,
+  because evtx didn't implement those BinXML tokens. XML now writes them as
+  `<![CDATA[...]]>` and `&#65;`, and JSON gets their text. A `]]>` inside a
+  CDATA section splits it in two, so the XML stays well-formed. With this, every
+  record of the Windows types sample renders.
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with
