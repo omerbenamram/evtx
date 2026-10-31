@@ -19,6 +19,7 @@ and this project adheres to
 - `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
   `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
   can't represent still render. `to_timestamp()` converts them.
+- `BinXmlValue::AnsiStringArrayType` holds its strings, as a `&[&str]`.
 
 ### Fixed
 
@@ -29,6 +30,10 @@ and this project adheres to
   `i64::MAX` renders as `0000-00-00T00:00:00.0000000Z`, and an invalid
   SYSTEMTIME as `1601-01-01T00:00:00.0000000Z`, as an unset one already did.
   10 records of the Windows types sample failed this way.
+- A record holding an array of ANSI strings, which Windows stores for a
+  `win:AnsiString` field with a `count`, failed because evtx didn't implement
+  that value type. Each string now renders as an element of its own, as Windows
+  renders them. 3 records of the Windows types sample failed this way.
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with
