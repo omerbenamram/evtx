@@ -295,7 +295,8 @@ describe("real DuckDB event queries", () => {
       const record = await fetchRecordByKey(row.rowKey, query);
       const json = record?.Event.System;
       expect(row).toMatchObject({
-        time: json?.TimeCreated_attributes?.SystemTime,
+        // The time column holds microseconds, and evtx's SystemTime has a seventh digit.
+        time: json?.TimeCreated_attributes?.SystemTime?.replace(/(\.\d{6})\dZ$/, "$1Z"),
         task: json?.Task,
         eventId: json?.EventID,
         level: json?.Level,
