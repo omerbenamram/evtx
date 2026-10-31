@@ -8,6 +8,7 @@ mod wevt_templates {
         CrimManifest, EventKey, MapDefinition, WevtManifestError,
     };
     use evtx::wevt_templates::{ResourceIdentifier, extract_wevt_template_resources};
+    use evtx::wevt_templates::{WevtCacheFileError, for_each_crim_blob};
     use evtx::wevt_templates::{
         render_template_definition_to_xml, render_template_definition_to_xml_with_values,
     };
@@ -1043,6 +1044,66 @@ mod wevt_templates {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn it_rejects_table_counts_the_blob_cannot_hold() {
+        // Each table claims u32::MAX entries in its header and holds none. Reserving room for
+        // them asked for hundreds of GB, which aborted the process. Tables of size 0 are read by
+        // their count, and a TTBL table's count was never checked against its size.
+        let table = |sig: &[u8; 4], header_len: usize, size: u32| {
+            let mut table = sig.to_vec();
+            table.extend_from_slice(&size.to_le_bytes());
+            table.extend_from_slice(&u32::MAX.to_le_bytes()); // count
+            table.resize(header_len, 0);
+            table
+        };
+        let tables = [
+            table(b"CHAN", 12, 0),
+            table(b"EVNT", 16, 0),
+            table(b"TTBL", 12, 12),
+        ];
+        let (provider_data_off, wevt_size) = wevt_layout_for_single_provider(1, 0);
+        for table in tables {
+            let blob = build_crim_single_provider_blob(
+                [0x55; 16],
+                0xffffffff,
+                &[],
+                &[provider_data_off + wevt_size],
+                &[table],
+                &[],
+            );
+            let err = CrimManifest::parse(&blob).unwrap_err();
+            assert!(
+                matches!(err, WevtManifestError::Truncated { .. }),
+                "unexpected error: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_rejects_a_wevtcache_entry_longer_than_the_file() {
+        // A 29-byte cache whose one entry claims 256 TiB. The reader used to allocate the
+        // entry's whole length before reading it.
+        let d = tempdir().unwrap();
+        let path = d.path().join("huge-entry.wevtcache");
+        let mut cache = b"WEVTCACH".to_vec();
+        cache.extend_from_slice(&1u32.to_le_bytes()); // version
+        cache.extend_from_slice(&1u32.to_le_bytes()); // entry_count
+        cache.push(1); // kind: CRIM
+        cache.extend_from_slice(&(1u64 << 48).to_le_bytes()); // len
+        cache.extend_from_slice(b"CRIM");
+        fs::write(&path, &cache).unwrap();
+
+        let err = for_each_crim_blob(&path, |_| panic!("the entry is truncated")).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                WevtCacheFileError::Io { action: "read entry payload", source, .. }
+                    if source.kind() == std::io::ErrorKind::UnexpectedEof
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

@@ -29,6 +29,15 @@ and this project adheres to
 
 ### Security
 
+- A crafted `.wevtcache` file could abort the process that loads it. The reader
+  allocated whatever length an entry's header claimed before reading the entry,
+  so a 25-byte file claiming 256 TiB aborted `evtx_dump --wevt-cache`,
+  `apply-wevt-cache` and pyevtx-rs's `WevtCache.load` (#334). An entry is now
+  read as it arrives, and one that the file cuts short fails with an error. The
+  WEVT manifests in these files and in DLLs had the same flaw: a TTBL table, or
+  a CHAN, KEYW, LEVL, OPCO, TASK or EVNT table of size 0, reserved room for as
+  many entries as its count claimed, up to 4 billion. Those tables now reserve
+  no more entries than the manifest has room for.
 - Refreshed lockfiles to clear Dependabot alerts: `crossbeam-epoch` 0.9.21
   (RUSTSEC-2026-0204) and `anyhow` 1.0.104 (RUSTSEC-2026-0190), `rkyv` 0.8.18 in the
   `utf16-simd` benches, and `zod` 4.6.7, `vite` 8.3.5, `vitest` 5.0.5 and

@@ -220,10 +220,18 @@ impl WevtCacheReader {
                 len: len_u64,
             })?;
 
-        let mut buf = vec![0u8; len];
-        self.file
-            .read_exact(&mut buf)
+        // Read the payload as it arrives rather than allocating `len` bytes first: the header
+        // can claim far more than the file holds.
+        let mut buf = Vec::new();
+        (&mut self.file)
+            .take(len_u64)
+            .read_to_end(&mut buf)
             .map_err(io_err("read entry payload", &self.path))?;
+        if buf.len() != len {
+            return Err(io_err("read entry payload", &self.path)(
+                io::ErrorKind::UnexpectedEof.into(),
+            ));
+        }
 
         self.remaining -= 1;
         Ok(Some((kind, buf)))
