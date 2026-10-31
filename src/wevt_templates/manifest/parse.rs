@@ -385,6 +385,7 @@ fn parse_table_header(
 
     let end = if size == 0 {
         // libfwevt accepts size==0 and uses `count` to parse the array.
+        require_len(crim, recs_off, recs_bytes, names.array)?;
         recs_end
     } else {
         let end = region_end(crim.len(), off, size, header_len as u32, names.size)?;
@@ -613,8 +614,10 @@ fn parse_ttbl<'a>(crim: &'a [u8], off: u32) -> Result<TemplateTable<'a>> {
     let end = region_end(crim.len(), off, size, 12, "TTBL.size")?;
     let count_usize = count as usize;
 
-    let mut templates = Vec::with_capacity(count_usize);
     let mut cur = off_usize + 12;
+    // Each template takes at least a TEMP header, which bounds how many the table can hold.
+    let mut templates =
+        Vec::with_capacity(count_usize.min(end.saturating_sub(cur) / TEMP_HEADER_SIZE));
 
     for _ in 0..count_usize {
         require_len(&crim[..end], cur, TEMP_HEADER_SIZE, "TEMP header")?;

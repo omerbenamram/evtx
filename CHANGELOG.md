@@ -14,6 +14,11 @@ and this project adheres to
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with
   `EntryLengthTooLarge` before anything is allocated (#334).
+- The WEVT manifests in `.wevtcache` files and DLLs could abort the process the
+  same way: a TTBL table, or a CHAN, KEYW, LEVL, OPCO, TASK or EVNT table of
+  size 0, reserved room for as many entries as its count claimed, up to
+  4 billion, before reading any. Those tables now reserve no more entries than
+  the manifest has room for.
 - A BinXML value holding more than one element kept only the first. Windows
   writes such values: in the Shell-Core sample, events 161 and 968 hold their
   event data and then a `RenderingInfo` element, which evtx dropped. Every

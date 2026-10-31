@@ -1046,6 +1046,41 @@ mod wevt_templates {
     }
 
     #[test]
+    fn it_rejects_table_counts_the_blob_cannot_hold() {
+        // Each table claims u32::MAX entries in its header and holds none. Reserving room for
+        // them asked for hundreds of GB, which aborted the process. Tables of size 0 are read by
+        // their count, and a TTBL table's count was never checked against its size.
+        let table = |sig: &[u8; 4], header_len: usize, size: u32| {
+            let mut table = sig.to_vec();
+            table.extend_from_slice(&size.to_le_bytes());
+            table.extend_from_slice(&u32::MAX.to_le_bytes()); // count
+            table.resize(header_len, 0);
+            table
+        };
+        let tables = [
+            table(b"CHAN", 12, 0),
+            table(b"EVNT", 16, 0),
+            table(b"TTBL", 12, 12),
+        ];
+        let (provider_data_off, wevt_size) = wevt_layout_for_single_provider(1, 0);
+        for table in tables {
+            let blob = build_crim_single_provider_blob(
+                [0x55; 16],
+                0xffffffff,
+                &[],
+                &[provider_data_off + wevt_size],
+                &[table],
+                &[],
+            );
+            let err = CrimManifest::parse(&blob).unwrap_err();
+            assert!(
+                matches!(err, WevtManifestError::Truncated { .. }),
+                "unexpected error: {err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn it_errors_when_template_item_name_offset_overlaps_descriptor_table() {
         // Cover parse_template_items' boundary enforcement between descriptor table and name table.
         let provider_guid = [0x88u8; 16];
