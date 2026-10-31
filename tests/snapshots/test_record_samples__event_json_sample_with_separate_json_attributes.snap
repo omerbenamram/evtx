@@ -23,7 +23,7 @@ expression: "&value"
       "Opcode": 0,
       "Keywords": "0x80000000000000",
       "TimeCreated_attributes": {
-        "SystemTime": "2010-11-10T18:18:51.000000Z"
+        "SystemTime": "2010-11-10T18:18:51.0000000Z"
       },
       "EventRecordID": 1,
       "Correlation": null,

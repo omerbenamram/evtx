@@ -24,7 +24,7 @@ expression: "&value"
       "Keywords": "0x80000000000000",
       "TimeCreated": {
         "#attributes": {
-          "SystemTime": "2017-07-12T17:16:28.214161Z"
+          "SystemTime": "2017-07-12T17:16:28.2141616Z"
         }
       },
       "EventRecordID": 1,

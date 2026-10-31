@@ -22,7 +22,7 @@ expression: "&value"
       "Keywords": "0x8020000000000000",
       "TimeCreated": {
         "#attributes": {
-          "SystemTime": "2015-08-23T21:25:49.063125Z"
+          "SystemTime": "2015-08-23T21:25:49.0631250Z"
         }
       },
       "EventRecordID": 196,

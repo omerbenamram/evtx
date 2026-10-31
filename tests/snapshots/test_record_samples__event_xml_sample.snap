@@ -14,7 +14,7 @@ expression: first_record.data
     <Task>12288</Task>
     <Opcode>0</Opcode>
     <Keywords>0x8020000000000000</Keywords>
-    <TimeCreated SystemTime="2016-07-08T18:12:51.681640Z">
+    <TimeCreated SystemTime="2016-07-08T18:12:51.6816408Z">
     </TimeCreated>
     <EventRecordID>1</EventRecordID>
     <Correlation>
