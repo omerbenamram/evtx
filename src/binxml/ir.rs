@@ -75,6 +75,7 @@ use crate::EvtxChunk;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
 };
+use crate::binxml::compiled::{Budget, MAX_SUBSTITUTIONS};
 use crate::binxml::name::NAME_LINK_SIZE;
 use crate::binxml::tokens::{
     BinXmlTemplateValues, Stream, TemplateHeader, TokenSink, ends_stream, read_template_header,
@@ -158,9 +159,9 @@ pub(crate) const TEMPLATE_DEFINITION_HEADER_SIZE: usize = 24;
 /// clones the tree and resolves all placeholders using substitution values.
 #[derive(Debug)]
 pub(crate) struct IrTemplateCache<'a> {
-    /// Cached definition tree + "contains a literal expandable array" flag
-    /// (precomputed once so per-record expansion gating is a lookup).
-    templates: AHashMap<u32, (Rc<IrTree<'a>>, bool)>,
+    /// Cached definition trees, with their stats (precomputed once so per-record expansion
+    /// gating and budgeting are lookups).
+    templates: AHashMap<u32, (Rc<IrTree<'a>>, TemplateStats)>,
     arena: &'a Bump,
 }
 
@@ -178,17 +179,19 @@ impl<'a> IrTemplateCache<'a> {
     }
 
     /// Cached template tree + literal-array flag, for the compiled-template
-    /// path (`binxml::compiled`).
+    /// path (`binxml::compiled`). Parsing the template charges `budget`.
     pub(crate) fn template_for_compile(
         &mut self,
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
+        budget: &Budget,
     ) -> Result<(Rc<IrTree<'a>>, bool)> {
-        self.get_or_parse_template_direct(chunk, template_def_offset, 0)
+        self.get_or_parse_template_direct(chunk, template_def_offset, 0, budget)
+            .map(|(template, stats)| (template, stats.has_literal_array))
     }
 
-    /// Load a template definition from the chunk (or return a cached copy),
-    /// with its "contains a literal expandable array" flag.
+    /// Load a template definition from the chunk (or return a cached copy), with its stats.
+    /// The record that parses it pays for the instances it holds (see `build_template_in`).
     ///
     /// The returned [`IrTree`] is stored in the cache and contains `Node::Placeholder` nodes.
     /// It is never rendered directly; instead it is used as the source for
@@ -198,27 +201,27 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         template_def_offset: u32,
         depth: usize,
-    ) -> Result<(Rc<IrTree<'a>>, bool)> {
+        budget: &Budget,
+    ) -> Result<(Rc<IrTree<'a>>, TemplateStats)> {
         if let Some(existing) = self.templates.get(&template_def_offset) {
             return Ok(existing.clone());
         }
         let header = read_template_definition_header_at(chunk.data, template_def_offset)?;
 
         let parsed = template_body_at(chunk.data, template_def_offset, &header).and_then(|bytes| {
-            build_template_in(Stream::chunk(chunk, self.arena), bytes, self, depth)
+            build_template_in(Stream::chunk(chunk, self.arena), bytes, self, depth, budget)
         });
         // If the embedded chunk template is corrupt/missing, optionally fall back to an
         // offline WEVT cache (provider resources) when configured.
         #[cfg(feature = "wevt_templates")]
-        let parsed = parsed.or_else(|err| self.wevt_template(chunk, &header, depth).ok_or(err));
+        let parsed =
+            parsed.or_else(|err| self.wevt_template(chunk, &header, depth, budget).ok_or(err));
 
         let template = Rc::new(parsed?);
-        let has_literal_array = tree_has_literal_array(&template);
-        self.templates.insert(
-            template_def_offset,
-            (Rc::clone(&template), has_literal_array),
-        );
-        Ok((template, has_literal_array))
+        let stats = TemplateStats::of(&template)?;
+        self.templates
+            .insert(template_def_offset, (Rc::clone(&template), stats));
+        Ok((template, stats))
     }
 
     #[cfg(feature = "wevt_templates")]
@@ -227,6 +230,7 @@ impl<'a> IrTemplateCache<'a> {
         chunk: &'a EvtxChunk<'a>,
         header: &TemplateHeader,
         depth: usize,
+        budget: &Budget,
     ) -> Option<IrTree<'a>> {
         let cache = chunk.settings.get_wevt_cache()?;
         let guid = winstructs::guid::Guid::from_buffer(&header.guid).ok()?;
@@ -234,7 +238,7 @@ impl<'a> IrTemplateCache<'a> {
             .load_temp_binxml_fragment_in(&guid.to_string(), self.arena)
             .ok()?;
         let src = Stream::wevt(binxml, chunk.settings.get_ansi_codec(), self.arena);
-        build_template_in(src, binxml, self, depth).ok()
+        build_template_in(src, binxml, self, depth, budget).ok()
     }
 }
 
@@ -254,7 +258,7 @@ const MAX_BINXML_NESTING: usize = 64;
 
 /// Hard cap on open-element depth within one BinXML stream, bounding tree
 /// depth (and the walkers' recursion over it) on crafted input.
-const MAX_ELEMENT_DEPTH: usize = 512;
+pub(crate) const MAX_ELEMENT_DEPTH: usize = 512;
 
 /// Streaming token consumer that builds the IR tree.
 ///
@@ -273,6 +277,8 @@ struct TreeBuilder<'a, 'cache, 'arena> {
     cache: &'cache mut IrTemplateCache<'a>,
     mode: BuildMode,
     arena: &'arena mut IrArena<'a>,
+    /// What the record may still build, which its template instances charge.
+    budget: &'arena Budget,
     /// Fragment/instance nesting depth of this stream (see [`MAX_BINXML_NESTING`]).
     depth: usize,
     stack: IrVec<'a, ElementId>,
@@ -427,9 +433,17 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
         })?;
         // No nested-instance list: nested BinXML is built in stream order (as
         // `build_in` does), so errors surface in the same order as a full walk.
-        let instance =
-            validate_tpl_instance(template, chunk, self.cache, self.arena, None, self.depth)?;
-        let element_id = materialize_instance(&instance, &[], self.src.bump, self.arena)?;
+        let instance = validate_tpl_instance(
+            template,
+            chunk,
+            self.cache,
+            self.arena,
+            None,
+            self.depth,
+            self.budget,
+        )?;
+        let element_id =
+            materialize_instance(&instance, &[], self.src.bump, self.arena, self.budget)?;
         self.attach(element_id)
     }
 
@@ -473,6 +487,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     /// Build an embedded fragment and attach its top-level elements here.
     #[inline(never)]
     fn splice_fragment(&mut self, bytes: &'a [u8]) -> Result<()> {
+        self.arena.mark_spliced();
         let roots = build_in(
             self.src,
             bytes,
@@ -480,6 +495,7 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             self.arena,
             BuildMode::Record,
             self.depth + 1,
+            self.budget,
         )?;
         if let Some(first) = roots.first {
             self.attach(first)?;
@@ -553,7 +569,8 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
 ///
 /// `mode` controls whether substitutions become placeholders (template definitions) or are
 /// rejected (records); template definitions also carry dependency IDs on element start tokens.
-/// `depth` is the fragment/instance nesting depth of this stream (recursion guard).
+/// `depth` is the fragment/instance nesting depth of this stream (recursion guard). The
+/// stream's template instances charge `budget` what they materialize.
 fn build_in<'a>(
     src: Stream<'a>,
     bytes: &'a [u8],
@@ -561,6 +578,7 @@ fn build_in<'a>(
     arena: &mut IrArena<'a>,
     mode: BuildMode,
     depth: usize,
+    budget: &Budget,
 ) -> Result<Roots<'a>> {
     // Only template definitions carry dependency IDs on element start tokens.
     let has_dep_id = mode == BuildMode::TemplateDefinition;
@@ -575,6 +593,7 @@ fn build_in<'a>(
         cache,
         mode,
         arena,
+        budget,
         depth,
         stack: IrVec::new_in(src.bump),
         current_element: None,
@@ -593,39 +612,45 @@ fn build_record_root_in<'a>(
     bytes: &'a [u8],
     cache: &mut IrTemplateCache<'a>,
     arena: &mut IrArena<'a>,
+    budget: &Budget,
 ) -> Result<ElementId> {
-    let roots = build_in(src, bytes, cache, arena, BuildMode::Record, 0)?;
+    let roots = build_in(src, bytes, cache, arena, BuildMode::Record, 0, budget)?;
     Ok(match roots.first {
         Some(root) => root,
         None => arena.new_node(Element::new_in(Name::new("Event"), src.bump)),
     })
 }
 
-/// Build an IR tree directly from a record's BinXML bytes without an iterator.
+/// Build an IR tree directly from a record's BinXML bytes without an iterator, within the
+/// record's `budget`.
 pub(crate) fn build_tree_from_binxml_bytes_direct<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
+    budget: &Budget,
 ) -> Result<IrTree<'a>> {
     let mut arena =
         IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), &chunk.arena);
-    let root = build_record_root_in(Stream::chunk(chunk, &chunk.arena), bytes, cache, &mut arena)?;
+    let src = Stream::chunk(chunk, &chunk.arena);
+    let root = build_record_root_in(src, bytes, cache, &mut arena, budget)?;
     Ok(IrTree::new(arena, root))
 }
 
-/// Build an embedded BinXML fragment, returning its arena and its top-level elements in
-/// order (none when it holds no element).
+/// Build an embedded BinXML fragment within the record's `budget`, returning its arena and its
+/// top-level elements in order (none when it holds no element).
 #[cold]
 #[inline(never)]
 pub(crate) fn build_fragment_from_binxml_bytes<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
+    budget: &Budget,
 ) -> Result<(ManuallyDrop<IrArena<'a>>, &'a [ElementId])> {
     let mut arena =
         IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), &chunk.arena);
     let src = Stream::chunk(chunk, &chunk.arena);
-    let roots = build_in(src, bytes, cache, &mut arena, BuildMode::Record, 0)?.into_slice(src.bump);
+    let roots =
+        build_in(src, bytes, cache, &mut arena, BuildMode::Record, 0, budget)?.into_slice(src.bump);
     // Like `IrTree`, skip the arena's drop glue: its memory lives in the chunk's bump.
     Ok((ManuallyDrop::new(arena), roots))
 }
@@ -650,7 +675,7 @@ pub(crate) enum ValidatedValue<'a> {
 pub(crate) struct ValidatedInstance<'a> {
     pub(crate) offset: u32,
     pub(crate) template: Rc<IrTree<'a>>,
-    pub(crate) has_literal_array: bool,
+    pub(crate) stats: TemplateStats,
     pub(crate) has_arrays: bool,
     pub(crate) values: Vec<ValidatedValue<'a>>,
 }
@@ -673,10 +698,11 @@ impl<'a> TemplateContent<'a> {
         }
     }
 
-    pub(crate) fn materialize(&self, bump: &'a Bump) -> Result<IrTree<'a>> {
+    /// The record's tree, within the record's `budget`.
+    pub(crate) fn materialize(&self, bump: &'a Bump, budget: &Budget) -> Result<IrTree<'a>> {
         // Preserve fragment element IDs. No fragment bytes are parsed again.
         let mut arena = (*self.frags).clone();
-        let root = materialize_instance(&self.root, &self.nested, bump, &mut arena)?;
+        let root = materialize_instance(&self.root, &self.nested, bump, &mut arena, budget)?;
         Ok(IrTree::new(arena, root))
     }
 }
@@ -686,13 +712,20 @@ impl<'a> TemplateContent<'a> {
 /// Nested instances are materialized first so every placeholder resolves to a scalar or an
 /// element; the template tree is then deep-cloned with all placeholders resolved and array
 /// substitutions expanded (see `resolve_node_into`). The returned `ElementId` is *spliced* into
-/// the record tree at the template instance location.
+/// the record tree at the template instance location. `budget` pays for the clone up front;
+/// the fragments that placeholders place, and the elements arrays repeat, are charged where
+/// they are placed.
 fn materialize_instance<'a>(
     instance: &ValidatedInstance<'a>,
     nested: &[ValidatedInstance<'a>],
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
+    budget: &Budget,
 ) -> Result<ElementId> {
+    budget.build(instance.stats.nodes)?;
+    if instance.stats.reuses_value {
+        arena.mark_shared();
+    }
     let has_templates = instance
         .values
         .iter()
@@ -703,7 +736,7 @@ fn materialize_instance<'a>(
         for value in &instance.values {
             copy.push(match value {
                 ValidatedValue::Template(id) => {
-                    let root = materialize_instance(&nested[*id], nested, bump, arena)?;
+                    let root = materialize_instance(&nested[*id], nested, bump, arena, budget)?;
                     ValidatedValue::Fragment(std::slice::from_ref(bump.alloc(root)))
                 }
                 other => other.clone(),
@@ -722,32 +755,43 @@ fn materialize_instance<'a>(
         values,
         bump,
         arena,
+        budget,
     )
     .map(|(root, _)| root)
 }
 
+/// A record's content, within the record's `budget`.
 pub(crate) fn build_record_content<'a>(
     bytes: &'a [u8],
     chunk: &'a EvtxChunk<'a>,
     cache: &mut IrTemplateCache<'a>,
+    budget: &Budget,
 ) -> Result<RecordContent<'a>> {
     if let Some(template_ref) = read_single_instance_stream(bytes, chunk)? {
         let mut frags = IrArena::new_in(&chunk.arena);
         let mut nested = Vec::new();
-        let root =
-            validate_tpl_instance(template_ref, chunk, cache, &mut frags, Some(&mut nested), 0)?;
+        let root = validate_tpl_instance(
+            template_ref,
+            chunk,
+            cache,
+            &mut frags,
+            Some(&mut nested),
+            0,
+            budget,
+        )?;
         return Ok(RecordContent::Template(TemplateContent {
             root,
             nested,
             frags: ManuallyDrop::new(frags),
         }));
     }
-    build_tree_from_binxml_bytes_direct(bytes, chunk, cache).map(RecordContent::Tree)
+    build_tree_from_binxml_bytes_direct(bytes, chunk, cache, budget).map(RecordContent::Tree)
 }
 
 /// Validate a template instance's substitution values. With `nested`, values that are
 /// themselves single-instance streams are validated recursively and pushed there (as
-/// `ValidatedValue::Template`); without it, every non-empty BinXML value is built in place.
+/// `ValidatedValue::Template`); without it, every non-empty BinXML value is built in place,
+/// within `budget`.
 fn validate_tpl_instance<'a>(
     template_ref: BinXmlTemplateValues<'a>,
     chunk: &'a EvtxChunk<'a>,
@@ -755,9 +799,14 @@ fn validate_tpl_instance<'a>(
     frags: &mut IrArena<'a>,
     mut nested: Option<&mut Vec<ValidatedInstance<'a>>>,
     depth: usize,
+    budget: &Budget,
 ) -> Result<ValidatedInstance<'a>> {
-    let (template, has_literal_array) =
-        cache.get_or_parse_template_direct(chunk, template_ref.template_def_offset, depth)?;
+    let (template, stats) = cache.get_or_parse_template_direct(
+        chunk,
+        template_ref.template_def_offset,
+        depth,
+        budget,
+    )?;
     // Collected in place (same allocation as `values`), then rewritten. A
     // single fallible `map(..).collect::<Result<Vec<_>>>()` measured ~4.5% more
     // instructions on the records API (`records_json`, security_big_sample).
@@ -788,20 +837,28 @@ fn validate_tpl_instance<'a>(
             && depth < MAX_BINXML_NESTING
             && let Some(inner) = read_single_instance_stream(bytes, chunk)?
         {
-            let child = validate_tpl_instance(inner, chunk, cache, frags, Some(nested), depth + 1)?;
+            let child =
+                validate_tpl_instance(inner, chunk, cache, frags, Some(nested), depth + 1, budget)?;
             *value = ValidatedValue::Template(nested.len());
             nested.push(child);
             continue;
         }
         let src = Stream::chunk(chunk, &chunk.arena);
-        *value = ValidatedValue::Fragment(
-            build_in(src, bytes, cache, frags, BuildMode::Record, depth + 1)?.into_slice(src.bump),
-        );
+        let roots = build_in(
+            src,
+            bytes,
+            cache,
+            frags,
+            BuildMode::Record,
+            depth + 1,
+            budget,
+        )?;
+        *value = ValidatedValue::Fragment(roots.into_slice(src.bump));
     }
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
         template,
-        has_literal_array,
+        stats,
         has_arrays,
         values,
     })
@@ -842,20 +899,25 @@ pub(crate) fn build_wevt_template_definition_ir<'a>(
     bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
     let mut cache = IrTemplateCache::with_capacity(0, bump);
+    // Without a chunk, the template can't hold instances, so it builds nothing to pay for.
+    let budget = Budget::new(0);
     build_template_in(
         Stream::wevt(binxml, ansi_codec, bump),
         binxml,
         &mut cache,
         0,
+        &budget,
     )
 }
 
-/// Parse a template definition stream into a placeholder tree.
+/// Parse a template definition stream into a placeholder tree. A template can't hold an
+/// instance itself, but a BinXML value in it can, and `budget` pays for building those.
 fn build_template_in<'a>(
     src: Stream<'a>,
     bytes: &'a [u8],
     cache: &mut IrTemplateCache<'a>,
     depth: usize,
+    budget: &Budget,
 ) -> Result<IrTree<'a>> {
     let mut arena = IrArena::with_capacity_in(estimate_node_capacity(bytes.len() as u32), src.bump);
     let root = match build_in(
@@ -865,6 +927,7 @@ fn build_template_in<'a>(
         &mut arena,
         BuildMode::TemplateDefinition,
         depth,
+        budget,
     )? {
         Roots {
             first: Some(root),
@@ -892,29 +955,105 @@ pub(crate) fn instantiate_template_definition_ir<'a>(
     bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
     let mut arena = IrArena::with_capacity_in(template.arena().count(), bump);
-    let (root, _needs_array_expansion) =
-        clone_and_resolve(template.arena(), template.root(), values, bump, &mut arena)?;
+    let budget = Budget::new(0);
+    let (root, _needs_array_expansion) = clone_and_resolve(
+        template.arena(),
+        template.root(),
+        values,
+        bump,
+        &mut arena,
+        &budget,
+    )?;
     Ok(IrTree::new(arena, root))
 }
 
-/// Whether the template definition tree contains a literal `Node::Value` array
-/// that would trigger element repetition at instantiation time.
-fn tree_has_literal_array(tree: &IrTree<'_>) -> bool {
-    let arena = tree.arena();
-    for id in 0..arena.count() {
-        let Some(element) = arena.get(id) else {
-            continue;
-        };
-        if element.children.iter().any(node_needs_array_expansion) {
-            return true;
-        }
-        for attr in &element.attrs {
-            if attr.value.iter().any(node_needs_array_expansion) {
-                return true;
+/// What instantiating a template definition does and costs, computed once per cached
+/// template.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TemplateStats {
+    /// Whether the tree contains a literal `Node::Value` array that would trigger element
+    /// repetition at instantiation time.
+    pub(crate) has_literal_array: bool,
+    /// Whether a substitution appears in more than one place, so that an instance places its
+    /// value in each, or has an ID past [`MAX_SUBSTITUTIONS`]. A template's elements may be
+    /// shared, by instances that a BinXML value in it holds, but its substitutions aren't: values
+    /// can't hold any.
+    reuses_value: bool,
+    /// The nodes an instance creates, counting each substitution as one (see `Budget::build`).
+    nodes: usize,
+}
+
+impl TemplateStats {
+    /// Fails for a template with an element in more than [`MAX_ELEMENT_DEPTH`] others, as in one
+    /// stream. One stream can't nest them deeper, but a BinXML value in a template is a stream of
+    /// its own, which can hold instances, and instantiating or compiling a template recurses once
+    /// per level.
+    pub(crate) fn of(tree: &IrTree<'_>) -> Result<Self> {
+        let arena = tree.arena();
+        let mut stats = TemplateStats::default();
+        // The substitution IDs seen so far, below `MAX_SUBSTITUTIONS`.
+        let mut seen = [0u64; MAX_SUBSTITUTIONS.div_ceil(64)];
+        for element in (0..arena.count()).filter_map(|id| arena.get(id)) {
+            stats.nodes += element.nodes();
+            let values = element.attrs.iter().flat_map(|attr| attr.value.iter());
+            for node in element.children.iter().chain(values) {
+                match node {
+                    Node::Placeholder(ph) => {
+                        let (word, bit) = (usize::from(ph.id) / 64, 1 << (ph.id % 64));
+                        match seen.get_mut(word) {
+                            Some(word) if *word & bit == 0 => *word |= bit,
+                            _ => stats.reuses_value = true,
+                        }
+                    }
+                    node => stats.has_literal_array |= node_needs_array_expansion(node),
+                }
             }
         }
+        // One stream builds each element once, in one place, and nests them at most
+        // `MAX_ELEMENT_DEPTH` deep, so only a template that holds a BinXML value needs walking.
+        if arena.spliced() {
+            let (nodes, depth) = unfolded_size(arena, tree.root());
+            if depth > MAX_ELEMENT_DEPTH {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "BinXML elements nested too deeply",
+                ));
+            }
+            stats.nodes = nodes;
+        }
+        Ok(stats)
     }
-    false
+}
+
+/// The nodes that cloning the tree at `root` creates, and how many elements its deepest element
+/// sits in. An element that several parents share is cloned for each, so this walks the tree's
+/// elements once each, children first, rather than recursing through every path.
+fn unfolded_size(arena: &IrArena<'_>, root: ElementId) -> (usize, usize) {
+    fn children<'e>(element: &'e Element<'_>) -> impl Iterator<Item = ElementId> + 'e {
+        element.children.iter().filter_map(|node| match node {
+            Node::Element(child) => Some(*child),
+            _ => None,
+        })
+    }
+    let mut size: Vec<Option<(usize, usize)>> = vec![None; arena.count()];
+    let mut stack = vec![root];
+    while let Some(&id) = stack.last() {
+        let Some(element) = arena.get(id).filter(|_| size[id].is_none()) else {
+            stack.pop();
+            continue;
+        };
+        let known = stack.len();
+        stack.extend(children(element).filter(|&child| size.get(child) == Some(&None)));
+        if stack.len() > known {
+            continue;
+        }
+        stack.pop();
+        let sizes = children(element).filter_map(|child| size.get(child).copied().flatten());
+        let (nodes, depth) = sizes.fold((element.nodes(), 0), |(nodes, depth), child| {
+            (nodes.saturating_add(child.0), depth.max(child.1 + 1))
+        });
+        size[id] = Some((nodes, depth));
+    }
+    size.get(root).copied().flatten().unwrap_or_default()
 }
 
 pub(crate) fn binxml_slice_offset_in(data: &[u8], bytes: &[u8]) -> Result<u64> {
@@ -996,6 +1135,7 @@ fn clone_and_resolve<'a>(
     values: &[ValidatedValue<'a>],
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
+    budget: &Budget,
 ) -> Result<(ElementId, bool)> {
     let element = template_arena
         .get(element_id)
@@ -1026,6 +1166,7 @@ fn clone_and_resolve<'a>(
                 values,
                 bump,
                 arena,
+                budget,
                 &mut new_attr.value,
             )?;
             if !needs_array_expansion
@@ -1049,6 +1190,7 @@ fn clone_and_resolve<'a>(
             values,
             bump,
             arena,
+            budget,
             &mut resolved.children,
         )?;
         if !resolved.has_element_child
@@ -1084,19 +1226,21 @@ fn resolve_node_into<'a>(
     values: &[ValidatedValue<'a>],
     bump: &'a Bump,
     arena: &mut IrArena<'a>,
+    budget: &Budget,
     out: &mut IrVec<'a, Node<'a>>,
 ) -> Result<()> {
     match node {
-        Node::Placeholder(ph) => resolve_placeholder_into(ph, values, out),
+        Node::Placeholder(ph) => resolve_placeholder_into(ph, values, budget, out),
         Node::Element(element_id) => {
             let (cloned, needs_array_expansion) =
-                clone_and_resolve(template_arena, *element_id, values, bump, arena)?;
+                clone_and_resolve(template_arena, *element_id, values, bump, arena, budget)?;
             // MS-EVEN6 §3.1.4.7.5: array substitutions expand by repeating the containing element.
             // After placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)`
             // inside an element's content/attributes. Expand them here so renderers see the proper
             // repeated-element structure (matching common tools like libevtx).
             if needs_array_expansion
-                && let Some(expanded) = expand_array_substitutions_in_element(arena, bump, cloned)?
+                && let Some(expanded) =
+                    expand_array_substitutions_in_element(arena, bump, cloned, budget)?
             {
                 for id in expanded {
                     out.push(Node::Element(id));
@@ -1121,7 +1265,7 @@ fn resolve_node_into<'a>(
 /// - **out of bounds**: treat as missing → emit nothing (fail-soft)
 /// - **optional + empty**: emit nothing (this is the common "omitted" path)
 /// - **embedded BinXML**: emit `Node::Element(id)` for each of its top-level elements (subtrees
-///   already parsed in the record arena)
+///   already parsed in the record arena), charging `budget` for each
 /// - **scalar value**: convert via `value_to_node` and emit `Text`/`Value`
 ///
 /// Note that placeholder resolution itself does **not** perform array-substitution expansion.
@@ -1140,13 +1284,17 @@ fn resolve_node_into<'a>(
 fn resolve_placeholder_into<'a>(
     placeholder: &Placeholder,
     values: &[ValidatedValue<'a>],
+    budget: &Budget,
     out: &mut IrVec<'a, Node<'a>>,
 ) -> Result<()> {
     let Some(value) = values.get(placeholder.id as usize) else {
         return Ok(());
     };
     match value {
-        ValidatedValue::Fragment(roots) => out.extend(roots.iter().map(|&id| Node::Element(id))),
+        ValidatedValue::Fragment(roots) => {
+            budget.build(roots.len())?;
+            out.extend(roots.iter().map(|&id| Node::Element(id)));
+        }
         ValidatedValue::Scalar(value) if placeholder.optional && is_optional_empty(value) => {}
         ValidatedValue::Scalar(BinXmlValue::EvtXml) => {
             return Err(EvtxError::FailedToCreateRecordModel(
@@ -1238,5 +1386,12 @@ pub(crate) fn bench_build_tree_from_binxml_bytes_direct<'a>(
     bump: &'a Bump,
 ) -> Result<ElementId> {
     let mut arena = IrArena::new_in(bump);
-    build_record_root_in(Stream::chunk(chunk, bump), bytes, cache, &mut arena)
+    let budget = Budget::new(0);
+    build_record_root_in(
+        Stream::chunk(chunk, bump),
+        bytes,
+        cache,
+        &mut arena,
+        &budget,
+    )
 }

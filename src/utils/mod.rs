@@ -10,3 +10,8 @@ pub(crate) use self::utf16::{Utf16LeSlice, decode_utf16le_bytes_to_bump_str};
 
 #[cfg(feature = "wevt_templates")]
 pub(crate) use self::utf16::decode_utf16le_bytes_z;
+
+/// The bytes `v` allocated.
+pub(crate) fn heap_size<T>(v: &Vec<T>) -> usize {
+    v.capacity() * std::mem::size_of::<T>()
+}

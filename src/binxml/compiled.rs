@@ -17,9 +17,9 @@
 use crate::ChunkOffset;
 use crate::ParserSettings;
 use crate::binxml::ir::{
-    IrTemplateCache, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent, ValidatedValue,
-    binxml_slice_offset_in, build_fragment_from_binxml_bytes, read_template_definition_header_at,
-    template_body_at,
+    IrTemplateCache, MAX_ELEMENT_DEPTH, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent,
+    ValidatedValue, binxml_slice_offset_in, build_fragment_from_binxml_bytes,
+    read_template_definition_header_at, template_body_at,
 };
 use crate::binxml::name::read_name_link;
 use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
@@ -29,13 +29,199 @@ use crate::err::{EvtxError, Result};
 use crate::evtx_chunk::EvtxChunk;
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrTree, Node, Placeholder, Text};
 use crate::mta::{self, RenderingInfo, SystemFields};
-use crate::utils::{ByteCursor, Utf16LeSlice};
+use crate::utils::{ByteCursor, Utf16LeSlice, heap_size};
 use ahash::AHashMap;
+use std::cell::Cell;
+use std::collections::hash_map::Entry;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
 const INDENT_WIDTH: u16 = 2;
 const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+
+/// Output past which rendering fails its record. Real records render to a few KiB, but a
+/// crafted one can repeat a value or a name many times over, at every level of nesting, and
+/// so render to a size exponential in its own. Every lane checks the size as it goes, so that
+/// it stops close to the limit (the tree walkers where `XmlCompiler::check_size` says, the
+/// compiled lanes before each instance and array item), and once the record is rendered. The
+/// compiled lanes render each value once (see `each_slot_once`) from programs of at most
+/// `MAX_PROGRAM_SIZE`.
+const MAX_RECORD_OUTPUT: usize = 16 << 20;
+
+/// Nodes one record may build and visit, which bounds its tree to about 30 MB. The samples'
+/// records cost at most 198. Each instance of a template copies its elements, so a crafted
+/// record can build a tree far larger than itself, and a tree can place a value's elements in
+/// several places, which the walkers then visit once for each. Building charges the nodes it
+/// creates: a template's nodes for each instance (an element the template shares once for
+/// each copy), a value's top-level elements where they are placed, and an element's nodes for
+/// each copy an array makes. Nodes parsed from the record's own bytes cost nothing: its size
+/// bounds them. On a tree that shares elements (see `IrArena::shared`), the walkers also charge
+/// their visits: an element costs one, plus one for each of its attributes, their value nodes
+/// (charged as the walkers read them) and its children. A crafted record could otherwise make
+/// them visit an element far more often than its output shows: an attribute with an empty
+/// value renders nothing. On any other tree they visit each node once, and building paid for
+/// it. The compiled lanes count only the templates and fragments they build: they render each
+/// value once, from programs of bounded size, so their output bounds the rest of their work.
+pub(crate) const MAX_RENDER_NODES: usize = 1 << 18;
+
+/// Output one pass over a chunk's records may render, failed records' included. Records share
+/// their chunk's templates, so a crafted chunk can hold hundreds of small records that each
+/// render close to `MAX_RECORD_OUTPUT`, and both chunk renderers hold a chunk's output until
+/// its last record. The samples' chunks render at most 234 KB and cost at most 16,545 nodes.
+const MAX_CHUNK_OUTPUT: usize = 4 * MAX_RECORD_OUTPUT;
+
+/// Nodes one pass over a chunk's records may build and visit (see `MAX_CHUNK_OUTPUT`).
+const MAX_CHUNK_NODES: usize = 4 * MAX_RENDER_NODES;
+
+/// Most literal bytes a compiled program may hold. Real templates compile to a few KiB, but a
+/// crafted one can give thousands of elements one long name.
+const MAX_PROGRAM_SIZE: usize = 1 << 20;
+
+/// Most bytes the programs compiled for one chunk may write, failed compilations included.
+/// Real chunks compile a few KiB, but each place a crafted record nests an instance in can
+/// compile its template again, for that place's indentation.
+const MAX_CHUNK_PROGRAMS: usize = 16 << 20;
+
+/// Most bytes the cross-chunk program store keeps (see `ProgramStore`).
+const MAX_STORED_PROGRAMS: usize = 64 << 20;
+
+/// Deepest element nesting the tree walkers render, recursing once per level: the cap on
+/// one BinXML stream. Values nest streams, so a crafted record could otherwise be tens of
+/// thousands of elements deep and overflow the stack. The compiled lanes don't recurse per
+/// element, so they still render records nested deeper through up to
+/// `MAX_FAST_LANE_NESTING` instances in instances.
+const MAX_RENDER_DEPTH: u16 = MAX_ELEMENT_DEPTH as u16;
+
+/// What rendering one record, or compiling one program, may still spend.
+#[derive(Clone)]
+pub(crate) struct Budget {
+    /// How long the output may grow (see [`MAX_RECORD_OUTPUT`] and [`MAX_PROGRAM_SIZE`]).
+    out_limit: usize,
+    /// Nodes the record may still build and visit (see [`MAX_RENDER_NODES`]), shared by all
+    /// it builds and walks: its content at parse time, the fragments a compiled lane builds
+    /// and walks, and the record's tree.
+    nodes: Cell<usize>,
+}
+
+impl Budget {
+    /// The budget of a record whose output starts at `start`.
+    pub(crate) fn new(start: usize) -> Self {
+        Budget {
+            out_limit: start + MAX_RECORD_OUTPUT,
+            nodes: Cell::new(MAX_RENDER_NODES),
+        }
+    }
+
+    /// The budget of compiling a program (see [`MAX_PROGRAM_SIZE`]).
+    fn program() -> Self {
+        Budget {
+            out_limit: MAX_PROGRAM_SIZE,
+            ..Budget::new(0)
+        }
+    }
+
+    /// Fails once the output has grown past the limit, to `len` bytes.
+    #[inline(always)]
+    fn check(&self, len: usize) -> Result<()> {
+        if len > self.out_limit {
+            return Err(output_too_large());
+        }
+        Ok(())
+    }
+
+    /// Charges a visit of `element` (see [`MAX_RENDER_NODES`]).
+    fn visit(&mut self, element: &Element<'_>) -> Result<()> {
+        let nodes = self.nodes.get_mut();
+        *nodes = nodes
+            .checked_sub(visit_cost(element))
+            .ok_or_else(too_many_nodes)?;
+        Ok(())
+    }
+
+    /// Charges reading `nodes` nodes. The next visit fails once the budget is spent.
+    fn charge(&mut self, nodes: usize) {
+        let left = self.nodes.get_mut();
+        *left = left.saturating_sub(nodes);
+    }
+
+    /// Charges building `nodes` nodes, before they are built (see [`MAX_RENDER_NODES`]).
+    pub(crate) fn build(&self, nodes: usize) -> Result<()> {
+        let left = self.nodes.get().checked_sub(nodes);
+        self.nodes.set(left.ok_or_else(too_many_nodes)?);
+        Ok(())
+    }
+}
+
+/// What one pass over a chunk's records may still spend (see [`MAX_CHUNK_OUTPUT`]).
+#[derive(Debug)]
+pub(crate) struct ChunkBudget {
+    out: Cell<usize>,
+    nodes: Cell<usize>,
+}
+
+impl Default for ChunkBudget {
+    fn default() -> Self {
+        ChunkBudget {
+            out: Cell::new(MAX_CHUNK_OUTPUT),
+            nodes: Cell::new(MAX_CHUNK_NODES),
+        }
+    }
+}
+
+impl ChunkBudget {
+    /// Builds a record's content with `build` before it is rendered, given a whole record's
+    /// budget while the chunk has that much left, and charges the chunk the nodes it built.
+    /// Returns the content with the nodes the record has left, for `render`.
+    pub(crate) fn build<T>(&self, build: impl FnOnce(&Budget) -> Result<T>) -> Result<(T, usize)> {
+        self.admit(MAX_RENDER_NODES)?;
+        let budget = Budget::new(0);
+        let built = build(&budget);
+        let left = budget.nodes.get();
+        self.nodes
+            .set(self.nodes.get().saturating_sub(MAX_RENDER_NODES - left));
+        Ok((built?, left))
+    }
+
+    /// Renders a record into `out` with `render`, given a whole record's output and the `nodes`
+    /// it has left (all of [`MAX_RENDER_NODES`] unless `build` built it) while the chunk has
+    /// that much left, and charges the chunk what it took: the bytes it left in `out`, a failed
+    /// record's partial output included, and the nodes it built and visited. Callers discard a
+    /// failed record's output.
+    pub(crate) fn render(
+        &self,
+        nodes: usize,
+        out: &mut Vec<u8>,
+        render: impl FnOnce(&Budget, &mut Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        self.admit(nodes)?;
+        let start = out.len();
+        let budget = Budget {
+            nodes: Cell::new(nodes),
+            ..Budget::new(start)
+        };
+        let rendered = render(&budget, out);
+        let written = out.len().saturating_sub(start);
+        self.out.set(self.out.get().saturating_sub(written));
+        let spent = nodes - budget.nodes.get();
+        self.nodes.set(self.nodes.get().saturating_sub(spent));
+        rendered
+    }
+
+    /// Fails unless the chunk has a whole record's output and `nodes` nodes left, so that a
+    /// record's errors are its own.
+    fn admit(&self, nodes: usize) -> Result<()> {
+        if self.out.get() < MAX_RECORD_OUTPUT || self.nodes.get() < nodes {
+            return Err(chunk_spent());
+        }
+        Ok(())
+    }
+}
+
+/// What a tree walker charges for visiting `element`, before it reads the values of its
+/// attributes: see [`MAX_RENDER_NODES`].
+fn visit_cost(element: &Element<'_>) -> usize {
+    1 + element.attrs.len() + element.children.len()
+}
 
 /// A `lits` byte range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,17 +236,51 @@ impl LitRange {
 /// A `Preflight::slots` index range (one instance's slots).
 type SlotRange = (u32, u32);
 
-/// Duplicate-key `_N` suffix counter: 0 the first time `name` is seen (no
-/// suffix), then 1, 2, … for repeats. Shared by the JSON compiler (compile
+/// Duplicate-key `_N` suffix counter. Shared by the JSON compiler (compile
 /// time) and the materialized layer (per record) so the rule cannot drift.
-fn next_name_suffix<K: PartialEq>(name: K, counts: &mut Vec<(K, u16)>) -> u16 {
-    if let Some((_, c)) = counts.iter_mut().find(|(n, _)| *n == name) {
-        let suffix = *c;
-        *c += 1;
-        suffix
-    } else {
-        counts.push((name, 1));
-        0
+/// The first names go in a list, as many as real elements have, the rest in a
+/// map: a crafted element can have thousands of children of as many names.
+struct NameCounts<K> {
+    list: Vec<(K, u32)>,
+    map: Option<AHashMap<K, u32>>,
+}
+
+impl<K: Copy + Eq + std::hash::Hash> NameCounts<K> {
+    /// Names the list holds.
+    const LIST_LEN: usize = 16;
+
+    fn new() -> Self {
+        NameCounts {
+            list: Vec::new(),
+            map: None,
+        }
+    }
+
+    /// 0 the first time `name` is seen (no suffix), then 1, 2, … for repeats.
+    fn next_suffix(&mut self, name: K) -> u32 {
+        let count = if let Some(at) = self.list.iter().position(|(seen, _)| *seen == name) {
+            &mut self.list[at].1
+        } else if self.list.len() < Self::LIST_LEN {
+            if self.list.is_empty() {
+                // One allocation: growing the list as it fills takes three.
+                self.list.reserve_exact(Self::LIST_LEN);
+            }
+            self.list.push((name, 0));
+            &mut self.list.last_mut().expect("just pushed").1
+        } else {
+            self.map.get_or_insert_default().entry(name).or_insert(0)
+        };
+        *count += 1;
+        *count - 1
+    }
+
+    /// Each name seen, with how many times.
+    fn iter(&self) -> impl Iterator<Item = (K, u32)> + '_ {
+        let map = self.map.iter().flatten();
+        self.list
+            .iter()
+            .copied()
+            .chain(map.map(|(&name, &count)| (name, count)))
     }
 }
 
@@ -113,6 +333,20 @@ enum XOp {
     },
 }
 
+impl XOp {
+    /// The slot this op renders.
+    fn slot(&self) -> Option<u16> {
+        match self {
+            XOp::Lit(_) => None,
+            XOp::Val { slot, .. }
+            | XOp::AttrVal { slot, .. }
+            | XOp::Body { slot, .. }
+            | XOp::ChildSlot { slot, .. }
+            | XOp::Expand { slot, .. } => Some(*slot),
+        }
+    }
+}
+
 /// A compiled template program for one (def offset, base indent, root?) key.
 pub(crate) struct XmlProgram {
     lits: Vec<u8>,
@@ -132,6 +366,8 @@ pub(crate) struct XmlProgram {
 pub(crate) struct ProgramCache<P> {
     by_key: AHashMap<(u32, u16, bool), Option<usize>>,
     programs: Vec<Arc<P>>,
+    /// Bytes this chunk's compilations may still write (see [`MAX_CHUNK_PROGRAMS`]).
+    budget: usize,
 }
 
 impl<P> Default for ProgramCache<P> {
@@ -139,6 +375,7 @@ impl<P> Default for ProgramCache<P> {
         Self {
             by_key: AHashMap::default(),
             programs: Vec::new(),
+            budget: MAX_CHUNK_PROGRAMS,
         }
     }
 }
@@ -165,6 +402,8 @@ pub(crate) struct ProgramStore {
     xml: Shard<XmlProgram>,
     json: Shard<JsonProgram>,
     hasher: ahash::RandomState,
+    /// Bytes the maps hold, counted as entries go in (see [`MAX_STORED_PROGRAMS`]).
+    stored: std::sync::atomic::AtomicUsize,
 }
 
 /// Template identity: GUID, data size, body-bytes hash.
@@ -198,14 +437,48 @@ impl ProgramStore {
             Some(refs) => refs,
             None => {
                 let refs = NameRefs::of(chunk, def_offset, body.len()).map(Arc::new);
-                self.names
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(template, refs.clone());
+                let size = refs.as_ref().map_or(0, |refs| refs.size());
+                self.insert(&self.names, template, refs.clone(), size);
                 refs
             }
         }?;
         Some((template, refs.key(data, def_offset, &self.hasher)?))
+    }
+
+    /// Stores `value`, which holds `size` bytes besides its entry, under `key` in `map`, unless
+    /// the store is full. Once it is, each chunk compiles the templates it uses itself.
+    fn insert<K: Eq + std::hash::Hash, V>(
+        &self,
+        map: &std::sync::RwLock<AHashMap<K, V>>,
+        key: K,
+        value: V,
+        size: usize,
+    ) {
+        let size = std::mem::size_of::<(K, V)>() + size;
+        let mut map = map
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Another chunk may have stored it since the read: count it once.
+        if let Entry::Vacant(entry) = map.entry(key)
+            && self.reserve(size)
+        {
+            entry.insert(value);
+        }
+    }
+
+    /// Whether the store may take `size` more bytes, counting them if so.
+    // `fetch_update` is deprecated for `try_update`, which is newer than the toolchain the
+    // release builds use.
+    #[allow(deprecated)]
+    fn reserve(&self, size: usize) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.stored)
+            .fetch_update(Relaxed, Relaxed, |stored| {
+                stored
+                    .checked_add(size)
+                    .filter(|&total| total <= MAX_STORED_PROGRAMS)
+            })
+            .is_ok()
     }
 }
 
@@ -263,6 +536,11 @@ impl NameRefs {
             state.write(&data[name_entry(data, offset)?]);
         }
         Some((state.finish(), self.inside.then_some(def_offset)))
+    }
+
+    /// About how many bytes it holds, for `ProgramStore::reserve`.
+    fn size(&self) -> usize {
+        std::mem::size_of::<Self>() + heap_size(&self.outside)
     }
 
     fn name(&mut self, offset: ChunkOffset) -> Result<()> {
@@ -358,6 +636,7 @@ impl StoredProgram for XmlProgram {
             &[fragment.root()],
             INDENT_WIDTH,
             indent,
+            &Budget::new(start),
             out,
         );
         out.extend_from_slice(close);
@@ -387,7 +666,12 @@ impl StoredProgram for JsonProgram {
             return false;
         }
         out.truncate(out.len() - 2);
-        let mut c = JsonCompiler::new(Some(fragment), std::mem::take(out), false);
+        let mut c = JsonCompiler::new(
+            Some(fragment),
+            std::mem::take(out),
+            false,
+            Budget::new(start),
+        );
         let rendered = c.render_member_plain();
         *out = c.lits;
         out.extend_from_slice(b"}}");
@@ -465,13 +749,18 @@ pub(crate) trait TemplateProgram: Sized {
     /// Where the program's records keep their `System` fields, when an `.MTA` file is set.
     /// `None` otherwise, and for templates whose records need their tree built for them.
     fn system_fields(&self) -> Option<&SystemFields>;
+    /// Compile `tree`, taking the bytes written, whether it compiles or not, from `budget`.
     fn compile(
         tree: &IrTree<'_>,
         has_literal_array: bool,
         base_indent: u16,
         is_root: bool,
         settings: &ParserSettings,
+        budget: &mut usize,
     ) -> Option<Self>;
+    /// About how many bytes the program holds, for `ProgramStore::reserve` and the chunk's
+    /// `ProgramCache::budget`.
+    fn size(&self) -> usize;
     /// Run a prepared instance. Errors may leave partial output.
     fn exec<'a, V: ValueSource<'a>>(
         instance: Instance<V::Scope>,
@@ -482,8 +771,13 @@ pub(crate) trait TemplateProgram: Sized {
         vr: &mut ValueRenderer,
         out: &mut Vec<u8>,
     ) -> Result<()>;
-    /// The materialized walker for this format (the slow lane).
-    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()>;
+    /// The materialized walker for this format (the slow lane), within the record's `budget`.
+    fn render_tree(
+        tree: &IrTree<'_>,
+        settings: &ParserSettings,
+        budget: &Budget,
+        out: &mut Vec<u8>,
+    ) -> Result<()>;
 }
 
 impl TemplateProgram for XmlProgram {
@@ -506,8 +800,25 @@ impl TemplateProgram for XmlProgram {
         base_indent: u16,
         is_root: bool,
         settings: &ParserSettings,
+        budget: &mut usize,
     ) -> Option<Self> {
-        compile_xml_template(tree, has_literal_array, base_indent, is_root, settings)
+        compile_xml_template(
+            tree,
+            has_literal_array,
+            base_indent,
+            is_root,
+            settings,
+            budget,
+        )
+    }
+    fn size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + heap_size(&self.lits)
+            + heap_size(&self.ops)
+            + heap_size(&self.elem_slots)
+            + heap_size(&self.expand_slots)
+            + heap_size(&self.root_name)
+            + (self.system_fields.as_ref()).map_or(0, SystemFields::heap_size)
     }
     fn exec<'a, V: ValueSource<'a>>(
         instance: Instance<V::Scope>,
@@ -524,13 +835,19 @@ impl TemplateProgram for XmlProgram {
     /// materialization), writing straight into `out`. Byte-compatible with
     /// the cached-program lane by construction: it IS the same walk, with
     /// zero placeholder sites.
-    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
+    fn render_tree(
+        tree: &IrTree<'_>,
+        settings: &ParserSettings,
+        budget: &Budget,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
         out.extend_from_slice(XML_DECL);
         render_fragment_xml(
             tree.arena(),
             &[tree.root()],
             0,
             settings.should_indent(),
+            budget,
             out,
         )
     }
@@ -581,12 +898,25 @@ struct XmlCompiler<'t, 'a> {
     /// sites are errors instead of ops, and any error is a real record error.
     /// When false (template compilation), any error just means "not cacheable".
     materialized: bool,
+    /// What the walk may still spend: how long `lits` may grow, and the nodes it may visit.
+    budget: Budget,
+    /// Whether the tree shares elements, so that the walk counts the nodes it visits (see
+    /// [`MAX_RENDER_NODES`]).
+    shared: bool,
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
-    fn new(arena: &'t IrArena<'a>, lits: Vec<u8>, indent_on: bool, materialized: bool) -> Self {
+    fn new(
+        arena: &'t IrArena<'a>,
+        lits: Vec<u8>,
+        indent_on: bool,
+        materialized: bool,
+        budget: Budget,
+    ) -> Self {
         XmlCompiler {
             arena,
+            budget,
+            shared: arena.shared(),
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -620,6 +950,28 @@ fn unresolved_nested_json() -> EvtxError {
     model_err("unresolved nested instance in compiled JSON")
 }
 
+#[cold]
+fn output_too_large() -> EvtxError {
+    const _: () = assert!(MAX_RECORD_OUTPUT == 16 << 20, "update the message");
+    model_err("record renders to more than 16 MiB")
+}
+
+#[cold]
+fn nested_too_deeply() -> EvtxError {
+    model_err("rendered elements nested too deeply")
+}
+
+#[cold]
+fn too_many_nodes() -> EvtxError {
+    const _: () = assert!(MAX_RENDER_NODES == 1 << 18, "update the message");
+    model_err("record renders more than 2^18 nodes")
+}
+
+#[cold]
+fn chunk_spent() -> EvtxError {
+    model_err("earlier records of the chunk spent its render budget")
+}
+
 fn model_err(msg: &'static str) -> EvtxError {
     EvtxError::FailedToCreateRecordModel(msg)
 }
@@ -632,6 +984,7 @@ fn compile_xml_template(
     base_indent: u16,
     is_root: bool,
     settings: &ParserSettings,
+    budget: &mut usize,
 ) -> Option<XmlProgram> {
     if has_literal_array {
         return None;
@@ -641,14 +994,25 @@ fn compile_xml_template(
         Vec::with_capacity(512),
         settings.should_indent(),
         false,
+        Budget::program(),
     );
     c.ops.reserve(32);
     if is_root {
         c.lits.extend_from_slice(XML_DECL);
     }
-    match c.compile_element(tree.root(), base_indent) {
-        Ok(()) => {
+    let compiled = c.compile_element(tree.root(), base_indent);
+    let written = c.lits.len() + std::mem::size_of_val(c.ops.as_slice());
+    let program = match compiled {
+        Ok(())
+            if c.check_size().is_ok()
+                && each_slot_once(c.ops.iter().filter_map(XOp::slot).collect()) =>
+        {
             c.flush_lit_run();
+            // Programs live as long as their chunk or the parse: no spare capacity.
+            c.lits.shrink_to_fit();
+            c.ops.shrink_to_fit();
+            c.elem_slots.shrink_to_fit();
+            c.expand_slots.shrink_to_fit();
             Some(XmlProgram {
                 lits: c.lits,
                 ops: c.ops,
@@ -659,8 +1023,22 @@ fn compile_xml_template(
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
         }
-        Err(_) => None,
-    }
+        _ => None,
+    };
+    *budget = budget.saturating_sub(program.as_ref().map_or(written, XmlProgram::size));
+    program
+}
+
+/// Whether no slot repeats. The compiled lanes render each value in one place: a nested
+/// instance's program is compiled for that place (its indentation), and a value used in
+/// several places at every level of nesting renders a number of times exponential in the
+/// record's size. Templates that use a value twice (none in the samples) render through the
+/// tree walkers, which share the value's elements and check the output's size as they go.
+fn each_slot_once(mut slots: Vec<u16>) -> bool {
+    let uses = slots.len();
+    slots.sort_unstable();
+    slots.dedup();
+    slots.len() == uses
 }
 
 /// `render_fragment_xml` behind one pointer, keeping the executor's call at six arguments.
@@ -670,24 +1048,29 @@ fn render_fragment_roots_xml(
     roots: &&[ElementId],
     indent: u16,
     indent_on: bool,
+    budget: &Budget,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    render_fragment_xml(arena, roots, indent, indent_on, out)
+    render_fragment_xml(arena, roots, indent, indent_on, budget, out)
 }
 
-/// Render a materialized fragment's top-level elements at `indent` (executor cold path).
+/// Render a materialized fragment's top-level elements at `indent` (executor cold path),
+/// within the record's `budget`.
 fn render_fragment_xml(
     arena: &IrArena<'_>,
     roots: &[ElementId],
     indent: u16,
     indent_on: bool,
+    budget: &Budget,
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    let mut c = XmlCompiler::new(arena, std::mem::take(out), indent_on, true);
+    let mut c = XmlCompiler::new(arena, std::mem::take(out), indent_on, true, budget.clone());
     let res = roots
         .iter()
-        .try_for_each(|&root| c.compile_element(root, indent));
+        .try_for_each(|&root| c.compile_element(root, indent))
+        .and_then(|()| c.check_size());
     debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+    budget.nodes.set(c.budget.nodes.get());
     *out = c.lits;
     res
 }
@@ -699,6 +1082,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
     lit_run_methods!(XOp);
 
+    #[inline(always)]
     fn indent_str(&mut self, level: u16) {
         if self.indent_on {
             self.lits.extend(std::iter::repeat_n(b' ', level as usize));
@@ -711,8 +1095,27 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         }
     }
 
+    /// Fails once `lits` has grown past the budget. Checked before each element, after each one
+    /// with element children (their closing tags would add up), before each attribute and each
+    /// node of a value or of content, and once the walk is done: one name or node renders to a
+    /// few hundred KiB at most, but a materialized tree shares a value's elements among the
+    /// places it is used in, and a template can give one element thousands of attributes that
+    /// share a long name, or use a long value thousands of times.
+    fn check_size(&self) -> Result<()> {
+        self.budget.check(self.lits.len())
+    }
+
+    /// Charges a visit of `element` on a tree that shares elements, then checks the size.
+    fn visit(&mut self, element: &Element<'_>) -> Result<()> {
+        if self.shared {
+            self.budget.visit(element)?;
+        }
+        self.check_size()
+    }
+
     fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
         let element = self.element_ref(id);
+        self.visit(element)?;
 
         // Attribute-less single-hole `<Data>` elements are the array
         // expansion sites: compile them as self-contained `Expand` ops (the
@@ -735,6 +1138,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             .extend_from_slice(element.name.as_str().as_bytes());
 
         for attr in &element.attrs {
+            self.check_size()?;
             self.compile_attr(attr)?;
         }
 
@@ -793,6 +1197,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 let nodes = &element.children;
                 let mut idx = 0;
                 while idx < nodes.len() {
+                    self.check_size()?;
                     match &nodes[idx] {
                         // Mirror `render_nodes`' processing-instruction
                         // pairing: `<?target data?>` / `<?target?>`.
@@ -818,6 +1223,10 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 self.close_tag_inline(element);
             }
             ChildrenKind::StaticLines => {
+                // A materialized tree nests values' elements where they are used.
+                if self.materialized && indent / INDENT_WIDTH >= MAX_RENDER_DEPTH {
+                    return Err(nested_too_deeply());
+                }
                 self.lits.push(b'>');
                 self.newline();
                 for node in &element.children {
@@ -829,6 +1238,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                             if self.materialized {
                                 return Err(unresolved_placeholder());
                             }
+                            self.check_size()?;
                             self.flush_lit_run();
                             let ind = self.side_range(|c| c.indent_str(indent + INDENT_WIDTH));
                             self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
@@ -840,6 +1250,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                             });
                         }
                         other => {
+                            self.check_size()?;
                             self.indent_str(indent + INDENT_WIDTH);
                             self.compile_literal_content_node(other, false)?;
                             self.newline();
@@ -848,6 +1259,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 }
                 self.indent_str(indent);
                 self.close_tag_inline(element);
+                self.check_size()?;
             }
             ChildrenKind::Bail => {
                 // Only placeholder-bearing shapes classify as Bail; on a
@@ -871,6 +1283,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     }
 
     fn compile_attr(&mut self, attr: &Attr<'a>) -> Result<()> {
+        if self.shared {
+            self.budget.charge(attr.value.len());
+        }
         // Placeholders are dynamic; everything else is compile-time constant.
         // Mirrors `attribute_value_is_empty` + `render_nodes`.
         let mut has_nonempty_const = false;
@@ -915,6 +1330,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             self.lits.extend_from_slice(attr.name.as_str().as_bytes());
             self.lits.extend_from_slice(b"=\"");
             for node in attr.value.iter() {
+                self.check_size()?;
                 self.compile_literal_content_node(node, true)?;
             }
             self.lits.push(b'"');
@@ -927,6 +1343,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             self.lits.extend_from_slice(attr.name.as_str().as_bytes());
             self.lits.extend_from_slice(b"=\"");
             for node in attr.value.iter() {
+                self.check_size()?;
                 match node {
                     Node::Placeholder(ph) => {
                         self.flush_lit_run();
@@ -1290,7 +1707,7 @@ const MAX_FAST_LANE_NESTING: usize = 8;
 
 /// Sanity cap on a template instance's substitution count (the wire could
 /// claim up to `u32::MAX`; nothing legitimate comes close).
-const MAX_SUBSTITUTIONS: usize = 4096;
+pub(crate) const MAX_SUBSTITUTIONS: usize = 4096;
 
 struct PreflightBail;
 
@@ -1345,7 +1762,7 @@ impl Preflight {
 
     /// Scan a `TemplateInstance` whose header starts at absolute `pos` (the
     /// byte after the 0x0c token). Appends slots/nested entries and returns
-    /// `(instance, end_pos)`.
+    /// `(instance, end_pos)`. Templates it parses charge the record's `budget`.
     #[allow(clippy::too_many_arguments)]
     fn scan_instance<'a, P: StoredProgram>(
         &mut self,
@@ -1353,6 +1770,7 @@ impl Preflight {
         pos: usize,
         depth: usize,
         cache: &mut IrTemplateCache<'a>,
+        budget: &Budget,
         progs: &mut ProgramCache<P>,
         base_indent: u16,
         is_root: bool,
@@ -1386,7 +1804,7 @@ impl Preflight {
             chunk,
             (def_offset, base_indent, is_root),
             progs,
-            TemplateSource::Bytes(cache),
+            TemplateSource::Bytes(cache, budget),
         )
         .ok_or(PreflightBail)?;
 
@@ -1508,6 +1926,7 @@ impl Preflight {
                 s.off as usize + inst_off,
                 depth + 1,
                 cache,
+                budget,
                 progs,
                 child_indent,
                 false,
@@ -1545,7 +1964,8 @@ impl Preflight {
 }
 
 enum TemplateSource<'s, 'a> {
-    Bytes(&'s mut IrTemplateCache<'a>),
+    /// The chunk's template, parsed into the cache at the record's expense.
+    Bytes(&'s mut IrTemplateCache<'a>, &'s Budget),
     Validated(&'s IrTree<'a>, bool),
 }
 
@@ -1576,23 +1996,41 @@ fn get_or_compile<'a, P: StoredProgram>(
     {
         return progs.insert(key, entry.clone());
     }
+    // Every compilation gets a whole program's worth, so a failure is the template's own and
+    // other chunks can skip it.
+    if progs.budget < MAX_PROGRAM_SIZE {
+        return progs.insert(key, None);
+    }
 
+    let budget = &mut progs.budget;
     let compiled = match source {
-        TemplateSource::Validated(tree, has_literal_array) => {
-            P::compile(tree, has_literal_array, base_indent, is_root, settings).map(Arc::new)
-        }
-        TemplateSource::Bytes(cache) => cache
-            .template_for_compile(chunk, def_offset)
+        TemplateSource::Validated(tree, has_literal_array) => P::compile(
+            tree,
+            has_literal_array,
+            base_indent,
+            is_root,
+            settings,
+            budget,
+        )
+        .map(Arc::new),
+        TemplateSource::Bytes(cache, record) => cache
+            .template_for_compile(chunk, def_offset, record)
             .ok()
             .and_then(|(tree, has_literal_array)| {
-                P::compile(&tree, has_literal_array, base_indent, is_root, settings).map(Arc::new)
+                P::compile(
+                    &tree,
+                    has_literal_array,
+                    base_indent,
+                    is_root,
+                    settings,
+                    budget,
+                )
+                .map(Arc::new)
             }),
     };
     if let Some(sk) = store_key {
-        P::shard(store)
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(sk, compiled.clone());
+        let size = compiled.as_ref().map_or(0, |program| program.size());
+        store.insert(P::shard(store), sk, compiled.clone(), size);
     }
     progs.insert(key, compiled)
 }
@@ -1601,12 +2039,15 @@ fn get_or_compile<'a, P: StoredProgram>(
 // Per-record entry + executor
 // ---------------------------------------------------------------------------
 
-/// Try to render one record's BinXML via the compiled-template path.
+/// Try to render one record's BinXML via the compiled-template path, within `budget`.
 ///
-/// Returns `false` with `out` untouched when the record isn't covered (the
-/// caller then uses the regular path). On `true` the record was rendered
+/// Returns `Ok(false)` with `out` untouched when the record isn't covered (the
+/// caller then uses the regular path). On `Ok(true)` the record was rendered
 /// byte-identically to `P::render_tree` over the materialized record, with
-/// `mta::add_rendering_info` applied when an `.MTA` file is set.
+/// `mta::add_rendering_info` applied when an `.MTA` file is set, except that only
+/// the walkers count nodes (see `MAX_RENDER_NODES`): a record that visits too many
+/// there can render here. A record that renders past `MAX_RECORD_OUTPUT` fails
+/// here, as it would there, and leaves its partial output in `out`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     bytes: &[u8],
@@ -1616,58 +2057,71 @@ pub(crate) fn try_render_compiled<'a, P: StoredProgram>(
     progs: &mut ProgramCache<P>,
     pf: &mut Preflight,
     vr: &mut ValueRenderer,
+    budget: &Budget,
     out: &mut Vec<u8>,
-) -> bool {
+) -> Result<bool> {
     // Single-instance stream shape (mirrors `read_single_instance_stream`).
     let Some(inst_off) = single_instance_offset(bytes) else {
-        return false;
+        return Ok(false);
     };
     let Ok(stream_offset) = binxml_slice_offset_in(chunk.data, bytes) else {
-        return false;
+        return Ok(false);
     };
     let stream_offset = stream_offset as usize;
     pf.clear();
-    let Ok((instance, end)) =
-        pf.scan_instance(chunk, stream_offset + inst_off, 0, cache, progs, 0, true)
-    else {
-        return false;
+    let Ok((instance, end)) = pf.scan_instance(
+        chunk,
+        stream_offset + inst_off,
+        0,
+        cache,
+        budget,
+        progs,
+        0,
+        true,
+    ) else {
+        return Ok(false);
     };
     // Anything after the instance other than EOF is unhandled here, and so
     // is an instance that read past the record (the regular path accepts it).
     if ends_stream(bytes, end - stream_offset) != Some(true) {
-        return false;
+        return Ok(false);
     }
     let values = RawValues {
         pf,
         data: chunk.data,
+        budget: budget.clone(),
     };
     let rendering_info = match chunk.settings.get_mta() {
         None => None,
         Some(mta) => {
             let Some(fields) = progs.programs[instance.prog].system_fields() else {
-                return false;
+                return Ok(false);
             };
             let slots = values.slots(instance.slots);
             let value = |id| values.mta_value(slots, id, progs, chunk);
             if fields.needs_tree(value) {
-                return false;
+                return Ok(false);
             }
             fields.rendering_info(mta, record_number, value)
         }
     };
     let start = out.len();
-    if !exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out) {
-        return false;
+    let rendered = exec_or_rollback(instance, progs, &values, chunk, Some(cache), vr, out);
+    budget.nodes.set(values.budget.nodes.get());
+    if !rendered? {
+        return Ok(false);
     }
     if let Some(info) = rendering_info {
-        if !append_rendering_info::<P>(&info, chunk, start, out) {
+        let appended = append_rendering_info::<P>(&info, chunk, start, out);
+        values.budget().check(out.len())?;
+        if !appended {
             out.truncate(start);
-            return false;
+            return Ok(false);
         }
         #[cfg(test)]
         MTA_SPLICES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    true
+    Ok(true)
 }
 
 /// How many records got their `RenderingInfo` from `try_render_compiled`, for the tests in
@@ -1690,9 +2144,12 @@ fn append_rendering_info<'a, P: StoredProgram>(
     P::append_to_event(&IrTree::new(arena, root), &chunk.settings, start, out)
 }
 
-/// `P::exec`, truncating `out` back on error. Errors are unreachable after a
-/// successful preflight except for attribute-position BinXml elements, which
-/// the regular path also rejects per record.
+/// `P::exec`, truncating `out` back unless it renders. `Ok(false)` on an error, for the
+/// caller to render the record's tree, which fails the same way: errors are unreachable after
+/// a successful preflight except for attribute-position BinXml elements, which the regular
+/// path also rejects per record, and the caps of the fragments it walks (see `Budget`).
+/// Output past `MAX_RECORD_OUTPUT` fails the record here, without rendering it again, and
+/// stays in `out` for `ChunkBudget::render` to charge.
 fn exec_or_rollback<'a, P: TemplateProgram, V: ValueSource<'a>>(
     instance: Instance<V::Scope>,
     progs: &ProgramCache<P>,
@@ -1701,13 +2158,14 @@ fn exec_or_rollback<'a, P: TemplateProgram, V: ValueSource<'a>>(
     cache: Option<&mut IrTemplateCache<'a>>,
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
-) -> bool {
+) -> Result<bool> {
     let start = out.len();
     let ok = P::exec(instance, progs, values, chunk, cache, vr, out).is_ok();
+    values.budget().check(out.len())?;
     if !ok {
         out.truncate(start);
     }
-    ok
+    Ok(ok)
 }
 
 /// Runtime slot class for `Body`/`ChildSlot` branching.
@@ -1876,6 +2334,8 @@ fn exec<'a, V: ValueSource<'a>>(
                     // arrays drop their text node (two-line empty form).
                     let multi = items.len() > 1;
                     for item in items {
+                        // Each item repeats the element's indentation.
+                        pf.budget().check(out.len())?;
                         write_lit!(*open);
                         if multi && item.is_empty() {
                             write_lit!(*tail_empty);
@@ -1942,18 +2402,20 @@ fn render_element_slot<'a, V: ValueSource<'a>>(
     out: &mut Vec<u8>,
 ) -> Result<()> {
     if let Some(inst) = pf.nested(s) {
+        // Instances can share a program.
+        pf.budget().check(out.len())?;
         return exec(inst, progs, pf, chunk, cache, vr, out);
     }
     if let Some((arena, roots)) = pf.fragment(s) {
-        return render_fragment_roots_xml(arena, roots, indent, indent_on, out);
+        return render_fragment_roots_xml(arena, roots, indent, indent_on, pf.budget(), out);
     }
     // Generic (non-instance) fragment: materialize and render. Cold path.
     let Some(cache) = cache else {
         return Err(unresolved_placeholder());
     };
     let frag = pf.bytes(s).ok_or_else(unresolved_placeholder)?;
-    let (arena, roots) = build_fragment_from_binxml_bytes(frag, chunk, cache)?;
-    render_fragment_xml(&arena, roots, indent, indent_on, out)
+    let (arena, roots) = build_fragment_from_binxml_bytes(frag, chunk, cache, pf.budget())?;
+    render_fragment_xml(&arena, roots, indent, indent_on, pf.budget(), out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1997,10 +2459,31 @@ enum JOp {
         slot: u16,
         /// `(name bytes in lits, static emission count)` of preceding static
         /// members, for `_N` suffix seeding.
-        static_names: Box<[(LitRange, u16)]>,
+        static_names: Box<[(LitRange, u32)]>,
         /// Whether any object member unconditionally precedes this op.
         lead_comma: bool,
     },
+}
+
+impl JOp {
+    /// The slots `ops` render, each as often as they use it.
+    fn slots(ops: &[JOp]) -> Vec<u16> {
+        let mut slots = Vec::new();
+        for op in ops {
+            match op {
+                JOp::Lit(_) => {}
+                JOp::LeafVal { slot, .. } | JOp::SlotChild { slot, .. } => slots.push(*slot),
+                JOp::Elem { attrs, content, .. } => {
+                    slots.extend(attrs.iter().filter_map(|part| match part {
+                        JAttrPart::Placeholder { slot, .. } => Some(*slot),
+                        JAttrPart::Literal(_) => None,
+                    }));
+                    slots.extend(*content);
+                }
+            }
+        }
+        slots
+    }
 }
 
 /// A compiled JSON template program.
@@ -2040,8 +2523,19 @@ impl TemplateProgram for JsonProgram {
         _base_indent: u16,
         is_root: bool,
         settings: &ParserSettings,
+        budget: &mut usize,
     ) -> Option<Self> {
-        compile_json_template(tree, has_literal_array, is_root, settings)
+        compile_json_template(tree, has_literal_array, is_root, settings, budget)
+    }
+    fn size(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + heap_size(&self.lits)
+            + heap_size(&self.ops)
+            + heap_size(&self.elem_slots)
+            + heap_size(&self.constraints)
+            + heap_size(&self.expand_slots)
+            + heap_size(&self.root_name)
+            + (self.system_fields.as_ref()).map_or(0, SystemFields::heap_size)
     }
     fn exec<'a, V: ValueSource<'a>>(
         instance: Instance<V::Scope>,
@@ -2055,14 +2549,21 @@ impl TemplateProgram for JsonProgram {
         exec_json(instance, progs, values, vr, out)
     }
     /// The single-walker slow lane, honoring `--separate-json-attributes`.
-    fn render_tree(tree: &IrTree<'_>, settings: &ParserSettings, out: &mut Vec<u8>) -> Result<()> {
+    fn render_tree(
+        tree: &IrTree<'_>,
+        settings: &ParserSettings,
+        budget: &Budget,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
         let mut c = JsonCompiler::new(
             Some(tree),
             std::mem::take(out),
             settings.should_separate_json_attributes(),
+            budget.clone(),
         );
         let res = c.render_root_plain();
         debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
+        budget.nodes.set(c.budget.nodes.get());
         *out = c.lits;
         res
     }
@@ -2079,12 +2580,20 @@ struct JsonCompiler<'t, 'a> {
     vr: ValueRenderer,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
     separate: bool,
+    /// As in `XmlCompiler`.
+    budget: Budget,
+    /// As in `XmlCompiler`.
+    shared: bool,
+    /// Elements open in the materialized walk (see [`MAX_RENDER_DEPTH`]).
+    depth: u16,
 }
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
-    fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool) -> Self {
+    fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool, budget: Budget) -> Self {
         JsonCompiler {
             tree,
+            budget,
+            shared: tree.is_some_and(|tree| tree.arena().shared()),
             lits,
             ops: Vec::new(),
             run_start: 0,
@@ -2093,6 +2602,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             expand_slots: Vec::new(),
             vr: ValueRenderer::new(),
             separate,
+            depth: 0,
         }
     }
 }
@@ -2102,24 +2612,38 @@ fn compile_json_template(
     has_literal_array: bool,
     is_root: bool,
     settings: &ParserSettings,
+    budget: &mut usize,
 ) -> Option<JsonProgram> {
     if has_literal_array || settings.should_separate_json_attributes() {
         return None;
     }
     let root = tree.root_element();
     let root_container = is_data_container_name(root.name.as_str());
-    let mut c = JsonCompiler::new(Some(tree), Vec::with_capacity(512), false);
+    let mut c = JsonCompiler::new(
+        Some(tree),
+        Vec::with_capacity(512),
+        false,
+        Budget::program(),
+    );
     c.ops.reserve(32);
     if is_root {
         c.lits.push(b'{');
         c.key_with_suffix_plain(root.name.as_str(), 0);
     }
-    match c.compile_element_value(tree.root(), root_container) {
-        Ok(()) => {
+    let compiled = c.compile_element_value(tree.root(), root_container);
+    let written = c.lits.len() + std::mem::size_of_val(c.ops.as_slice());
+    let program = match compiled {
+        Ok(()) if c.check_size().is_ok() && each_slot_once(JOp::slots(&c.ops)) => {
             if is_root {
                 c.lits.push(b'}');
             }
             c.flush_lit_run();
+            // As in `compile_xml_template`.
+            c.lits.shrink_to_fit();
+            c.ops.shrink_to_fit();
+            c.elem_slots.shrink_to_fit();
+            c.constraints.shrink_to_fit();
+            c.expand_slots.shrink_to_fit();
             Some(JsonProgram {
                 lits: c.lits,
                 ops: c.ops,
@@ -2130,8 +2654,10 @@ fn compile_json_template(
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
         }
-        Err(Bail) => None,
-    }
+        _ => None,
+    };
+    *budget = budget.saturating_sub(program.as_ref().map_or(written, JsonProgram::size));
+    program
 }
 
 fn is_data_container_name(name: &str) -> bool {
@@ -2258,6 +2784,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut parts: Vec<JAttrPart> = Vec::with_capacity(element.attrs.len());
         self.flush_lit_run();
         for attr in &element.attrs {
+            self.check_size().map_err(|_| Bail)?;
             let n_ph = attr
                 .value
                 .iter()
@@ -2373,10 +2900,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut positional_emitted = false;
 
         // Compile-time `_N` suffix counting for static members.
-        let mut static_names: Vec<(&[u8], u16)> = Vec::new();
+        let mut static_names = NameCounts::new();
 
         let mut seen_slot_child = false;
         for node in &element.children {
+            self.check_size().map_err(|_| Bail)?;
             match node {
                 Node::Element(id) => {
                     if seen_slot_child {
@@ -2418,6 +2946,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             } else {
                                 self.lits.push(b'[');
                                 for (i, did) in positional_data.iter().enumerate() {
+                                    self.check_size().map_err(|_| Bail)?;
                                     if i > 0 {
                                         self.lits.push(b',');
                                     }
@@ -2434,7 +2963,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         self.lits.push(b',');
                     }
                     wrote_any = true;
-                    let suffix = next_name_suffix(cname.as_bytes(), &mut static_names);
+                    let suffix = static_names.next_suffix(cname.as_bytes());
                     self.lits.push(b'"');
                     self.lits.extend_from_slice(cname.as_bytes());
                     if suffix > 0 {
@@ -2450,11 +2979,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     }
                     // Dynamic member: nested-instance value (or absent).
                     self.flush_lit_run();
-                    let name_ranges: Vec<(LitRange, u16)> = static_names
+                    let name_ranges: Vec<(LitRange, u32)> = static_names
                         .iter()
                         .map(|(n, c)| {
                             let r = self.side_range(|cc| cc.lits.extend_from_slice(n));
-                            (r, *c)
+                            (r, c)
                         })
                         .collect();
                     self.constraints.push(SlotConstraint::ElemOrEmpty(ph.id));
@@ -2538,11 +3067,16 @@ pub(crate) trait ValueSource<'a> {
     fn bytes(&self, _slot: &Self::Value) -> Option<&'a [u8]> {
         None
     }
+    /// What rendering this record may still spend.
+    fn budget(&self) -> &Budget;
 }
 
 struct RawValues<'s, 'a> {
     pf: &'s Preflight,
     data: &'a [u8],
+    /// A copy of the record's budget: the executors run faster with one of their own (0.8% of
+    /// the instructions on `security_big_sample.evtx`).
+    budget: Budget,
 }
 
 impl<'a> RawValues<'_, 'a> {
@@ -2636,11 +3170,17 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
     fn bytes(&self, s: &RawSlot) -> Option<&'a [u8]> {
         Some(s.bytes(self.data))
     }
+    #[inline(always)]
+    fn budget(&self) -> &Budget {
+        &self.budget
+    }
 }
 
 struct DecodedValues<'s, 'a> {
     content: &'s TemplateContent<'a>,
     nested: &'s mut Vec<Option<Instance<usize>>>,
+    /// As in `RawValues`.
+    budget: Budget,
 }
 
 impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
@@ -2685,11 +3225,12 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
         let ValidatedValue::Scalar(value) = s else {
             return Err(unresolved_placeholder());
         };
-        if matches!(value, BinXmlValue::StringArrayType(_)) {
-            // Reused array slots must expand at every occurrence. Scalar ops
-            // fall back to materialization, matching the raw source.
-            return Err(model_err("array substitution outside its expand op"));
-        }
+        // `prepare` takes arrays only at expand slots, which have no other op (see
+        // `each_slot_once`).
+        debug_assert!(
+            !matches!(value, BinXmlValue::StringArrayType(_)),
+            "array substitution outside its expand op"
+        );
         vr.write_value_text(out, value, mode)
     }
     #[inline(always)]
@@ -2709,6 +3250,10 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
             _ => None,
         }
     }
+    #[inline(always)]
+    fn budget(&self) -> &Budget {
+        &self.budget
+    }
 }
 
 impl<'a> DecodedValues<'_, 'a> {
@@ -2717,9 +3262,9 @@ impl<'a> DecodedValues<'_, 'a> {
         chunk: &'a EvtxChunk<'a>,
         progs: &mut ProgramCache<P>,
         out: &mut Vec<u8>,
-    ) -> bool {
+    ) -> Result<bool> {
         let Some(instance) = self.prepare(usize::MAX, 0, 0, true, chunk, progs) else {
-            return false;
+            return Ok(false);
         };
         exec_or_rollback(
             instance,
@@ -2752,7 +3297,7 @@ impl<'a> DecodedValues<'_, 'a> {
             chunk,
             (input.offset, indent, root),
             progs,
-            TemplateSource::Validated(&input.template, input.has_literal_array),
+            TemplateSource::Validated(&input.template, input.stats.has_literal_array),
         )?;
         if input.has_arrays {
             for (i, value) in input.values.iter().enumerate() {
@@ -2797,19 +3342,23 @@ pub(crate) fn try_render_validated<'a>(
     chunk: &'a EvtxChunk<'a>,
     caches: &mut RenderCaches,
     json: bool,
+    budget: &Budget,
     out: &mut Vec<u8>,
-) -> bool {
+) -> Result<bool> {
     caches.nested.clear();
     caches.nested.resize(content.nested.len(), None);
     let mut values = DecodedValues {
         content,
         nested: &mut caches.nested,
+        budget: budget.clone(),
     };
-    if json {
+    let rendered = if json {
         values.render(chunk, &mut caches.json, out)
     } else {
         values.render(chunk, &mut caches.xml, out)
-    }
+    };
+    budget.nodes.set(values.budget.nodes.get());
+    rendered
 }
 
 /// Whether `ty` renders as a bare JSON number/bool (`write_value_as_number`).
@@ -2840,6 +3389,8 @@ fn exec_json<'a, V: ValueSource<'a>>(
     vr: &mut ValueRenderer,
     out: &mut Vec<u8>,
 ) -> Result<()> {
+    // Instances can share a program.
+    pf.budget().check(out.len())?;
     let prog = &progs.programs[instance.prog];
     let lits = &prog.lits;
     let slots = pf.slots(instance.slots);
@@ -2981,7 +3532,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
                 };
                 let name = progs.programs[inst.prog].root_name.as_slice();
                 // `_N` suffix: static members first, then prior dynamics.
-                let mut count: u16 = 0;
+                let mut count: u32 = 0;
                 for (r, c) in static_names.iter() {
                     if &lits[r.0 as usize..r.1 as usize] == name {
                         count = *c;
@@ -3010,7 +3561,8 @@ fn exec_json<'a, V: ValueSource<'a>>(
 /// Benchmark-only entry to the JSON text-content path.
 #[cfg(feature = "bench")]
 pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> Result<()> {
-    let mut c = JsonCompiler::new(None, std::mem::take(out), false);
+    let budget = Budget::new(out.len());
+    let mut c = JsonCompiler::new(None, std::mem::take(out), false, budget);
     let res = c.text_content_plain(nodes, false);
     *out = c.lits;
     res
@@ -3034,14 +3586,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// `,"<root>":<value>`: the root as one more member of an enclosing object.
     fn render_member_plain(&mut self) -> Result<()> {
         let root = self.tree().root_element();
+        self.visit(root)?;
         self.lits.push(b',');
         self.key_with_suffix_plain(root.name.as_str(), 0);
-        self.write_element_value_plain(root, false)
+        self.write_element_value_plain(root, false)?;
+        self.check_size()
     }
 
     /// Mirrors `render_json_with_scope` for a materialized tree.
     fn render_root_plain(&mut self) -> Result<()> {
         let root = self.tree().root_element();
+        self.visit(root)?;
         self.lits.push(b'{');
         if self.separate {
             if !root.attrs.is_empty() && self.render_separate_attrs_plain(root, 0)? {
@@ -3054,16 +3609,29 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             self.write_element_value_plain(root, false)?;
         }
         self.lits.push(b'}');
-        Ok(())
+        self.check_size()
     }
 
     fn element_ref(&self, id: ElementId) -> &'t Element<'a> {
         self.tree().arena().get(id).expect("invalid element id")
     }
 
+    /// As `XmlCompiler::check_size`.
+    fn check_size(&self) -> Result<()> {
+        self.budget.check(self.lits.len())
+    }
+
+    /// As `XmlCompiler::visit`.
+    fn visit(&mut self, element: &Element<'_>) -> Result<()> {
+        if self.shared {
+            self.budget.visit(element)?;
+        }
+        self.check_size()
+    }
+
     // --- small writers ---
 
-    fn key_with_suffix_plain(&mut self, name: &str, suffix: u16) {
+    fn key_with_suffix_plain(&mut self, name: &str, suffix: u32) {
         self.lits.push(b'"');
         self.lits.extend_from_slice(name.as_bytes());
         if suffix > 0 {
@@ -3116,7 +3684,12 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
     }
 
-    fn has_text_content_plain(nodes: &[Node<'_>]) -> bool {
+    /// Whether `nodes` has text. Every scan of an attribute's value starts here, so it charges
+    /// the value's nodes on a tree that shares elements.
+    fn has_text_content_plain(&mut self, nodes: &[Node<'_>]) -> bool {
+        if self.shared {
+            self.budget.charge(nodes.len());
+        }
         nodes.iter().any(Self::node_is_content_plain)
     }
 
@@ -3138,12 +3711,12 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     /// Mirrors `attr_flags`: `(has_any, has_any_non_empty_value)`.
-    fn attr_flags_plain(attrs: &[Attr<'_>]) -> (bool, bool) {
+    fn attr_flags_plain(&mut self, attrs: &[Attr<'_>]) -> (bool, bool) {
         if attrs.is_empty() {
             return (false, false);
         }
         for attr in attrs {
-            if Self::has_text_content_plain(&attr.value) {
+            if self.has_text_content_plain(&attr.value) {
                 return (true, true);
             }
         }
@@ -3155,6 +3728,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Mirrors `write_json_text_content` (no surrounding quotes).
     fn text_content_plain(&mut self, nodes: &[Node<'a>], skip_elements: bool) -> Result<()> {
         for node in nodes {
+            self.check_size()?;
             match node {
                 Node::Text(text) | Node::CData(text) => self.json_text_plain(text)?,
                 Node::Value(value) => {
@@ -3284,10 +3858,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut wrote_any = false;
         let mut first = true;
         for attr in attrs {
-            if !Self::has_text_content_plain(&attr.value) {
+            if !self.has_text_content_plain(&attr.value) {
                 continue;
             }
             if !first {
+                self.check_size()?;
                 self.lits.push(b',');
             }
             first = false;
@@ -3307,7 +3882,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
     /// Mirrors `render_attributes_object`.
     fn attrs_object_plain(&mut self, attrs: &[Attr<'a>]) -> Result<bool> {
-        let (_has_any, has_text) = Self::attr_flags_plain(attrs);
+        let (_has_any, has_text) = self.attr_flags_plain(attrs);
         if !has_text {
             return Ok(false);
         }
@@ -3318,11 +3893,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     /// Mirrors `render_separate_attributes_for_element`.
-    fn render_separate_attrs_plain(&mut self, element: &Element<'a>, suffix: u16) -> Result<bool> {
+    fn render_separate_attrs_plain(&mut self, element: &Element<'a>, suffix: u32) -> Result<bool> {
         if element.attrs.is_empty() {
             return Ok(false);
         }
-        let (_has_any, has_text) = Self::attr_flags_plain(&element.attrs);
+        let (_has_any, has_text) = self.attr_flags_plain(&element.attrs);
         if !has_text {
             return Ok(false);
         }
@@ -3429,7 +4004,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             return Ok(());
         }
         let (has_text, has_element_child) = Self::content_layout_plain(element);
-        let (_has_attrs_any, has_attrs_text) = Self::attr_flags_plain(&element.attrs);
+        let (_has_attrs_any, has_attrs_text) = self.attr_flags_plain(&element.attrs);
 
         if !has_element_child && !has_text && !has_attrs_text {
             self.lits.extend_from_slice(b"null");
@@ -3449,6 +4024,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         omit_attributes: bool,
         has_text: bool,
     ) -> Result<()> {
+        // A materialized tree nests values' elements where they are used.
+        if self.depth >= MAX_RENDER_DEPTH
+            && element
+                .children
+                .iter()
+                .any(|n| matches!(n, Node::Element(_)))
+        {
+            return Err(nested_too_deeply());
+        }
+        self.depth += 1;
+
         // Flatten detection: one non-empty `Data[@Name]` selects named form.
         let mut should_flatten_named_data = false;
         if in_data_container {
@@ -3466,14 +4052,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 else {
                     continue;
                 };
-                if Self::has_text_content_plain(name_nodes) {
+                if self.has_text_content_plain(name_nodes) {
                     should_flatten_named_data = true;
                     break;
                 }
             }
         }
 
-        let mut name_counts: Vec<(&'t str, u16)> = Vec::new();
+        let mut name_counts = NameCounts::new();
 
         self.lits.push(b'{');
         let mut wrote_any = false;
@@ -3511,6 +4097,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         for node in &element.children {
             let Node::Element(id) = node else { continue };
             let child = self.element_ref(*id);
+            self.visit(child)?;
 
             if in_data_container && is_data_element_name(child.name.as_str()) {
                 if should_flatten_named_data {
@@ -3522,7 +4109,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     else {
                         continue;
                     };
-                    if !Self::has_text_content_plain(name_nodes) {
+                    if !self.has_text_content_plain(name_nodes) {
                         continue;
                     }
                     if wrote_any {
@@ -3547,6 +4134,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         let mut first = true;
                         for node2 in &element.children {
                             let Node::Element(id2) = node2 else { continue };
+                            self.check_size()?;
                             let candidate = self.element_ref(*id2);
                             if !is_data_element_name(candidate.name.as_str()) {
                                 continue;
@@ -3566,7 +4154,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
             // Normal child member with `_N` suffixing.
             let cname = child.name.as_str();
-            let suffix = next_name_suffix(cname, &mut name_counts);
+            let suffix = name_counts.next_suffix(cname);
 
             if wrote_any {
                 self.lits.push(b',');
@@ -3593,6 +4181,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
 
         self.lits.push(b'}');
+        self.depth -= 1;
         Ok(())
     }
 }
@@ -3627,11 +4216,68 @@ mod tests {
         let root = arena.new_node(root);
 
         let tree = IrTree::new(arena, root);
+        let mut budget = MAX_CHUNK_PROGRAMS;
 
         assert!(
-            compile_json_template(&tree, false, true, &ParserSettings::default()).is_none(),
+            compile_json_template(&tree, false, true, &ParserSettings::default(), &mut budget)
+                .is_none(),
             "multiple dynamic child slots need runtime name-suffix state; use the materialized path"
         );
+    }
+
+    /// A program's size counts what it keeps, which has no spare capacity, and compiling it
+    /// charges the chunk that much.
+    #[test]
+    fn programs_charge_what_they_keep() {
+        use std::mem::{size_of, size_of_val};
+
+        let name = "N".repeat(1000);
+        let bump = Bump::new();
+        let mut arena = IrArena::new_in(&bump);
+        let mut root = Element::new_in(Name::new(&name), &bump);
+        root.push_child(binxml_placeholder(0));
+        let root = arena.new_node(root);
+        let tree = IrTree::new(arena, root);
+        let settings = ParserSettings::default();
+
+        let mut budget = MAX_CHUNK_PROGRAMS;
+        let xml = compile_xml_template(&tree, false, 0, true, &settings, &mut budget).unwrap();
+        let kept = size_of::<XmlProgram>()
+            + size_of_val(xml.lits.as_slice())
+            + size_of_val(xml.ops.as_slice())
+            + size_of_val(xml.elem_slots.as_slice())
+            + size_of_val(xml.expand_slots.as_slice())
+            + xml.root_name.len();
+        assert_eq!((xml.size(), budget), (kept, MAX_CHUNK_PROGRAMS - kept));
+
+        let mut budget = MAX_CHUNK_PROGRAMS;
+        let json = compile_json_template(&tree, false, true, &settings, &mut budget).unwrap();
+        let kept = size_of::<JsonProgram>()
+            + size_of_val(json.lits.as_slice())
+            + size_of_val(json.ops.as_slice())
+            + size_of_val(json.elem_slots.as_slice())
+            + size_of_val(json.constraints.as_slice())
+            + size_of_val(json.expand_slots.as_slice())
+            + json.root_name.len();
+        assert_eq!((json.size(), budget), (kept, MAX_CHUNK_PROGRAMS - kept));
+    }
+
+    /// The store counts an entry once, with its key and value, and stops taking entries when
+    /// full.
+    #[test]
+    fn the_store_stops_at_its_cap() {
+        let store = ProgramStore::default();
+        let map = std::sync::RwLock::new(AHashMap::default());
+        store.insert(&map, 0u32, (), 1);
+        store.insert(&map, 0u32, (), 1);
+        let entry = std::mem::size_of::<(u32, ())>() + 1;
+        assert!(store.reserve(MAX_STORED_PROGRAMS - entry - 1));
+        assert!(!store.reserve(2));
+        assert!(store.reserve(1));
+        assert!(!store.reserve(1));
+        assert!(!store.reserve(usize::MAX));
+        store.insert(&map, 1u32, (), 0);
+        assert_eq!(map.read().unwrap().len(), 1);
     }
 
     /// Embedded BinXML names elements the body's name walk does not see, so

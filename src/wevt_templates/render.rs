@@ -8,7 +8,7 @@ use bumpalo::Bump;
 
 use crate::AnsiCodec;
 use crate::ParserSettings;
-use crate::binxml::compiled::{TemplateProgram, XmlProgram};
+use crate::binxml::compiled::{Budget, TemplateProgram, XmlProgram};
 use crate::binxml::ir::{
     ValidatedValue, build_wevt_template_definition_ir, instantiate_template_definition_ir,
 };
@@ -111,7 +111,7 @@ fn render_instantiated<'a>(
     let instantiated = instantiate_template_definition_ir(ir, values, bump)?;
     let settings = ParserSettings::default().ansi_codec(ansi_codec);
     let mut out = Vec::new();
-    XmlProgram::render_tree(&instantiated, &settings, &mut out)?;
+    XmlProgram::render_tree(&instantiated, &settings, &Budget::new(0), &mut out)?;
     String::from_utf8(out).map_err(|e| EvtxError::calculation_error(e.to_string()))
 }
 
