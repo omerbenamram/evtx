@@ -1006,6 +1006,14 @@ fn children_all_depend(
 
 struct Bail;
 
+/// An element that `XmlCompiler::compile_start` left open for its children on lines of their
+/// own: where its open tag ends in `lits`, and, when those children can all be left out, the
+/// index of its `XOp::LeftOut` placeholder in `ops` and where its open tag starts in `lits`.
+struct OpenElement {
+    open_end: usize,
+    left_out: Option<(usize, usize)>,
+}
+
 struct XmlCompiler<'t, 'a> {
     arena: &'t IrArena<'a>,
     lits: Vec<u8>,
@@ -1246,8 +1254,30 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.check_size()
     }
 
+    /// Compiles an element. Each level of a deep tree keeps this frame on the stack, and a debug
+    /// build's 2 MiB thread holds 512 levels only while it stays small, so the walk of children
+    /// on lines of their own, the only part that recurses, is all that compiles here.
     fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
         let element = self.element_ref(id);
+        let Some(open) = self.compile_start(element, indent)? else {
+            return Ok(());
+        };
+        for node in &element.children {
+            match node {
+                Node::Element(child) => self.compile_child(*child, indent + INDENT_WIDTH)?,
+                node => self.compile_line(node, indent + INDENT_WIDTH)?,
+            }
+        }
+        self.compile_end(element, indent, open)
+    }
+
+    /// Compiles an element up to its children on lines of their own and returns where it stands,
+    /// for `compile_element` to walk them, or compiles all of it and returns `None`.
+    fn compile_start(
+        &mut self,
+        element: &'t Element<'a>,
+        indent: u16,
+    ) -> Result<Option<OpenElement>> {
         self.visit(element)?;
 
         // Attribute-less single-hole `<Data>` elements are the array
@@ -1258,7 +1288,8 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             && is_data_element_name(element.name.as_str())
             && let ChildrenKind::SinglePlaceholder(ph) = classify_children(element)
         {
-            return self.compile_expand(element, ph, indent);
+            self.compile_expand(element, ph, indent)?;
+            return Ok(None);
         }
 
         // Children that each depend on a value can all be left out, which leaves the element
@@ -1373,51 +1404,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 self.lits.push(b'>');
                 let open_end = self.lits.len();
                 self.newline();
-                for node in &element.children {
-                    match node {
-                        Node::Element(child) => {
-                            self.compile_child(*child, indent + INDENT_WIDTH)?;
-                        }
-                        Node::Placeholder(ph) => {
-                            if self.materialized {
-                                return Err(unresolved_placeholder());
-                            }
-                            self.check_size()?;
-                            self.flush_lit_run();
-                            let ind = self.side_range(|c| c.indent_str(indent + INDENT_WIDTH));
-                            self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
-                            self.ops.push(XOp::ChildSlot {
-                                slot: ph.id,
-                                optional: ph.optional,
-                                indent: indent + INDENT_WIDTH,
-                                ind,
-                            });
-                        }
-                        other => {
-                            self.check_size()?;
-                            self.indent_str(indent + INDENT_WIDTH);
-                            self.compile_literal_content_node(other, false)?;
-                            self.newline();
-                        }
-                    }
-                }
-                self.indent_str(indent);
-                self.close_tag_inline(element);
-                self.check_size()?;
-                if let Some((at, start)) = left_out {
-                    self.flush_lit_run();
-                    let empty = self.side_range(|c| {
-                        c.lits.extend_from_within(start..open_end);
-                        c.close_tag_inline(element);
-                    });
-                    let deps = self.children_deps(element);
-                    self.close_guard(at, |len, open| XOp::LeftOut {
-                        deps,
-                        len,
-                        empty,
-                        open,
-                    });
-                }
+                return Ok(Some(OpenElement { open_end, left_out }));
             }
             ChildrenKind::Bail => {
                 // Only placeholder-bearing shapes classify as Bail; on a
@@ -1428,6 +1415,53 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     bail_err()
                 });
             }
+        }
+        Ok(None)
+    }
+
+    /// A child other than an element, on a line of its own.
+    fn compile_line(&mut self, node: &Node<'a>, indent: u16) -> Result<()> {
+        if let Node::Placeholder(ph) = node {
+            if self.materialized {
+                return Err(unresolved_placeholder());
+            }
+            self.check_size()?;
+            self.flush_lit_run();
+            let ind = self.side_range(|c| c.indent_str(indent));
+            self.elem_slots.push((ph.id, indent));
+            self.ops.push(XOp::ChildSlot {
+                slot: ph.id,
+                optional: ph.optional,
+                indent,
+                ind,
+            });
+        } else {
+            self.check_size()?;
+            self.indent_str(indent);
+            self.compile_literal_content_node(node, false)?;
+            self.newline();
+        }
+        Ok(())
+    }
+
+    /// Closes an element that `compile_start` left open.
+    fn compile_end(&mut self, element: &Element<'_>, indent: u16, open: OpenElement) -> Result<()> {
+        self.indent_str(indent);
+        self.close_tag_inline(element);
+        self.check_size()?;
+        if let Some((at, start)) = open.left_out {
+            self.flush_lit_run();
+            let empty = self.side_range(|c| {
+                c.lits.extend_from_within(start..open.open_end);
+                c.close_tag_inline(element);
+            });
+            let deps = self.children_deps(element);
+            self.close_guard(at, |len, open| XOp::LeftOut {
+                deps,
+                len,
+                empty,
+                open,
+            });
         }
         Ok(())
     }
