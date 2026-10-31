@@ -5,15 +5,15 @@ use evtx::err::EvtxError;
 use evtx::{EvtxParser, ParserSettings};
 use std::collections::HashMap;
 
-/// The `Data` elements of an XML record whose name ends in `TIME` or `TIMEs`, in order, as
-/// (name, text). Windows quotes attributes with `'` and evtx with `"`.
-fn time_data(xml: &str) -> Vec<(String, String)> {
+/// The `Data` elements of an XML record whose name `keep` selects, in order, as (name, text).
+/// Windows quotes attributes with `'` and evtx with `"`.
+fn named_data(xml: &str, keep: &impl Fn(&str) -> bool) -> Vec<(String, String)> {
     xml.split("<Data Name=")
         .skip(1)
         .filter_map(|data| {
             let quote = data.chars().next()?;
             let name = data[1..].split(quote).next()?;
-            if !(name.ends_with("TIME") || name.ends_with("TIMEs")) {
+            if !keep(name) {
                 return None;
             }
             let rest = &data[1 + name.len() + 1..];
@@ -26,8 +26,9 @@ fn time_data(xml: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-#[test]
-fn timestamps_render_as_windows_renders_them() {
+/// Checks that each `Data` element of `samples/windows/types.evtx` that `keep` selects renders as
+/// Windows renders it, and returns how many were compared.
+fn compare_with_windows(keep: impl Fn(&str) -> bool) -> usize {
     let jsonl = std::fs::read_to_string("samples/windows/types.evtx.jsonl").unwrap();
     let windows: Vec<(u64, String)> = jsonl
         .lines()
@@ -59,7 +60,7 @@ fn timestamps_render_as_windows_renders_them() {
 
     let mut values = 0;
     for (record_id, xml) in &windows {
-        let expected = time_data(xml);
+        let expected = named_data(xml, &keep);
         if expected.is_empty() {
             continue;
         }
@@ -67,9 +68,21 @@ fn timestamps_render_as_windows_renders_them() {
             Ok(rendered) => rendered,
             Err(err) => panic!("record {record_id} failed: {err}"),
         };
-        assert_eq!(time_data(rendered), expected, "record {record_id}");
+        assert_eq!(named_data(rendered, &keep), expected, "record {record_id}");
         values += expected.len();
     }
+    values
+}
+
+#[test]
+fn timestamps_render_as_windows_renders_them() {
+    let values = compare_with_windows(|name| name.ends_with("TIME") || name.ends_with("TIMEs"));
     // The FILETIME and SYSTEMTIME events, their array events, and the scalars event.
     assert!(values >= 30, "only {values} timestamps compared");
+}
+
+#[test]
+fn ansi_string_arrays_render_as_windows_renders_them() {
+    // Arrays of three items (one of them empty), one item and none.
+    assert_eq!(compare_with_windows(|name| name == "AnsiStrings"), 5);
 }

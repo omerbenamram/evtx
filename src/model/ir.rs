@@ -260,6 +260,7 @@ pub(crate) fn is_optional_empty(value: &BinXmlValue<'_>) -> bool {
         BinXmlValue::BinaryType(bytes) => bytes.is_empty(),
         BinXmlValue::BinXmlType(bytes) => bytes.is_empty(),
         BinXmlValue::StringArrayType(v) => v.is_empty(),
+        BinXmlValue::AnsiStringArrayType(v) => v.is_empty(),
         BinXmlValue::Int8ArrayType(v) => v.is_empty(),
         BinXmlValue::UInt8ArrayType(v) => v.is_empty(),
         BinXmlValue::Int16ArrayType(v) => v.is_empty(),

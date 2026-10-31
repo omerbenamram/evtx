@@ -102,6 +102,11 @@ impl ValueRenderer {
             BinXmlValue::StringArrayType(items) => self.write_list(writer, items, |s, w, item| {
                 s.write_utf16_escaped(w, *item, string_mode)
             }),
+            BinXmlValue::AnsiStringArrayType(items) => {
+                self.write_list(writer, items, |s, w, item| {
+                    s.write_str_escaped(w, item, string_mode)
+                })
+            }
             BinXmlValue::Int8ArrayType(items) => {
                 self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i8, *v))
             }
