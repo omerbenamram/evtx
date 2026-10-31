@@ -85,7 +85,9 @@ fn render_chunk<P: StoredProgram>(
     chunk: &mut EvtxChunk<'_>,
     record_numbers: bool,
 ) -> RenderedChunk {
-    use crate::binxml::compiled::{ChunkBudget, Preflight, ProgramCache, try_render_compiled};
+    use crate::binxml::compiled::{
+        ChunkBudget, MAX_RENDER_NODES, Preflight, ProgramCache, try_render_compiled,
+    };
     use crate::binxml::ir::{IrTemplateCache, build_tree_from_binxml_bytes_direct};
     use crate::binxml::value_render::ValueRenderer;
 
@@ -121,7 +123,7 @@ fn render_chunk<P: StoredProgram>(
         }
         let body_start = data.len();
         let rendered = budget
-            .render(&mut data, |budget, data| {
+            .render(MAX_RENDER_NODES, &mut data, |budget, data| {
                 let compiled = try_render_compiled(
                     raw.bytes,
                     event_record_id,
@@ -138,8 +140,12 @@ fn render_chunk<P: StoredProgram>(
                 }
                 // Slow lane: fully materialize, then run the same walker the
                 // compiler uses — one output semantics for every record shape.
-                let mut tree =
-                    build_tree_from_binxml_bytes_direct(raw.bytes, chunk_ref, &mut ir_cache)?;
+                let mut tree = build_tree_from_binxml_bytes_direct(
+                    raw.bytes,
+                    chunk_ref,
+                    &mut ir_cache,
+                    budget,
+                )?;
                 if let Some(mta) = mta {
                     crate::mta::add_rendering_info(
                         &mut tree,

@@ -12,6 +12,7 @@
 //! This keeps renderers dumb: XML/JSON just render the expanded structure, matching common tools
 //! (notably `libevtx`) and the conceptual XML expansion in the spec.
 
+use crate::binxml::compiled::Budget;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{EvtxError, Result};
 use crate::model::ir::{Attr, Element, ElementId, IrArena, IrVec, Node, Text};
@@ -28,21 +29,23 @@ pub(crate) fn node_needs_array_expansion(node: &Node<'_>) -> bool {
 ///
 /// The input element (`element_id`) is expected to already be cloned into `arena`
 /// (with placeholders resolved). If no expandable arrays are found, this returns
-/// `None` (caller should keep `element_id` as-is).
+/// `None` (caller should keep `element_id` as-is). `budget` pays for the copies.
 pub(crate) fn expand_array_substitutions_in_element<'a>(
     arena: &mut IrArena<'a>,
     bump: &'a Bump,
     element_id: ElementId,
+    budget: &Budget,
 ) -> Result<Option<Vec<ElementId>>> {
     // Expand one array occurrence at a time. If an element contains multiple arrays,
     // this produces a deterministic expansion (potentially a cross-product).
-    let Some(expanded_once) = expand_first_array_in_element(arena, bump, element_id)? else {
+    let Some(expanded_once) = expand_first_array_in_element(arena, bump, element_id, budget)?
+    else {
         return Ok(None);
     };
 
     let mut out = Vec::with_capacity(expanded_once.len());
     for id in expanded_once {
-        if let Some(expanded) = expand_array_substitutions_in_element(arena, bump, id)? {
+        if let Some(expanded) = expand_array_substitutions_in_element(arena, bump, id, budget)? {
             out.extend(expanded);
         } else {
             out.push(id);
@@ -61,8 +64,9 @@ fn expand_first_array_in_element<'a>(
     arena: &mut IrArena<'a>,
     bump: &'a Bump,
     element_id: ElementId,
+    budget: &Budget,
 ) -> Result<Option<Vec<ElementId>>> {
-    let (loc, array_value, len) = {
+    let (loc, array_value, len, nodes, has_element_child) = {
         let element = arena
             .get(element_id)
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid element id"))?;
@@ -71,11 +75,22 @@ fn expand_first_array_in_element<'a>(
             return Ok(None);
         };
 
-        (loc, array_value, len)
+        (
+            loc,
+            array_value,
+            len,
+            element.nodes(),
+            element.has_element_child,
+        )
     };
 
     if len <= 1 {
         return Ok(None);
+    }
+    // Each copy is a new element, and its element children are those of every other copy.
+    budget.build(len.saturating_mul(nodes))?;
+    if has_element_child {
+        arena.mark_shared();
     }
 
     let mut out = Vec::with_capacity(len);
@@ -252,7 +267,8 @@ mod tests {
 
         let root = arena.new_node(Element::new_in(Name::new("EventData"), &bump));
         assert_eq!(
-            expand_array_substitutions_in_element(&mut arena, &bump, root).unwrap(),
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap(),
             None
         );
     }
@@ -277,9 +293,10 @@ mod tests {
             .children
             .push(Node::Value(BinXmlValue::StringArrayType(&items)));
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand");
         assert_eq!(expanded.len(), 2);
 
         let e0 = arena.get(expanded[0]).unwrap();
@@ -312,9 +329,10 @@ mod tests {
             .push(Node::Value(BinXmlValue::Int32ArrayType(&items)));
         arena.get_mut(root).unwrap().attrs.push(attr);
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand");
         assert_eq!(expanded.len(), 2);
 
         let e0 = arena.get(expanded[0]).unwrap();
@@ -357,9 +375,10 @@ mod tests {
             .push(Node::Value(BinXmlValue::StringArrayType(&items)));
         arena.get_mut(root).unwrap().attrs.push(attr);
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand");
         assert_eq!(expanded.len(), 2);
 
         let e0 = arena.get(expanded[0]).unwrap();
@@ -390,9 +409,10 @@ mod tests {
             e.children.push(Node::Text(Text::utf8("post")));
         }
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand");
         assert_eq!(expanded.len(), 2);
 
         let e0 = arena.get(expanded[0]).unwrap();
@@ -434,9 +454,10 @@ mod tests {
                 .push(Node::Value(BinXmlValue::UInt8ArrayType(&b_items)));
         }
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand");
         assert_eq!(expanded.len(), 6);
 
         // Expected order:
@@ -492,9 +513,10 @@ mod tests {
                 .push(Node::Value(BinXmlValue::UInt8ArrayType(&second)));
         }
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand later array");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand later array");
         assert_eq!(expanded.len(), 3);
 
         for (id, expected_second) in expanded.iter().copied().zip([10u8, 20u8, 30u8]) {
@@ -553,9 +575,10 @@ mod tests {
             .push(Node::Value(BinXmlValue::UInt8ArrayType(&prop_a_items)));
 
         // Expand array substitution in <PropA>.
-        let expanded_prop_a = expand_array_substitutions_in_element(&mut arena, &bump, prop_a)
-            .unwrap()
-            .expect("should expand PropA");
+        let expanded_prop_a =
+            expand_array_substitutions_in_element(&mut arena, &bump, prop_a, &Budget::new(0))
+                .unwrap()
+                .expect("should expand PropA");
         assert_eq!(expanded_prop_a.len(), 2);
 
         // Build the scalar element: <PropB>%2</PropB>.
@@ -612,9 +635,10 @@ mod tests {
             .children
             .push(Node::Value(BinXmlValue::StringArrayType(&items)));
 
-        let expanded = expand_array_substitutions_in_element(&mut arena, &bump, root)
-            .unwrap()
-            .expect("should expand");
+        let expanded =
+            expand_array_substitutions_in_element(&mut arena, &bump, root, &Budget::new(0))
+                .unwrap()
+                .expect("should expand");
         assert_eq!(expanded.len(), 2);
 
         let e0 = arena.get(expanded[0]).unwrap();

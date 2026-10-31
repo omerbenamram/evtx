@@ -10,7 +10,7 @@ use evtx::{EvtxParser, ParserSettings, RenderedChunkItem};
 use fixtures::*;
 
 const SIZE_ERROR: &str = "record renders to more than 16 MiB";
-const NODES_ERROR: &str = "record renders more than 2^20 nodes";
+const NODES_ERROR: &str = "record renders more than 2^18 nodes";
 const DEPTH_ERROR: &str = "rendered elements nested too deeply";
 const CHUNK_ERROR: &str = "earlier records of the chunk spent its render budget";
 
@@ -323,8 +323,8 @@ fn visits_are_capped() {
 }
 
 /// A record whose template holds `count` values, each a fragment of an `<F>` around an
-/// instance of a template that uses its value, an element with 2,000 NULL attributes, 150
-/// times: 600,000 nodes to walk in each.
+/// instance of a template that uses its value, an element with 2,000 NULL attributes, 40
+/// times: 160,000 nodes to walk in each.
 fn fragments(count: u16) -> Vec<u8> {
     let element = || {
         value(0x21, |fragment| {
@@ -358,7 +358,7 @@ fn fragments(count: u16) -> Vec<u8> {
                                 fragment.template_instance(
                                     |uses| {
                                         uses.open("U", true).close_start();
-                                        for _ in 0..150 {
+                                        for _ in 0..40 {
                                             uses.substitution(0, 0x21);
                                         }
                                         uses.end_element();
@@ -382,8 +382,8 @@ fn the_fragments_of_a_record_share_its_cap() {
     // The compiled XML lanes walk each fragment of a record on its own, within what the record
     // has left: one renders, and two fail.
     let (xml, json) = render_record(&fragments(1), 1);
-    assert_eq!(xml.matches("<X").count(), 150);
-    assert_eq!(json.matches(r#""X"#).count(), 150);
+    assert_eq!(xml.matches("<X").count(), 40);
+    assert_eq!(json.matches(r#""X"#).count(), 40);
     assert_fails_everywhere(&fragments(2), NODES_ERROR);
 }
 
@@ -624,7 +624,7 @@ fn chunks_are_capped() {
     );
     assert_chunk_spent(render_passes(&evtx, 32 << 20), 10, 4, NODES_ERROR);
     // A compiled template's fragment renders through the walkers, whose nodes count too: each of
-    // these records visits 270,000 nodes in its `<F>`.
+    // these records visits 67,000 nodes in its `<F>`.
     let evtx = synthetic_evtx_records(16, |_, record| {
         record
             .fragment_header()
@@ -643,7 +643,7 @@ fn chunks_are_capped() {
                         .template_instance(
                             |root| {
                                 root.open("R", true).close_start();
-                                for _ in 0..64 {
+                                for _ in 0..40 {
                                     root.substitution(0, 0x21);
                                 }
                                 root.end_element();
@@ -1094,4 +1094,329 @@ fn children_of_many_names_get_distinct_keys() {
         "{json}"
     );
     assert!(json.contains(&format!(r#""V":{{{members}}}"#)), "{json}");
+}
+
+/// What the chunk's arena holds once the records API has rendered each record of `evtx` as
+/// XML, the trees it built included.
+fn arena_bytes(evtx: &[u8]) -> usize {
+    let mut parser = EvtxParser::from_buffer(evtx.to_vec()).unwrap();
+    let mut data = parser.chunks().next().unwrap().unwrap();
+    let mut chunk = data.parse(Arc::new(ParserSettings::new())).unwrap();
+    for record in chunk.iter() {
+        let _ = record.and_then(|record| record.into_xml());
+    }
+    chunk.arena.allocated_bytes()
+}
+
+/// A record whose template uses its value, a fragment of `roots` empty elements, `uses` times.
+fn placed_roots(uses: usize, roots: usize) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("R", true).close_start();
+                    for _ in 0..uses {
+                        root.substitution(0, 0x21);
+                    }
+                    root.end_element();
+                },
+                vec![value(0x21, move |fragment| {
+                    fragment.fragment_header().open("D", false).close_empty();
+                    for _ in 1..roots {
+                        fragment.reopen(false).close_empty();
+                    }
+                    fragment.eof();
+                })],
+            )
+            .eof();
+    })
+}
+
+#[test]
+fn placing_a_value_counts_toward_the_cap() {
+    // A value's elements become children wherever it is used: 8,000 uses of 3,000 elements
+    // built 1.7 GB of tree before the walk failed the record.
+    let evtx = placed_roots(8000, 3000);
+    assert_fails_everywhere(&evtx, NODES_ERROR);
+    assert!(arena_bytes(&evtx) < 32 << 20);
+}
+
+/// A record of an instance of a template whose BinXML value holds two instances of the template
+/// before it, and so on, `levels` templates in all. The first holds an `<L>`.
+fn doubling_templates(levels: usize) -> Vec<u8> {
+    fn instance(x: &mut BinXml, levels: usize) {
+        x.template_instance(
+            |d| {
+                d.open("D", true).close_start();
+                if levels == 1 {
+                    d.open("L", true).close_empty();
+                } else {
+                    d.binxml(|fragment| {
+                        fragment.fragment_header();
+                        instance(fragment, levels - 1);
+                        fragment.template_ref(Vec::new()).eof();
+                    });
+                }
+                d.end_element();
+            },
+            Vec::new(),
+        );
+    }
+    synthetic_evtx(|record| {
+        record.fragment_header();
+        instance(record, levels);
+        record.eof();
+    })
+}
+
+#[test]
+fn templates_pay_for_the_instances_they_hold() {
+    // A BinXML value in a template can hold instances, which become part of the template: 30
+    // templates of two instances of the one before took 2^29 copies of the first to parse.
+    let (xml, json) = render_record(&doubling_templates(3), 1);
+    assert_eq!(xml.matches("<L").count(), 4);
+    assert_eq!(json.matches(r#""L""#).count(), 4);
+    let evtx = doubling_templates(30);
+    assert_fails_everywhere(&evtx, NODES_ERROR);
+    assert!(arena_bytes(&evtx) < 32 << 20);
+}
+
+/// A record of an instance of a template whose BinXML value holds an instance of a template that
+/// uses its value `uses` times: a `<V>` of `children` empty elements.
+fn shared_in_template(uses: usize, children: usize) -> Vec<u8> {
+    let v = move |v: &mut BinXml| {
+        v.fragment_header().open("V", false).close_start();
+        for child in 0..children {
+            match child {
+                0 => v.open("C", false),
+                _ => v.reopen(false),
+            }
+            .close_empty();
+        }
+        v.end_element().eof();
+    };
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |d| {
+                    (d.open("D", true).close_start())
+                        .binxml(|fragment| {
+                            fragment
+                                .fragment_header()
+                                .template_instance(
+                                    |t| {
+                                        t.open("T", true).close_start();
+                                        for _ in 0..uses {
+                                            t.substitution(0, 0x21);
+                                        }
+                                        t.end_element();
+                                    },
+                                    vec![value(0x21, v)],
+                                )
+                                .eof();
+                        })
+                        .end_element();
+                },
+                Vec::new(),
+            )
+            .eof();
+    })
+}
+
+#[test]
+fn templates_that_share_elements_pay_for_each_copy() {
+    // The template places one `<V>` 600 times, which each instance copies: 720,000 nodes for the
+    // 1,800 the template holds.
+    let (xml, json) = render_record(&shared_in_template(20, 20), 1);
+    assert_eq!(xml.matches("<C").count(), 400);
+    assert_eq!(json.matches(r#""C"#).count(), 400);
+    assert_fails_everywhere(&shared_in_template(600, 600), NODES_ERROR);
+}
+
+/// A record of an instance of a template that nests `depths[0]` elements around a BinXML value,
+/// which holds an instance of a template that nests `depths[1]`, and so on.
+fn deep_templates(depths: &[usize]) -> Vec<u8> {
+    fn instance(x: &mut BinXml, depths: &[usize]) {
+        x.template_instance(
+            |d| {
+                for level in 0..depths[0] {
+                    match level {
+                        0 => d.open("N", true),
+                        _ => d.reopen(true),
+                    }
+                    .close_start();
+                }
+                if depths.len() > 1 {
+                    d.binxml(|fragment| {
+                        fragment.fragment_header();
+                        instance(fragment, &depths[1..]);
+                        fragment.eof();
+                    });
+                }
+                for _ in 0..depths[0] {
+                    d.end_element();
+                }
+            },
+            Vec::new(),
+        );
+    }
+    synthetic_evtx(|record| {
+        record.fragment_header();
+        instance(record, depths);
+        record.eof();
+    })
+}
+
+#[test]
+fn templates_nest_at_most_512_elements() {
+    // As in one stream, 512 elements can nest around an empty one. Each of these templates nests
+    // fewer, but not with the instance it holds, and instantiating or compiling a template
+    // recurses once per level.
+    let (xml, json) = render_record(&deep_templates(&[256, 257]), 1);
+    assert_eq!(xml.matches("<N").count(), 513);
+    assert_eq!(json.matches(r#""N""#).count(), 513);
+    let error = "BinXML elements nested too deeply";
+    assert_fails_everywhere(&deep_templates(&[257, 257]), error);
+}
+
+#[test]
+fn array_copies_count_toward_the_cap() {
+    // An instance repeats an element once for each item of each array in it, in turn: 6 arrays
+    // of 16 items made 16^6 copies, which took 20 s and 7 GB before the walk failed the record.
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("R", true).close_start();
+                    root.open("D", true).close_start();
+                    for slot in 0..6 {
+                        root.substitution(slot, 0x81);
+                    }
+                    root.end_element().end_element();
+                },
+                (0..6)
+                    .map(|_| {
+                        value(0x81, |strings| {
+                            for _ in 0..16 {
+                                strings.utf16("a\0");
+                            }
+                        })
+                    })
+                    .collect(),
+            )
+            .eof();
+    });
+    assert_fails_everywhere(&evtx, NODES_ERROR);
+    assert!(arena_bytes(&evtx) < 32 << 20);
+}
+
+#[test]
+fn copies_an_array_makes_share_their_children() {
+    // The 1,000 copies of the `<D>` share its `<C>` of 1,000 elements: building them takes 4,000
+    // nodes, and walking them 2,000,000.
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("R", true).close_start();
+                    (root.open_with_attributes("D", true).attribute("a"))
+                        .substitution(0, 0x81)
+                        .close_start()
+                        .open("C", true)
+                        .close_start();
+                    for child in 0..1000 {
+                        match child {
+                            0 => root.open("G", true),
+                            _ => root.reopen(true),
+                        }
+                        .close_empty();
+                    }
+                    root.end_element().end_element().end_element();
+                },
+                vec![value(0x81, |strings| {
+                    for _ in 0..1000 {
+                        strings.utf16("a\0");
+                    }
+                })],
+            )
+            .eof();
+    });
+    assert_fails_everywhere(&evtx, NODES_ERROR);
+}
+
+/// A record of an `<E>` around `instances` instances of an element of 2,000 NULL attributes,
+/// which the first defines unless `defined`.
+fn null_attribute_instances(record: &mut BinXml, instances: usize, defined: bool) {
+    record.fragment_header().open("E", false).close_start();
+    if defined {
+        record.template_ref(Vec::new());
+    } else {
+        record.template_instance(|x| null_attributes_element(x, true, 2000, 1), Vec::new());
+    }
+    for _ in 1..instances {
+        record.template_ref(Vec::new());
+    }
+    record.end_element().eof();
+}
+
+#[test]
+fn trees_that_share_nothing_are_walked_without_counting() {
+    // 60 instances of 4,001 nodes: walking them would charge their nodes again, if any of their
+    // elements were a child in two places.
+    let evtx = synthetic_evtx(|record| null_attribute_instances(record, 60, false));
+    let (xml, json) = render_record(&evtx, 1);
+    assert_eq!(xml.matches("<X").count(), 60);
+    assert_eq!(json.matches(r#""X"#).count(), 60);
+}
+
+#[test]
+fn building_counts_toward_the_chunk() {
+    // Each record builds 65 instances of 4,001 nodes, which the records API does before it
+    // renders the record: 4 records' worth spends the chunk.
+    let evtx = synthetic_evtx_records(8, |i, record| null_attribute_instances(record, 65, i > 0));
+    for (rendered, _) in rendered_before_chunk_error(&evtx) {
+        assert_eq!(rendered, 4);
+    }
+}
+
+#[test]
+fn a_record_builds_within_one_budget() {
+    // The records API builds a value that isn't one instance before it renders the record, and
+    // the record's instances as it renders it: 50 instances of 4,001 nodes each time. XML
+    // renders the instances from their programs, so only JSON goes past the cap.
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |r| {
+                    r.open("R", true).close_start();
+                    for slot in 0..51 {
+                        match slot {
+                            0 => r.open("A", true),
+                            _ => r.reopen(true),
+                        }
+                        .close_start()
+                        .substitution(slot, 0x21)
+                        .end_element();
+                    }
+                    r.end_element();
+                },
+                (0..51)
+                    .map(|slot| {
+                        value(0x21, move |fragment| match slot {
+                            0 => null_attribute_instances(fragment, 50, false),
+                            _ => {
+                                fragment.fragment_header().template_ref(Vec::new()).eof();
+                            }
+                        })
+                    })
+                    .collect(),
+            )
+            .eof();
+    });
+    assert_fails_as(&evtx, None, Some(NODES_ERROR));
 }

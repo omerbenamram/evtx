@@ -294,6 +294,19 @@ impl BinXml {
         self.u8(0x05).u8(0x08).u32(v)
     }
 
+    /// A BinXML value whose fragment `write` writes. In a template definition, the instances in
+    /// it are part of the template.
+    pub fn binxml(&mut self, write: impl FnOnce(&mut BinXml)) -> &mut Self {
+        let mut fragment = BinXml::at(self.pos() + 4);
+        fragment.definition = self.definition;
+        write(&mut fragment);
+        self.definition = fragment.definition;
+        self.u8(0x05)
+            .u8(0x21)
+            .u16(fragment.bytes.len() as u16)
+            .raw(&fragment.bytes)
+    }
+
     /// A normal substitution of value `id`, of type `value_type`.
     pub fn substitution(&mut self, id: u16, value_type: u8) -> &mut Self {
         self.u8(0x0d).u16(id).u8(value_type)
@@ -310,6 +323,7 @@ impl BinXml {
         let definition_offset = self.pos() + 4;
         self.u32(definition_offset).u32(0).raw(&[0xab; 16]);
         let mut body = BinXml::at(definition_offset + TEMPLATE_DEFINITION_HEADER_SIZE as u32);
+        body.definition = self.definition;
         body.fragment_header();
         definition(&mut body);
         body.eof();
