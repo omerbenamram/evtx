@@ -65,7 +65,8 @@ pub enum WevtCacheFileError {
     #[error("unknown `.wevtcache` entry kind {kind} for `{path}`")]
     UnknownEntryKind { path: PathBuf, kind: u8 },
 
-    #[error("`.wevtcache` entry length does not fit usize for `{path}`: {len}")]
+    /// The entry's declared length is larger than the bytes left in the file.
+    #[error("`.wevtcache` entry length {len} is larger than the rest of `{path}`")]
     EntryLengthTooLarge { path: PathBuf, len: u64 },
 
     #[error("wevtcache entry count overflow for `{path}`")]
@@ -158,6 +159,9 @@ pub struct WevtCacheReader {
     file: File,
     path: PathBuf,
     remaining: u32,
+    /// Bytes left in the file after the current position; bounds each entry's
+    /// declared length so a crafted header can't force a huge allocation.
+    bytes_left: u64,
 }
 
 impl WevtCacheReader {
@@ -186,10 +190,13 @@ impl WevtCacheReader {
             });
         }
 
+        let file_len = file.metadata().map_err(io_err("stat", path))?.len();
+
         Ok(Self {
             file,
             path: path.to_path_buf(),
             remaining: u32_at(ENTRY_COUNT_OFFSET),
+            bytes_left: file_len.saturating_sub(HEADER_SIZE as u64),
         })
     }
 
@@ -214,11 +221,16 @@ impl WevtCacheReader {
         };
 
         let len_u64 = u64::from_le_bytes(bytes::le(&header[1..]));
-        let len: usize =
-            usize::try_from(len_u64).map_err(|_| WevtCacheFileError::EntryLengthTooLarge {
-                path: self.path.clone(),
-                len: len_u64,
-            })?;
+        self.bytes_left = self.bytes_left.saturating_sub(ENTRY_HEADER_SIZE as u64);
+        let too_large = || WevtCacheFileError::EntryLengthTooLarge {
+            path: self.path.clone(),
+            len: len_u64,
+        };
+        if len_u64 > self.bytes_left {
+            return Err(too_large());
+        }
+        let len = usize::try_from(len_u64).map_err(|_| too_large())?;
+        self.bytes_left -= len_u64;
 
         let mut buf = vec![0u8; len];
         self.file
@@ -246,4 +258,57 @@ where
     }
 
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 25-byte file whose single entry claims a ~4 GiB payload must be
+    /// rejected before the payload buffer is allocated.
+    #[test]
+    fn entry_length_beyond_file_is_rejected_before_allocating() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&MAGIC);
+        bytes.extend_from_slice(&VERSION.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.push(EntryKind::Crim as u8);
+        bytes.extend_from_slice(&0xFFFF_FFF0u64.to_le_bytes());
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), &bytes).unwrap();
+
+        let err = for_each_crim_blob(file.path(), |_| Ok(())).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WevtCacheFileError::EntryLengthTooLarge {
+                    len: 0xFFFF_FFF0,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn round_trip_still_reads_every_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.wevtcache");
+        let mut w = WevtCacheWriter::create(&path, false).unwrap();
+        w.write_crim_blob(b"abc").unwrap();
+        w.write_crim_blob(b"").unwrap();
+        w.finish().unwrap();
+
+        let mut blobs = Vec::new();
+        assert_eq!(
+            for_each_crim_blob(&path, |b| {
+                blobs.push(b);
+                Ok(())
+            })
+            .unwrap(),
+            2
+        );
+        assert_eq!(blobs, vec![b"abc".to_vec(), Vec::new()]);
+    }
 }
