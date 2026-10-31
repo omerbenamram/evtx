@@ -48,7 +48,8 @@ impl EvtxFileHeader {
         let chunk_count = bytes::read_u16_le_r(data, 42, "file_header_chunk_count")?;
 
         let raw_flags = bytes::read_u32_le_r(data, 120, "file_header_flags")?;
-        let flags = HeaderFlags::from_bits_truncate(raw_flags);
+        // Keep the bits evtx doesn't know, so that they show.
+        let flags = HeaderFlags::from_bits_retain(raw_flags);
         let checksum = bytes::read_u32_le_r(data, 124, "file_header_checksum")?;
 
         Ok(EvtxFileHeader {
@@ -104,5 +105,15 @@ mod tests {
                 checksum: checksum_ieee(&evtx_file[..120]),
             }
         );
+    }
+
+    #[test]
+    fn unknown_header_flags_are_kept() {
+        // None of the flags evtx knows, only bits it doesn't.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/samples/post-Security.evtx");
+        let mut file = std::fs::File::open(path).unwrap();
+        let header = EvtxFileHeader::from_stream(&mut file).unwrap();
+        assert_eq!(header.flags.bits(), 0x1b97_0000);
+        assert!(!header.flags.intersects(HeaderFlags::all()));
     }
 }

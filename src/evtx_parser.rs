@@ -324,6 +324,11 @@ impl Debug for ParserSettings {
 
 impl PartialEq for ParserSettings {
     fn eq(&self, other: &ParserSettings) -> bool {
+        // Caches and MTA files compare by identity.
+        #[cfg(feature = "wevt_templates")]
+        if self.wevt_cache.as_ref().map(Arc::as_ptr) != other.wevt_cache.as_ref().map(Arc::as_ptr) {
+            return false;
+        }
         self.ansi_codec.name() == other.ansi_codec.name()
             && self.num_threads == other.num_threads
             && self.validate_checksums == other.validate_checksums
@@ -979,6 +984,24 @@ mod tests {
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "wevt_templates")]
+    fn settings_compare_wevt_caches_by_identity() {
+        use crate::wevt_templates::WevtCache;
+
+        let cache = Arc::new(WevtCache::new());
+        let with = |cache| ParserSettings::new().wevt_cache(cache);
+        assert_eq!(
+            with(Some(Arc::clone(&cache))),
+            with(Some(Arc::clone(&cache)))
+        );
+        assert_ne!(
+            with(Some(Arc::clone(&cache))),
+            with(Some(Arc::new(WevtCache::new())))
+        );
+        assert_ne!(with(Some(cache)), with(None));
     }
 
     #[test]

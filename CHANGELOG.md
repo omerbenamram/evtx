@@ -96,6 +96,20 @@ and this project adheres to
   from the start again, repeating keys. Debug builds panicked. Numbering the
   children of an element with thousands of names took time quadratic in their
   number.
+- A chunk that failed a checksum check reported
+  `ChunkError::InvalidChunkChecksum { expected: 0, found: 0 }`, whichever check
+  failed. The error now says which: `InvalidChunkHeaderChecksum` for the
+  header's CRC32 and `InvalidChunkChecksum` for the records', both with the
+  stored and computed values, or `InvalidFreeSpaceOffset` when the header's
+  free space offset is outside the chunk, so the records' CRC32 can't be
+  computed. **Breaking:** `ChunkError` has these two new variants.
+- File and chunk headers dropped the flag bits evtx doesn't define, so the
+  post-Security sample's header, whose flags are 0x1b970000, read as having no
+  flags. `EvtxFileHeader::flags` and `EvtxChunkHeader::flags` now keep every
+  bit.
+- `ParserSettings` equality ignored the WEVT template cache, so settings with
+  different caches compared equal. Caches now compare by identity, as `.MTA`
+  files do.
 
 ### Security
 

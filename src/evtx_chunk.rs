@@ -66,12 +66,8 @@ impl EvtxChunkData {
         let header = EvtxChunkHeader::from_bytes(&data)?;
 
         let chunk = EvtxChunkData { header, data };
-        if validate_checksum && !chunk.validate_checksum() {
-            // Preserve the public error fields and header-first short circuit.
-            return Err(ChunkError::InvalidChunkChecksum {
-                expected: 0,
-                found: 0,
-            });
+        if validate_checksum && let Some(err) = chunk.checksum_error() {
+            return Err(err);
         }
 
         Ok(chunk)
@@ -104,7 +100,24 @@ impl EvtxChunkData {
     }
 
     pub fn validate_checksum(&self) -> bool {
-        self.validate_header_checksum() && self.validate_data_checksum()
+        self.checksum_error().is_none()
+    }
+
+    /// The first check `validate_checksum` fails: the header's CRC32, then the records'.
+    fn checksum_error(&self) -> Option<ChunkError> {
+        if self.header.flags.contains(ChunkFlags::NO_CRC32) {
+            return None;
+        }
+        let (expected, found) = (self.header.header_chunk_checksum, self.header_crc());
+        if expected != found {
+            return Some(ChunkError::InvalidChunkHeaderChecksum { expected, found });
+        }
+        let offset = self.header.free_space_offset;
+        let Some(records) = self.data.get(EVTX_CHUNK_HEADER_SIZE..offset as usize) else {
+            return Some(ChunkError::InvalidFreeSpaceOffset { offset });
+        };
+        let (expected, found) = (self.header.events_checksum, checksum_ieee(records));
+        (expected != found).then_some(ChunkError::InvalidChunkChecksum { expected, found })
     }
 }
 
@@ -487,7 +500,8 @@ impl EvtxChunkHeader {
         let events_checksum = bytes::read_u32_le_r(data, 52, "chunk.events_checksum")?;
 
         let raw_flags = bytes::read_u32_le_r(data, 120, "chunk.flags")?;
-        let flags = ChunkFlags::from_bits_truncate(raw_flags);
+        // Keep the bits evtx doesn't know, so that they show.
+        let flags = ChunkFlags::from_bits_retain(raw_flags);
 
         let header_chunk_checksum = bytes::read_u32_le_r(data, 124, "chunk.header_chunk_checksum")?;
 
@@ -592,42 +606,64 @@ mod tests {
     }
 
     #[test]
-    fn checksum_errors_preserve_fields_and_reject_invalid_data_bounds() {
+    fn checksum_errors_say_which_check_failed() {
         let file = include_bytes!("../samples/security.evtx");
         let original = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        let stored =
+            |data: &[u8], at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+        let error = |data| {
+            EvtxChunkData::new(data, true)
+                .err()
+                .expect("a checksum error")
+        };
         for offset in [0, 511, EVTX_CHUNK_SIZE as u32 + 1, u32::MAX] {
             let mut data = original.to_vec();
             data[48..52].copy_from_slice(&offset.to_le_bytes());
-            // An invalid header must fail before attempting to slice the record data.
-            assert!(matches!(
-                EvtxChunkData::new(data.clone(), true),
-                Err(ChunkError::InvalidChunkChecksum {
-                    expected: 0,
-                    found: 0
-                })
-            ));
+            // The header's CRC32 covers the free space offset and is checked first.
+            let computed = EvtxChunkData::new(data.clone(), false)
+                .unwrap()
+                .header_crc();
+            let err = error(data.clone());
+            assert!(
+                matches!(err, ChunkError::InvalidChunkHeaderChecksum { expected, found }
+                    if expected == stored(&data, 124) && found == computed),
+                "{err:?}"
+            );
 
-            // A valid header checksum must not make an invalid data range panic either.
-            let chunk = EvtxChunkData::new(data.clone(), false).unwrap();
-            let checksum = chunk.header_crc();
-            data[124..128].copy_from_slice(&checksum.to_le_bytes());
-            assert!(matches!(
-                EvtxChunkData::new(data, true),
-                Err(ChunkError::InvalidChunkChecksum {
-                    expected: 0,
-                    found: 0
-                })
-            ));
+            // With a valid header CRC32, the offset must fail without slicing the records.
+            data[124..128].copy_from_slice(&computed.to_le_bytes());
+            let err = error(data);
+            assert!(
+                matches!(err, ChunkError::InvalidFreeSpaceOffset { offset: found } if found == offset),
+                "{err:?}"
+            );
         }
+
         let mut data = original.to_vec();
         data[EVTX_CHUNK_HEADER_SIZE] ^= 1;
-        assert!(matches!(
-            EvtxChunkData::new(data, true),
-            Err(ChunkError::InvalidChunkChecksum {
-                expected: 0,
-                found: 0
-            })
-        ));
+        let records = &data[EVTX_CHUNK_HEADER_SIZE..stored(&data, 48) as usize];
+        let (expected, found) = (stored(&data, 52), checksum_ieee(records));
+        let err = error(data.clone());
+        assert!(
+            matches!(err, ChunkError::InvalidChunkChecksum { expected: e, found: f }
+                if e == expected && f == found),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            format!("chunk data CRC32 invalid (stored {expected:#010x}, computed {found:#010x})")
+        );
+    }
+
+    #[test]
+    fn unknown_chunk_flags_are_kept() {
+        let file = include_bytes!("../samples/security.evtx");
+        let mut header =
+            file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_HEADER_SIZE].to_vec();
+        header[120..124].copy_from_slice(&0x8001_u32.to_le_bytes());
+        let header = EvtxChunkHeader::from_bytes(&header).unwrap();
+        assert_eq!(header.flags.bits(), 0x8001);
+        assert!(header.flags.contains(ChunkFlags::DIRTY));
     }
 
     #[test]
