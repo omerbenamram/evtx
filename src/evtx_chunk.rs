@@ -16,7 +16,7 @@ use crate::{ParserSettings, checksum_ieee};
 use bumpalo::Bump;
 use std::sync::Arc;
 
-const EVTX_CHUNK_HEADER_SIZE: usize = 512;
+pub(crate) const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 bitflags! {
     #[derive(Debug)]

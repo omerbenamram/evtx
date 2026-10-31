@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Changed
 
+- A log that has wrapped around comes out oldest record first, as Windows reads
+  it: from the chunk that holds its lowest record ID to the end of the file,
+  then from the start of the file. evtx read it in file order, so its newest
+  records came first. The file header names the oldest chunk too, but a log
+  that wasn't closed cleanly can be a chunk ahead of it, as the LiveId sample
+  is, and Windows still starts at the oldest records. 5 of the samples change.
 - Timestamps render with seven fractional digits, the 100 ns that a FILETIME
   counts, as Windows renders them: `2016-07-08T18:12:51.6816408Z` instead of
   `2016-07-08T18:12:51.681640Z`, which dropped the last digit. SYSTEMTIME

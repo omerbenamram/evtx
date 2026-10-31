@@ -83,6 +83,12 @@ pub fn sample_issue_65() -> PathBuf {
     )
 }
 
+/// A log that has wrapped around and wasn't closed cleanly: its file header names the chunk after
+/// the one with its oldest records.
+pub fn sample_with_a_stale_oldest_chunk() -> PathBuf {
+    samples_dir().join("2-system-Microsoft-Windows-LiveId%4Operational.evtx")
+}
+
 pub fn sample_with_dependency_id_edge_case() -> PathBuf {
     samples_dir().join("Archive-ForwardedEvents-test.evtx")
 }
