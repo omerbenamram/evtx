@@ -79,6 +79,12 @@ pub(crate) trait TokenSink<'a> {
     fn pi_data(&mut self, _data: Utf16LeSlice<'a>) -> EvtxResult<()> {
         Ok(())
     }
+    fn cdata(&mut self, _text: Utf16LeSlice<'a>) -> EvtxResult<()> {
+        Ok(())
+    }
+    fn char_ref(&mut self, _ch: u16) -> EvtxResult<()> {
+        Ok(())
+    }
     fn substitution(&mut self, _id: u16, _optional: bool) -> EvtxResult<()> {
         Ok(())
     }
@@ -136,20 +142,12 @@ pub(crate) fn walk_tokens<'a>(
                 cursor.u8_named("fragment_header_minor_version")?;
                 cursor.u8_named("fragment_header_flags")?;
             }
-            0x07 | 0x47 => {
-                return Err(DeserializationError::UnimplementedToken {
-                    name: "CDataSection",
-                    offset: cursor.position(),
-                }
-                .into());
-            }
-            0x08 | 0x48 => {
-                return Err(DeserializationError::UnimplementedToken {
-                    name: "CharReference",
-                    offset: cursor.position(),
-                }
-                .into());
-            }
+            0x07 | 0x47 => sink.cdata(
+                cursor
+                    .len_prefixed_utf16_string(false, "cdata")?
+                    .unwrap_or_else(Utf16LeSlice::empty),
+            )?,
+            0x08 | 0x48 => sink.char_ref(cursor.u16_named("char_ref")?)?,
             _ => {
                 return Err(DeserializationError::InvalidToken {
                     value: token,
