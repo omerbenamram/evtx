@@ -146,6 +146,7 @@ impl<'a> ElementBuilder<'a> {
             attrs: self.attrs,
             children: IrVec::new_in(self.arena),
             has_element_child: false,
+            self_closing: false,
         }
     }
 }
@@ -356,11 +357,12 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
     }
 
     fn close_empty(&mut self) -> Result<()> {
-        let element = self
+        let mut element = self
             .current_element
             .take()
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("close empty - Bad parser state"))?
             .finish();
+        element.self_closing = true;
         let element_id = self.arena.new_node(element);
         self.attach(element_id)
     }
@@ -1154,6 +1156,7 @@ fn clone_and_resolve<'a>(
         attrs: IrVec::with_capacity_in(element.attrs.len(), bump),
         children: IrVec::with_capacity_in(element.children.len(), bump),
         has_element_child: false,
+        self_closing: element.self_closing,
     };
 
     // Fast-path hint for array expansion:

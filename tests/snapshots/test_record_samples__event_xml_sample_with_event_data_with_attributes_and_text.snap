@@ -5,25 +5,21 @@ expression: first_record.data
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <Provider Name="EventLog">
-    </Provider>
+    <Provider Name="EventLog"/>
     <EventID Qualifiers="32768">6009</EventID>
     <Level>4</Level>
     <Task>0</Task>
     <Keywords>0x80000000000000</Keywords>
-    <TimeCreated SystemTime="2017-07-12T17:16:28.2141616Z">
-    </TimeCreated>
+    <TimeCreated SystemTime="2017-07-12T17:16:28.2141616Z"/>
     <EventRecordID>1</EventRecordID>
     <Channel>System</Channel>
     <Computer>WIN-P4SIAA0SQCO</Computer>
-    <Security>
-    </Security>
+    <Security/>
   </System>
   <EventData>
     <Data>10.00.</Data>
     <Data>15063</Data>
-    <Data>
-    </Data>
+    <Data></Data>
     <Data>Multiprocessor Free</Data>
     <Data>0</Data>
     <Binary></Binary>

@@ -295,16 +295,15 @@ enum XOp {
     /// ` name="` + escaped value + `"`, all omitted when the value is
     /// empty-ish (mirrors `attribute_value_is_empty`: optionality ignored).
     AttrVal { slot: u16, pre: LitRange },
-    /// `<Tag ...attrs` has been emitted (sans `>`). Emit `>` and the single
-    /// placeholder content, branching on the runtime slot class:
-    /// Skip -> `tail_empty`; text-ish -> text + `tail_text`;
+    /// `<Tag ...attrs>` has been emitted. Emit the single placeholder content,
+    /// branching on the runtime slot class: Skip -> `tail_text`, so the
+    /// element is `<Tag></Tag>`; text-ish -> text + `tail_text`;
     /// element -> newline + nested/frag at `indent + 2` + `tail_elem`.
     Body {
         slot: u16,
         optional: bool,
         indent: u16,
         tail_text: LitRange,
-        tail_empty: LitRange,
         tail_elem: LitRange,
     },
     /// Placeholder in element-child position under a statically line-formed
@@ -319,8 +318,7 @@ enum XOp {
     /// An attribute-less `<Data>` element whose entire content is one hole
     /// (MS-EVEN6 array expansion site). Scalar values follow `Body`
     /// semantics with `open` spliced first; a string array repeats the
-    /// element per item — single-item arrays render inline like a scalar,
-    /// empty items in larger arrays take the two-line empty form. Mirrors
+    /// element per item, an empty item as `<Data></Data>`. Mirrors
     /// `array_expand` over the materialized tree.
     Expand {
         slot: u16,
@@ -328,7 +326,6 @@ enum XOp {
         indent: u16,
         open: LitRange,
         tail_text: LitRange,
-        tail_empty: LitRange,
         tail_elem: LitRange,
     },
 }
@@ -1148,20 +1145,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     return Err(unresolved_placeholder());
                 }
                 let name = element.name.as_str().as_bytes();
-                let is_binary = element.name.as_str() == "Binary";
                 self.lits.push(b'>');
                 self.flush_lit_run();
                 let tail_text = self.side_range(|c| {
-                    c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(name);
-                    c.lits.push(b'>');
-                    c.newline();
-                });
-                let tail_empty = self.side_range(|c| {
-                    if !is_binary {
-                        c.newline();
-                        c.indent_str(indent);
-                    }
                     c.lits.extend_from_slice(b"</");
                     c.lits.extend_from_slice(name);
                     c.lits.push(b'>');
@@ -1180,16 +1166,17 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     optional: ph.optional,
                     indent,
                     tail_text,
-                    tail_empty,
                     tail_elem,
                 });
             }
+            // Windows writes `<X/>` for an element the BinXML closed as empty, and `<X></X>` for
+            // one whose content is empty. Neither gets whitespace inside when indenting.
+            ChildrenKind::Empty if element.self_closing => {
+                self.lits.extend_from_slice(b"/>");
+                self.newline();
+            }
             ChildrenKind::Empty => {
                 self.lits.push(b'>');
-                if element.name.as_str() != "Binary" {
-                    self.newline();
-                    self.indent_str(indent);
-                }
                 self.close_tag_inline(element);
             }
             ChildrenKind::StaticInline => {
@@ -1408,14 +1395,6 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             c.lits.push(b'>');
             c.newline();
         });
-        let tail_empty = self.side_range(|c| {
-            c.newline();
-            c.indent_str(indent);
-            c.lits.extend_from_slice(b"</");
-            c.lits.extend_from_slice(name);
-            c.lits.push(b'>');
-            c.newline();
-        });
         let tail_elem = self.side_range(|c| {
             c.indent_str(indent);
             c.lits.extend_from_slice(b"</");
@@ -1431,7 +1410,6 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             indent,
             open,
             tail_text,
-            tail_empty,
             tail_elem,
         });
         Ok(())
@@ -2264,13 +2242,12 @@ fn exec<'a, V: ValueSource<'a>>(
                 optional,
                 indent,
                 tail_text,
-                tail_empty,
                 tail_elem,
             } => {
                 // The opening `<Tag ...>` (including `>`) came from the
                 // preceding Lit run; only the content + close remain here.
                 match classify(*slot, *optional) {
-                    SlotClass::Skip => write_lit!(*tail_empty),
+                    SlotClass::Skip => write_lit!(*tail_text),
                     SlotClass::TextLike => {
                         if let Some(s) = slot_at(*slot) {
                             write_val!(s, false);
@@ -2334,37 +2311,28 @@ fn exec<'a, V: ValueSource<'a>>(
                 indent,
                 open,
                 tail_text,
-                tail_empty,
                 tail_elem,
             } => {
                 if let Some(items) = slot_at(*slot).and_then(|s| pf.array(s)) {
-                    // Array: the element repeats per item. Single-item arrays
-                    // are not expanded by the materialize lane (the value node
-                    // stays inline, empty or not); empty items in larger
-                    // arrays drop their text node (two-line empty form).
-                    let multi = items.len() > 1;
+                    // Array: the element repeats per item.
                     for item in items {
                         // Each item repeats the element's indentation.
                         pf.budget().check(out.len())?;
                         write_lit!(*open);
-                        if multi && item.is_empty() {
-                            write_lit!(*tail_empty);
-                        } else {
-                            vr.write_value_text(
-                                out,
-                                &BinXmlValue::StringType(item),
-                                StringEscapeMode::Xml {
-                                    in_attribute: false,
-                                },
-                            )?;
-                            write_lit!(*tail_text);
-                        }
+                        vr.write_value_text(
+                            out,
+                            &BinXmlValue::StringType(item),
+                            StringEscapeMode::Xml {
+                                in_attribute: false,
+                            },
+                        )?;
+                        write_lit!(*tail_text);
                     }
                 } else {
                     // Scalar: `Body` semantics with the open tag spliced in.
                     write_lit!(*open);
                     match classify(*slot, *optional) {
-                        SlotClass::Skip => write_lit!(*tail_empty),
+                        SlotClass::Skip => write_lit!(*tail_text),
                         SlotClass::TextLike => {
                             if let Some(s) = slot_at(*slot) {
                                 write_val!(s, false);

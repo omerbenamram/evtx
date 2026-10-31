@@ -6,25 +6,20 @@ expression: first_record.data
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <Provider Name="Microsoft-Windows-Security-Auditing" Guid="{54849625-5478-4994-a5ba-3e3b0328c30d}">
-    </Provider>
+    <Provider Name="Microsoft-Windows-Security-Auditing" Guid="{54849625-5478-4994-a5ba-3e3b0328c30d}"/>
     <EventID>4688</EventID>
     <Version>2</Version>
     <Level>0</Level>
     <Task>13312</Task>
     <Opcode>0</Opcode>
     <Keywords>0x8020000000000000</Keywords>
-    <TimeCreated SystemTime="2018-07-28T07:24:45.7547874Z">
-    </TimeCreated>
+    <TimeCreated SystemTime="2018-07-28T07:24:45.7547874Z"/>
     <EventRecordID>1</EventRecordID>
-    <Correlation>
-    </Correlation>
-    <Execution ProcessID="4" ThreadID="32">
-    </Execution>
+    <Correlation/>
+    <Execution ProcessID="4" ThreadID="32"/>
     <Channel>Security</Channel>
     <Computer>WIN-LL0C19JS506</Computer>
-    <Security>
-    </Security>
+    <Security/>
   </System>
   <EventData>
     <Data Name="SubjectUserSid">S-1-5-18</Data>
