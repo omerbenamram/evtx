@@ -440,14 +440,15 @@ impl ValueRenderer {
 
     fn write_datetime<W: WriteExt>(&mut self, writer: &mut W, tm: &Timestamp) -> Result<()> {
         let dt = Offset::UTC.to_datetime(*tm);
-        let mut buf = *b"0000-00-00T00:00:00.000000Z";
+        // Seven fractional digits, the 100 ns that a FILETIME counts, as Windows renders them.
+        let mut buf = *b"0000-00-00T00:00:00.0000000Z";
         pack_digits(&mut buf[0..4], dt.year() as u32);
         pack_digits(&mut buf[5..7], u32::from(dt.month() as u8));
         pack_digits(&mut buf[8..10], u32::from(dt.day() as u8));
         pack_digits(&mut buf[11..13], u32::from(dt.hour() as u8));
         pack_digits(&mut buf[14..16], u32::from(dt.minute() as u8));
         pack_digits(&mut buf[17..19], u32::from(dt.second() as u8));
-        pack_digits(&mut buf[20..26], (dt.subsec_nanosecond() / 1_000) as u32);
+        pack_digits(&mut buf[20..27], (dt.subsec_nanosecond() / 100) as u32);
         writer.write_all(&buf).map_err(EvtxError::from)
     }
 }

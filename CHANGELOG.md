@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Timestamps render with seven fractional digits, the 100 ns that a FILETIME
+  counts, as Windows renders them: `2016-07-08T18:12:51.6816408Z` instead of
+  `2016-07-08T18:12:51.681640Z`, which dropped the last digit. SYSTEMTIME
+  values, which store milliseconds, render as `.7890000Z`, as in Windows. This
+  covers XML and JSON, `TimeCreated` included, so code that parses evtx's
+  timestamps with exactly six digits needs to accept seven.
+
 ### Fixed
 
 - Reading a `.wevtcache` file trusted each entry's length and allocated that

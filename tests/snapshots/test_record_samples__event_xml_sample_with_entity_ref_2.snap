@@ -13,7 +13,7 @@ expression: record.data
     <Task>51</Task>
     <Opcode>2</Opcode>
     <Keywords>0x400000000000002e</Keywords>
-    <TimeCreated SystemTime="2017-05-19T02:02:36.187500Z">
+    <TimeCreated SystemTime="2017-05-19T02:02:36.1875000Z">
     </TimeCreated>
     <EventRecordID>25</EventRecordID>
     <Correlation>
