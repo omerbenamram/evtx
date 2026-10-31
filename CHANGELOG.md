@@ -10,6 +10,10 @@ and this project adheres to
 
 ### Fixed
 
+- Reading a `.wevtcache` file trusted each entry's length and allocated that
+  many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
+  An entry longer than the rest of the file is now rejected with
+  `EntryLengthTooLarge` before anything is allocated (#334).
 - A BinXML value holding more than one element kept only the first. Windows
   writes such values: in the Shell-Core sample, events 161 and 968 hold their
   event data and then a `RenderingInfo` element, which evtx dropped. Every
