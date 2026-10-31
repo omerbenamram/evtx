@@ -145,6 +145,13 @@ impl<'a> Element<'a> {
         }
         self.children.push(node);
     }
+
+    /// The nodes the element holds: itself, its attributes, their values' nodes and its
+    /// children.
+    pub(crate) fn nodes(&self) -> usize {
+        let values: usize = self.attrs.iter().map(|attr| attr.value.len()).sum();
+        1 + self.attrs.len() + values + self.children.len()
+    }
 }
 
 /// Bump-allocated vector type used inside IR nodes.
@@ -160,6 +167,13 @@ pub type ElementId = usize;
 #[derive(Debug, Clone)]
 pub struct IrArena<'a> {
     elements: IrVec<'a, Element<'a>>,
+    /// Whether an element may be a child in more than one place, so that walking the tree
+    /// can visit it more than once: a value that several substitutions place, or the children
+    /// of an element that an array repeats.
+    shared: bool,
+    /// Whether a BinXML value's fragment was built into it. A template's arena holds only its
+    /// own stream's elements otherwise.
+    spliced: bool,
 }
 
 impl<'a> IrArena<'a> {
@@ -167,6 +181,8 @@ impl<'a> IrArena<'a> {
     pub fn new_in(arena: &'a Bump) -> Self {
         IrArena {
             elements: IrVec::new_in(arena),
+            shared: false,
+            spliced: false,
         }
     }
 
@@ -174,6 +190,8 @@ impl<'a> IrArena<'a> {
     pub(crate) fn with_capacity_in(capacity: usize, arena: &'a Bump) -> Self {
         IrArena {
             elements: IrVec::with_capacity_in(capacity, arena),
+            shared: false,
+            spliced: false,
         }
     }
 
@@ -202,6 +220,26 @@ impl<'a> IrArena<'a> {
     /// Returns a mutable reference to the element with the given ID.
     pub(crate) fn get_mut(&mut self, id: ElementId) -> Option<&mut Element<'a>> {
         self.elements.get_mut(id)
+    }
+
+    /// Whether an element may be a child in more than one place.
+    pub(crate) fn shared(&self) -> bool {
+        self.shared
+    }
+
+    /// Records that an element may be a child in more than one place.
+    pub(crate) fn mark_shared(&mut self) {
+        self.shared = true;
+    }
+
+    /// Whether a BinXML value's fragment was built into it.
+    pub(crate) fn spliced(&self) -> bool {
+        self.spliced
+    }
+
+    /// Records that a BinXML value's fragment was built into it.
+    pub(crate) fn mark_spliced(&mut self) {
+        self.spliced = true;
     }
 }
 

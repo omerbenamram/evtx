@@ -143,6 +143,19 @@ pub fn render_record(evtx: &[u8], id: u64) -> (String, String) {
 pub struct BinXml {
     bytes: Vec<u8>,
     base: u32,
+    /// The template definition `template_instance` wrote last, here or in an enclosing or
+    /// earlier stream, for `template_ref`.
+    definition: Option<u32>,
+    /// The name `open` or `attribute` wrote last, for `reopen` and `reattribute`.
+    name: Option<u32>,
+}
+
+/// A template value: its type, and what writes its bytes at the offset they land at.
+pub type Value<'v> = (u8, Box<dyn FnOnce(&mut BinXml) + 'v>);
+
+/// A template value of type `value_type` that `write` writes.
+pub fn value<'v>(value_type: u8, write: impl FnOnce(&mut BinXml) + 'v) -> Value<'v> {
+    (value_type, Box::new(write))
 }
 
 impl BinXml {
@@ -150,6 +163,8 @@ impl BinXml {
         BinXml {
             bytes: Vec::new(),
             base,
+            definition: None,
+            name: None,
         }
     }
 
@@ -174,7 +189,7 @@ impl BinXml {
         self.raw(&v.to_le_bytes())
     }
 
-    fn utf16(&mut self, s: &str) -> &mut Self {
+    pub fn utf16(&mut self, s: &str) -> &mut Self {
         for unit in s.encode_utf16() {
             self.u16(unit);
         }
@@ -191,14 +206,39 @@ impl BinXml {
 
     /// An element start without attributes. Template definitions also carry a dependency ID.
     pub fn open(&mut self, name: &str, in_template_definition: bool) -> &mut Self {
-        self.u8(0x01);
-        if in_template_definition {
-            self.u16(0xffff);
-        }
-        // The element's data size, which readers skip.
-        self.u32(0);
-        // A name reference whose string follows inline: next string, hash, length, UTF-16, NUL.
+        self.element_start(in_template_definition).name(name)
+    }
+
+    /// An element start like `open`'s, with attributes to follow.
+    pub fn open_with_attributes(&mut self, name: &str, in_template_definition: bool) -> &mut Self {
+        let token = self.bytes.len();
+        self.open(name, in_template_definition);
+        self.bytes[token] |= 0x40;
+        // The attribute list's size, which readers skip.
+        self.u32(0)
+    }
+
+    /// An element start sharing the name `open` or `attribute` wrote last.
+    pub fn reopen(&mut self, in_template_definition: bool) -> &mut Self {
+        let name = self.name.expect("a name first");
+        self.element_start(in_template_definition).u32(name)
+    }
+
+    /// An attribute, whose value follows.
+    pub fn attribute(&mut self, name: &str) -> &mut Self {
+        self.u8(0x06).name(name)
+    }
+
+    /// An attribute sharing the name `open` or `attribute` wrote last.
+    pub fn reattribute(&mut self) -> &mut Self {
+        let name = self.name.expect("a name first");
+        self.u8(0x06).u32(name)
+    }
+
+    /// A name reference whose string follows inline: next string, hash, length, UTF-16, NUL.
+    fn name(&mut self, name: &str) -> &mut Self {
         let name_offset = self.pos() + 4;
+        self.name = Some(name_offset);
         self.u32(name_offset)
             .u32(0)
             .u16(0)
@@ -207,8 +247,21 @@ impl BinXml {
             .u16(0)
     }
 
+    fn element_start(&mut self, in_template_definition: bool) -> &mut Self {
+        self.u8(0x01);
+        if in_template_definition {
+            self.u16(0xffff);
+        }
+        // The element's data size, which readers skip.
+        self.u32(0)
+    }
+
     pub fn close_start(&mut self) -> &mut Self {
         self.u8(0x02)
+    }
+
+    pub fn close_empty(&mut self) -> &mut Self {
+        self.u8(0x03)
     }
 
     pub fn end_element(&mut self) -> &mut Self {
@@ -217,12 +270,41 @@ impl BinXml {
 
     /// `<name>text</name>`, outside template definitions.
     pub fn text_element(&mut self, name: &str, text: &str) -> &mut Self {
-        self.open(name, false).close_start();
+        self.open(name, false)
+            .close_start()
+            .text(text)
+            .end_element()
+    }
+
+    /// A NULL value.
+    pub fn null(&mut self) -> &mut Self {
+        self.u8(0x05).u8(0x00)
+    }
+
+    /// A string value.
+    pub fn text(&mut self, text: &str) -> &mut Self {
         self.u8(0x05)
             .u8(0x01)
             .u16(text.encode_utf16().count() as u16)
-            .utf16(text);
-        self.end_element()
+            .utf16(text)
+    }
+
+    /// A UInt32 value.
+    pub fn uint32(&mut self, v: u32) -> &mut Self {
+        self.u8(0x05).u8(0x08).u32(v)
+    }
+
+    /// A BinXML value whose fragment `write` writes. In a template definition, the instances in
+    /// it are part of the template.
+    pub fn binxml(&mut self, write: impl FnOnce(&mut BinXml)) -> &mut Self {
+        let mut fragment = BinXml::at(self.pos() + 4);
+        fragment.definition = self.definition;
+        write(&mut fragment);
+        self.definition = fragment.definition;
+        self.u8(0x05)
+            .u8(0x21)
+            .u16(fragment.bytes.len() as u16)
+            .raw(&fragment.bytes)
     }
 
     /// A character reference, `&#ch;`.
@@ -243,46 +325,72 @@ impl BinXml {
     }
 
     /// A template instance whose definition follows inline: `definition` writes its element,
-    /// between the fragment header and EOF. Its one value, of type `value_type`, is written by
-    /// `value` at the offset its bytes land at.
+    /// between the fragment header and EOF. Then its values.
     pub fn template_instance(
         &mut self,
         definition: impl FnOnce(&mut BinXml),
-        value_type: u8,
-        value: impl FnOnce(&mut BinXml),
+        values: Vec<Value<'_>>,
     ) -> &mut Self {
         self.u8(0x0c).u8(0x01).u32(1);
         let definition_offset = self.pos() + 4;
         self.u32(definition_offset).u32(0).raw(&[0xab; 16]);
         let mut body = BinXml::at(definition_offset + TEMPLATE_DEFINITION_HEADER_SIZE as u32);
+        body.definition = self.definition;
         body.fragment_header();
         definition(&mut body);
         body.eof();
         self.u32(body.bytes.len() as u32).raw(&body.bytes);
+        self.definition = Some(definition_offset);
+        self.values(values)
+    }
 
-        // The value count and descriptor (size, type, padding), then the value.
-        self.u32(1);
-        let mut bytes = BinXml::at(self.pos() + 4);
-        value(&mut bytes);
-        self.u16(bytes.bytes.len() as u16)
-            .u8(value_type)
-            .u8(0)
-            .raw(&bytes.bytes)
+    /// An instance of the template `template_instance` defined last.
+    pub fn template_ref(&mut self, values: Vec<Value<'_>>) -> &mut Self {
+        let definition = self.definition.expect("a template_instance first");
+        self.u8(0x0c).u8(0x01).u32(1).u32(definition);
+        self.values(values)
+    }
+
+    /// A template instance's values: their count and descriptors (size, type, padding), then
+    /// their bytes.
+    fn values(&mut self, values: Vec<Value<'_>>) -> &mut Self {
+        let mut at = self.pos() + 4 + 4 * values.len() as u32;
+        let mut written = Vec::with_capacity(values.len());
+        for (value_type, write) in values {
+            let mut bytes = BinXml::at(at);
+            bytes.definition = self.definition;
+            write(&mut bytes);
+            self.definition = bytes.definition;
+            at += bytes.bytes.len() as u32;
+            written.push((value_type, bytes.bytes));
+        }
+        self.u32(written.len() as u32);
+        for (value_type, bytes) in &written {
+            self.u16(bytes.len() as u16).u8(*value_type).u8(0);
+        }
+        for (_, bytes) in &written {
+            self.raw(bytes);
+        }
+        self
     }
 }
 
 /// A one-chunk EVTX file with one record (ID 1), whose BinXML `record` writes.
 pub fn synthetic_evtx(record: impl FnOnce(&mut BinXml)) -> Vec<u8> {
+    let mut record = Some(record);
+    synthetic_evtx_records(1, |_, binxml| record.take().expect("one record")(binxml))
+}
+
+/// A one-chunk EVTX file with `count` records, IDs 1 to `count`, whose BinXML `record(i, ..)`
+/// writes for the record at index `i`. `template_ref` can use a template an earlier record
+/// defined.
+pub fn synthetic_evtx_records(count: usize, mut record: impl FnMut(usize, &mut BinXml)) -> Vec<u8> {
     fn put(buf: &mut [u8], at: usize, bytes: &[u8]) {
         buf[at..at + bytes.len()].copy_from_slice(bytes);
     }
-    let record_start = EVTX_CHUNK_HEADER_SIZE;
-    let mut binxml = BinXml::at((record_start + EVTX_RECORD_HEADER_SIZE) as u32);
-    record(&mut binxml);
-
     let mut file = vec![0; EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
     put(&mut file, 0, b"ElfFile\0");
-    put(&mut file, 24, &2u64.to_le_bytes()); // next record ID
+    put(&mut file, 24, &(count as u64 + 1).to_le_bytes()); // next record ID
     put(&mut file, 32, &128u32.to_le_bytes()); // header size
     put(&mut file, 36, &1u16.to_le_bytes()); // minor version
     put(&mut file, 38, &3u16.to_le_bytes()); // major version
@@ -292,29 +400,96 @@ pub fn synthetic_evtx(record: impl FnOnce(&mut BinXml)) -> Vec<u8> {
     put(&mut file, 124, &checksum.to_le_bytes());
 
     let chunk = &mut file[EVTX_FILE_HEADER_SIZE..];
-    let record_size = EVTX_RECORD_HEADER_SIZE + binxml.bytes.len() + 4;
-    let free_space = record_start + record_size;
+    let mut record_start = EVTX_CHUNK_HEADER_SIZE;
+    let mut last_record = record_start;
+    let mut definition = None;
+    for i in 0..count {
+        let mut binxml = BinXml::at((record_start + EVTX_RECORD_HEADER_SIZE) as u32);
+        binxml.definition = definition;
+        record(i, &mut binxml);
+        definition = binxml.definition;
+        let record_size = EVTX_RECORD_HEADER_SIZE + binxml.bytes.len() + 4;
+        let end = record_start + record_size;
+        assert!(
+            end <= EVTX_CHUNK_SIZE,
+            "record {} overflows the chunk",
+            i + 1
+        );
+        let record = &mut chunk[record_start..end];
+        put(record, 0, EVTX_RECORD_MAGIC);
+        put(record, 4, &(record_size as u32).to_le_bytes());
+        put(record, 8, &(i as u64 + 1).to_le_bytes());
+        put(record, 16, &131_000_000_000_000_000u64.to_le_bytes()); // 2016-02-15T08:53:20Z
+        put(record, EVTX_RECORD_HEADER_SIZE, &binxml.bytes);
+        put(record, record_size - 4, &(record_size as u32).to_le_bytes());
+        last_record = record_start;
+        record_start = end;
+    }
+    let free_space = record_start;
+
     put(chunk, 0, b"ElfChnk\0");
-    // First and last record numbers and IDs.
-    for at in [8, 16, 24, 32] {
-        put(chunk, at, &1u64.to_le_bytes());
+    // First and last record numbers, then IDs.
+    for (at, id) in [(8, 1), (16, count), (24, 1), (32, count)] {
+        put(chunk, at, &(id as u64).to_le_bytes());
     }
     put(chunk, 40, &128u32.to_le_bytes()); // header size
-    put(chunk, 44, &(record_start as u32).to_le_bytes()); // last record offset
+    put(chunk, 44, &(last_record as u32).to_le_bytes()); // last record offset
     put(chunk, 48, &(free_space as u32).to_le_bytes());
 
-    let record = &mut chunk[record_start..free_space];
-    put(record, 0, EVTX_RECORD_MAGIC);
-    put(record, 4, &(record_size as u32).to_le_bytes());
-    put(record, 8, &1u64.to_le_bytes());
-    put(record, 16, &131_000_000_000_000_000u64.to_le_bytes()); // 2016-02-15T08:53:20Z
-    put(record, EVTX_RECORD_HEADER_SIZE, &binxml.bytes);
-    put(record, record_size - 4, &(record_size as u32).to_le_bytes());
-
-    let events_checksum = evtx::checksum_ieee(&chunk[record_start..free_space]);
+    let events_checksum = evtx::checksum_ieee(&chunk[EVTX_CHUNK_HEADER_SIZE..free_space]);
     put(chunk, 52, &events_checksum.to_le_bytes());
     let header_checksum =
         evtx::checksum_ieee(&[&chunk[..120], &chunk[128..EVTX_CHUNK_HEADER_SIZE]].concat());
     put(chunk, 124, &header_checksum.to_le_bytes());
+    file
+}
+
+/// An `.MTA` file with one publisher, `provider`, whose level 0 is named `level`.
+pub fn mta_naming_level(provider: &str, level: &str) -> Vec<u8> {
+    // `text` in UTF-16, after its size in bytes.
+    fn counted(text: &str) -> Vec<u8> {
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut counted = (utf16.len() as u32).to_le_bytes().to_vec();
+        counted.extend(utf16);
+        counted
+    }
+    // One page whose one entry, number 0, follows its header. Its next page is itself: the last.
+    fn section(entry: Vec<u8>) -> Vec<u8> {
+        const PAGE_HEADER_SIZE: usize = 888;
+        // Where the page header lists the offsets of the page's entries.
+        const PAGE_ENTRIES: usize = 88;
+        let mut page = vec![0; PAGE_HEADER_SIZE];
+        page[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        page[PAGE_ENTRIES..][..8].copy_from_slice(&(PAGE_HEADER_SIZE as u64).to_le_bytes());
+        page.extend(0u32.to_le_bytes());
+        page.extend((entry.len() as u32).to_le_bytes());
+        page.extend(entry);
+        page
+    }
+    // Level 0 named by message 0, then no tasks, opcodes or keywords, then the name.
+    let mut publisher: Vec<u8> = [1u32, 0, 0, 0, 0, 0].map(u32::to_le_bytes).concat();
+    publisher.extend(counted(provider));
+    let sections = [
+        (counted("EVT"), Vec::new()),
+        (counted("MSG"), section(counted(level))),
+        (counted("PUB"), section(publisher)),
+    ];
+    // Each section's descriptor: its offset and size (u64 each), then its name.
+    let table: usize = sections.iter().map(|(name, _)| 16 + name.len()).sum();
+    let mut file = b"MTAFile\0".to_vec();
+    // Version 1.1, then the size and length of the section table.
+    for value in [1, 1, table as u32, sections.len() as u32] {
+        file.extend(u32::to_le_bytes(value));
+    }
+    let mut offset = file.len() + table;
+    for (name, data) in &sections {
+        file.extend((offset as u64).to_le_bytes());
+        file.extend((data.len() as u64).to_le_bytes());
+        file.extend(name);
+        offset += data.len();
+    }
+    for (_, data) in sections {
+        file.extend(data);
+    }
     file
 }

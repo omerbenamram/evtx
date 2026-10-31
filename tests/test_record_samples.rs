@@ -370,14 +370,13 @@ fn test_value_with_several_elements_renders_them_all() {
                         .substitution(0, 0x21)
                         .end_element();
                 },
-                0x21,
-                |value| {
+                vec![value(0x21, |value| {
                     value
                         .fragment_header()
                         .text_element("A", "1")
                         .text_element("B", "2")
                         .eof();
-                },
+                })],
             )
             .eof();
     });
@@ -419,10 +418,9 @@ fn test_cdata_and_character_references_render() {
                         .end_element();
                     root.end_element();
                 },
-                0x01,
-                |value| {
+                vec![value(0x01, |value| {
                     value.raw(&[b'v', 0]);
-                },
+                })],
             )
             .eof();
     });
