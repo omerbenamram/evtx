@@ -26,6 +26,13 @@ and this project adheres to
   element the template closes empty, and `<Data Name="x"></Data>` for one whose
   content is empty. Indented output used to put a newline and indentation inside
   them, which XML parsers read as text. JSON is unchanged.
+- An element whose template makes it depend on a value (its DependencyId) is
+  left out when that value is NULL, as MS-EVEN6 requires and Windows does. This
+  removes the `<Binary></Binary>` and `<Data></Data>` that classic events wrote
+  for values that were never set, and optional `System` fields left unset. An
+  element left with no children renders empty, as `<EventData></EventData>` in
+  XML and `"EventData": null` in JSON. An empty string still renders as an
+  empty element, as in Windows. This covers XML and JSON.
 - `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
   `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
   can't represent still render. `to_timestamp()` converts them.

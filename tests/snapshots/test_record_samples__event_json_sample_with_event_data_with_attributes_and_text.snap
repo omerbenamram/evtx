@@ -41,8 +41,7 @@ expression: "&value"
           "Multiprocessor Free",
           "0"
         ]
-      },
-      "Binary": null
+      }
     }
   }
 }

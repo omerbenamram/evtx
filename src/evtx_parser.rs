@@ -928,14 +928,8 @@ mod tests {
             }
         }
 
-        // It should be empty, and not a [].
-        assert!(
-            records[0]
-                .as_ref()
-                .unwrap()
-                .data
-                .contains("<Binary></Binary>")
-        );
+        // Its Binary depends on a NULL value, so it is left out, as Windows does.
+        assert!(!records[0].as_ref().unwrap().data.contains("<Binary"));
         assert!(
             records[1]
                 .as_ref()
