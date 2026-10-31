@@ -382,18 +382,20 @@ impl ValueRenderer {
         Ok(())
     }
 
-    /// Write a GUID in the canonical uppercase-hex form (`D1-D2-D3-D4[0..2]-D4[2..8]`,
-    /// data1-3 little-endian), matching `winstructs::guid::Guid`'s `Display`.
+    /// Write a GUID as Windows renders it: lowercase hex in braces,
+    /// `{d1-d2-d3-d4[0..2]-d4[2..8]}`, with data1-3 little-endian.
     fn write_guid<W: WriteExt>(&mut self, writer: &mut W, bytes: &[u8; 16]) -> Result<()> {
         const ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-        let mut out = [b'-'; 36];
-        let mut n = 0;
+        let mut out = [b'-'; 38];
+        out[0] = b'{';
+        out[37] = b'}';
+        let mut n = 1;
         for (i, &idx) in ORDER.iter().enumerate() {
             if matches!(i, 4 | 6 | 8 | 10) {
                 n += 1;
             }
-            out[n] = to_hex_digit(bytes[idx] >> 4);
-            out[n + 1] = to_hex_digit(bytes[idx] & 0x0f);
+            out[n] = to_hex_digit_lower(bytes[idx] >> 4);
+            out[n + 1] = to_hex_digit_lower(bytes[idx] & 0x0f);
             n += 2;
         }
         writer.write_all(&out).map_err(EvtxError::from)

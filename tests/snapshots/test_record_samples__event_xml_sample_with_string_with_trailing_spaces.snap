@@ -5,7 +5,7 @@ expression: record.data
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <Provider Name="Microsoft-Windows-Security-Auditing" Guid="54849625-5478-4994-A5BA-3E3B0328C30D">
+    <Provider Name="Microsoft-Windows-Security-Auditing" Guid="{54849625-5478-4994-a5ba-3e3b0328c30d}">
     </Provider>
     <EventID>4624</EventID>
     <Version>0</Version>
@@ -38,7 +38,7 @@ expression: record.data
     <Data Name="LogonProcessName">Advapi  </Data>
     <Data Name="AuthenticationPackageName">Negotiate</Data>
     <Data Name="WorkstationName"></Data>
-    <Data Name="LogonGuid">00000000-0000-0000-0000-000000000000</Data>
+    <Data Name="LogonGuid">{00000000-0000-0000-0000-000000000000}</Data>
     <Data Name="TransmittedServices">-</Data>
     <Data Name="LmPackageName">-</Data>
     <Data Name="KeyLength">0</Data>

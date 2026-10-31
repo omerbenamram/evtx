@@ -16,6 +16,12 @@ and this project adheres to
   values, which store milliseconds, render as `.7890000Z`, as in Windows. This
   covers XML and JSON, `TimeCreated` included, so code that parses evtx's
   timestamps with exactly six digits needs to accept seven.
+- GUIDs render as Windows renders them, lowercase and in braces:
+  `{54849625-5478-4994-a5ba-3e3b0328c30d}` instead of
+  `54849625-5478-4994-A5BA-3E3B0328C30D`. This covers GUID values in XML and
+  JSON, the provider's `Guid` and the `ActivityID` included. A GUID that a
+  template holds as text keeps its case. Code that matches evtx's GUIDs as text
+  needs to accept the new form.
 - `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
   `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
   can't represent still render. `to_timestamp()` converts them.
