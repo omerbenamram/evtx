@@ -191,6 +191,8 @@ impl EvtxDump {
             }
         };
 
+        // Dropping the buffer flushes it too, but ignores a failed write.
+        self.output.flush()?;
         Ok(())
     }
 
@@ -420,6 +422,23 @@ fn test_parse_ansi_codec() {
 }
 
 fn main() -> Result<()> {
+    match run_cli() {
+        // A reader that stops early, such as `head`, closes the pipe: that ends the output, as
+        // it does for other command-line tools, rather than being an error.
+        Err(error) if is_broken_pipe(&error) => Ok(()),
+        result => result,
+    }
+}
+
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+    })
+}
+
+fn run_cli() -> Result<()> {
     let cmd = Command::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
