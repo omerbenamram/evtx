@@ -85,9 +85,7 @@ Some examples
   - `fd -e evtx -x evtx_dump '{}' -f '{.}.xml'` will create an xml file next to each evtx file, for all files in folder recursively!
   - If the source of the file needs to be added to json, `xargs` (or `gxargs` on mac) and `jq` can be used: `fd -a -e evtx | xargs -I input sh -c "evtx_dump -o jsonl input | jq --arg path "input" '. + {path: \$path}'"`
 
-**Note:** by default, `evtx_dump` will try to utilize multithreading, this means that the records may be returned out of order.
-
-To force single threaded usage (which will also ensure order), `-t 1` can be passed.
+**Note:** by default, `evtx_dump` parses chunks on a thread per CPU core; `-t` sets the number of threads (`-t 1` for one). The records come out in the same order with any number of threads.
 
 ## Offline template rendering (WEVT_TEMPLATE)
 
