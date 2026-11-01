@@ -45,6 +45,13 @@ and this project adheres to
   `<![CDATA[...]]>` and `&#65;`, and JSON gets their text. A `]]>` inside a
   CDATA section splits it in two, so the XML stays well-formed. With this, every
   record of the Windows types sample renders.
+- XML output wasn't always well-formed: C0 controls other than tab, LF and CR,
+  and U+FFFE and U+FFFF, went into it as they were, and XML parsers reject them.
+  Each now renders as `_`, as Windows renders them. A lone UTF-16 surrogate was
+  dropped: it now renders as `_` in XML, as in Windows, and as U+FFFD in JSON,
+  which already escaped controls. 5 records across the samples weren't
+  well-formed XML, and now every record is. utf16-simd 0.2.0 makes the same
+  change in its XML, JSON and raw output.
 - A chunk whose string table links back to a string it has already listed, as
   a damaged or crafted chunk can, made the parser loop forever: only a string
   that links to itself ended the walk. Any string already read now ends it.

@@ -62,12 +62,13 @@ fn evtx_records() -> HashMap<u64, Result<String, String>> {
     evtx
 }
 
-/// Checks that each `Data` element of `samples/windows/types.evtx` that `keep` selects renders as
-/// Windows renders it, and returns how many were compared.
-fn compare_with_windows(keep: impl Fn(&str) -> bool) -> usize {
+/// Checks that each `Data` element of `samples/windows/types.evtx` that `keep` selects, by record
+/// ID and name, renders as Windows renders it, and returns how many were compared.
+fn compare_with_windows(keep: impl Fn(u64, &str) -> bool) -> usize {
     let evtx = evtx_records();
     let mut values = 0;
     for (record_id, xml) in &windows_records() {
+        let keep = |name: &str| keep(*record_id, name);
         let expected = named_data(xml, &keep);
         if expected.is_empty() {
             continue;
@@ -94,7 +95,7 @@ fn every_record_renders() {
 
 #[test]
 fn timestamps_render_as_windows_renders_them() {
-    let values = compare_with_windows(|name| name.ends_with("TIME") || name.ends_with("TIMEs"));
+    let values = compare_with_windows(|_, name| name.ends_with("TIME") || name.ends_with("TIMEs"));
     // The FILETIME and SYSTEMTIME events, their array events, and the scalars event.
     assert!(values >= 30, "only {values} timestamps compared");
 }
@@ -102,7 +103,26 @@ fn timestamps_render_as_windows_renders_them() {
 #[test]
 fn ansi_string_arrays_render_as_windows_renders_them() {
     // Arrays of three items (one of them empty), one item and none.
-    assert_eq!(compare_with_windows(|name| name == "AnsiStrings"), 5);
+    assert_eq!(compare_with_windows(|_, name| name == "AnsiStrings"), 5);
+}
+
+/// Events 3 and 4 hold strings that are hard to render: controls, CR and LF, lone and reversed
+/// surrogates, U+FFFE and U+FFFF, markup, a BOM, and counted strings with NULs. Characters XML
+/// doesn't allow become `_`, as Windows writes them.
+#[test]
+fn text_renders_as_windows_renders_it() {
+    assert_eq!(compare_with_windows(|_, name| name == "Text"), 26);
+}
+
+/// ANSI strings with C0 controls (event 5's record 37) get `_` for them too. The other ANSI
+/// strings differ on purpose: evtx decodes windows-1252, and Windows widens each byte to the
+/// code point of the same value.
+#[test]
+fn ansi_controls_render_as_windows_renders_them() {
+    assert_eq!(
+        compare_with_windows(|id, name| id == 37 && (name == "Ansi" || name == "Utf8")),
+        2
+    );
 }
 
 /// Event 11's UserData comes from its template: entity references, text the manifest compiler

@@ -11,6 +11,9 @@ use core::mem::MaybeUninit;
 
 const HEX: [u8; 16] = *b"0123456789ABCDEF";
 
+/// U+FFFD, which stands in for a lone surrogate outside XML.
+const REPLACEMENT: &[u8] = "\u{FFFD}".as_bytes();
+
 #[inline]
 pub(crate) fn max_units(num_units: usize, byte_len: usize) -> usize {
     core::cmp::min(num_units, byte_len / 2)
@@ -76,6 +79,11 @@ unsafe fn read_u16_le(bytes: *const u8, idx: usize) -> u16 {
 }
 
 #[inline(always)]
+fn is_surrogate(code_unit: u16) -> bool {
+    (0xD800..=0xDFFF).contains(&code_unit)
+}
+
+#[inline(always)]
 fn is_high_surrogate(code_unit: u16) -> bool {
     (0xD800..=0xDBFF).contains(&code_unit)
 }
@@ -106,16 +114,41 @@ fn special_escape(byte: u8) -> Option<&'static [u8]> {
     }
 }
 
+/// Bit `b` is set for each byte `b` below 64 that XML text can't hold as it is: `&`, `<`, `>`,
+/// and the C0 controls but tab, LF and CR, which XML 1.0 doesn't allow even as character
+/// references (Windows writes `_` for them).
+const XML_TEXT_SPECIAL: u64 = {
+    let mut mask = (1u64 << 0x20) - 1;
+    mask &= !(1 << b'\t' | 1 << b'\n' | 1 << b'\r');
+    mask | 1 << b'&' | 1 << b'<' | 1 << b'>'
+};
+/// Attributes also escape both quotes.
+const XML_ATTRIBUTE_SPECIAL: u64 = XML_TEXT_SPECIAL | 1 << b'"' | 1 << b'\'';
+
 #[inline(always)]
 fn xml_escape(byte: u8, in_attribute: bool) -> Option<&'static [u8]> {
-    match byte {
-        b'&' => Some(b"&amp;"),
-        b'<' => Some(b"&lt;"),
-        b'>' => Some(b"&gt;"),
-        b'"' if in_attribute => Some(b"&quot;"),
-        b'\'' if in_attribute => Some(b"&apos;"),
-        _ => None,
+    let special = if in_attribute {
+        XML_ATTRIBUTE_SPECIAL
+    } else {
+        XML_TEXT_SPECIAL
+    };
+    if byte >= 64 || special >> byte & 1 == 0 {
+        return None;
     }
+    Some(match byte {
+        b'&' => b"&amp;",
+        b'<' => b"&lt;",
+        b'>' => b"&gt;",
+        b'"' => b"&quot;",
+        b'\'' => b"&apos;",
+        _ => b"_",
+    })
+}
+
+/// U+FFFE and U+FFFF, which XML 1.0 doesn't allow either. Windows writes `_` for them too.
+#[inline(always)]
+fn is_xml_noncharacter(code_unit: u16) -> bool {
+    code_unit >= 0xFFFE
 }
 
 /// Process a single UTF-16 code unit (and possibly a surrogate pair).
@@ -147,8 +180,8 @@ pub(crate) unsafe fn escape_one(
         return idx + 1;
     }
 
-    if is_high_surrogate(code_unit) {
-        if idx + 1 < max_units {
+    if is_surrogate(code_unit) {
+        if is_high_surrogate(code_unit) && idx + 1 < max_units {
             let lo = read_u16_le(bytes, idx + 1);
             if is_low_surrogate(lo) {
                 let codepoint = decode_surrogate_pair(code_unit, lo);
@@ -156,12 +189,8 @@ pub(crate) unsafe fn escape_one(
                 return idx + 2;
             }
         }
-        // Lone high surrogate: skip.
-        return idx + 1;
-    }
-
-    if is_low_surrogate(code_unit) {
-        // Lone low surrogate: skip.
+        // A lone surrogate.
+        write_slice(dst, REPLACEMENT);
         return idx + 1;
     }
 
@@ -194,8 +223,8 @@ pub(crate) unsafe fn escape_one_xml(
         return idx + 1;
     }
 
-    if is_high_surrogate(code_unit) {
-        if idx + 1 < max_units {
+    if is_surrogate(code_unit) {
+        if is_high_surrogate(code_unit) && idx + 1 < max_units {
             let lo = read_u16_le(bytes, idx + 1);
             if is_low_surrogate(lo) {
                 let codepoint = decode_surrogate_pair(code_unit, lo);
@@ -203,14 +232,16 @@ pub(crate) unsafe fn escape_one_xml(
                 return idx + 2;
             }
         }
+        // A lone surrogate.
+        write_byte(dst, b'_');
         return idx + 1;
     }
 
-    if is_low_surrogate(code_unit) {
-        return idx + 1;
+    if is_xml_noncharacter(code_unit) {
+        write_byte(dst, b'_');
+    } else {
+        write_utf8_3(dst, code_unit);
     }
-
-    write_utf8_3(dst, code_unit);
     idx + 1
 }
 
@@ -233,8 +264,8 @@ pub(crate) unsafe fn escape_one_raw(
         return idx + 1;
     }
 
-    if is_high_surrogate(code_unit) {
-        if idx + 1 < max_units {
+    if is_surrogate(code_unit) {
+        if is_high_surrogate(code_unit) && idx + 1 < max_units {
             let lo = read_u16_le(bytes, idx + 1);
             if is_low_surrogate(lo) {
                 let codepoint = decode_surrogate_pair(code_unit, lo);
@@ -242,10 +273,8 @@ pub(crate) unsafe fn escape_one_raw(
                 return idx + 2;
             }
         }
-        return idx + 1;
-    }
-
-    if is_low_surrogate(code_unit) {
+        // A lone surrogate.
+        write_slice(dst, REPLACEMENT);
         return idx + 1;
     }
 
@@ -410,8 +439,8 @@ pub(crate) unsafe fn escape_one_u16(utf16: &[u16], idx: usize, dst: &mut *mut u8
         return idx + 1;
     }
 
-    if is_high_surrogate(code_unit) {
-        if idx + 1 < utf16.len() {
+    if is_surrogate(code_unit) {
+        if is_high_surrogate(code_unit) && idx + 1 < utf16.len() {
             let lo = *utf16.get_unchecked(idx + 1);
             if is_low_surrogate(lo) {
                 let codepoint = decode_surrogate_pair(code_unit, lo);
@@ -419,12 +448,8 @@ pub(crate) unsafe fn escape_one_u16(utf16: &[u16], idx: usize, dst: &mut *mut u8
                 return idx + 2;
             }
         }
-        // Lone high surrogate: skip.
-        return idx + 1;
-    }
-
-    if is_low_surrogate(code_unit) {
-        // Lone low surrogate: skip.
+        // A lone surrogate.
+        write_slice(dst, REPLACEMENT);
         return idx + 1;
     }
 
@@ -455,8 +480,8 @@ pub(crate) unsafe fn escape_one_xml_u16(
         return idx + 1;
     }
 
-    if is_high_surrogate(code_unit) {
-        if idx + 1 < utf16.len() {
+    if is_surrogate(code_unit) {
+        if is_high_surrogate(code_unit) && idx + 1 < utf16.len() {
             let lo = *utf16.get_unchecked(idx + 1);
             if is_low_surrogate(lo) {
                 let codepoint = decode_surrogate_pair(code_unit, lo);
@@ -464,14 +489,16 @@ pub(crate) unsafe fn escape_one_xml_u16(
                 return idx + 2;
             }
         }
+        // A lone surrogate.
+        write_byte(dst, b'_');
         return idx + 1;
     }
 
-    if is_low_surrogate(code_unit) {
-        return idx + 1;
+    if is_xml_noncharacter(code_unit) {
+        write_byte(dst, b'_');
+    } else {
+        write_utf8_3(dst, code_unit);
     }
-
-    write_utf8_3(dst, code_unit);
     idx + 1
 }
 
@@ -488,8 +515,8 @@ pub(crate) unsafe fn escape_one_raw_u16(utf16: &[u16], idx: usize, dst: &mut *mu
         return idx + 1;
     }
 
-    if is_high_surrogate(code_unit) {
-        if idx + 1 < utf16.len() {
+    if is_surrogate(code_unit) {
+        if is_high_surrogate(code_unit) && idx + 1 < utf16.len() {
             let lo = *utf16.get_unchecked(idx + 1);
             if is_low_surrogate(lo) {
                 let codepoint = decode_surrogate_pair(code_unit, lo);
@@ -497,10 +524,8 @@ pub(crate) unsafe fn escape_one_raw_u16(utf16: &[u16], idx: usize, dst: &mut *mu
                 return idx + 2;
             }
         }
-        return idx + 1;
-    }
-
-    if is_low_surrogate(code_unit) {
+        // A lone surrogate.
+        write_slice(dst, REPLACEMENT);
         return idx + 1;
     }
 
