@@ -85,9 +85,7 @@ Some examples
   - `fd -e evtx -x evtx_dump '{}' -f '{.}.xml'` will create an xml file next to each evtx file, for all files in folder recursively!
   - If the source of the file needs to be added to json, `xargs` (or `gxargs` on mac) and `jq` can be used: `fd -a -e evtx | xargs -I input sh -c "evtx_dump -o jsonl input | jq --arg path "input" '. + {path: \$path}'"`
 
-**Note:** by default, `evtx_dump` will try to utilize multithreading, this means that the records may be returned out of order.
-
-To force single threaded usage (which will also ensure order), `-t 1` can be passed.
+**Note:** by default, `evtx_dump` parses chunks on a thread per CPU core; `-t` sets the number of threads (`-t 1` for one). The records come out in the same order with any number of threads.
 
 ## Offline template rendering (WEVT_TEMPLATE)
 
@@ -176,6 +174,10 @@ Throughput now saturates at around 8 threads on this 30MB sample: single-threade
 ### PGO build
 
 The numbers above come from a profile-guided build (`./build_pgo.sh`): it trains an instrumented binary on the sample corpus, then rebuilds with that profile. CI runs this for the Linux (x86_64) and macOS release binaries, so the table reflects the artifact most people download (output is byte-identical to a normal build). PGO is worth roughly 2–5% of single-threaded throughput over a plain `cargo build --release --features fast-alloc` (JSON 77.6 → 75 ms, XML 73.0 → 71 ms); at 8+ threads the workload is saturation-bound, so PGO there is within measurement noise.
+
+## Fuzzing
+
+[`fuzz/`](fuzz/README.md) has [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the parsers that read untrusted input: whole logs, single chunks, `WEVT_TEMPLATE` manifests and `.MTA` files, seeded from `samples/`.
 
 ## Caveats
 

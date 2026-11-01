@@ -9,7 +9,7 @@ use crate::binxml::value_variant::{BinXmlValue, SidRef, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
 use crate::utils::bytes::le;
-use jiff::{Timestamp, tz::Offset};
+use crate::utils::windows::{DateTimeFields, FileTime, SysTime};
 use sonic_rs::format::{CompactFormatter, Formatter};
 use sonic_rs::writer::WriteExt;
 use zmij::Buffer as ZmijBuffer;
@@ -92,9 +92,8 @@ impl ValueRenderer {
             BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
             BinXmlValue::GuidType(guid) => self.write_guid(writer, guid),
             BinXmlValue::SizeTType(v) => write_int!(self, writer, write_u64, *v as u64),
-            BinXmlValue::FileTimeType(tm) | BinXmlValue::SysTimeType(tm) => {
-                self.write_datetime(writer, tm)
-            }
+            BinXmlValue::FileTimeType(ft) => self.write_datetime(writer, ft.fields()),
+            BinXmlValue::SysTimeType(st) => self.write_datetime(writer, st.fields()),
             BinXmlValue::SidType(sid) => self.write_sid(writer, sid),
             BinXmlValue::HexInt32Type(v) => {
                 self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
@@ -103,6 +102,11 @@ impl ValueRenderer {
             BinXmlValue::StringArrayType(items) => self.write_list(writer, items, |s, w, item| {
                 s.write_utf16_escaped(w, *item, string_mode)
             }),
+            BinXmlValue::AnsiStringArrayType(items) => {
+                self.write_list(writer, items, |s, w, item| {
+                    s.write_str_escaped(w, item, string_mode)
+                })
+            }
             BinXmlValue::Int8ArrayType(items) => {
                 self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i8, *v))
             }
@@ -139,8 +143,11 @@ impl ValueRenderer {
             BinXmlValue::GuidArrayType(items) => {
                 self.write_list(writer, items, |s, w, v| s.write_guid(w, v))
             }
-            BinXmlValue::FileTimeArrayType(items) | BinXmlValue::SysTimeArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v))
+            BinXmlValue::FileTimeArrayType(items) => {
+                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v.fields()))
+            }
+            BinXmlValue::SysTimeArrayType(items) => {
+                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v.fields()))
             }
             BinXmlValue::SidArrayType(items) => {
                 self.write_list(writer, items, |s, w, v| s.write_sid(w, v))
@@ -212,14 +219,10 @@ impl ValueRenderer {
                 self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le(bytes)))
             }
             value_ty::FILETIME => {
-                let tm =
-                    crate::utils::windows::filetime_to_timestamp(u64::from_le_bytes(le(bytes)))?;
-                self.write_datetime(writer, &tm)
+                self.write_datetime(writer, FileTime(u64::from_le_bytes(le(bytes))).fields())
             }
             value_ty::SYSTIME => {
-                let mut cursor = crate::utils::ByteCursor::with_pos(bytes, 0)?;
-                let tm = crate::utils::windows::read_systime(&mut cursor)?;
-                self.write_datetime(writer, &tm)
+                self.write_datetime(writer, SysTime::from_bytes(&le(bytes)).fields())
             }
             value_ty::SID => self.write_sid(writer, &SidRef::new(bytes)),
             value_ty::HEX_INT32 => {
@@ -438,17 +441,16 @@ impl ValueRenderer {
         writer.write_all(s.as_bytes()).map_err(EvtxError::from)
     }
 
-    fn write_datetime<W: WriteExt>(&mut self, writer: &mut W, tm: &Timestamp) -> Result<()> {
-        let dt = Offset::UTC.to_datetime(*tm);
-        // Seven fractional digits, the 100 ns that a FILETIME counts, as Windows renders them.
+    /// Seven fractional digits, the 100 ns that a FILETIME counts, as Windows renders them.
+    fn write_datetime<W: WriteExt>(&mut self, writer: &mut W, dt: DateTimeFields) -> Result<()> {
         let mut buf = *b"0000-00-00T00:00:00.0000000Z";
-        pack_digits(&mut buf[0..4], dt.year() as u32);
-        pack_digits(&mut buf[5..7], u32::from(dt.month() as u8));
-        pack_digits(&mut buf[8..10], u32::from(dt.day() as u8));
-        pack_digits(&mut buf[11..13], u32::from(dt.hour() as u8));
-        pack_digits(&mut buf[14..16], u32::from(dt.minute() as u8));
-        pack_digits(&mut buf[17..19], u32::from(dt.second() as u8));
-        pack_digits(&mut buf[20..27], (dt.subsec_nanosecond() / 100) as u32);
+        pack_digits(&mut buf[0..4], u32::from(dt.year));
+        pack_digits(&mut buf[5..7], u32::from(dt.month));
+        pack_digits(&mut buf[8..10], u32::from(dt.day));
+        pack_digits(&mut buf[11..13], u32::from(dt.hour));
+        pack_digits(&mut buf[14..16], u32::from(dt.minute));
+        pack_digits(&mut buf[17..19], u32::from(dt.second));
+        pack_digits(&mut buf[20..27], dt.ticks);
         writer.write_all(&buf).map_err(EvtxError::from)
     }
 }
