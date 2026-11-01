@@ -57,6 +57,9 @@ pub struct EvtxChunkHeader {
 pub struct EvtxChunkData {
     pub header: EvtxChunkHeader,
     pub data: Vec<u8>,
+    /// The chunk's number in the file, which errors about its records name. The chunks that
+    /// [`EvtxParser`](crate::EvtxParser) reads have it; [`EvtxChunkData::new`] leaves it `None`.
+    pub number: Option<u64>,
 }
 
 impl EvtxChunkData {
@@ -65,7 +68,11 @@ impl EvtxChunkData {
     pub fn new(data: Vec<u8>, validate_checksum: bool) -> EvtxChunkResult<Self> {
         let header = EvtxChunkHeader::from_bytes(&data)?;
 
-        let chunk = EvtxChunkData { header, data };
+        let chunk = EvtxChunkData {
+            header,
+            data,
+            number: None,
+        };
         if validate_checksum && let Some(err) = chunk.checksum_error() {
             return Err(err);
         }
@@ -75,7 +82,14 @@ impl EvtxChunkData {
 
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new(&self.data, &self.header, Arc::clone(&settings))
+        EvtxChunk::new_with_arena(
+            &self.data,
+            &self.header,
+            settings,
+            Bump::new(),
+            Default::default(),
+            self.number,
+        )
     }
 
     /// Computed CRC32 of the header (bytes 0..120 and 128..512).

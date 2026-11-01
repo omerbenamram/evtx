@@ -57,16 +57,19 @@ and this project adheres to
   header is damaged, fails with `EvtxError::FailedToReadRecordAt`, which names
   its chunk and its offsets and has the error it replaces as its source:
   `Failed to read the record at offset 0x2060 of chunk 7 (file offset
-  0x73060)`. A chunk parsed on its own, with `EvtxChunkData::parse`, doesn't
-  know its number, and says `of its chunk`. A position past the end of the data
+  0x73060)`. The chunks that the parser reads keep their number in the file in
+  `EvtxChunkData::number`, so errors name it when such a chunk is parsed on its
+  own, with `EvtxChunkData::parse`; a chunk built with `EvtxChunkData::new`
+  doesn't know it, and says `of its chunk`. A position past the end of the data
   reads `NullType Descriptor at offset 78404 is past the end of the data (65536
   bytes)` (`DeserializationError::OutOfBounds`) instead of `buffer too small
   for NullType Descriptor at offset 78404 (need 0 bytes, have 0)`, and a record
   header whose timestamp is out of range fails with `InvalidRecordTimestamp`,
   which gives the FILETIME, instead of `InvalidDateTimeError`. **Breaking:**
   code that matches on such a record's error finds it under
-  `FailedToReadRecordAt`, and exhaustive matches on `EvtxError` and
-  `DeserializationError` need the new variants.
+  `FailedToReadRecordAt`, exhaustive matches on `EvtxError` and
+  `DeserializationError` need the new variants, and code that builds an
+  `EvtxChunkData` with a struct literal needs its `number`.
 
 ### Fixed
 
