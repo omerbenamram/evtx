@@ -174,6 +174,10 @@ pub struct IrArena<'a> {
     /// Whether a BinXML value's fragment was built into it. A template's arena holds only its
     /// own stream's elements otherwise.
     spliced: bool,
+    /// Whether two `Data` elements of one `EventData` or `UserData` may share a name, which JSON
+    /// numbers or puts in an array: a template repeats a name or lets its values name `Data` or
+    /// add them, an array repeats an element, or the record's own stream builds elements.
+    repeated_names: bool,
 }
 
 impl<'a> IrArena<'a> {
@@ -183,6 +187,7 @@ impl<'a> IrArena<'a> {
             elements: IrVec::new_in(arena),
             shared: false,
             spliced: false,
+            repeated_names: false,
         }
     }
 
@@ -192,6 +197,7 @@ impl<'a> IrArena<'a> {
             elements: IrVec::with_capacity_in(capacity, arena),
             shared: false,
             spliced: false,
+            repeated_names: false,
         }
     }
 
@@ -240,6 +246,16 @@ impl<'a> IrArena<'a> {
     /// Records that a BinXML value's fragment was built into it.
     pub(crate) fn mark_spliced(&mut self) {
         self.spliced = true;
+    }
+
+    /// Whether two `Data` elements of one container may share a name.
+    pub(crate) fn repeated_names(&self) -> bool {
+        self.repeated_names
+    }
+
+    /// Records that two `Data` elements of one container may share a name.
+    pub(crate) fn mark_repeated_names(&mut self) {
+        self.repeated_names = true;
     }
 }
 

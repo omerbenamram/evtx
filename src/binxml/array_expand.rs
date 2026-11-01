@@ -87,6 +87,8 @@ fn expand_first_array_in_element<'a>(
     if len <= 1 {
         return Ok(None);
     }
+    // The copies share their names, `Data`'s included.
+    arena.mark_repeated_names();
     // Each copy is a new element, and its element children are those of every other copy.
     budget.build(len.saturating_mul(nodes))?;
     if has_element_child {
