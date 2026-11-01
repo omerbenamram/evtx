@@ -3494,7 +3494,9 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
     }
     #[inline(always)]
     fn null(&self, s: &RawSlot) -> bool {
-        s.ty == value_ty::NULL
+        // A BinXML value with no bytes decodes as NULL (`validate_tpl_instance`), and so
+        // renders as one: it is one here too.
+        s.ty == value_ty::NULL || (s.ty == value_ty::BIN_XML && s.len == 0)
     }
     #[inline(always)]
     fn element(&self, s: &RawSlot) -> bool {
