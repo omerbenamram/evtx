@@ -217,6 +217,8 @@ fn scalar_replacement_from_array_value<'a>(
         // Strings are represented as `Node::Text` in the IR.
         BinXmlValue::StringType(s) if s.is_empty() => None,
         BinXmlValue::StringType(s) => Some(Node::Text(Text::utf16(s))),
+        BinXmlValue::AnsiStringType("") => None,
+        BinXmlValue::AnsiStringType(s) => Some(Node::Text(Text::utf8(s))),
         // Everything else stays as a typed value node.
         other => Some(Node::Value(other)),
     })

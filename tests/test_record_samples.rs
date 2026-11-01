@@ -392,6 +392,54 @@ fn test_value_with_several_elements_renders_them_all() {
     assert_eq!(json, serde_json::json!({"Root": {"A": "1", "B": "2"}}));
 }
 
+/// CDATA sections and character references render as XML writes them, and JSON gets their
+/// text. A `]]>` inside a CDATA section splits it in two, so the XML stays well-formed.
+#[test]
+fn test_cdata_and_character_references_render() {
+    ensure_env_logger_initialized();
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Root", true).close_start();
+                    root.open("CharRef", true)
+                        .close_start()
+                        .char_ref(0x41)
+                        .char_ref(0x263a)
+                        .end_element();
+                    root.open("Cdata", true)
+                        .close_start()
+                        .cdata("x < y ]]> & z")
+                        .end_element();
+                    root.open("Value", true)
+                        .close_start()
+                        .substitution(0, 0x01)
+                        .end_element();
+                    root.end_element();
+                },
+                vec![value(0x01, |value| {
+                    value.raw(&[b'v', 0]);
+                })],
+            )
+            .eof();
+    });
+    let (xml, json) = render_record(&evtx, 1);
+    insta::assert_snapshot!(xml, @r#"
+    <?xml version="1.0" encoding="utf-8"?>
+    <Root>
+      <CharRef>&#65;&#9786;</CharRef>
+      <Cdata><![CDATA[x < y ]]]]><![CDATA[> & z]]></Cdata>
+      <Value>v</Value>
+    </Root>
+    "#);
+    let json: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"Root": {"CharRef": "A\u{263a}", "Cdata": "x < y ]]> & z", "Value": "v"}})
+    );
+}
+
 /// Record 17's last value is BinXML with no element in it (an EOF token, then zeroes): it
 /// renders nothing, in every output path.
 #[test]

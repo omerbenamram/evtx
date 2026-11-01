@@ -1487,8 +1487,18 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 if in_attribute {
                     self.compile_literal_text(text, true)
                 } else {
-                    self.lits.extend_from_slice(b"<![CDATA[");
+                    let start = self.lits.len();
                     self.compile_raw_text(text);
+                    let body = self.lits.split_off(start);
+                    self.lits.extend_from_slice(b"<![CDATA[");
+                    // A `]]>` in the text would end the section early: split it across two.
+                    let mut rest = &body[..];
+                    while let Some(at) = rest.windows(3).position(|w| w == b"]]>") {
+                        self.lits.extend_from_slice(&rest[..at + 2]);
+                        self.lits.extend_from_slice(b"]]><![CDATA[");
+                        rest = &rest[at + 2..];
+                    }
+                    self.lits.extend_from_slice(rest);
                     self.lits.extend_from_slice(b"]]>");
                     Ok(())
                 }
