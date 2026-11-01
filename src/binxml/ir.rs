@@ -460,6 +460,14 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
     fn pi_data(&mut self, data: Utf16LeSlice<'a>) -> Result<()> {
         self.push_node(Node::PIData(Text::utf16(data)))
     }
+
+    fn cdata(&mut self, text: Utf16LeSlice<'a>) -> Result<()> {
+        self.push_node(Node::CData(Text::utf16(text)))
+    }
+
+    fn char_ref(&mut self, ch: u16) -> Result<()> {
+        self.push_node(Node::CharRef(ch))
+    }
 }
 
 impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {

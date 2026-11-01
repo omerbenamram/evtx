@@ -436,8 +436,8 @@ mod validated_content_tests {
         payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&u32::MAX.to_le_bytes()); // unused definition
         payload.extend_from_slice(&1u32.to_le_bytes());
-        payload.extend_from_slice(&[8, 0, 0x11, 0]); // FILETIME descriptor
-        payload.extend_from_slice(&u64::MAX.to_le_bytes()); // invalid timestamp
+        payload.extend_from_slice(&[3, 0, 0x01, 0]); // UTF-16 string descriptor
+        payload.extend_from_slice(b"x\0\0"); // an odd number of bytes
         let size = (24 + payload.len() + 4) as u32;
         data.data[512 + 4..512 + 8].copy_from_slice(&size.to_le_bytes());
         data.data[512 + 24..512 + 24 + payload.len()].copy_from_slice(&payload);
@@ -448,7 +448,8 @@ mod validated_content_tests {
         };
         assert!(matches!(
             *source,
-            EvtxError::DeserializationError(DeserializationError::InvalidDateTimeError)
+            EvtxError::DeserializationError(DeserializationError::Io(ref e))
+                if e.kind() == std::io::ErrorKind::InvalidData
         ));
     }
 }

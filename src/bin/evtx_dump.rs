@@ -66,7 +66,7 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
-    /// When set, only the specified events (offseted reltaive to file) will be outputted.
+    /// When set, only the records whose event record IDs are in these ranges are output.
     ranges: Option<Ranges>,
 }
 
@@ -98,6 +98,8 @@ impl EvtxDump {
 
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
             (true, number) => number,
+            // The default (0) and `-t 1` ask for nothing a build without threads lacks.
+            (false, 0 | 1) => 1,
             (false, _) => {
                 eprintln!(
                     "turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator"
@@ -500,10 +502,10 @@ fn run_cli() -> Result<()> {
                 .long("events")
                 .action(ArgAction::Set)
                 .value_parser(matches_ranges)
-                .help(indoc!("When set, only the specified events (offseted reltaive to file) will be outputted.
+                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output.
                 For example:
-                    --events=1 will output the first event.
-                    --events=0-10,20-30 will output events 0-10 and 20-30.
+                    --events=1 outputs the record whose ID is 1.
+                    --events=0-10,20-30 outputs the records with IDs 0 to 10 and 20 to 30.
                 ")),
         )
         .arg(
