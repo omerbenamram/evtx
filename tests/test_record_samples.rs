@@ -443,12 +443,12 @@ fn test_cdata_and_character_references_render() {
 /// An element whose DependencyId names a NULL value is left out, as MS-EVEN6 requires and
 /// Windows does for classic events' `Data` and `Binary`. All of an element's children can go,
 /// which leaves it empty. A template's root, and an element depending on a value past the
-/// instance's, stay.
+/// instance's, stay. A BinXML value with no bytes reads as NULL, as it renders, in every path.
 #[test]
 fn test_elements_depending_on_null_values_are_left_out() {
     ensure_env_logger_initialized();
     let null = || value(0x00, |_| {});
-    let evtx = synthetic_evtx_records(2, |i, record| {
+    let evtx = synthetic_evtx_records(3, |i, record| {
         record.fragment_header();
         let values = if i == 0 {
             vec![
@@ -469,7 +469,7 @@ fn test_elements_depending_on_null_values_are_left_out() {
                 }),
                 null(),
                 null(),
-                null(),
+                if i == 1 { null() } else { value(0x21, |_| {}) },
                 null(),
             ]
         };
@@ -566,6 +566,11 @@ fn test_elements_depending_on_null_values_are_left_out() {
         serde_json::json!({"Event": {"System": {"Level": 4, "Computer": "WIN"}, "EventData": null}})
     );
     assert_eq!(tree_json(2), json);
+
+    // Record 3 is record 2 with an empty BinXML value in place of the NULL that `Binary`
+    // depends on.
+    assert_eq!(render_record(&evtx, 3), render_record(&evtx, 2));
+    assert_eq!(tree_json(3), json);
 }
 
 /// Record 17's last value is BinXML with no element in it (an EOF token, then zeroes): it
