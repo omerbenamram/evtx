@@ -606,8 +606,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
-    /// The next chunk in record order, advancing `cursor` past it.
-    fn next_chunk(&mut self, cursor: &mut ChunkCursor) -> Option<Result<EvtxChunkData>> {
+    /// The next chunk in record order and its number, advancing `cursor` past it.
+    fn next_chunk(&mut self, cursor: &mut ChunkCursor) -> Option<(Result<EvtxChunkData>, u64)> {
         loop {
             // Once it has wrapped around, the walk ends where it started.
             let end = if cursor.wrapped {
@@ -617,7 +617,7 @@ impl<T: ReadSeek> EvtxParser<T> {
             };
             if let Some((chunk, chunk_number)) = self.find_next_chunk(cursor.next, end) {
                 cursor.next = chunk_number.checked_add(1)?;
-                return Some(chunk);
+                return Some((chunk, chunk_number));
             }
             if cursor.wrapped || cursor.oldest == 0 {
                 return None;
@@ -693,8 +693,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         let num_threads = max(self.config.num_threads, 1);
         let settings = Arc::clone(&self.config);
         let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
-        // Parse one chunk into a reused `arena` and build its payload.
-        let work = move |chunk_res: Result<EvtxChunkData>, chunk_id: u64, arena: Bump| {
+        // Parse chunk `chunk_number` into a reused `arena` and build its payload.
+        let work = move |chunk_res: Result<EvtxChunkData>, chunk_number: u64, arena: Bump| {
             let chunk_data = match chunk_res {
                 Ok(chunk_data) => chunk_data,
                 Err(err) => {
@@ -710,9 +710,10 @@ impl<T: ReadSeek> EvtxParser<T> {
                 Arc::clone(&settings),
                 arena,
                 Arc::clone(&program_store),
+                Some(chunk_number),
             ) {
                 Err(err) => ChunkBatch {
-                    payload: on_err(EvtxError::chunk(chunk_id, err)),
+                    payload: on_err(EvtxError::chunk(chunk_number, err)),
                     arena: Bump::new(),
                 },
                 Ok(mut chunk) => ChunkBatch {
@@ -747,10 +748,9 @@ impl<T: ReadSeek> EvtxParser<T> {
             if num_threads == 1 {
                 // Single-threaded: process inline; a cross-thread round-trip per
                 // chunk costs ~3% wall time for no benefit.
-                let chunk_res = chunks.next()?;
+                let (chunk_res, chunk_number) = chunks.next_numbered()?;
                 let arena = arena_pool.pop().unwrap_or_else(new_arena);
-                let batch = work(chunk_res, next_seq, arena);
-                next_seq += 1;
+                let batch = work(chunk_res, chunk_number, arena);
                 arena_pool.push(batch.arena);
                 return Some(batch.payload);
             }
@@ -761,7 +761,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 // Keep the pipeline full. Chunk allocation (I/O) stays on the
                 // consumer thread; parsing + serialization go to the rayon pool.
                 while !exhausted && in_flight < max_in_flight {
-                    let Some(chunk_res) = chunks.next() else {
+                    let Some((chunk_res, chunk_number)) = chunks.next_numbered() else {
                         exhausted = true;
                         break;
                     };
@@ -773,7 +773,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                     let work = work.clone();
                     spawn(move || {
                         let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            work(chunk_res, seq, arena)
+                            work(chunk_res, chunk_number, arena)
                         }));
                         // The receiver may be gone if the iterator was dropped.
                         let _ = tx.send((seq, batch));
@@ -930,10 +930,17 @@ pub struct IterChunks<'c, T: ReadSeek> {
     cursor: ChunkCursor,
 }
 
+impl<T: ReadSeek> IterChunks<'_, T> {
+    /// The next chunk and its number in the file.
+    fn next_numbered(&mut self) -> Option<(Result<EvtxChunkData>, u64)> {
+        self.parser.next_chunk(&mut self.cursor)
+    }
+}
+
 impl<T: ReadSeek> Iterator for IterChunks<'_, T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        self.parser.next_chunk(&mut self.cursor)
+        self.next_numbered().map(|(chunk, _)| chunk)
     }
 }
 
@@ -946,7 +953,9 @@ impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
         info!("Chunk {}", self.cursor.next);
-        self.parser.next_chunk(&mut self.cursor)
+        self.parser
+            .next_chunk(&mut self.cursor)
+            .map(|(chunk, _)| chunk)
     }
 }
 

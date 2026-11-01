@@ -22,8 +22,27 @@ and this project adheres to
   values, which store milliseconds, render as `.7890000Z`, as in Windows. This
   covers XML and JSON, `TimeCreated` included, so code that parses evtx's
   timestamps with exactly six digits needs to accept seven.
+- Errors say where they are. A record that can't be read, such as one whose
+  header is damaged, fails with `EvtxError::FailedToReadRecordAt`, which names
+  its chunk and its offsets and has the error it replaces as its source:
+  `Failed to read the record at offset 0x2060 of chunk 7 (file offset
+  0x73060)`. A chunk parsed on its own, with `EvtxChunkData::parse`, doesn't
+  know its number, and says `of its chunk`. A position past the end of the data
+  reads `NullType Descriptor at offset 78404 is past the end of the data (65536
+  bytes)` (`DeserializationError::OutOfBounds`) instead of `buffer too small
+  for NullType Descriptor at offset 78404 (need 0 bytes, have 0)`, and a record
+  header whose timestamp is out of range fails with `InvalidRecordTimestamp`,
+  which gives the FILETIME, instead of `InvalidDateTimeError`. **Breaking:**
+  code that matches on such a record's error finds it under
+  `FailedToReadRecordAt`, and exhaustive matches on `EvtxError` and
+  `DeserializationError` need the new variants.
 
 ### Fixed
+
+- A chunk whose string table couldn't be read was reported as `Failed to parse
+  chunk number N` with N its place among the chunks read, not its number in the
+  file. The two differ after an empty chunk and in a log that has wrapped
+  around.
 
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
