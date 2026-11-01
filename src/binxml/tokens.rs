@@ -52,7 +52,9 @@ pub(crate) trait TokenSink<'a> {
     fn template_instance(&mut self, _template: BinXmlTemplateValues<'a>) -> EvtxResult<()> {
         Ok(())
     }
-    fn open_start(&mut self, _name: ChunkOffset) -> EvtxResult<()> {
+    /// An element start; `dependency` is its DependencyId in a template definition, `None` for
+    /// none (0xFFFF) or outside one.
+    fn open_start(&mut self, _name: ChunkOffset, _dependency: Option<u16>) -> EvtxResult<()> {
         Ok(())
     }
     fn close_start(&mut self) -> EvtxResult<()> {
@@ -114,12 +116,15 @@ pub(crate) fn walk_tokens<'a>(
                 src.ansi_codec,
                 src.bump,
             )?)?,
-            0x01 | 0x41 => sink.open_start(read_open_start_element_cursor(
-                &mut cursor,
-                token & 0x40 != 0,
-                has_dep_id,
-                inline_names,
-            )?)?,
+            0x01 | 0x41 => {
+                let (name, dependency) = read_open_start_element_cursor(
+                    &mut cursor,
+                    token & 0x40 != 0,
+                    has_dep_id,
+                    inline_names,
+                )?;
+                sink.open_start(name, dependency)?
+            }
             0x02 => sink.close_start()?,
             0x03 => sink.close_empty()?,
             0x04 => sink.close_element()?,
@@ -354,13 +359,17 @@ pub(crate) fn read_substitution_descriptor_cursor(cursor: &mut ByteCursor<'_>) -
     Ok(substitution_index)
 }
 
-/// Read an element start header and return its name offset.
+/// The DependencyId of an element without a dependency.
+const NO_DEPENDENCY: u16 = 0xffff;
+
+/// Read an element start header and return its name offset and, in a template definition, its
+/// DependencyId (`None` for none).
 pub(crate) fn read_open_start_element_cursor(
     cursor: &mut ByteCursor<'_>,
     has_attributes: bool,
     has_dependency_identifier: bool,
     inline_names: bool,
-) -> Result<ChunkOffset> {
+) -> Result<(ChunkOffset, Option<u16>)> {
     trace!(
         "Offset `0x{:08x}` - OpenStartElement<has_attributes={}, has_dependency_identifier={}>",
         cursor.position(),
@@ -371,10 +380,12 @@ pub(crate) fn read_open_start_element_cursor(
     // Element start headers come in (at least) two variants:
     // - Template definitions: include a dependency identifier (u16)
     // - Direct record elements / nested BinXML (substitution value type 0x21): omit it
-    if has_dependency_identifier {
-        let _dependency_identifier =
-            cursor.u16_named("open_start_element_dependency_identifier")?;
-    }
+    let dependency = if has_dependency_identifier {
+        let id = cursor.u16_named("open_start_element_dependency_identifier")?;
+        (id != NO_DEPENDENCY).then_some(id)
+    } else {
+        None
+    };
 
     let _data_size = cursor.u32_named("open_start_element_data_size")?;
     let name = read_name_ref(cursor, inline_names)?;
@@ -384,7 +395,7 @@ pub(crate) fn read_open_start_element_cursor(
             cursor.u32_named("open_start_element_attribute_list_data_size")?;
     }
 
-    Ok(name)
+    Ok((name, dependency))
 }
 
 #[cfg(test)]

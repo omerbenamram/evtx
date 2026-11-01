@@ -99,6 +99,7 @@ use std::rc::Rc;
 /// into an `Element`.
 struct ElementBuilder<'a> {
     name: Name<'a>,
+    dependency: Option<u16>,
     attrs: IrVec<'a, Attr<'a>>,
     current_attr_name: Option<Name<'a>>,
     current_attr_value: IrVec<'a, Node<'a>>,
@@ -106,9 +107,10 @@ struct ElementBuilder<'a> {
 }
 
 impl<'a> ElementBuilder<'a> {
-    fn new(name: Name<'a>, arena: &'a Bump) -> Self {
+    fn new(name: Name<'a>, dependency: Option<u16>, arena: &'a Bump) -> Self {
         ElementBuilder {
             name,
+            dependency,
             attrs: IrVec::new_in(arena),
             current_attr_name: None,
             current_attr_value: IrVec::new_in(arena),
@@ -146,6 +148,8 @@ impl<'a> ElementBuilder<'a> {
             attrs: self.attrs,
             children: IrVec::new_in(self.arena),
             has_element_child: false,
+            self_closing: false,
+            dependency: self.dependency,
         }
     }
 }
@@ -317,7 +321,7 @@ impl<'a> Roots<'a> {
 }
 
 impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
-    fn open_start(&mut self, name: ChunkOffset) -> Result<()> {
+    fn open_start(&mut self, name: ChunkOffset, dependency: Option<u16>) -> Result<()> {
         if self.current_element.is_some() {
             return Err(EvtxError::FailedToCreateRecordModel(
                 "open start - Bad parser state",
@@ -328,7 +332,7 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
             // Not from a template, whose stats say whether its names repeat.
             self.arena.mark_repeated_names();
         }
-        self.current_element = Some(ElementBuilder::new(name, self.src.bump));
+        self.current_element = Some(ElementBuilder::new(name, dependency, self.src.bump));
         Ok(())
     }
 
@@ -360,11 +364,12 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
     }
 
     fn close_empty(&mut self) -> Result<()> {
-        let element = self
+        let mut element = self
             .current_element
             .take()
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("close empty - Bad parser state"))?
             .finish();
+        element.self_closing = true;
         let element_id = self.arena.new_node(element);
         self.attach(element_id)
     }
@@ -1167,6 +1172,8 @@ fn clone_and_resolve<'a>(
         attrs: IrVec::with_capacity_in(element.attrs.len(), bump),
         children: IrVec::with_capacity_in(element.children.len(), bump),
         has_element_child: false,
+        self_closing: element.self_closing,
+        dependency: None,
     };
 
     // Fast-path hint for array expansion:
@@ -1239,7 +1246,8 @@ fn clone_and_resolve<'a>(
 /// output nodes:
 /// - `Node::Placeholder(..)` → 0 or more nodes (optional empties disappear; a fragment gives
 ///   one node per top-level element).
-/// - `Node::Element(..)` → 1 or many nodes (array substitution expansion may repeat the element).
+/// - `Node::Element(..)` → none when its dependency is NULL ([`is_left_out`]), else 1 or many
+///   nodes (array substitution expansion may repeat the element).
 /// - Everything else → exactly 1 node (shallow clone).
 fn resolve_node_into<'a>(
     template_arena: &IrArena<'a>,
@@ -1252,6 +1260,7 @@ fn resolve_node_into<'a>(
 ) -> Result<()> {
     match node {
         Node::Placeholder(ph) => resolve_placeholder_into(ph, values, budget, out),
+        Node::Element(element_id) if is_left_out(template_arena, *element_id, values) => Ok(()),
         Node::Element(element_id) => {
             let (cloned, needs_array_expansion) =
                 clone_and_resolve(template_arena, *element_id, values, bump, arena, budget)?;
@@ -1276,6 +1285,18 @@ fn resolve_node_into<'a>(
             Ok(())
         }
     }
+}
+
+/// Whether a template's element is left out of an instance: MS-EVEN6 2.2.12 says an element
+/// whose DependencyId names a NullType value MUST NOT be rendered, and Windows leaves it out. A
+/// template's root has no parent to leave it out of, so it is always rendered: callers clone it
+/// directly rather than through [`resolve_node_into`]. A dependency past the values is none.
+fn is_left_out(template_arena: &IrArena<'_>, id: ElementId, values: &[ValidatedValue<'_>]) -> bool {
+    template_arena
+        .get(id)
+        .and_then(|element| element.dependency)
+        .and_then(|dependency| values.get(usize::from(dependency)))
+        .is_some_and(|value| matches!(value, ValidatedValue::Scalar(BinXmlValue::NullType)))
 }
 
 /// Resolve a template `Placeholder` and append its concrete representation into `out`.

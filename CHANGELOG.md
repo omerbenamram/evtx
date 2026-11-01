@@ -27,6 +27,23 @@ and this project adheres to
   other samples name the second `TargetLogonGuid`, so the second is now
   `LogonGuid_1` and `LogonGuid` is the first, which parsers used to lose. XML
   is unchanged, and so are arrays of one value, which render as that value.
+- GUIDs render as Windows renders them, lowercase and in braces:
+  `{54849625-5478-4994-a5ba-3e3b0328c30d}` instead of
+  `54849625-5478-4994-A5BA-3E3B0328C30D`. This covers GUID values in XML and
+  JSON, the provider's `Guid` and the `ActivityID` included. A GUID that a
+  template holds as text keeps its case. Code that matches evtx's GUIDs as text
+  needs to accept the new form.
+- XML writes empty elements as Windows does: `<Provider Name="P"/>` for an
+  element the template closes empty, and `<Data Name="x"></Data>` for one whose
+  content is empty. Indented output used to put a newline and indentation inside
+  them, which XML parsers read as text. JSON is unchanged.
+- An element whose template makes it depend on a value (its DependencyId) is
+  left out when that value is NULL, as MS-EVEN6 requires and Windows does. This
+  removes the `<Binary></Binary>` and `<Data></Data>` that classic events wrote
+  for values that were never set, and optional `System` fields left unset. An
+  element left with no children renders empty, as `<EventData></EventData>` in
+  XML and `"EventData": null` in JSON. An empty string still renders as an
+  empty element, as in Windows. This covers XML and JSON.
 - `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
   `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
   can't represent still render. `to_timestamp()` converts them.
@@ -56,6 +73,13 @@ and this project adheres to
   `<![CDATA[...]]>` and `&#65;`, and JSON gets their text. A `]]>` inside a
   CDATA section splits it in two, so the XML stays well-formed. With this, every
   record of the Windows types sample renders.
+- XML output wasn't always well-formed: C0 controls other than tab, LF and CR,
+  and U+FFFE and U+FFFF, went into it as they were, and XML parsers reject them.
+  Each now renders as `_`, as Windows renders them. A lone UTF-16 surrogate was
+  dropped: it now renders as `_` in XML, as in Windows, and as U+FFFD in JSON,
+  which already escaped controls. 5 records across the samples weren't
+  well-formed XML, and now every record is. utf16-simd 0.2.0 makes the same
+  change in its XML, JSON and raw output.
 - A chunk whose string table links back to a string it has already listed, as
   a damaged or crafted chunk can, made the parser loop forever: only a string
   that links to itself ended the walk. Any string already read now ends it.

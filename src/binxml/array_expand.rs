@@ -126,6 +126,8 @@ fn clone_element_with_replacement<'a>(
         attrs: IrVec::with_capacity_in(element.attrs.len(), bump),
         children: IrVec::with_capacity_in(element.children.len(), bump),
         has_element_child: element.has_element_child,
+        self_closing: element.self_closing,
+        dependency: element.dependency,
     };
 
     for (a_idx, attr) in element.attrs.iter().enumerate() {

@@ -45,7 +45,7 @@ bumpalo = { version = "3.19.1", features = ["collections"] }
 # `utf16-simd` is designed to be usable as a standalone crate. We opt into its
 # `sonic-writeext` feature here to integrate with `sonic-rs::writer::WriteExt`
 # in the hot-path JSON/XML renderers.
-utf16-simd = { version = "0.1.1", path = "utf16-simd", features = ["sonic-writeext"] }
+utf16-simd = { version = "0.2.0", path = "utf16-simd", features = ["sonic-writeext"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # jemalloc is significantly more peformant than the system allocator.
@@ -72,6 +72,7 @@ criterion = "0.8.1"
 assert_cmd = "2.1.1"
 env_logger = "0.11.0"
 tempfile = "3.3.0"
+roxmltree = "0.21"
 
 [profile.release]
 opt-level = 3
