@@ -138,7 +138,7 @@ assert_eq!(out, b"\"A\\nB\"");
 ### UTF-16 validity
 
 - **Valid surrogate pairs** are decoded and emitted as 4-byte UTF‑8.
-- **Lone surrogates** are **silently dropped** (WTF‑16 style). This matches the behavior in the Zig EVTX implementation and is intentional for robustness on “dirty” logs.
+- **Lone surrogates** become U+FFFD in JSON and raw output, and `_` in XML, one per code unit, so “dirty” logs still convert and nothing disappears silently. `_` is what Windows writes for them in XML.
 
 ### JSON escaping rules
 
@@ -178,6 +178,8 @@ ASCII table (JSON):
 
 - Always escapes: `&`, `<`, `>`
 - If `in_attribute=true`, also escapes: `"` and `'`
+- Characters XML 1.0 doesn't allow become `_`, as Windows writes them: C0 controls other than
+  tab, LF and CR, U+FFFE and U+FFFF, and lone surrogates.
 
 ASCII table (XML):
 
@@ -190,6 +192,7 @@ ASCII table (XML):
 | >     | &gt;      |
 | "     | &quot; (*) |
 | '     | &apos; (*) |
+| 0x00..=0x1F except tab, LF, CR | _ |
 +-------+-----------+
 (* only when in_attribute = true)
 ```
@@ -272,7 +275,7 @@ that categorizes each code unit:
 ```text
 ASCII?     -> maybe escape, else write byte
 < 0x800    -> write 2-byte UTF-8
-surrogate? -> decode pair, write 4-byte UTF-8 (else skip)
+surrogate? -> decode pair, write 4-byte UTF-8 (else U+FFFD, or `_` in XML)
 else       -> write 3-byte UTF-8
 ```
 

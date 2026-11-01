@@ -190,12 +190,12 @@ macro_rules! impl_arch_xml_escape {
             let mut dst_ptr = dst.as_mut_ptr() as *mut u8;
             let dst_start = dst_ptr;
 
-            let (zero, hi_mask, amp, lt, gt, quote, apos) = xml_consts();
+            let (printable, amp, lt, gt, quote, apos) = xml_consts();
 
             let mut idx = 0usize;
             while idx + 8 <= max_units {
                 let v = load_utf16le(src_ptr, idx);
-                let len = xml_scan(v, zero, hi_mask, amp, lt, gt, quote, apos, in_attribute);
+                let len = xml_scan(v, printable, amp, lt, gt, quote, apos, in_attribute);
 
                 store_ascii8(dst_ptr, v);
                 dst_ptr = dst_ptr.add(len);
@@ -231,12 +231,12 @@ macro_rules! impl_arch_xml_escape {
             let mut dst_ptr = dst.as_mut_ptr() as *mut u8;
             let dst_start = dst_ptr;
 
-            let (zero, hi_mask, amp, lt, gt, quote, apos) = xml_consts();
+            let (printable, amp, lt, gt, quote, apos) = xml_consts();
 
             let mut idx = 0usize;
             while idx + 8 <= max_units {
                 let v = load_utf16(src_ptr, idx);
-                let len = xml_scan(v, zero, hi_mask, amp, lt, gt, quote, apos, in_attribute);
+                let len = xml_scan(v, printable, amp, lt, gt, quote, apos, in_attribute);
 
                 store_ascii8(dst_ptr, v);
                 dst_ptr = dst_ptr.add(len);
@@ -587,15 +587,15 @@ mod x86 {
 
     #[inline]
     #[target_feature(enable = "sse2")]
-    unsafe fn xml_consts() -> (Vec, Vec, Vec, Vec, Vec, Vec, Vec) {
-        let zero = _mm_setzero_si128();
-        let hi_mask = _mm_set1_epi16(0xFF80u16 as i16);
+    unsafe fn xml_consts() -> ((Vec, Vec), Vec, Vec, Vec, Vec, Vec) {
+        // `v + 0x7FE0 < 0x8060`, as signed 16-bit lanes, holds exactly for 0x20..=0x7F.
+        let printable = (_mm_set1_epi16(0x7FE0), _mm_set1_epi16(0x8060u16 as i16));
         let amp = _mm_set1_epi16(0x26);
         let lt = _mm_set1_epi16(0x3C);
         let gt = _mm_set1_epi16(0x3E);
         let quote = _mm_set1_epi16(0x22);
         let apos = _mm_set1_epi16(0x27);
-        (zero, hi_mask, amp, lt, gt, quote, apos)
+        (printable, amp, lt, gt, quote, apos)
     }
 
     #[inline]
@@ -653,8 +653,7 @@ mod x86 {
     #[target_feature(enable = "sse2")]
     unsafe fn xml_scan(
         v: Vec,
-        zero: Vec,
-        hi_mask: Vec,
+        printable: (Vec, Vec),
         amp: Vec,
         lt: Vec,
         gt: Vec,
@@ -662,8 +661,9 @@ mod x86 {
         apos: Vec,
         in_attribute: bool,
     ) -> usize {
-        let high = _mm_and_si128(v, hi_mask);
-        let ascii = _mm_cmpeq_epi16(high, zero);
+        // Printable ASCII only: controls and non-ASCII take the scalar path, which writes `_`
+        // for the characters XML doesn't allow. This costs no more than an ASCII test.
+        let ascii = _mm_cmplt_epi16(_mm_add_epi16(v, printable.0), printable.1);
         let ascii_mask = _mm_movemask_epi8(ascii);
 
         let is_amp = _mm_cmpeq_epi16(v, amp);
@@ -751,15 +751,15 @@ mod neon {
 
     #[inline]
     #[target_feature(enable = "neon")]
-    unsafe fn xml_consts() -> (Vec, Vec, Vec, Vec, Vec, Vec, Vec) {
-        let zero = vdupq_n_u16(0);
-        let hi_mask = vdupq_n_u16(0xFF80);
+    unsafe fn xml_consts() -> ((Vec, Vec), Vec, Vec, Vec, Vec, Vec) {
+        // `v - 0x20 < 0x60`, as unsigned 16-bit lanes, holds exactly for 0x20..=0x7F.
+        let printable = (vdupq_n_u16(0x20), vdupq_n_u16(0x60));
         let amp = vdupq_n_u16(0x26);
         let lt = vdupq_n_u16(0x3C);
         let gt = vdupq_n_u16(0x3E);
         let quote = vdupq_n_u16(0x22);
         let apos = vdupq_n_u16(0x27);
-        (zero, hi_mask, amp, lt, gt, quote, apos)
+        (printable, amp, lt, gt, quote, apos)
     }
 
     #[inline]
@@ -818,8 +818,7 @@ mod neon {
     #[target_feature(enable = "neon")]
     unsafe fn xml_scan(
         v: Vec,
-        zero: Vec,
-        hi_mask: Vec,
+        printable: (Vec, Vec),
         amp: Vec,
         lt: Vec,
         gt: Vec,
@@ -827,8 +826,9 @@ mod neon {
         apos: Vec,
         in_attribute: bool,
     ) -> usize {
-        let high = vandq_u16(v, hi_mask);
-        let not_ascii = vmvnq_u16(vceqq_u16(high, zero)); // 0 if good
+        // Printable ASCII only: controls and non-ASCII take the scalar path, which writes `_`
+        // for the characters XML doesn't allow.
+        let not_ascii = vcgeq_u16(vsubq_u16(v, printable.0), printable.1); // 0 if good
 
         let is_amp = vceqq_u16(v, amp);
         let is_lt = vceqq_u16(v, lt);

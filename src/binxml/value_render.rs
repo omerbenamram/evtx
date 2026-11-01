@@ -317,6 +317,19 @@ impl ValueRenderer {
     ) -> Result<()> {
         // The escaped characters are ASCII, so they are never part of a longer UTF-8 sequence.
         let bytes = text.as_bytes();
+        // Characters XML doesn't allow, which Windows writes as `_`: C0 controls other than tab,
+        // LF and CR, and U+FFFE and U+FFFF (`EF BF BE`, `EF BF BF`). Rare, so checked first.
+        if bytes.iter().any(|&b| b < 0x20 || b == 0xEF) {
+            let special = (0..bytes.len()).filter(|&i| match bytes[i] {
+                b'&' | b'<' | b'>' => true,
+                b'"' | b'\'' => in_attribute,
+                b'\t' | b'\n' | b'\r' => false,
+                0x00..=0x1F => true,
+                0xEF => matches!(bytes.get(i + 1..i + 3), Some([0xBF, 0xBE | 0xBF])),
+                _ => false,
+            });
+            return self.write_xml_escaped_at(writer, bytes, special);
+        }
         if in_attribute {
             let special = bytes
                 .iter()
@@ -339,16 +352,18 @@ impl ValueRenderer {
     ) -> Result<()> {
         let mut run = 0;
         for i in special {
-            let escaped: &[u8] = match bytes[i] {
-                b'&' => b"&amp;",
-                b'<' => b"&lt;",
-                b'>' => b"&gt;",
-                b'"' => b"&quot;",
-                _ => b"&apos;",
+            let (escaped, len): (&[u8], usize) = match bytes[i] {
+                b'&' => (b"&amp;", 1),
+                b'<' => (b"&lt;", 1),
+                b'>' => (b"&gt;", 1),
+                b'"' => (b"&quot;", 1),
+                b'\'' => (b"&apos;", 1),
+                0xEF => (b"_", 3), // U+FFFE or U+FFFF
+                _ => (b"_", 1),    // a C0 control
             };
             self.write_bytes(writer, &bytes[run..i])?;
             self.write_bytes(writer, escaped)?;
-            run = i + 1;
+            run = i + len;
         }
         self.write_bytes(writer, &bytes[run..])
     }
@@ -367,18 +382,20 @@ impl ValueRenderer {
         Ok(())
     }
 
-    /// Write a GUID in the canonical uppercase-hex form (`D1-D2-D3-D4[0..2]-D4[2..8]`,
-    /// data1-3 little-endian), matching `winstructs::guid::Guid`'s `Display`.
+    /// Write a GUID as Windows renders it: lowercase hex in braces,
+    /// `{d1-d2-d3-d4[0..2]-d4[2..8]}`, with data1-3 little-endian.
     fn write_guid<W: WriteExt>(&mut self, writer: &mut W, bytes: &[u8; 16]) -> Result<()> {
         const ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-        let mut out = [b'-'; 36];
-        let mut n = 0;
+        let mut out = [b'-'; 38];
+        out[0] = b'{';
+        out[37] = b'}';
+        let mut n = 1;
         for (i, &idx) in ORDER.iter().enumerate() {
             if matches!(i, 4 | 6 | 8 | 10) {
                 n += 1;
             }
-            out[n] = to_hex_digit(bytes[idx] >> 4);
-            out[n + 1] = to_hex_digit(bytes[idx] & 0x0f);
+            out[n] = to_hex_digit_lower(bytes[idx] >> 4);
+            out[n + 1] = to_hex_digit_lower(bytes[idx] & 0x0f);
             n += 2;
         }
         writer.write_all(&out).map_err(EvtxError::from)
@@ -498,5 +515,11 @@ mod tests {
         );
         assert_eq!(escape("plain", false), "plain");
         assert_eq!(escape("", true), "");
+        // Characters XML doesn't allow become `_`, as Windows writes them.
+        assert_eq!(escape("A\u{1}\u{1f}B\t\n\r", false), "A__B\t\n\r");
+        assert_eq!(
+            escape("x\u{fffe}\u{ffff}y \u{fffd}\u{ff01}\u{efbf} <'\0", true),
+            "x__y \u{fffd}\u{ff01}\u{efbf} &lt;&apos;_"
+        );
     }
 }

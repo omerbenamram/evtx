@@ -498,6 +498,7 @@ dependencies = [
  "memchr",
  "rayon",
  "rexpect",
+ "roxmltree",
  "rpmalloc",
  "serde",
  "serde_json",
@@ -1136,6 +1137,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "roxmltree"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "rpmalloc"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1523,7 +1533,7 @@ checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
 
 [[package]]
 name = "utf16-simd"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "sonic-rs",
 ]

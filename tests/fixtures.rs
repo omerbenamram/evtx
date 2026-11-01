@@ -218,6 +218,12 @@ impl BinXml {
         self.u32(0)
     }
 
+    /// An element start in a template definition that depends on value `dependency` (its
+    /// DependencyId): MS-EVEN6 leaves the element out when that value is NULL.
+    pub fn open_depending(&mut self, name: &str, dependency: u16) -> &mut Self {
+        self.u8(0x01).u16(dependency).u32(0).name(name)
+    }
+
     /// An element start sharing the name `open` or `attribute` wrote last.
     pub fn reopen(&mut self, in_template_definition: bool) -> &mut Self {
         let name = self.name.expect("a name first");
@@ -322,6 +328,11 @@ impl BinXml {
     /// A normal substitution of value `id`, of type `value_type`.
     pub fn substitution(&mut self, id: u16, value_type: u8) -> &mut Self {
         self.u8(0x0d).u16(id).u8(value_type)
+    }
+
+    /// An optional substitution of value `id`, of type `value_type`.
+    pub fn optional_substitution(&mut self, id: u16, value_type: u8) -> &mut Self {
+        self.u8(0x0e).u16(id).u8(value_type)
     }
 
     /// A template instance whose definition follows inline: `definition` writes its element,
