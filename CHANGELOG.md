@@ -19,6 +19,14 @@ and this project adheres to
   offsets, but the parser logs a warning and `evtx_dump` prints one.
   **Breaking:** code that builds an `EvtxFileHeader` with a struct literal
   needs the new field.
+- `evtx_dump info -i <file>` shows what the file header and each chunk header
+  say: the version, flags, chunk numbers, next record ID and CRC32 of the
+  header, and each chunk's record numbers and IDs, flags, and header and
+  records CRC32s, with empty and unreadable chunks marked, without parsing
+  records. For triaging dirty, wrapped or damaged logs: security.evtx's dirty
+  header says the next record ID is 2226, where its last chunk ends at 2261.
+- `ChunkFlags`, the type of `EvtxChunkHeader::flags`, is exported, so that its
+  flags can be named.
 
 ### Changed
 
