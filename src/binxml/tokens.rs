@@ -295,7 +295,7 @@ pub(crate) fn read_template_values_cursor<'a>(
 
         trace!("\t {:?}", value);
         // NullType can mean deleted substitution (and data need to be skipped)
-        if value == BinXmlValue::NullType {
+        if matches!(value, BinXmlValue::NullType) {
             trace!("\t Skipping `NullType` descriptor");
             cursor.set_pos_u64(
                 cursor.position() + u64::from(descriptor.size),

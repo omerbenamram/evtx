@@ -42,6 +42,17 @@ and this project adheres to
   values, which store milliseconds, render as `.7890000Z`, as in Windows. This
   covers XML and JSON, `TimeCreated` included, so code that parses evtx's
   timestamps with exactly six digits needs to accept seven.
+- In JSON, `Data` elements that share a name no longer become duplicate keys,
+  of which JSON parsers keep only the last. Consecutive ones, which an array
+  substitution writes, one per value, become one member whose value is an
+  array: `"UnicodeStrings":["a","","c,d"]` instead of
+  `"UnicodeStrings":"a","UnicodeStrings":"","UnicodeStrings":"c,d"`. A name
+  that comes back later is numbered `_1`, `_2` and so on, as repeated element
+  names already are. Event 4648 in the Security_with_size_t and
+  security_big_sample samples names both of its GUIDs `LogonGuid`, where the
+  other samples name the second `TargetLogonGuid`, so the second is now
+  `LogonGuid_1` and `LogonGuid` is the first, which parsers used to lose. XML
+  is unchanged, and so are arrays of one value, which render as that value.
 - Errors say where they are. A record that can't be read, such as one whose
   header is damaged, fails with `EvtxError::FailedToReadRecordAt`, which names
   its chunk and its offsets and has the error it replaces as its source:

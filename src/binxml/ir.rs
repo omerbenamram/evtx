@@ -75,7 +75,7 @@ use crate::EvtxChunk;
 use crate::binxml::array_expand::{
     expand_array_substitutions_in_element, node_needs_array_expansion,
 };
-use crate::binxml::compiled::{Budget, MAX_SUBSTITUTIONS};
+use crate::binxml::compiled::{Budget, MAX_SUBSTITUTIONS, data_names_may_repeat};
 use crate::binxml::name::NAME_LINK_SIZE;
 use crate::binxml::tokens::{
     BinXmlTemplateValues, Stream, TemplateHeader, TokenSink, ends_stream, read_template_header,
@@ -328,6 +328,10 @@ impl<'a> TokenSink<'a> for TreeBuilder<'a, '_, '_> {
             ));
         }
         let name = self.name(name)?;
+        if self.mode == BuildMode::Record {
+            // Not from a template, whose stats say whether its names repeat.
+            self.arena.mark_repeated_names();
+        }
         self.current_element = Some(ElementBuilder::new(name, dependency, self.src.bump));
         Ok(())
     }
@@ -739,6 +743,9 @@ fn materialize_instance<'a>(
     if instance.stats.reuses_value {
         arena.mark_shared();
     }
+    if instance.stats.repeats_data_names {
+        arena.mark_repeated_names();
+    }
     let has_templates = instance
         .values
         .iter()
@@ -968,6 +975,8 @@ pub(crate) fn instantiate_template_definition_ir<'a>(
     bump: &'a Bump,
 ) -> Result<IrTree<'a>> {
     let mut arena = IrArena::with_capacity_in(template.arena().count(), bump);
+    // Without the template's stats, its names may repeat.
+    arena.mark_repeated_names();
     let budget = Budget::new(0);
     let (root, _needs_array_expansion) = clone_and_resolve(
         template.arena(),
@@ -992,6 +1001,9 @@ pub(crate) struct TemplateStats {
     /// shared, by instances that a BinXML value in it holds, but its substitutions aren't: values
     /// can't hold any.
     reuses_value: bool,
+    /// Whether two `Data` elements of a container in it may share a name (see
+    /// [`data_names_may_repeat`]).
+    repeats_data_names: bool,
     /// The nodes an instance creates, counting each substitution as one (see `Budget::build`).
     nodes: usize,
 }
@@ -1008,6 +1020,7 @@ impl TemplateStats {
         let mut seen = [0u64; MAX_SUBSTITUTIONS.div_ceil(64)];
         for element in (0..arena.count()).filter_map(|id| arena.get(id)) {
             stats.nodes += element.nodes();
+            stats.repeats_data_names |= data_names_may_repeat(arena, element);
             let values = element.attrs.iter().flat_map(|attr| attr.value.iter());
             for node in element.children.iter().chain(values) {
                 match node {

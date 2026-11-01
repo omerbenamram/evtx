@@ -292,8 +292,102 @@ impl<K: Copy + Eq + std::hash::Hash> NameCounts<K> {
     }
 }
 
+/// A `Data` element's name, the nodes of its `Name` attribute, for numbering the names that
+/// repeat in a container. Names compare by their nodes: a template's literal names, and the
+/// copies of one element an array substitution makes, are equal when their text is.
+#[derive(Clone, Copy)]
+struct DataName<'t, 'a> {
+    nodes: &'t [Node<'a>],
+    /// Of the nodes' kinds and text, which equal nodes share, so that most names compare by it.
+    hash: u64,
+}
+
+impl<'t, 'a> DataName<'t, 'a> {
+    fn new(nodes: &'t [Node<'a>]) -> Self {
+        let mut hash = 0_u64;
+        for node in nodes {
+            let (kind, text): (u64, &[u8]) = match node {
+                Node::Text(Text::Utf16(text)) => (1, text.as_bytes()),
+                Node::Value(BinXmlValue::StringType(text)) => (2, text.as_bytes()),
+                Node::Text(Text::Utf8(text)) => (3, text.as_bytes()),
+                Node::Value(BinXmlValue::AnsiStringType(text)) => (4, text.as_bytes()),
+                _ => (0, &[]),
+            };
+            // The length and the first and last 8 bytes, which few names share.
+            let ends = match text.len() {
+                len @ 8.. => {
+                    let word = |at: usize| {
+                        u64::from_le_bytes(text[at..at + 8].try_into().expect("8 bytes"))
+                    };
+                    word(0) ^ word(len - 8).rotate_left(29)
+                }
+                _ => text
+                    .iter()
+                    .fold(0, |word, &byte| word << 8 | u64::from(byte)),
+            };
+            let word = ends ^ kind ^ (text.len() as u64) << 48;
+            // FxHash's step.
+            hash = (hash.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+        DataName { nodes, hash }
+    }
+}
+
+impl PartialEq for DataName<'_, '_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.nodes == other.nodes
+    }
+}
+
+impl Eq for DataName<'_, '_> {}
+
+impl std::hash::Hash for DataName<'_, '_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+/// Whether `element` is a data container whose `Data` children may share a name: its template
+/// repeats one, a substitution names one, or a substitution is a child, which can be `Data`.
+/// Records whose arena doesn't say so render without numbering names (see
+/// [`IrArena::repeated_names`]), since most never repeat one.
+pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) -> bool {
+    if !is_data_container_name(element.name.as_str()) {
+        return false;
+    }
+    let mut names = NameCounts::new();
+    for node in &element.children {
+        let child = match node {
+            Node::Placeholder(_) => return true,
+            Node::Element(id) => arena.get(*id),
+            _ => None,
+        };
+        let Some(name) = child
+            .filter(|child| is_data_element_name(child.name.as_str()))
+            .and_then(data_name)
+        else {
+            continue;
+        };
+        if name.iter().any(|n| matches!(n, Node::Placeholder(_)))
+            || names.next_suffix(DataName::new(name)) > 0
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A `Data` element's `Name` attribute: the nodes of its value.
+fn data_name<'t, 'a>(element: &'t Element<'a>) -> Option<&'t [Node<'a>]> {
+    element
+        .attrs
+        .iter()
+        .find(|a| a.name.as_str() == "Name")
+        .map(|a| &a.value[..])
+}
+
 /// The object `JsonCompiler::element_body_plain` is writing.
-struct BodyPlain {
+struct BodyPlain<'t, 'a> {
     in_data_container: bool,
     /// One non-empty `Data[@Name]` selects the named form for the container's `Data`.
     should_flatten_named_data: bool,
@@ -301,14 +395,19 @@ struct BodyPlain {
     positional_data_count: usize,
     positional_data_emitted: bool,
     wrote_any: bool,
+    /// The names of the named `Data` members so far, to number repeats.
+    data_names: NameCounts<DataName<'t, 'a>>,
+    /// The `Data` children left in the run the last named one began, written with it.
+    skip: usize,
 }
 
 /// What `JsonCompiler::member_value_plain` writes after the key `member_key_plain` wrote.
 enum MemberPlain {
     /// Nothing: the child isn't a member, or it holds only its attributes' member.
     None,
-    /// A named `Data` element's value.
-    Data,
+    /// A named `Data` element's value, or with the next `run - 1`, which share its name, theirs
+    /// in an array.
+    Data { run: usize },
     /// The container's `Data` children in the positional form, this many.
     PositionalData(usize),
     /// An element's value.
@@ -2894,6 +2993,9 @@ struct JsonCompiler<'t, 'a> {
     budget: Budget,
     /// As in `XmlCompiler`.
     shared: bool,
+    /// Whether to number the `Data` names that repeat in a container, and put runs of one in an
+    /// array: when compiling, and for trees whose names may repeat.
+    data_names: bool,
     /// Elements open in the materialized walk (see [`MAX_RENDER_DEPTH`]).
     depth: u16,
 }
@@ -2904,6 +3006,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             tree,
             budget,
             shared: tree.is_some_and(|tree| tree.arena().shared()),
+            data_names: tree.is_some_and(|tree| tree.arena().repeated_names()),
             lits,
             ops: Vec::new(),
             deps: Vec::new(),
@@ -2936,6 +3039,8 @@ fn compile_json_template(
         false,
         Budget::program(),
     );
+    // Template stats aren't at hand, and compiling happens once.
+    c.data_names = true;
     c.ops.reserve(32);
     if is_root {
         c.lits.push(b'{');
@@ -3231,6 +3336,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         // Compile-time `_N` suffix counting for static members.
         let mut static_names = NameCounts::new();
+        let mut data_names = NameCounts::new();
 
         let mut seen_slot_child = false;
         for (index, node) in element.children.iter().enumerate() {
@@ -3245,19 +3351,19 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     let dependency = child.dependency;
                     if container && is_data_element_name(cname) {
                         if flatten_named {
-                            let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name")
-                            else {
+                            let Some(name) = data_name(child) else {
                                 continue; // unnamed Data skipped in named form
                             };
-                            if !attr.value.iter().any(literal_nonempty) {
+                            if !name.iter().any(literal_nonempty) {
                                 continue; // empty literal name: skipped
                             }
+                            // Data of one name in a row are an array: the tree's walk writes it.
+                            if self.data_run(name, &element.children[index + 1..]) > 1 {
+                                return Err(Bail);
+                            }
                             self.member_comma(&mut members, false);
-                            // Key: JSON-escaped literal name text.
-                            self.lits.push(b'"');
-                            self.text_content_plain(&attr.value, false)
-                                .map_err(|_| Bail)?;
-                            self.lits.extend_from_slice(b"\":");
+                            let suffix = data_names.next_suffix(DataName::new(name));
+                            self.data_key_plain(name, suffix).map_err(|_| Bail)?;
                             self.compile_data_value(*id, false)?;
                         } else if !positional_emitted && !positional_data.is_empty() {
                             positional_emitted = true;
@@ -4072,6 +4178,33 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         self.lits.extend_from_slice(b"\":");
     }
 
+    /// A named `Data` member's key: its escaped name, numbered as `key_with_suffix_plain` numbers
+    /// elements.
+    fn data_key_plain(&mut self, name: &[Node<'a>], suffix: u32) -> Result<()> {
+        self.lits.push(b'"');
+        self.text_content_plain(name, false)?;
+        if suffix > 0 {
+            self.lits.push(b'_');
+            self.lits.extend_from_slice(suffix.to_string().as_bytes());
+        }
+        self.lits.extend_from_slice(b"\":");
+        Ok(())
+    }
+
+    /// How many `Data` elements in a row, one named `name` and those of `following` right after
+    /// it, have that name. An array substitution makes one per value.
+    fn data_run(&self, name: &[Node<'a>], following: &[Node<'a>]) -> usize {
+        let same = following
+            .iter()
+            .filter_map(|node| match node {
+                Node::Element(id) => Some(self.element_ref(*id)),
+                _ => None,
+            })
+            .take_while(|e| is_data_element_name(e.name.as_str()) && data_name(e) == Some(name))
+            .count();
+        1 + same
+    }
+
     fn json_escaped_str_plain(&mut self, s: &str) -> Result<()> {
         self.vr
             .write_str_escaped(&mut self.lits, s, StringEscapeMode::Json)
@@ -4461,11 +4594,13 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut body =
             self.body_start_plain(element, in_data_container, omit_attributes, has_text)?;
         let mut name_counts = NameCounts::new();
-        for node in &element.children {
+        let mut children = &element.children[..];
+        while let [node, following @ ..] = children {
+            children = following;
             let Node::Element(id) = node else { continue };
             let child = self.element_ref(*id);
-            let member = self.member_key_plain(child, &mut body, &mut name_counts)?;
-            self.member_value_plain(element, child, member)?;
+            let member = self.member_key_plain(child, following, &mut body, &mut name_counts)?;
+            self.member_value_plain(element, child, following, member)?;
         }
         self.lits.push(b'}');
         self.depth -= 1;
@@ -4479,7 +4614,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         in_data_container: bool,
         omit_attributes: bool,
         has_text: bool,
-    ) -> Result<BodyPlain> {
+    ) -> Result<BodyPlain<'t, 'a>> {
         // A materialized tree nests values' elements where they are used.
         if self.depth >= MAX_RENDER_DEPTH
             && element
@@ -4552,6 +4687,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             positional_data_count,
             positional_data_emitted: false,
             wrote_any,
+            data_names: NameCounts::new(),
+            skip: 0,
         })
     }
 
@@ -4560,32 +4697,37 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     fn member_key_plain(
         &mut self,
         child: &'t Element<'a>,
-        body: &mut BodyPlain,
+        following: &[Node<'a>],
+        body: &mut BodyPlain<'t, 'a>,
         name_counts: &mut NameCounts<&'t str>,
     ) -> Result<MemberPlain> {
         self.visit(child)?;
+        if body.skip > 0 {
+            body.skip -= 1;
+            return Ok(MemberPlain::None);
+        }
 
         if body.in_data_container && is_data_element_name(child.name.as_str()) {
             if body.should_flatten_named_data {
-                let Some(name_nodes) = child
-                    .attrs
-                    .iter()
-                    .find(|a| a.name.as_str() == "Name")
-                    .map(|a| &a.value)
-                else {
+                let Some(name) = data_name(child) else {
                     return Ok(MemberPlain::None);
                 };
-                if !self.has_text_content_plain(name_nodes) {
+                if !self.has_text_content_plain(name) {
                     return Ok(MemberPlain::None);
                 }
                 if body.wrote_any {
                     self.lits.push(b',');
                 }
                 body.wrote_any = true;
-                self.lits.push(b'"');
-                self.text_content_plain(name_nodes, false)?;
-                self.lits.extend_from_slice(b"\":");
-                return Ok(MemberPlain::Data);
+                let (run, suffix) = if self.data_names {
+                    let run = self.data_run(name, following);
+                    body.skip = run - 1;
+                    (run, body.data_names.next_suffix(DataName::new(name)))
+                } else {
+                    (1, 0)
+                };
+                self.data_key_plain(name, suffix)?;
+                return Ok(MemberPlain::Data { run });
             }
             if body.positional_data_emitted || body.positional_data_count == 0 {
                 return Ok(MemberPlain::None);
@@ -4633,17 +4775,43 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         &mut self,
         element: &Element<'a>,
         child: &Element<'a>,
+        following: &[Node<'a>],
         member: MemberPlain,
     ) -> Result<()> {
         match member {
             MemberPlain::None => Ok(()),
-            MemberPlain::Data => self.data_element_value_plain(child),
+            MemberPlain::Data { run: 1 } => self.data_element_value_plain(child),
+            MemberPlain::Data { run } => self.data_run_plain(child, following, run),
             MemberPlain::PositionalData(count) => self.positional_data_plain(element, child, count),
             MemberPlain::Element { container } => self.write_element_value_plain(child, container),
             MemberPlain::ElementNoAttrs { container } => {
                 self.write_element_value_no_attrs_plain(child, container)
             }
         }
+    }
+
+    /// A run of `run` named `Data` elements, `first` and the next of `following`: their values
+    /// in an array.
+    fn data_run_plain(
+        &mut self,
+        first: &Element<'a>,
+        following: &[Node<'a>],
+        run: usize,
+    ) -> Result<()> {
+        self.lits.push(b'[');
+        self.data_element_value_plain(first)?;
+        let rest = following.iter().filter_map(|node| match node {
+            Node::Element(id) => Some(*id),
+            _ => None,
+        });
+        for id in rest.take(run - 1) {
+            self.check_size()?;
+            self.lits.push(b',');
+            let element = self.element_ref(id);
+            self.data_element_value_plain(element)?;
+        }
+        self.lits.push(b']');
+        Ok(())
     }
 
     /// The `Data` children of a container in the positional form, from the first one, `first`:
