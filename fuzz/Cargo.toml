@@ -1,0 +1,49 @@
+[package]
+name = "evtx-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+encoding_rs = "0.8"
+libfuzzer-sys = "0.4"
+
+[dependencies.evtx]
+path = ".."
+default-features = false
+features = ["wevt_templates"]
+
+# Its own workspace, so that it builds apart from evtx.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "evtx_file"
+path = "fuzz_targets/evtx_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "evtx_chunk"
+path = "fuzz_targets/evtx_chunk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wevt_template"
+path = "fuzz_targets/wevt_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mta"
+path = "fuzz_targets/mta.rs"
+test = false
+doc = false
+bench = false
