@@ -8,6 +8,54 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.15.0 - 2026-11-01]
+
+Records now render as Windows renders them in many more ways, and all the
+breaking changes of this round are in this one release. Breaking changes says
+what to change when upgrading; the sections after it give the details.
+
+### Breaking changes
+
+Output, in XML and JSON, from every API and from `evtx_dump`:
+
+- Timestamps have seven fractional digits (`2016-07-08T18:12:51.6816408Z`).
+  Code that parses them with exactly six needs to accept seven.
+- GUIDs are lowercase and in braces (`{54849625-5478-4994-a5ba-3e3b0328c30d}`).
+- Elements that depend on a NULL value are left out, as Windows leaves them
+  out: the `<Binary></Binary>` and `<Data></Data>` of values that were never
+  set, and unset optional `System` fields. Code that reads them needs to handle
+  their absence.
+- In JSON, consecutive `Data` elements of one name are one member whose value
+  is an array, and a name that comes back later is numbered `_1`, `_2`: in
+  event 4648 of some logs, the second `LogonGuid` is `LogonGuid_1`.
+- XML writes empty elements as `<X/>`, or as `<X></X>` when their content is
+  empty, with nothing inside them when indented.
+- Characters that XML doesn't allow are `_` in XML, and lone surrogates are `_`
+  in XML and U+FFFD in JSON. utf16-simd 0.2.0 does the same.
+- A log that has wrapped around comes out oldest record first.
+- The walk over a chunk's records resyncs past a corrupt record header, so more
+  records come out. With `recover_records`, the records that the resync skips
+  come out as recovered.
+- A record fails with an error once its output passes 16 MiB, or once its tree
+  takes more than 2^18 nodes. The samples' records stay far below both.
+
+API:
+
+- `EvtxFileHeader` has `computed_checksum`, and `EvtxChunkData` has `number`,
+  so struct literals of them need the new fields.
+- `HeaderFlags` and `ChunkFlags` keep the bits evtx doesn't define: test flags
+  with `contains`, since `==` compares those bits too.
+- A record that can't be read fails with `EvtxError::FailedToReadRecordAt`,
+  whose source is the error it used to fail with. `EvtxError`,
+  `DeserializationError` (`OutOfBounds`, `InvalidRecordTimestamp`) and
+  `ChunkError` (`InvalidChunkHeaderChecksum`, `InvalidFreeSpaceOffset`) have
+  new variants, and `InvalidChunkChecksum` is now only for the records' CRC32.
+- `BinXmlValue::FileTimeType`, `SysTimeType` and their arrays hold `FileTime`
+  and `SysTime`, the values as stored. `to_timestamp()` gives a jiff
+  `Timestamp` when jiff can represent the value. `AnsiStringArrayType` holds
+  its strings.
+- `ParserSettings` with different WEVT template caches no longer compare equal.
+
 ### Added
 
 - `EvtxParser::header()` returns the file header, which was private. The
@@ -70,6 +118,16 @@ and this project adheres to
   `FailedToReadRecordAt`, exhaustive matches on `EvtxError` and
   `DeserializationError` need the new variants, and code that builds an
   `EvtxChunkData` with a struct literal needs its `number`.
+- `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
+  `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
+  can't represent still render. `to_timestamp()` converts them.
+- `BinXmlValue::AnsiStringArrayType` holds its strings, as a `&[&str]`.
+- `evtx_dump` starts each chunk's output buffer as big as the largest a chunk of
+  the log has needed so far (from 128 KiB up to 1 MiB), instead of at 128 KiB.
+  Most Security chunks render about 160 KiB of XML, and growing the buffer
+  copies it unless the allocator has free space right after it, so the cost of
+  a dump depended on heap layout: up to 6.5% more instructions on a 30 MB
+  Security log.
 
 ### Fixed
 
@@ -77,7 +135,6 @@ and this project adheres to
   chunk number N` with N its place among the chunks read, not its number in the
   file. The two differ after an empty chunk and in a log that has wrapped
   around.
-
 - GUIDs render as Windows renders them, lowercase and in braces:
   `{54849625-5478-4994-a5ba-3e3b0328c30d}` instead of
   `54849625-5478-4994-A5BA-3E3B0328C30D`. This covers GUID values in XML and
@@ -95,19 +152,6 @@ and this project adheres to
   element left with no children renders empty, as `<EventData></EventData>` in
   XML and `"EventData": null` in JSON. An empty string still renders as an
   empty element, as in Windows. This covers XML and JSON.
-- `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
-  `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
-  can't represent still render. `to_timestamp()` converts them.
-- `BinXmlValue::AnsiStringArrayType` holds its strings, as a `&[&str]`.
-- `evtx_dump` starts each chunk's output buffer as big as the largest a chunk of
-  the log has needed so far (from 128 KiB up to 1 MiB), instead of at 128 KiB.
-  Most Security chunks render about 160 KiB of XML, and growing the buffer
-  copies it unless the allocator has free space right after it, so the cost of
-  a dump depended on heap layout: up to 6.5% more instructions on a 30 MB
-  Security log.
-
-### Fixed
-
 - A record holding a FILETIME or SYSTEMTIME value that jiff can't represent
   failed with `InvalidDateTimeError`: a FILETIME from 9999-12-30T22:00 UTC on,
   and a SYSTEMTIME with a field out of range. Such values now render as Windows
