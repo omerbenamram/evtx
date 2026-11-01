@@ -52,6 +52,13 @@ static GLOBAL: Jemalloc = Jemalloc;
 #[global_allocator]
 static ALLOC: rpmalloc::RpMalloc = rpmalloc::RpMalloc;
 
+// rpmalloc calls advapi32's OpenProcessToken, LookupPrivilegeValueA and AdjustTokenPrivileges, to
+// use large pages, without linking advapi32. The windows-sys 0.59 import library that other
+// dependencies used to bring in happened to provide them.
+#[cfg(all(target_env = "msvc", feature = "fast-alloc"))]
+#[link(name = "advapi32")]
+unsafe extern "system" {}
+
 #[derive(Copy, Clone, PartialOrd, PartialEq, Eq)]
 pub enum EvtxOutputFormat {
     JSON,
