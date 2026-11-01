@@ -1,7 +1,7 @@
 mod fixtures;
 
 use evtx::err::{DeserializationError, EvtxError};
-use evtx::{EvtxParser, ParserSettings, RenderedChunkItem};
+use evtx::{EvtxChunkData, EvtxParser, ParserSettings, RenderedChunkItem};
 use fixtures::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -123,9 +123,18 @@ fn record_errors_say_where_the_record_is() {
         )
     );
 
-    // A chunk parsed on its own doesn't know its number.
-    let mut chunk = parser.chunks().next().unwrap().unwrap();
-    let mut chunk = chunk.parse(Arc::new(ParserSettings::new())).unwrap();
+    // A chunk that the parser read knows its number when it is parsed on its own.
+    let mut data = parser.chunks().next().unwrap().unwrap();
+    assert_eq!(data.number, Some(0));
+    let mut chunk = data.parse(Arc::new(ParserSettings::new())).unwrap();
+    let error = chunk.iter().find_map(Result::err).unwrap();
+    assert_eq!(error.to_string(), errors[0].to_string());
+    drop(chunk);
+
+    // A chunk built from its bytes doesn't.
+    let mut data = EvtxChunkData::new(data.data, false).unwrap();
+    assert_eq!(data.number, None);
+    let mut chunk = data.parse(Arc::new(ParserSettings::new())).unwrap();
     let error = chunk.iter().find_map(Result::err).unwrap();
     assert_eq!(
         error.to_string(),
@@ -174,4 +183,26 @@ fn record_errors_name_the_chunk_in_the_file() {
             ["Failed to read the record at offset 0x2060 of chunk 7 (file offset 0x73060)"]
         );
     }
+
+    // So do the chunks that `chunks()` returns, in record order, each parsed on its own.
+    let mut parser = EvtxParser::from_path(sample_with_a_bad_chunk_magic()).unwrap();
+    let settings = Arc::new(ParserSettings::new());
+    let mut errors = vec![];
+    for data in parser.chunks() {
+        let Ok(mut data) = data else { continue };
+        let Ok(mut chunk) = data.parse(Arc::clone(&settings)) else {
+            continue;
+        };
+        errors.extend(
+            chunk
+                .iter()
+                .filter_map(Result::err)
+                .map(|error| error.to_string())
+                .filter(|error| error.starts_with("Failed to read the record")),
+        );
+    }
+    assert_eq!(
+        errors,
+        ["Failed to read the record at offset 0x2060 of chunk 7 (file offset 0x73060)"]
+    );
 }

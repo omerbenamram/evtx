@@ -592,9 +592,10 @@ impl<T: ReadSeek> EvtxParser<T> {
             return Ok(None);
         }
 
-        EvtxChunkData::new(chunk_data, validate_checksum)
-            .map(Some)
-            .map_err(|e| EvtxError::chunk(chunk_number, e))
+        let mut chunk = EvtxChunkData::new(chunk_data, validate_checksum)
+            .map_err(|e| EvtxError::chunk(chunk_number, e))?;
+        chunk.number = Some(chunk_number);
+        Ok(Some(chunk))
     }
 
     /// Find the next chunk, starting at `chunk_number` (inclusive) and before `end`.
