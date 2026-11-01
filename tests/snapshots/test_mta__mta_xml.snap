@@ -5,25 +5,20 @@ expression: render(false)
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <Provider Name="MtaTest-Provider" Guid="6C4A7D21-3B8E-4F5A-9C2D-1E0F3A4B5C6D">
-    </Provider>
+    <Provider Name="MtaTest-Provider" Guid="{6c4a7d21-3b8e-4f5a-9c2d-1e0f3a4b5c6d}"/>
     <EventID>2</EventID>
     <Version>0</Version>
     <Level>3</Level>
     <Task>1</Task>
     <Opcode>10</Opcode>
     <Keywords>0x8000000000000005</Keywords>
-    <TimeCreated SystemTime="2026-10-27T21:27:54.7395325Z">
-    </TimeCreated>
+    <TimeCreated SystemTime="2026-10-27T21:27:54.7395325Z"/>
     <EventRecordID>126</EventRecordID>
-    <Correlation ActivityID="8987975E-9B45-0000-7B92-4EAA5966DD01">
-    </Correlation>
-    <Execution ProcessID="6872" ThreadID="6368">
-    </Execution>
+    <Correlation ActivityID="{8987975e-9b45-0000-7b92-4eaa5966dd01}"/>
+    <Execution ProcessID="6872" ThreadID="6368"/>
     <Channel>MtaTest-Provider/Operational</Channel>
     <Computer>runnervmdaln5</Computer>
-    <Security UserID="S-1-5-21-3776380004-1005456608-3524014338-500">
-    </Security>
+    <Security UserID="S-1-5-21-3776380004-1005456608-3524014338-500"/>
   </System>
   <EventData>
     <Data Name="Text">alpha &amp; &lt;beta&gt;</Data>

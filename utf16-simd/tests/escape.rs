@@ -30,18 +30,14 @@ fn u16s_from_utf16le(bytes: &[u8], num_units: usize) -> Vec<u16> {
         .collect()
 }
 
-/// Convert UTF-16LE into a UTF-8 `String`, skipping invalid surrogate code units.
+/// Convert UTF-16LE into a UTF-8 `String`, writing `replacement` for each lone surrogate.
 ///
-/// This matches the crate's behavior of silently dropping lone surrogates.
-fn utf16le_to_string_skip_invalid(bytes: &[u8], num_units: usize) -> String {
+/// The crate writes U+FFFD for them in JSON and raw output, and `_` in XML.
+fn utf16le_to_string_lossy(bytes: &[u8], num_units: usize, replacement: char) -> String {
     let units = u16s_from_utf16le(bytes, num_units);
-    let mut out = String::new();
-    for r in std::char::decode_utf16(units.into_iter()) {
-        if let Ok(ch) = r {
-            out.push(ch);
-        }
-    }
-    out
+    std::char::decode_utf16(units)
+        .map(|r| r.unwrap_or(replacement))
+        .collect()
 }
 
 fn uppercase_json_u00xx_escapes_in_place(out: &mut [u8]) {
@@ -67,7 +63,7 @@ fn uppercase_json_u00xx_escapes_in_place(out: &mut [u8]) {
 }
 
 fn json_reference(bytes: &[u8], num_units: usize, need_quote: bool) -> Vec<u8> {
-    let s = utf16le_to_string_skip_invalid(bytes, num_units);
+    let s = utf16le_to_string_lossy(bytes, num_units, char::REPLACEMENT_CHARACTER);
     let mut fmt = CompactFormatter;
     let mut out = Vec::new();
     fmt.write_string_fast(&mut out, &s, need_quote).unwrap();
@@ -76,7 +72,7 @@ fn json_reference(bytes: &[u8], num_units: usize, need_quote: bool) -> Vec<u8> {
 }
 
 fn xml_reference(bytes: &[u8], num_units: usize, in_attribute: bool) -> Vec<u8> {
-    let s = utf16le_to_string_skip_invalid(bytes, num_units);
+    let s = utf16le_to_string_lossy(bytes, num_units, '_');
     let mut out = String::new();
     for ch in s.chars() {
         match ch {
@@ -85,6 +81,9 @@ fn xml_reference(bytes: &[u8], num_units: usize, in_attribute: bool) -> Vec<u8> 
             '>' => out.push_str("&gt;"),
             '"' if in_attribute => out.push_str("&quot;"),
             '\'' if in_attribute => out.push_str("&apos;"),
+            // Characters XML 1.0 doesn't allow become `_`, as Windows writes them.
+            '\t' | '\n' | '\r' => out.push(ch),
+            '\0'..='\u{1f}' | '\u{fffe}' | '\u{ffff}' => out.push('_'),
             _ => out.push(ch),
         }
     }
@@ -92,7 +91,7 @@ fn xml_reference(bytes: &[u8], num_units: usize, in_attribute: bool) -> Vec<u8> 
 }
 
 fn raw_reference(bytes: &[u8], num_units: usize) -> Vec<u8> {
-    utf16le_to_string_skip_invalid(bytes, num_units).into_bytes()
+    utf16le_to_string_lossy(bytes, num_units, char::REPLACEMENT_CHARACTER).into_bytes()
 }
 
 fn escape_to_vec(buf: &[MaybeUninit<u8>], len: usize) -> Vec<u8> {
@@ -297,6 +296,38 @@ fn control_1f() {
 }
 
 #[test]
+fn xml_invalid_characters() {
+    // Every C0 control, a reversed surrogate pair, the noncharacters XML doesn't allow, and
+    // characters next to them that it does, inside and across 8-unit SIMD blocks.
+    let mut units: Vec<u16> = (0..0x20).collect();
+    units.extend([
+        b'a' as u16,
+        0xDC00,
+        0xD800,
+        b'b' as u16,
+        0xFFFE,
+        0xFFFF,
+        0xFFFD,
+        0xFFEF,
+    ]);
+    units.extend([b'c' as u16; 7]);
+    units.extend([0x0B, b'd' as u16, b'\t' as u16, 0xD83D, 0xDE00, 0xDBFF]);
+    let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+    run_case_json(&bytes, units.len(), true);
+    run_case_xml(&bytes, units.len(), false);
+    run_case_xml(&bytes, units.len(), true);
+    run_case_raw(&bytes, units.len());
+
+    let mut out = vec![MaybeUninit::uninit(); max_escaped_len(units.len(), false)];
+    let len = escape_xml_utf16le(&bytes, units.len(), &mut out, false);
+    let xml = String::from_utf8(escape_to_vec(&out, len)).unwrap();
+    assert_eq!(
+        xml,
+        "_________\t\n__\r__________________a__b__\u{fffd}\u{ffef}ccccccc_d\t\u{1f600}_"
+    );
+}
+
+#[test]
 fn newline() {
     let bytes = vec![b'\n', 0x00];
     run_case_json(&bytes, 1, true);
@@ -344,7 +375,7 @@ fn surrogate_pair_across_simd_block_boundary() {
 }
 
 #[test]
-fn high_surrogate_at_simd_block_end_not_followed_by_low_is_dropped() {
+fn high_surrogate_at_simd_block_end_not_followed_by_low_is_replaced() {
     // 7 ASCII 'a', then a lone high surrogate, then 'b'.
     let mut units: Vec<u16> = vec![b'a' as u16; 7];
     units.push(0xD83D);

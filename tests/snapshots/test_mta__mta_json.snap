@@ -11,7 +11,7 @@ expression: json
       "Provider": {
         "#attributes": {
           "Name": "MtaTest-Provider",
-          "Guid": "6C4A7D21-3B8E-4F5A-9C2D-1E0F3A4B5C6D"
+          "Guid": "{6c4a7d21-3b8e-4f5a-9c2d-1e0f3a4b5c6d}"
         }
       },
       "EventID": 2,
@@ -28,7 +28,7 @@ expression: json
       "EventRecordID": 126,
       "Correlation": {
         "#attributes": {
-          "ActivityID": "8987975E-9B45-0000-7B92-4EAA5966DD01"
+          "ActivityID": "{8987975e-9b45-0000-7b92-4eaa5966dd01}"
         }
       },
       "Execution": {

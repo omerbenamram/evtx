@@ -223,14 +223,22 @@ fn visit_cost(element: &Element<'_>) -> usize {
     1 + element.attrs.len() + element.children.len()
 }
 
-/// A `lits` byte range.
+/// A `lits` byte range, or a range of a program's `deps`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LitRange(u32, u32);
 
 impl LitRange {
-    /// The literal bytes this range denotes.
-    fn of(self, lits: &[u8]) -> &[u8] {
-        &lits[self.0 as usize..self.1 as usize]
+    /// The literal bytes (or dependencies) this range denotes.
+    fn of<T>(self, items: &[T]) -> &[T] {
+        &items[self.0 as usize..self.1 as usize]
+    }
+}
+
+/// Moves `ops` past its next `len` ops: what a guard op (`XOp::Depends`, `JOp::Depends` and
+/// the like) skips when it leaves an element out.
+fn skip<T>(ops: &mut std::slice::Iter<'_, T>, len: u32) {
+    if let Some(last) = (len as usize).checked_sub(1) {
+        ops.nth(last);
     }
 }
 /// A `Preflight::slots` index range (one instance's slots).
@@ -314,22 +322,38 @@ enum MemberPlain {
 enum XOp {
     /// Emit `lits[range]`.
     Lit(LitRange),
+    /// `open` and the next `len` ops write an element that depends on `slot` (its
+    /// DependencyId): skip them when that value is NULL, which leaves the element out (MS-EVEN6
+    /// 2.2.12).
+    Depends { slot: u16, len: u32, open: LitRange },
+    /// `open` and the next `len` ops write an element whose children are elements that each
+    /// depend on a value, `deps` (a range of the program's `deps`): when every one is NULL, all
+    /// of them are left out, so write `empty`, the element as `<Tag ...></Tag>`, instead.
+    LeftOut {
+        deps: LitRange,
+        len: u32,
+        empty: LitRange,
+        open: LitRange,
+    },
     /// Escaped value text in an always-emitted context (attribute value with
     /// static non-empty parts). No emptiness branch.
     Val { slot: u16, in_attr: bool },
     /// ` name="` + escaped value + `"`, all omitted when the value is
     /// empty-ish (mirrors `attribute_value_is_empty`: optionality ignored).
     AttrVal { slot: u16, pre: LitRange },
-    /// `<Tag ...attrs` has been emitted (sans `>`). Emit `>` and the single
-    /// placeholder content, branching on the runtime slot class:
-    /// Skip -> `tail_empty`; text-ish -> text + `tail_text`;
+    /// `prefix`, literal text that ends with `<Tag ...attrs>` (fused with this op to save a
+    /// dispatch), then the single placeholder content, branching on the runtime slot class:
+    /// Skip -> `tail_text`, so the element is `<Tag></Tag>`; text-ish -> text + `tail_text`;
     /// element -> newline + nested/frag at `indent + 2` + `tail_elem`.
     Body {
         slot: u16,
         optional: bool,
+        /// The element depends on its own value: left out, `prefix` and all, when that value
+        /// is NULL. `prefix` is then the element's own.
+        dependent: bool,
         indent: u16,
+        prefix: LitRange,
         tail_text: LitRange,
-        tail_empty: LitRange,
         tail_elem: LitRange,
     },
     /// Placeholder in element-child position under a statically line-formed
@@ -344,16 +368,16 @@ enum XOp {
     /// An attribute-less `<Data>` element whose entire content is one hole
     /// (MS-EVEN6 array expansion site). Scalar values follow `Body`
     /// semantics with `open` spliced first; a string array repeats the
-    /// element per item — single-item arrays render inline like a scalar,
-    /// empty items in larger arrays take the two-line empty form. Mirrors
+    /// element per item, an empty item as `<Data></Data>`. Mirrors
     /// `array_expand` over the materialized tree.
     Expand {
         slot: u16,
         optional: bool,
+        /// The element depends on its own value: left out when that value is NULL.
+        dependent: bool,
         indent: u16,
         open: LitRange,
         tail_text: LitRange,
-        tail_empty: LitRange,
         tail_elem: LitRange,
     },
 }
@@ -362,12 +386,30 @@ impl XOp {
     /// The slot this op renders.
     fn slot(&self) -> Option<u16> {
         match self {
-            XOp::Lit(_) => None,
+            // These test values without rendering them.
+            XOp::Lit(_) | XOp::Depends { .. } | XOp::LeftOut { .. } => None,
             XOp::Val { slot, .. }
             | XOp::AttrVal { slot, .. }
             | XOp::Body { slot, .. }
             | XOp::ChildSlot { slot, .. }
             | XOp::Expand { slot, .. } => Some(*slot),
+        }
+    }
+
+    /// Makes this op leave itself out when the value at `dependency` is NULL, if it can: an
+    /// element that holds that value. Whether it did.
+    fn depend_on(&mut self, dependency: u16) -> bool {
+        match self {
+            XOp::Body {
+                slot, dependent, ..
+            }
+            | XOp::Expand {
+                slot, dependent, ..
+            } if *slot == dependency => {
+                *dependent = true;
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -376,6 +418,8 @@ impl XOp {
 pub(crate) struct XmlProgram {
     lits: Vec<u8>,
     ops: Vec<XOp>,
+    /// The values that `XOp::LeftOut` ops test.
+    deps: Vec<u16>,
     indent_on: bool,
     /// `(slot, child_indent)` for every slot rendered in element position;
     /// the pre-flight uses this to resolve nested-instance programs up front.
@@ -589,7 +633,7 @@ fn name_entry(data: &[u8], offset: ChunkOffset) -> Option<std::ops::Range<usize>
 }
 
 impl<'a> TokenSink<'a> for NameRefs {
-    fn open_start(&mut self, name: ChunkOffset) -> Result<()> {
+    fn open_start(&mut self, name: ChunkOffset, _dependency: Option<u16>) -> Result<()> {
         self.name(name)
     }
     fn attribute(&mut self, name: ChunkOffset) -> Result<()> {
@@ -840,6 +884,7 @@ impl TemplateProgram for XmlProgram {
         std::mem::size_of::<Self>()
             + heap_size(&self.lits)
             + heap_size(&self.ops)
+            + heap_size(&self.deps)
             + heap_size(&self.elem_slots)
             + heap_size(&self.expand_slots)
             + heap_size(&self.root_name)
@@ -904,15 +949,101 @@ macro_rules! lit_run_methods {
             self.run_start = self.lits.len();
             LitRange(start, self.lits.len() as u32)
         }
+
+        /// Start ops that a guard op will skip: flush the literal run, so that they start an
+        /// op of their own, and hold the guard's place, which this returns.
+        fn open_guard(&mut self) -> usize {
+            self.flush_lit_run();
+            // Skips nothing until `close_guard` replaces it.
+            self.ops.push($op::Depends {
+                slot: 0,
+                len: 0,
+                open: LitRange(0, 0),
+            });
+            self.ops.len() - 1
+        }
+
+        /// End the ops that the guard at `at` skips, and put it there: `guard` makes it from
+        /// their number and the literal they start with, which the guard writes itself to save
+        /// a dispatch.
+        fn close_guard(&mut self, at: usize, guard: impl FnOnce(u32, LitRange) -> $op) {
+            self.flush_lit_run();
+            let open = match self.ops.get(at + 1) {
+                Some($op::Lit(open)) => {
+                    let open = *open;
+                    self.ops.remove(at + 1);
+                    open
+                }
+                _ => LitRange(0, 0),
+            };
+            let len = (self.ops.len() - at - 1) as u32;
+            self.ops[at] = guard(len, open);
+        }
+
+        /// End the ops that the guard at `at` leaves out when the value at `slot` is NULL. A
+        /// lone op that can leave itself out takes the guard's place instead.
+        fn close_depends(&mut self, at: usize, slot: u16) {
+            self.flush_lit_run();
+            if let [op] = &mut self.ops[at + 1..]
+                && op.depend_on(slot)
+            {
+                self.ops.remove(at);
+            } else {
+                self.close_guard(at, |len, open| $op::Depends { slot, len, open });
+            }
+        }
+
+        /// Push the dependencies of `element`'s children to `deps`, and return their range.
+        fn children_deps(&mut self, element: &Element<'_>) -> LitRange {
+            let start = self.deps.len() as u32;
+            for node in &element.children {
+                if let Node::Element(id) = node
+                    && let Some(dependency) = self.element_ref(*id).dependency
+                {
+                    self.deps.push(dependency);
+                }
+            }
+            LitRange(start, self.deps.len() as u32)
+        }
     };
 }
 
+/// Whether every element child of `element` depends on a value (and it has one), so that an
+/// instance can leave them all out. `Err` when it also has other children, which could leave a
+/// layout the compiled lanes don't follow: those templates take the tree walkers.
+fn children_all_depend(
+    arena: &IrArena<'_>,
+    element: &Element<'_>,
+) -> std::result::Result<bool, Bail> {
+    let (mut elements, mut dependent) = (0, 0);
+    for node in &element.children {
+        if let Node::Element(id) = node {
+            elements += 1;
+            dependent += usize::from(arena.get(*id).is_some_and(|e| e.dependency.is_some()));
+        }
+    }
+    let all = elements > 0 && dependent == elements;
+    if all && elements < element.children.len() {
+        return Err(Bail);
+    }
+    Ok(all)
+}
+
 struct Bail;
+
+/// An element that `XmlCompiler::compile_start` left open for its children on lines of their
+/// own: where its open tag ends in `lits`, and, when those children can all be left out, the
+/// index of its `XOp::LeftOut` placeholder in `ops` and where its open tag starts in `lits`.
+struct OpenElement {
+    open_end: usize,
+    left_out: Option<(usize, usize)>,
+}
 
 struct XmlCompiler<'t, 'a> {
     arena: &'t IrArena<'a>,
     lits: Vec<u8>,
     ops: Vec<XOp>,
+    deps: Vec<u16>,
     /// Start of the not-yet-flushed literal run (`lits[run_start..]`).
     run_start: usize,
     elem_slots: Vec<(u16, u16)>,
@@ -944,6 +1075,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             shared: arena.shared(),
             lits,
             ops: Vec::new(),
+            deps: Vec::new(),
             run_start: 0,
             elem_slots: Vec::new(),
             expand_slots: Vec::new(),
@@ -1036,11 +1168,13 @@ fn compile_xml_template(
             // Programs live as long as their chunk or the parse: no spare capacity.
             c.lits.shrink_to_fit();
             c.ops.shrink_to_fit();
+            c.deps.shrink_to_fit();
             c.elem_slots.shrink_to_fit();
             c.expand_slots.shrink_to_fit();
             Some(XmlProgram {
                 lits: c.lits,
                 ops: c.ops,
+                deps: c.deps,
                 indent_on: c.indent_on,
                 elem_slots: c.elem_slots,
                 expand_slots: c.expand_slots,
@@ -1107,6 +1241,13 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
     lit_run_methods!(XOp);
 
+    /// End the literal run and return it, for an op that writes it itself.
+    fn take_lit_run(&mut self) -> LitRange {
+        let run = LitRange(self.run_start as u32, self.lits.len() as u32);
+        self.run_start = self.lits.len();
+        run
+    }
+
     #[inline(always)]
     fn indent_str(&mut self, level: u16) {
         if self.indent_on {
@@ -1138,8 +1279,30 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.check_size()
     }
 
+    /// Compiles an element. Each level of a deep tree keeps this frame on the stack, and a debug
+    /// build's 2 MiB thread holds 512 levels only while it stays small, so the walk of children
+    /// on lines of their own, the only part that recurses, is all that compiles here.
     fn compile_element(&mut self, id: ElementId, indent: u16) -> Result<()> {
         let element = self.element_ref(id);
+        let Some(open) = self.compile_start(element, indent)? else {
+            return Ok(());
+        };
+        for node in &element.children {
+            match node {
+                Node::Element(child) => self.compile_child(*child, indent + INDENT_WIDTH)?,
+                node => self.compile_line(node, indent + INDENT_WIDTH)?,
+            }
+        }
+        self.compile_end(element, indent, open)
+    }
+
+    /// Compiles an element up to its children on lines of their own and returns where it stands,
+    /// for `compile_element` to walk them, or compiles all of it and returns `None`.
+    fn compile_start(
+        &mut self,
+        element: &'t Element<'a>,
+        indent: u16,
+    ) -> Result<Option<OpenElement>> {
         self.visit(element)?;
 
         // Attribute-less single-hole `<Data>` elements are the array
@@ -1150,8 +1313,27 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             && is_data_element_name(element.name.as_str())
             && let ChildrenKind::SinglePlaceholder(ph) = classify_children(element)
         {
-            return self.compile_expand(element, ph, indent);
+            self.compile_expand(element, ph, indent)?;
+            return Ok(None);
         }
+
+        // Children that each depend on a value can all be left out, which leaves the element
+        // empty: `XOp::LeftOut` then writes it so, as the tree walker does. It copies the open
+        // tag for that, which therefore can't hold values.
+        let left_out = if !self.materialized
+            && children_all_depend(self.arena, element).map_err(|Bail| bail_err())?
+        {
+            if element
+                .attrs
+                .iter()
+                .any(|attr| attr.value.iter().any(is_placeholder))
+            {
+                return Err(bail_err());
+            }
+            Some((self.open_guard(), self.lits.len()))
+        } else {
+            None
+        };
 
         // Note: even placeholder-free subtrees are walked here (not delegated
         // to the materialized emitter): template-scope layout classification
@@ -1173,20 +1355,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     return Err(unresolved_placeholder());
                 }
                 let name = element.name.as_str().as_bytes();
-                let is_binary = element.name.as_str() == "Binary";
                 self.lits.push(b'>');
-                self.flush_lit_run();
+                let prefix = self.take_lit_run();
                 let tail_text = self.side_range(|c| {
-                    c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(name);
-                    c.lits.push(b'>');
-                    c.newline();
-                });
-                let tail_empty = self.side_range(|c| {
-                    if !is_binary {
-                        c.newline();
-                        c.indent_str(indent);
-                    }
                     c.lits.extend_from_slice(b"</");
                     c.lits.extend_from_slice(name);
                     c.lits.push(b'>');
@@ -1203,18 +1374,21 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 self.ops.push(XOp::Body {
                     slot: ph.id,
                     optional: ph.optional,
+                    dependent: false,
                     indent,
+                    prefix,
                     tail_text,
-                    tail_empty,
                     tail_elem,
                 });
             }
+            // Windows writes `<X/>` for an element the BinXML closed as empty, and `<X></X>` for
+            // one whose content is empty. Neither gets whitespace inside when indenting.
+            ChildrenKind::Empty if element.self_closing => {
+                self.lits.extend_from_slice(b"/>");
+                self.newline();
+            }
             ChildrenKind::Empty => {
                 self.lits.push(b'>');
-                if element.name.as_str() != "Binary" {
-                    self.newline();
-                    self.indent_str(indent);
-                }
                 self.close_tag_inline(element);
             }
             ChildrenKind::StaticInline => {
@@ -1253,38 +1427,9 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     return Err(nested_too_deeply());
                 }
                 self.lits.push(b'>');
+                let open_end = self.lits.len();
                 self.newline();
-                for node in &element.children {
-                    match node {
-                        Node::Element(child) => {
-                            self.compile_element(*child, indent + INDENT_WIDTH)?;
-                        }
-                        Node::Placeholder(ph) => {
-                            if self.materialized {
-                                return Err(unresolved_placeholder());
-                            }
-                            self.check_size()?;
-                            self.flush_lit_run();
-                            let ind = self.side_range(|c| c.indent_str(indent + INDENT_WIDTH));
-                            self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
-                            self.ops.push(XOp::ChildSlot {
-                                slot: ph.id,
-                                optional: ph.optional,
-                                indent: indent + INDENT_WIDTH,
-                                ind,
-                            });
-                        }
-                        other => {
-                            self.check_size()?;
-                            self.indent_str(indent + INDENT_WIDTH);
-                            self.compile_literal_content_node(other, false)?;
-                            self.newline();
-                        }
-                    }
-                }
-                self.indent_str(indent);
-                self.close_tag_inline(element);
-                self.check_size()?;
+                return Ok(Some(OpenElement { open_end, left_out }));
             }
             ChildrenKind::Bail => {
                 // Only placeholder-bearing shapes classify as Bail; on a
@@ -1296,7 +1441,69 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 });
             }
         }
+        Ok(None)
+    }
+
+    /// A child other than an element, on a line of its own.
+    fn compile_line(&mut self, node: &Node<'a>, indent: u16) -> Result<()> {
+        if let Node::Placeholder(ph) = node {
+            if self.materialized {
+                return Err(unresolved_placeholder());
+            }
+            self.check_size()?;
+            self.flush_lit_run();
+            let ind = self.side_range(|c| c.indent_str(indent));
+            self.elem_slots.push((ph.id, indent));
+            self.ops.push(XOp::ChildSlot {
+                slot: ph.id,
+                optional: ph.optional,
+                indent,
+                ind,
+            });
+        } else {
+            self.check_size()?;
+            self.indent_str(indent);
+            self.compile_literal_content_node(node, false)?;
+            self.newline();
+        }
         Ok(())
+    }
+
+    /// Closes an element that `compile_start` left open.
+    fn compile_end(&mut self, element: &Element<'_>, indent: u16, open: OpenElement) -> Result<()> {
+        self.indent_str(indent);
+        self.close_tag_inline(element);
+        self.check_size()?;
+        if let Some((at, start)) = open.left_out {
+            self.flush_lit_run();
+            let empty = self.side_range(|c| {
+                c.lits.extend_from_within(start..open.open_end);
+                c.close_tag_inline(element);
+            });
+            let deps = self.children_deps(element);
+            self.close_guard(at, |len, open| XOp::LeftOut {
+                deps,
+                len,
+                empty,
+                open,
+            });
+        }
+        Ok(())
+    }
+
+    /// A child element. One that depends on a value (its DependencyId) compiles behind an
+    /// `XOp::Depends`, which leaves it out when that value is NULL, as the tree walker does, or
+    /// as a dependent `XOp::Body` or `XOp::Expand` when it holds that value.
+    fn compile_child(&mut self, id: ElementId, indent: u16) -> Result<()> {
+        match self.element_ref(id).dependency {
+            Some(slot) if !self.materialized => {
+                let at = self.open_guard();
+                self.compile_element(id, indent)?;
+                self.close_depends(at, slot);
+                Ok(())
+            }
+            _ => self.compile_element(id, indent),
+        }
     }
 
     fn close_tag_inline(&mut self, element: &Element<'_>) {
@@ -1433,14 +1640,6 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             c.lits.push(b'>');
             c.newline();
         });
-        let tail_empty = self.side_range(|c| {
-            c.newline();
-            c.indent_str(indent);
-            c.lits.extend_from_slice(b"</");
-            c.lits.extend_from_slice(name);
-            c.lits.push(b'>');
-            c.newline();
-        });
         let tail_elem = self.side_range(|c| {
             c.indent_str(indent);
             c.lits.extend_from_slice(b"</");
@@ -1453,10 +1652,10 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.ops.push(XOp::Expand {
             slot: ph.id,
             optional: ph.optional,
+            dependent: false,
             indent,
             open,
             tail_text,
-            tail_empty,
             tail_elem,
         });
         Ok(())
@@ -1596,19 +1795,26 @@ fn classify_children<'n>(element: &'n Element<'_>) -> ChildrenKind<'n> {
     ChildrenKind::Bail
 }
 
-fn subtree_has_placeholder(tree: &IrTree<'_>, element: &Element<'_>) -> bool {
+fn is_placeholder(node: &Node<'_>) -> bool {
+    matches!(node, Node::Placeholder(_))
+}
+
+/// Whether what `element` renders to varies by instance: it holds a placeholder, or an element
+/// below it depends on a value.
+fn subtree_varies(tree: &IrTree<'_>, element: &Element<'_>) -> bool {
     for attr in &element.attrs {
-        if attr.value.iter().any(|n| matches!(n, Node::Placeholder(_))) {
+        if attr.value.iter().any(is_placeholder) {
             return true;
         }
     }
     for node in &element.children {
         match node {
             Node::Placeholder(_) => return true,
-            Node::Element(id)
-                if subtree_has_placeholder(tree, tree.arena().get(*id).expect("element id")) =>
-            {
-                return true;
+            Node::Element(id) => {
+                let child = tree.arena().get(*id).expect("element id");
+                if child.dependency.is_some() || subtree_varies(tree, child) {
+                    return true;
+                }
             }
             _ => {}
         }
@@ -2205,6 +2411,8 @@ fn exec_or_rollback<'a, P: TemplateProgram, V: ValueSource<'a>>(
 
 /// Runtime slot class for `Body`/`ChildSlot` branching.
 enum SlotClass {
+    /// NULL, for an element that depends on its value: the element is left out.
+    LeftOut,
     Skip,
     TextLike,
     Element,
@@ -2223,12 +2431,14 @@ fn exec<'a, V: ValueSource<'a>>(
     let lits = &prog.lits;
     let slots = pf.slots(instance.slots);
     let slot_at = |id: u16| slots.get(usize::from(id));
-    let classify = |slot: u16, optional: bool| -> SlotClass {
+    let classify = |slot: u16, optional: bool, dependent: bool| -> SlotClass {
         match slot_at(slot) {
             None => SlotClass::Skip,
             Some(s) => {
                 if pf.empty(s) {
-                    if optional {
+                    if dependent && pf.null(s) {
+                        SlotClass::LeftOut
+                    } else if optional {
                         SlotClass::Skip
                     } else {
                         SlotClass::TextLike
@@ -2261,9 +2471,31 @@ fn exec<'a, V: ValueSource<'a>>(
         }};
     }
 
-    for op in &prog.ops {
+    let null = |slot: u16| slot_at(slot).is_some_and(|s| pf.null(s));
+    let mut ops = prog.ops.iter();
+    while let Some(op) = ops.next() {
         match op {
             XOp::Lit(r) => write_lit!(*r),
+            XOp::Depends { slot, len, open } => {
+                if null(*slot) {
+                    skip(&mut ops, *len);
+                } else {
+                    write_lit!(*open);
+                }
+            }
+            XOp::LeftOut {
+                deps,
+                len,
+                empty,
+                open,
+            } => {
+                if deps.of(&prog.deps).iter().all(|&slot| null(slot)) {
+                    write_lit!(*empty);
+                    skip(&mut ops, *len);
+                } else {
+                    write_lit!(*open);
+                }
+            }
             XOp::Val { slot, in_attr } => {
                 if let Some(s) = slot_at(*slot) {
                     if pf.element(s) {
@@ -2287,48 +2519,51 @@ fn exec<'a, V: ValueSource<'a>>(
             XOp::Body {
                 slot,
                 optional,
+                dependent,
                 indent,
+                prefix,
                 tail_text,
-                tail_empty,
                 tail_elem,
-            } => {
-                // The opening `<Tag ...>` (including `>`) came from the
-                // preceding Lit run; only the content + close remain here.
-                match classify(*slot, *optional) {
-                    SlotClass::Skip => write_lit!(*tail_empty),
-                    SlotClass::TextLike => {
-                        if let Some(s) = slot_at(*slot) {
-                            write_val!(s, false);
-                        }
-                        write_lit!(*tail_text);
-                    }
-                    SlotClass::Element => {
-                        let s = slot_at(*slot).expect("element class implies present");
-                        if prog.indent_on {
-                            out.push(b'\n');
-                        }
-                        render_element_slot(
-                            s,
-                            progs,
-                            pf,
-                            chunk,
-                            cache.as_deref_mut(),
-                            vr,
-                            *indent + INDENT_WIDTH,
-                            prog.indent_on,
-                            out,
-                        )?;
-                        write_lit!(*tail_elem);
-                    }
+            } => match classify(*slot, *optional, *dependent) {
+                SlotClass::LeftOut => {}
+                SlotClass::Skip => {
+                    write_lit!(*prefix);
+                    write_lit!(*tail_text);
                 }
-            }
+                SlotClass::TextLike => {
+                    write_lit!(*prefix);
+                    if let Some(s) = slot_at(*slot) {
+                        write_val!(s, false);
+                    }
+                    write_lit!(*tail_text);
+                }
+                SlotClass::Element => {
+                    write_lit!(*prefix);
+                    let s = slot_at(*slot).expect("element class implies present");
+                    if prog.indent_on {
+                        out.push(b'\n');
+                    }
+                    render_element_slot(
+                        s,
+                        progs,
+                        pf,
+                        chunk,
+                        cache.as_deref_mut(),
+                        vr,
+                        *indent + INDENT_WIDTH,
+                        prog.indent_on,
+                        out,
+                    )?;
+                    write_lit!(*tail_elem);
+                }
+            },
             XOp::ChildSlot {
                 slot,
                 optional,
                 indent,
                 ind,
-            } => match classify(*slot, *optional) {
-                SlotClass::Skip => {}
+            } => match classify(*slot, *optional, false) {
+                SlotClass::LeftOut | SlotClass::Skip => {}
                 SlotClass::TextLike => {
                     write_lit!(*ind);
                     if let Some(s) = slot_at(*slot) {
@@ -2356,47 +2591,45 @@ fn exec<'a, V: ValueSource<'a>>(
             XOp::Expand {
                 slot,
                 optional,
+                dependent,
                 indent,
                 open,
                 tail_text,
-                tail_empty,
                 tail_elem,
             } => {
+                // An array isn't NULL, so it is never left out.
                 if let Some(items) = slot_at(*slot).and_then(|s| pf.array(s)) {
-                    // Array: the element repeats per item. Single-item arrays
-                    // are not expanded by the materialize lane (the value node
-                    // stays inline, empty or not); empty items in larger
-                    // arrays drop their text node (two-line empty form).
-                    let multi = items.len() > 1;
+                    // Array: the element repeats per item.
                     for item in items {
                         // Each item repeats the element's indentation.
                         pf.budget().check(out.len())?;
                         write_lit!(*open);
-                        if multi && item.is_empty() {
-                            write_lit!(*tail_empty);
-                        } else {
-                            vr.write_value_text(
-                                out,
-                                &BinXmlValue::StringType(item),
-                                StringEscapeMode::Xml {
-                                    in_attribute: false,
-                                },
-                            )?;
-                            write_lit!(*tail_text);
-                        }
+                        vr.write_value_text(
+                            out,
+                            &BinXmlValue::StringType(item),
+                            StringEscapeMode::Xml {
+                                in_attribute: false,
+                            },
+                        )?;
+                        write_lit!(*tail_text);
                     }
                 } else {
                     // Scalar: `Body` semantics with the open tag spliced in.
-                    write_lit!(*open);
-                    match classify(*slot, *optional) {
-                        SlotClass::Skip => write_lit!(*tail_empty),
+                    match classify(*slot, *optional, *dependent) {
+                        SlotClass::LeftOut => {}
+                        SlotClass::Skip => {
+                            write_lit!(*open);
+                            write_lit!(*tail_text);
+                        }
                         SlotClass::TextLike => {
+                            write_lit!(*open);
                             if let Some(s) = slot_at(*slot) {
                                 write_val!(s, false);
                             }
                             write_lit!(*tail_text);
                         }
                         SlotClass::Element => {
+                            write_lit!(*open);
                             let s = slot_at(*slot).expect("element class implies present");
                             if prog.indent_on {
                                 out.push(b'\n');
@@ -2471,6 +2704,20 @@ enum JAttrPart {
 enum JOp {
     /// Emit `lits[range]`.
     Lit(LitRange),
+    /// As `XOp::Depends`: `open` and the next `len` ops write an object member whose element
+    /// depends on `slot`, and are skipped when that value is NULL.
+    Depends { slot: u16, len: u32, open: LitRange },
+    /// As `XOp::LeftOut`: when every value of `deps` is NULL, write `empty` (`null`, the value
+    /// of an element left without children) instead of `open` and the next `len` ops.
+    LeftOut {
+        deps: LitRange,
+        len: u32,
+        empty: LitRange,
+        open: LitRange,
+    },
+    /// The comma before an object member when the members before it may all have been left
+    /// out: none when the object is still empty.
+    Comma,
     /// A leaf element value: `null`/`""` when empty, bare number for
     /// int/bool-typed slots, nested-instance object for BinXml slots,
     /// quoted escaped string otherwise.
@@ -2478,6 +2725,8 @@ enum JOp {
         prefix: LitRange,
         slot: u16,
         empty: LitRange,
+        /// As `XOp::Body`'s.
+        dependent: bool,
     },
     /// `write_element_value` for an element with placeholder attributes and
     /// at most one placeholder content child (no element children possible).
@@ -2506,7 +2755,7 @@ impl JOp {
         let mut slots = Vec::new();
         for op in ops {
             match op {
-                JOp::Lit(_) => {}
+                JOp::Lit(_) | JOp::Depends { .. } | JOp::LeftOut { .. } | JOp::Comma => {}
                 JOp::LeafVal { slot, .. } | JOp::SlotChild { slot, .. } => slots.push(*slot),
                 JOp::Elem { attrs, content, .. } => {
                     slots.extend(attrs.iter().filter_map(|part| match part {
@@ -2519,12 +2768,27 @@ impl JOp {
         }
         slots
     }
+
+    /// As `XOp::depend_on`.
+    fn depend_on(&mut self, dependency: u16) -> bool {
+        match self {
+            JOp::LeafVal {
+                slot, dependent, ..
+            } if *slot == dependency => {
+                *dependent = true;
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A compiled JSON template program.
 pub(crate) struct JsonProgram {
     lits: Vec<u8>,
     ops: Vec<JOp>,
+    /// The values that `JOp::LeftOut` ops test.
+    deps: Vec<u16>,
     elem_slots: Vec<(u16, u16)>,
     constraints: Vec<SlotConstraint>,
     /// Slots whose `LeafVal` sits at a positional-`Data` aggregation site
@@ -2566,6 +2830,7 @@ impl TemplateProgram for JsonProgram {
         std::mem::size_of::<Self>()
             + heap_size(&self.lits)
             + heap_size(&self.ops)
+            + heap_size(&self.deps)
             + heap_size(&self.elem_slots)
             + heap_size(&self.constraints)
             + heap_size(&self.expand_slots)
@@ -2604,10 +2869,20 @@ impl TemplateProgram for JsonProgram {
     }
 }
 
+/// What the members of a JSON object written so far say about the next one's comma.
+#[derive(Default)]
+struct Members {
+    /// A member that is written whatever the instance.
+    certain: bool,
+    /// A member that an instance can leave out.
+    possible: bool,
+}
+
 struct JsonCompiler<'t, 'a> {
     tree: Option<&'t IrTree<'a>>,
     lits: Vec<u8>,
     ops: Vec<JOp>,
+    deps: Vec<u16>,
     run_start: usize,
     elem_slots: Vec<(u16, u16)>,
     constraints: Vec<SlotConstraint>,
@@ -2631,6 +2906,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             shared: tree.is_some_and(|tree| tree.arena().shared()),
             lits,
             ops: Vec::new(),
+            deps: Vec::new(),
             run_start: 0,
             elem_slots: Vec::new(),
             constraints: Vec::new(),
@@ -2676,12 +2952,14 @@ fn compile_json_template(
             // As in `compile_xml_template`.
             c.lits.shrink_to_fit();
             c.ops.shrink_to_fit();
+            c.deps.shrink_to_fit();
             c.elem_slots.shrink_to_fit();
             c.constraints.shrink_to_fit();
             c.expand_slots.shrink_to_fit();
             Some(JsonProgram {
                 lits: c.lits,
                 ops: c.ops,
+                deps: c.deps,
                 elem_slots: c.elem_slots,
                 constraints: c.constraints,
                 expand_slots: c.expand_slots,
@@ -2732,7 +3010,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         // Placeholder-free subtree: render via the materialized layer (the
         // same implementation the slow lane uses).
-        if !subtree_has_placeholder(self.tree(), element) {
+        if !subtree_varies(self.tree(), element) {
             return self
                 .write_element_value_plain(element, container)
                 .map_err(|_| Bail);
@@ -2759,7 +3037,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             ChildrenKind::Empty => {
                 if !ph_attrs {
                     // Statically resolvable: `null` or attrs-only object.
-                    // (subtree_has_placeholder was true, so this can't happen.)
+                    // (subtree_varies was true, so this can't happen.)
                     Err(Bail)
                 } else {
                     self.compile_elem_op(element, None)
@@ -2784,6 +3062,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             prefix,
             slot,
             empty,
+            dependent: false,
         });
     }
 
@@ -2878,6 +3157,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
     /// Static-layout object: literal element children (each a member), plus
     /// optional trailing placeholder children (`SlotChild`).
+    ///
+    /// A member whose element depends on a value compiles behind a `JOp::Depends`, which leaves
+    /// it out when the value is NULL, as the tree walker does. That must not change the other
+    /// members' keys, so such templates take the tree walkers when a member left out would
+    /// change the `_N` suffix of another, a sibling `Data` aggregation or the named form.
     fn compile_object_body(
         &mut self,
         element: &'t Element<'a>,
@@ -2887,34 +3171,42 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if ph_attrs {
             return Err(Bail); // object with placeholder attrs: fallback
         }
+        // Members that each depend on a value can all be left out, which leaves an element
+        // without attributes `null`: `JOp::LeftOut` writes that then.
+        let attrs_text = self.attr_flags_plain(&element.attrs).1;
+        let left_out = (children_all_depend(self.tree().arena(), element)? && !attrs_text)
+            .then(|| self.open_guard());
         self.lits.push(b'{');
-        let mut wrote_any = false;
+        let mut members = Members::default();
 
         // `#attributes` for literal attrs (static decision + static bytes).
         if !element.attrs.is_empty() && self.attrs_object_plain(&element.attrs).map_err(|_| Bail)? {
-            wrote_any = true;
+            members.certain = true;
         }
 
         // Flattening / positional decisions are compile-time: literal `Data`
         // children only (placeholder `Data` shapes bail via classify above).
         let mut flatten_named = false;
+        let mut dependent_data = false;
         if container {
             for node in &element.children {
                 if let Node::Element(id) = node {
                     let child = self.element_ref(*id);
-                    if is_data_element_name(child.name.as_str())
-                        && let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name")
-                    {
-                        if attr.value.iter().any(|n| matches!(n, Node::Placeholder(_))) {
+                    if !is_data_element_name(child.name.as_str()) {
+                        continue;
+                    }
+                    dependent_data |= child.dependency.is_some();
+                    if let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name") {
+                        if attr.value.iter().any(is_placeholder) {
                             return Err(Bail); // dynamic Data names: fallback
                         }
-                        if attr.value.iter().any(literal_nonempty) {
-                            flatten_named = true;
-                            break;
-                        }
+                        flatten_named |= attr.value.iter().any(literal_nonempty);
                     }
                 }
             }
+        }
+        if flatten_named && dependent_data {
+            return Err(Bail); // leaving a named Data out could change the form: fallback
         }
         let positional_data: Vec<ElementId> = if container && !flatten_named {
             element
@@ -2932,13 +3224,16 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         } else {
             Vec::new()
         };
+        if positional_data.len() > 1 && dependent_data {
+            return Err(Bail); // leaving a Data out would change the aggregation: fallback
+        }
         let mut positional_emitted = false;
 
         // Compile-time `_N` suffix counting for static members.
         let mut static_names = NameCounts::new();
 
         let mut seen_slot_child = false;
-        for node in &element.children {
+        for (index, node) in element.children.iter().enumerate() {
             self.check_size().map_err(|_| Bail)?;
             match node {
                 Node::Element(id) => {
@@ -2947,6 +3242,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     }
                     let child = self.element_ref(*id);
                     let cname = child.name.as_str();
+                    let dependency = child.dependency;
                     if container && is_data_element_name(cname) {
                         if flatten_named {
                             let Some(attr) = child.attrs.iter().find(|a| a.name.as_str() == "Name")
@@ -2956,10 +3252,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             if !attr.value.iter().any(literal_nonempty) {
                                 continue; // empty literal name: skipped
                             }
-                            if wrote_any {
-                                self.lits.push(b',');
-                            }
-                            wrote_any = true;
+                            self.member_comma(&mut members, false);
                             // Key: JSON-escaped literal name text.
                             self.lits.push(b'"');
                             self.text_content_plain(&attr.value, false)
@@ -2968,49 +3261,63 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             self.compile_data_value(*id, false)?;
                         } else if !positional_emitted && !positional_data.is_empty() {
                             positional_emitted = true;
-                            if wrote_any {
-                                self.lits.push(b',');
-                            }
-                            wrote_any = true;
-                            self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
-                            if positional_data.len() == 1 {
-                                // Sole positional Data: a string array here
-                                // aggregates into a JSON array value, so the
-                                // slot is expandable.
-                                self.compile_data_value(positional_data[0], true)?;
-                            } else {
-                                self.lits.push(b'[');
-                                for (i, did) in positional_data.iter().enumerate() {
-                                    self.check_size().map_err(|_| Bail)?;
-                                    if i > 0 {
-                                        self.lits.push(b',');
+                            // A dependent Data is the only one (above).
+                            self.compile_member(&mut members, dependency, |c| {
+                                c.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                                if positional_data.len() == 1 {
+                                    // Sole positional Data: a string array here
+                                    // aggregates into a JSON array value, so the
+                                    // slot is expandable.
+                                    c.compile_data_value(positional_data[0], true)?;
+                                } else {
+                                    c.lits.push(b'[');
+                                    for (i, did) in positional_data.iter().enumerate() {
+                                        c.check_size().map_err(|_| Bail)?;
+                                        if i > 0 {
+                                            c.lits.push(b',');
+                                        }
+                                        c.compile_data_value(*did, false)?;
                                     }
-                                    self.compile_data_value(*did, false)?;
+                                    c.lits.push(b']');
                                 }
-                                self.lits.push(b']');
-                            }
-                            self.lits.push(b'}');
+                                c.lits.push(b'}');
+                                Ok(())
+                            })?;
                         }
                         continue;
                     }
-                    // Normal member.
-                    if wrote_any {
-                        self.lits.push(b',');
-                    }
-                    wrote_any = true;
+                    // Normal member. Leaving one out mustn't change another's `_N` suffix, so
+                    // no member whose name repeats may be one an instance can leave out.
                     let suffix = static_names.next_suffix(cname.as_bytes());
-                    self.lits.push(b'"');
-                    self.lits.extend_from_slice(cname.as_bytes());
-                    if suffix > 0 {
-                        self.lits.push(b'_');
-                        self.lits.extend_from_slice(suffix.to_string().as_bytes());
+                    if suffix > 0
+                        && (dependency.is_some()
+                            || element.children[..index].iter().any(|node| {
+                                matches!(node, Node::Element(id)
+                                    if self.element_ref(*id).name.as_str() == cname
+                                        && self.element_ref(*id).dependency.is_some())
+                            }))
+                    {
+                        return Err(Bail);
                     }
-                    self.lits.extend_from_slice(b"\":");
-                    self.compile_element_value(*id, is_data_container_name(cname))?;
+                    self.compile_member(&mut members, dependency, |c| {
+                        c.lits.push(b'"');
+                        c.lits.extend_from_slice(cname.as_bytes());
+                        if suffix > 0 {
+                            c.lits.push(b'_');
+                            c.lits.extend_from_slice(suffix.to_string().as_bytes());
+                        }
+                        c.lits.extend_from_slice(b"\":");
+                        c.compile_element_value(*id, is_data_container_name(cname))
+                    })?;
                 }
                 Node::Placeholder(ph) => {
                     if seen_slot_child {
                         return Err(Bail); // dynamic same-name suffixing needs runtime state
+                    }
+                    // Its comma and `_N` suffix are decided here, so no member before it may be
+                    // left out.
+                    if members.possible {
+                        return Err(Bail);
                     }
                     // Dynamic member: nested-instance value (or absent).
                     self.flush_lit_run();
@@ -3026,7 +3333,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     self.ops.push(JOp::SlotChild {
                         slot: ph.id,
                         static_names: name_ranges.into_boxed_slice(),
-                        lead_comma: wrote_any,
+                        lead_comma: members.certain,
                     });
                     seen_slot_child = true;
                 }
@@ -3038,6 +3345,52 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             }
         }
         self.lits.push(b'}');
+        if let Some(at) = left_out {
+            self.flush_lit_run();
+            let empty = self.side_range(|c| c.lits.extend_from_slice(b"null"));
+            let deps = self.children_deps(element);
+            self.close_guard(at, |len, open| JOp::LeftOut {
+                deps,
+                len,
+                empty,
+                open,
+            });
+        }
+        Ok(())
+    }
+
+    /// The comma before an object member: none before the first, a literal one after a member
+    /// that is always written, and `JOp::Comma` while those before may all have been left out.
+    /// `dependent`: whether an instance can leave this member out.
+    fn member_comma(&mut self, members: &mut Members, dependent: bool) {
+        if members.certain {
+            self.lits.push(b',');
+        } else if members.possible {
+            self.flush_lit_run();
+            self.ops.push(JOp::Comma);
+        }
+        if dependent {
+            members.possible = true;
+        } else {
+            members.certain = true;
+        }
+    }
+
+    /// One object member with its comma, `write` compiling its key and value. One whose element
+    /// depends on a value compiles behind a `JOp::Depends`, which leaves it out when the value
+    /// is NULL, or as a dependent `JOp::LeafVal` when it holds that value.
+    fn compile_member(
+        &mut self,
+        members: &mut Members,
+        dependency: Option<u16>,
+        write: impl FnOnce(&mut Self) -> std::result::Result<(), Bail>,
+    ) -> std::result::Result<(), Bail> {
+        let guard = dependency.map(|slot| (self.open_guard(), slot));
+        self.member_comma(members, dependency.is_some());
+        write(self)?;
+        if let Some((at, slot)) = guard {
+            self.close_depends(at, slot);
+        }
         Ok(())
     }
 
@@ -3050,7 +3403,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         expandable: bool,
     ) -> std::result::Result<(), Bail> {
         let element = self.element_ref(id);
-        if !subtree_has_placeholder(self.tree(), element) {
+        if !subtree_varies(self.tree(), element) {
             return self.data_element_value_plain(element).map_err(|_| Bail);
         }
         if element.children.len() == 1
@@ -3081,6 +3434,8 @@ pub(crate) trait ValueSource<'a> {
     type Value;
     fn slots(&self, scope: Self::Scope) -> &[Self::Value];
     fn empty(&self, slot: &Self::Value) -> bool;
+    /// Whether the value is NULL, which leaves out the elements that depend on it.
+    fn null(&self, slot: &Self::Value) -> bool;
     fn element(&self, slot: &Self::Value) -> bool;
     fn array(&self, slot: &Self::Value) -> Option<impl ExactSizeIterator<Item = Utf16LeSlice<'a>>>;
     fn bare(&self, slot: &Self::Value) -> bool;
@@ -3163,6 +3518,12 @@ impl<'a> ValueSource<'a> for RawValues<'_, 'a> {
         self.pf.slot_empty(s, self.data)
     }
     #[inline(always)]
+    fn null(&self, s: &RawSlot) -> bool {
+        // A BinXML value with no bytes decodes as NULL (`validate_tpl_instance`), and so
+        // renders as one: it is one here too.
+        s.ty == value_ty::NULL || (s.ty == value_ty::BIN_XML && s.len == 0)
+    }
+    #[inline(always)]
     fn element(&self, s: &RawSlot) -> bool {
         s.is_binxml_payload()
     }
@@ -3231,6 +3592,10 @@ impl<'a> ValueSource<'a> for DecodedValues<'_, 'a> {
             ValidatedValue::Scalar(v) => crate::model::ir::is_optional_empty(v),
             _ => false,
         }
+    }
+    #[inline(always)]
+    fn null(&self, s: &Self::Value) -> bool {
+        matches!(s, ValidatedValue::Scalar(BinXmlValue::NullType))
     }
     #[inline(always)]
     fn element(&self, s: &Self::Value) -> bool {
@@ -3449,14 +3814,45 @@ fn exec_json<'a, V: ValueSource<'a>>(
         }};
     }
 
-    for op in &prog.ops {
+    let null = |slot: u16| slot_at(slot).is_some_and(|s| pf.null(s));
+    let mut ops = prog.ops.iter();
+    while let Some(op) = ops.next() {
         match op {
             JOp::Lit(r) => write_lit!(*r),
+            JOp::Depends { slot, len, open } => {
+                if null(*slot) {
+                    skip(&mut ops, *len);
+                } else {
+                    write_lit!(*open);
+                }
+            }
+            JOp::LeftOut {
+                deps,
+                len,
+                empty,
+                open,
+            } => {
+                if deps.of(&prog.deps).iter().all(|&slot| null(slot)) {
+                    write_lit!(*empty);
+                    skip(&mut ops, *len);
+                } else {
+                    write_lit!(*open);
+                }
+            }
+            JOp::Comma => {
+                if out.last() != Some(&b'{') {
+                    out.push(b',');
+                }
+            }
             JOp::LeafVal {
                 prefix,
                 slot,
                 empty,
+                dependent,
             } => {
+                if *dependent && null(*slot) {
+                    continue;
+                }
                 write_lit!(*prefix);
                 match slot_at(*slot) {
                     None => write_lit!(*empty),
