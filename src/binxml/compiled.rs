@@ -292,6 +292,31 @@ impl<K: Copy + Eq + std::hash::Hash> NameCounts<K> {
     }
 }
 
+/// The object `JsonCompiler::element_body_plain` is writing.
+struct BodyPlain {
+    in_data_container: bool,
+    /// One non-empty `Data[@Name]` selects the named form for the container's `Data`.
+    should_flatten_named_data: bool,
+    /// The container's `Data` children in the positional form, written with the first.
+    positional_data_count: usize,
+    positional_data_emitted: bool,
+    wrote_any: bool,
+}
+
+/// What `JsonCompiler::member_value_plain` writes after the key `member_key_plain` wrote.
+enum MemberPlain {
+    /// Nothing: the child isn't a member, or it holds only its attributes' member.
+    None,
+    /// A named `Data` element's value.
+    Data,
+    /// The container's `Data` children in the positional form, this many.
+    PositionalData(usize),
+    /// An element's value.
+    Element { container: bool },
+    /// An element's value without its attributes, which went to their own member.
+    ElementNoAttrs { container: bool },
+}
+
 /// One compiled op. `slot` indexes the instance's substitution array.
 #[derive(Debug, Clone)]
 enum XOp {
@@ -4422,7 +4447,10 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
     }
 
-    /// Mirrors `write_element_body_json` (materialized: no array expansion).
+    /// Mirrors `write_element_body_json` (materialized: no array expansion). Each level of a deep
+    /// tree keeps this frame on the stack, and a debug build's 2 MiB thread holds 512 levels only
+    /// while it stays small, so it makes only the calls that recurse: `body_start_plain` and
+    /// `member_key_plain` write the rest.
     fn element_body_plain(
         &mut self,
         element: &Element<'a>,
@@ -4430,6 +4458,28 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         omit_attributes: bool,
         has_text: bool,
     ) -> Result<()> {
+        let mut body =
+            self.body_start_plain(element, in_data_container, omit_attributes, has_text)?;
+        let mut name_counts = NameCounts::new();
+        for node in &element.children {
+            let Node::Element(id) = node else { continue };
+            let child = self.element_ref(*id);
+            let member = self.member_key_plain(child, &mut body, &mut name_counts)?;
+            self.member_value_plain(element, child, member)?;
+        }
+        self.lits.push(b'}');
+        self.depth -= 1;
+        Ok(())
+    }
+
+    /// Opens an element's object and writes its attributes and text, for `element_body_plain`.
+    fn body_start_plain(
+        &mut self,
+        element: &Element<'a>,
+        in_data_container: bool,
+        omit_attributes: bool,
+        has_text: bool,
+    ) -> Result<BodyPlain> {
         // A materialized tree nests values' elements where they are used.
         if self.depth >= MAX_RENDER_DEPTH
             && element
@@ -4465,8 +4515,6 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             }
         }
 
-        let mut name_counts = NameCounts::new();
-
         self.lits.push(b'{');
         let mut wrote_any = false;
 
@@ -4498,96 +4546,135 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         } else {
             0
         };
-        let mut positional_data_emitted = false;
+        Ok(BodyPlain {
+            in_data_container,
+            should_flatten_named_data,
+            positional_data_count,
+            positional_data_emitted: false,
+            wrote_any,
+        })
+    }
 
-        for node in &element.children {
-            let Node::Element(id) = node else { continue };
-            let child = self.element_ref(*id);
-            self.visit(child)?;
+    /// Writes what comes before a child element's value in `element_body_plain`'s object: the
+    /// comma and key, and in separate-attributes mode its attributes' member.
+    fn member_key_plain(
+        &mut self,
+        child: &'t Element<'a>,
+        body: &mut BodyPlain,
+        name_counts: &mut NameCounts<&'t str>,
+    ) -> Result<MemberPlain> {
+        self.visit(child)?;
 
-            if in_data_container && is_data_element_name(child.name.as_str()) {
-                if should_flatten_named_data {
-                    let Some(name_nodes) = child
-                        .attrs
-                        .iter()
-                        .find(|a| a.name.as_str() == "Name")
-                        .map(|a| &a.value)
-                    else {
-                        continue;
-                    };
-                    if !self.has_text_content_plain(name_nodes) {
-                        continue;
-                    }
-                    if wrote_any {
-                        self.lits.push(b',');
-                    }
-                    wrote_any = true;
-                    self.lits.push(b'"');
-                    self.text_content_plain(name_nodes, false)?;
-                    self.lits.extend_from_slice(b"\":");
-                    self.data_element_value_plain(child)?;
-                } else if !positional_data_emitted && positional_data_count > 0 {
-                    if wrote_any {
-                        self.lits.push(b',');
-                    }
-                    wrote_any = true;
-                    positional_data_emitted = true;
-                    self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
-                    if positional_data_count == 1 {
-                        self.data_element_value_plain(child)?;
-                    } else {
-                        self.lits.push(b'[');
-                        let mut first = true;
-                        for node2 in &element.children {
-                            let Node::Element(id2) = node2 else { continue };
-                            self.check_size()?;
-                            let candidate = self.element_ref(*id2);
-                            if !is_data_element_name(candidate.name.as_str()) {
-                                continue;
-                            }
-                            if !first {
-                                self.lits.push(b',');
-                            }
-                            first = false;
-                            self.data_element_value_plain(candidate)?;
-                        }
-                        self.lits.push(b']');
-                    }
-                    self.lits.push(b'}');
+        if body.in_data_container && is_data_element_name(child.name.as_str()) {
+            if body.should_flatten_named_data {
+                let Some(name_nodes) = child
+                    .attrs
+                    .iter()
+                    .find(|a| a.name.as_str() == "Name")
+                    .map(|a| &a.value)
+                else {
+                    return Ok(MemberPlain::None);
+                };
+                if !self.has_text_content_plain(name_nodes) {
+                    return Ok(MemberPlain::None);
                 }
-                continue;
-            }
-
-            // Normal child member with `_N` suffixing.
-            let cname = child.name.as_str();
-            let suffix = name_counts.next_suffix(cname);
-
-            if wrote_any {
-                self.lits.push(b',');
-            }
-            wrote_any = true;
-
-            let child_is_container = is_data_container_name(cname);
-            if self.separate {
-                let wrote_attrs = self.render_separate_attrs_plain(child, suffix)?;
-                let (child_text, child_elem) = Self::content_layout_plain(child);
-                let child_has_value = child_elem || child_text;
-                let write_value = child_has_value || !wrote_attrs;
-                if wrote_attrs && write_value {
+                if body.wrote_any {
                     self.lits.push(b',');
                 }
-                if write_value {
-                    self.key_with_suffix_plain(cname, suffix);
-                    self.write_element_value_no_attrs_plain(child, child_is_container)?;
-                }
-            } else {
-                self.key_with_suffix_plain(cname, suffix);
-                self.write_element_value_plain(child, child_is_container)?;
+                body.wrote_any = true;
+                self.lits.push(b'"');
+                self.text_content_plain(name_nodes, false)?;
+                self.lits.extend_from_slice(b"\":");
+                return Ok(MemberPlain::Data);
             }
+            if body.positional_data_emitted || body.positional_data_count == 0 {
+                return Ok(MemberPlain::None);
+            }
+            if body.wrote_any {
+                self.lits.push(b',');
+            }
+            body.wrote_any = true;
+            body.positional_data_emitted = true;
+            self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+            return Ok(MemberPlain::PositionalData(body.positional_data_count));
         }
 
+        // Normal child member with `_N` suffixing.
+        let cname = child.name.as_str();
+        let suffix = name_counts.next_suffix(cname);
+
+        if body.wrote_any {
+            self.lits.push(b',');
+        }
+        body.wrote_any = true;
+
+        let container = is_data_container_name(cname);
+        if self.separate {
+            let wrote_attrs = self.render_separate_attrs_plain(child, suffix)?;
+            let (child_text, child_elem) = Self::content_layout_plain(child);
+            let child_has_value = child_elem || child_text;
+            let write_value = child_has_value || !wrote_attrs;
+            if wrote_attrs && write_value {
+                self.lits.push(b',');
+            }
+            if !write_value {
+                return Ok(MemberPlain::None);
+            }
+            self.key_with_suffix_plain(cname, suffix);
+            Ok(MemberPlain::ElementNoAttrs { container })
+        } else {
+            self.key_with_suffix_plain(cname, suffix);
+            Ok(MemberPlain::Element { container })
+        }
+    }
+
+    /// Writes the value of a member whose key `member_key_plain` wrote.
+    fn member_value_plain(
+        &mut self,
+        element: &Element<'a>,
+        child: &Element<'a>,
+        member: MemberPlain,
+    ) -> Result<()> {
+        match member {
+            MemberPlain::None => Ok(()),
+            MemberPlain::Data => self.data_element_value_plain(child),
+            MemberPlain::PositionalData(count) => self.positional_data_plain(element, child, count),
+            MemberPlain::Element { container } => self.write_element_value_plain(child, container),
+            MemberPlain::ElementNoAttrs { container } => {
+                self.write_element_value_no_attrs_plain(child, container)
+            }
+        }
+    }
+
+    /// The `Data` children of a container in the positional form, from the first one, `first`:
+    /// its value, or all of theirs in an array, then the end of their `{"#text":…}`.
+    fn positional_data_plain(
+        &mut self,
+        element: &Element<'a>,
+        first: &Element<'a>,
+        count: usize,
+    ) -> Result<()> {
+        if count == 1 {
+            self.data_element_value_plain(first)?;
+        } else {
+            self.lits.push(b'[');
+            let mut first = true;
+            for node in &element.children {
+                let Node::Element(id) = node else { continue };
+                self.check_size()?;
+                let candidate = self.element_ref(*id);
+                if !is_data_element_name(candidate.name.as_str()) {
+                    continue;
+                }
+                if !first {
+                    self.lits.push(b',');
+                }
+                first = false;
+                self.data_element_value_plain(candidate)?;
+            }
+            self.lits.push(b']');
+        }
         self.lits.push(b'}');
-        self.depth -= 1;
         Ok(())
     }
 }

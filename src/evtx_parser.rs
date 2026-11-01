@@ -496,7 +496,8 @@ impl EvtxParser<File> {
 }
 
 impl EvtxParser<Cursor<Vec<u8>>> {
-    /// Attempts to load an evtx file from a given path, will fail the evtx header is invalid.
+    /// Loads an evtx file from a buffer that holds all of its bytes. Fails if the buffer doesn't
+    /// start with an EVTX file header.
     pub fn from_buffer(buffer: Vec<u8>) -> Result<Self> {
         let cursor = Cursor::new(buffer);
         Self::from_read_seek(cursor)
@@ -504,6 +505,8 @@ impl EvtxParser<Cursor<Vec<u8>>> {
 }
 
 impl<T: ReadSeek> EvtxParser<T> {
+    /// Loads an evtx file from any seekable reader, such as a `File` or a `Cursor`. Fails if it
+    /// doesn't start with an EVTX file header.
     pub fn from_read_seek(mut read_seek: T) -> Result<Self> {
         let evtx_header = EvtxFileHeader::from_stream(&mut read_seek)?;
 

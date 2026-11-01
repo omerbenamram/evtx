@@ -64,7 +64,7 @@ struct EvtxDump {
     output: Box<dyn Write>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
-    /// When set, only the specified events (offseted reltaive to file) will be outputted.
+    /// When set, only the records whose event record IDs are in these ranges are output.
     ranges: Option<Ranges>,
 }
 
@@ -96,6 +96,8 @@ impl EvtxDump {
 
         let num_threads = match (cfg!(feature = "multithreading"), num_threads) {
             (true, number) => number,
+            // The default (0) and `-t 1` ask for nothing a build without threads lacks.
+            (false, 0 | 1) => 1,
             (false, _) => {
                 eprintln!(
                     "turned on threads, but library was compiled without `multithreading` feature! using fallback sync iterator"
@@ -191,6 +193,8 @@ impl EvtxDump {
             }
         };
 
+        // Dropping the buffer flushes it too, but ignores a failed write.
+        self.output.flush()?;
         Ok(())
     }
 
@@ -420,6 +424,23 @@ fn test_parse_ansi_codec() {
 }
 
 fn main() -> Result<()> {
+    match run_cli() {
+        // A reader that stops early, such as `head`, closes the pipe: that ends the output, as
+        // it does for other command-line tools, rather than being an error.
+        Err(error) if is_broken_pipe(&error) => Ok(()),
+        result => result,
+    }
+}
+
+fn is_broken_pipe(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<io::Error>()
+            .is_some_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+    })
+}
+
+fn run_cli() -> Result<()> {
     let cmd = Command::new("EVTX Parser")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Omer B. <omerbenamram@gmail.com>")
@@ -471,10 +492,10 @@ fn main() -> Result<()> {
                 .long("events")
                 .action(ArgAction::Set)
                 .value_parser(matches_ranges)
-                .help(indoc!("When set, only the specified events (offseted reltaive to file) will be outputted.
+                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output.
                 For example:
-                    --events=1 will output the first event.
-                    --events=0-10,20-30 will output events 0-10 and 20-30.
+                    --events=1 outputs the record whose ID is 1.
+                    --events=0-10,20-30 outputs the records with IDs 0 to 10 and 20 to 30.
                 ")),
         )
         .arg(
