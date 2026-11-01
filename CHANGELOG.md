@@ -8,12 +8,18 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.15.1 - 2026-11-01]
+
+0.15.0's Windows build failed, so 0.15.0 never reached crates.io: this is the
+first published release of its changes. Read [0.15.0's
+notes](https://github.com/omerbenamram/evtx/releases/tag/v0.15.0) before
+upgrading: their Breaking changes section says what to change.
+
 ### Fixed
 
 - `evtx_dump` built with `fast-alloc` links on Windows again. rpmalloc calls
   advapi32 functions without linking advapi32, and the dependency that had been
-  bringing them in is gone, so 0.15.0's Windows build failed and 0.15.0 wasn't
-  published to crates.io.
+  bringing them in is gone.
 
 ## [0.15.0 - 2026-11-01]
 
