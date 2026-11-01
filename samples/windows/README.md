@@ -58,7 +58,9 @@ logs. Windows can't read 8 of the samples at all (`query_error`), and
 
 Each line has the log's path under `samples/` (`sample`), and `record_id` and `xml` as in
 `types.evtx.jsonl`. To make a new one, run the workflow, then the test on its artifact's
-`samples/` folder, which compares every record Windows rendered and writes the selection:
+`samples/` folder, which compares every record Windows rendered and writes the selection. It
+leaves out `types.evtx`, which holds values evtx renders differently on purpose, such as floats
+and ANSI text; [`test_windows_types.rs`](../../tests/test_windows_types.rs) checks it.
 
 ```
 EVTX_WINDOWS_XML=<artifact>/samples EVTX_WINDOWS_XML_SAVE=1 cargo test --test test_windows_samples

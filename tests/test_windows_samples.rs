@@ -5,7 +5,8 @@
 //!
 //! To compare every record of every sample instead, set `EVTX_WINDOWS_XML` to the `samples/`
 //! folder of the `windows-xml` workflow's artifact. With `EVTX_WINDOWS_XML_SAVE=1` as well, the
-//! test writes a new `samples/windows/samples.jsonl` from it.
+//! test writes a new `samples/windows/samples.jsonl` from it. `samples/windows/types.evtx` is
+//! left out: `test_windows_types.rs` checks it.
 
 mod fixtures;
 
@@ -64,7 +65,9 @@ fn artifact_records(folder: &Path) -> Vec<WindowsRecord> {
                 continue;
             };
             let sample = sample.replace('\\', "/");
-            if !samples_dir().join(&sample).is_file() {
+            // `windows/types.evtx` is made to hold the values evtx renders differently on purpose,
+            // such as floats and ANSI text, and `test_windows_types.rs` checks it on its own terms.
+            if sample.starts_with("windows/") || !samples_dir().join(&sample).is_file() {
                 continue;
             }
             for line in std::fs::read_to_string(&path).unwrap().lines() {
