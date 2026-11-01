@@ -31,6 +31,27 @@ jobs:
       - name: Run utf16-simd tests
         run: cargo test --manifest-path utf16-simd/Cargo.toml
 
+  fuzz:
+    name: Check fuzz targets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          lfs: true
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run every seed through every target
+        run: |
+          python3 fuzz/seed_corpus.py
+          for target in $(cargo fuzz list); do
+            cargo fuzz run "$target" -- -runs=0
+          done
+
   viewer:
     name: Check web viewer
     runs-on: ubuntu-latest
