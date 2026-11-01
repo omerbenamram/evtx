@@ -177,6 +177,14 @@ impl EvtxDump {
         let mut parser = self
             .open_parser()
             .map(|parser| parser.with_configuration(self.parser_settings.clone()))?;
+        let header = parser.header();
+        // With logging on, the parser's own warning says this.
+        if !header.validate_checksum() && self.verbosity_level.is_none() {
+            eprintln!(
+                "warning: the file header's CRC32 is invalid (stored {:#010x}, computed {:#010x}); reading the file anyway",
+                header.checksum, header.computed_checksum
+            );
+        }
 
         match self.output_format {
             EvtxOutputFormat::XML => {

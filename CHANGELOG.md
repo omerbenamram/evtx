@@ -8,6 +8,18 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `EvtxParser::header()` returns the file header, which was private. The
+  header also has `computed_checksum`, the CRC32 of its first 120 bytes as
+  read, and `validate_checksum()`, which compares it with the stored
+  `checksum` unless `NO_CRC32` is set (the Application_no_crc32 sample's
+  header sets it and stores 0). evtx never checked the header's CRC32. A file
+  whose header fails the check is still read, since evtx finds chunks at fixed
+  offsets, but the parser logs a warning and `evtx_dump` prints one.
+  **Breaking:** code that builds an `EvtxFileHeader` with a struct literal
+  needs the new field.
+
 ### Changed
 
 - Timestamps render with seven fractional digits, the 100 ns that a FILETIME
