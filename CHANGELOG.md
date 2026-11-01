@@ -106,6 +106,12 @@ and this project adheres to
   from the start again, repeating keys. Debug builds panicked. Numbering the
   children of an element with thousands of names took time quadratic in their
   number.
+- `evtx_dump` piped into a reader that stops early, such as `head`, ended with
+  `Error: Broken pipe (os error 32)` and exit status 1, and
+  `dump-template-instances` panicked. They now stop quietly, with status 0.
+- `evtx_dump` didn't flush its output before exiting, so a failure to write the
+  last of it, such as a full disk, was lost and the exit status was 0. It is
+  now an error.
 
 ### Security
 
