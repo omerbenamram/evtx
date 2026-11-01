@@ -125,6 +125,14 @@ pub(crate) struct Element<'a> {
     pub(crate) attrs: IrVec<'a, Attr<'a>>,
     pub(crate) children: IrVec<'a, Node<'a>>,
     pub(crate) has_element_child: bool,
+    /// Whether the BinXML closed the element as empty (`CloseEmptyElement`), so XML writes it
+    /// as `<X/>`, as Windows does. An element whose content renders to nothing is `<X></X>`.
+    pub(crate) self_closing: bool,
+    /// In a template definition, the substitution the element depends on (its BinXML
+    /// DependencyId): MS-EVEN6 2.2.12 says the element MUST NOT be rendered when that value is
+    /// NullType, and Windows leaves it out. `None` when it has no dependency (0xFFFF), and
+    /// once instantiated.
+    pub(crate) dependency: Option<u16>,
 }
 
 impl<'a> Element<'a> {
@@ -135,6 +143,8 @@ impl<'a> Element<'a> {
             attrs: IrVec::new_in(arena),
             children: IrVec::new_in(arena),
             has_element_child: false,
+            self_closing: false,
+            dependency: None,
         }
     }
 

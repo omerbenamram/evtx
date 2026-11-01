@@ -514,9 +514,12 @@ fn repeated_values_are_capped() {
 /// `with_value`, an `<A>` that holds its value.
 fn shared_names(root: &mut BinXml, elements: usize, with_value: bool) {
     root.open("R", true).close_start();
-    root.open(&"N".repeat(4000), true).close_empty();
+    // Each element ends with an end tag, so XML writes its name twice: `<N…></N…>`.
+    root.open(&"N".repeat(4000), true)
+        .close_start()
+        .end_element();
     for _ in 1..elements {
-        root.reopen(true).close_empty();
+        root.reopen(true).close_start().end_element();
     }
     if with_value {
         root.open("A", true)
@@ -880,9 +883,10 @@ fn output_after_instances(uses: u16) -> Vec<u8> {
                                 fragment.template_instance(
                                     |u| {
                                         u.open("U", true).close_start();
-                                        u.open(name, true).close_empty();
+                                        // `<N…></N…>`: the name twice in XML.
+                                        u.open(name, true).close_start().end_element();
                                         for _ in 1..124 {
-                                            u.reopen(true).close_empty();
+                                            u.reopen(true).close_start().end_element();
                                         }
                                         u.end_element();
                                     },
@@ -1003,7 +1007,7 @@ fn nested(outer: usize) -> Vec<u8> {
 fn depth_is_capped() {
     // As in one stream, 512 elements can nest around an empty one, in both formats.
     let (xml, json) = render_record(&nested(212), 1);
-    assert_eq!(xml.matches("<E>").count(), 2);
+    assert_eq!(xml.matches("<E/>").count(), 2);
     assert_eq!(json.matches(r#""E":null"#).count(), 2);
     assert_fails_everywhere(&nested(213), DEPTH_ERROR);
     // Each instance nests 101 elements: 1,212 levels would overflow the stack of the walkers.
@@ -1035,7 +1039,7 @@ fn many_children_of_one_name_get_distinct_keys() {
             .eof();
     });
     let (xml, json) = render_record(&evtx, 1);
-    assert_eq!(xml.matches("<D>").count(), 65537);
+    assert_eq!(xml.matches("<D/>").count(), 65537);
     assert!(
         json.ends_with(r#""D_65536":null}}"#),
         "{}",

@@ -5,25 +5,20 @@ expression: xml
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <Provider Name="Microsoft-Windows-Shell-Core" Guid="{30336ed4-e327-447c-9de0-51b652c86108}">
-    </Provider>
+    <Provider Name="Microsoft-Windows-Shell-Core" Guid="{30336ed4-e327-447c-9de0-51b652c86108}"/>
     <EventID>23956</EventID>
     <Version>0</Version>
     <Level>5</Level>
     <Task>0</Task>
     <Opcode>0</Opcode>
     <Keywords>0x0</Keywords>
-    <TimeCreated SystemTime="2018-05-01T21:58:31.0218375Z">
-    </TimeCreated>
+    <TimeCreated SystemTime="2018-05-01T21:58:31.0218375Z"/>
     <EventRecordID>161</EventRecordID>
-    <Correlation>
-    </Correlation>
-    <Execution ProcessID="352" ThreadID="3116">
-    </Execution>
+    <Correlation/>
+    <Execution ProcessID="352" ThreadID="3116"/>
     <Channel>Microsoft-Windows-Shell-Core/Operational</Channel>
     <Computer>WIN-29U41M70JCO</Computer>
-    <Security UserID="S-1-5-21-2967420476-1305424719-3994513216-500">
-    </Security>
+    <Security UserID="S-1-5-21-2967420476-1305424719-3994513216-500"/>
   </System>
   <EventData Name="TraceLayoutSelectionData">
     <Data Name="SelectionData">Region Codes:US 
