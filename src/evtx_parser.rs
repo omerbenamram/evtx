@@ -9,11 +9,7 @@ use crate::mta::MtaFile;
 use bumpalo::Bump;
 use encoding_rs::WINDOWS_1252;
 
-use log::trace;
-#[cfg(not(feature = "multithreading"))]
-use log::warn;
-
-use log::{debug, info};
+use log::{debug, info, trace, warn};
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
@@ -336,6 +332,11 @@ impl Debug for ParserSettings {
 
 impl PartialEq for ParserSettings {
     fn eq(&self, other: &ParserSettings) -> bool {
+        // Caches and MTA files compare by identity.
+        #[cfg(feature = "wevt_templates")]
+        if self.wevt_cache.as_ref().map(Arc::as_ptr) != other.wevt_cache.as_ref().map(Arc::as_ptr) {
+            return false;
+        }
         self.ansi_codec.name() == other.ansi_codec.name()
             && self.num_threads == other.num_threads
             && self.validate_checksums == other.validate_checksums
@@ -529,6 +530,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         let chunk_count = chunk_data_size / EVTX_CHUNK_SIZE as u64;
 
         debug!("EVTX Header: {:#?}", evtx_header);
+        if !evtx_header.validate_checksum() {
+            warn!(
+                "EVTX file header CRC32 invalid (stored {:#010x}, computed {:#010x}); reading the file anyway",
+                evtx_header.checksum, evtx_header.computed_checksum
+            );
+        }
         Ok(EvtxParser {
             data: read_seek,
             header: evtx_header,
@@ -540,6 +547,14 @@ impl<T: ReadSeek> EvtxParser<T> {
     pub fn with_configuration(mut self, configuration: ParserSettings) -> Self {
         self.config = Arc::new(configuration);
         self
+    }
+
+    /// The file header, as read when the parser was created.
+    ///
+    /// Check [`EvtxFileHeader::validate_checksum`] to see whether it is intact: the parser reads
+    /// a file whose header isn't, since it doesn't need the header to find chunks.
+    pub fn header(&self) -> &EvtxFileHeader {
+        &self.header
     }
 
     /// Allocate a new chunk from the given data, at the offset expected by `chunk_number`.
@@ -1056,6 +1071,25 @@ mod tests {
     }
 
     #[test]
+    fn file_with_a_corrupt_header_is_read() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let mut corrupt = evtx_file.to_vec();
+        // The last chunk number, which the header's CRC32 covers.
+        corrupt[16] ^= 0xff;
+
+        let mut parser = EvtxParser::from_buffer(corrupt).unwrap();
+        let header = parser.header();
+        assert_eq!(header.checksum, 0x3f6e_33d5);
+        assert!(!header.validate_checksum());
+        let records = parser.records().filter(Result::is_ok).count();
+
+        let mut intact = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        assert!(intact.header().validate_checksum());
+        assert_eq!(records, intact.records().filter(Result::is_ok).count());
+    }
+
+    #[test]
     fn test_parses_records_from_different_chunks() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
@@ -1069,6 +1103,24 @@ mod tests {
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "wevt_templates")]
+    fn settings_compare_wevt_caches_by_identity() {
+        use crate::wevt_templates::WevtCache;
+
+        let cache = Arc::new(WevtCache::new());
+        let with = |cache| ParserSettings::new().wevt_cache(cache);
+        assert_eq!(
+            with(Some(Arc::clone(&cache))),
+            with(Some(Arc::clone(&cache)))
+        );
+        assert_ne!(
+            with(Some(Arc::clone(&cache))),
+            with(Some(Arc::new(WevtCache::new())))
+        );
+        assert_ne!(with(Some(cache)), with(None));
     }
 
     #[test]

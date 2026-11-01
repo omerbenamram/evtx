@@ -20,6 +20,8 @@ mod apply_wevt_cache;
 mod dump_template_instances;
 #[path = "evtx_dump/extract_wevt_templates.rs"]
 mod extract_wevt_templates;
+#[path = "evtx_dump/info.rs"]
+mod info;
 
 fn load_wevt_cache_from_wevtcache_file(
     path: &str,
@@ -179,6 +181,14 @@ impl EvtxDump {
         let mut parser = self
             .open_parser()
             .map(|parser| parser.with_configuration(self.parser_settings.clone()))?;
+        let header = parser.header();
+        // With logging on, the parser's own warning says this.
+        if !header.validate_checksum() && self.verbosity_level.is_none() {
+            eprintln!(
+                "warning: the file header's CRC32 is invalid (stored {:#010x}, computed {:#010x}); reading the file anyway",
+                header.checksum, header.computed_checksum
+            );
+        }
 
         match self.output_format {
             EvtxOutputFormat::XML => {
@@ -572,12 +582,14 @@ fn run_cli() -> Result<()> {
         .subcommand(extract_wevt_templates::command())
         .subcommand(dump_template_instances::command())
         .subcommand(apply_wevt_cache::command())
+        .subcommand(info::command())
         .get_matches();
 
     match matches.subcommand() {
         Some(("extract-wevt-templates", m)) => return extract_wevt_templates::run(m),
         Some(("dump-template-instances", m)) => return dump_template_instances::run(m),
         Some(("apply-wevt-cache", m)) => return apply_wevt_cache::run(m),
+        Some(("info", m)) => return info::run(m),
         _ => {}
     }
 

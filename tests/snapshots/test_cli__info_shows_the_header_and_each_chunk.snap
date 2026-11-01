@@ -1,0 +1,50 @@
+---
+source: tests/test_cli.rs
+expression: evtx_dump_info(&regular_sample())
+---
+File header
+  Version          3.1
+  Flags            DIRTY
+  CRC32            ok (0x3f6e33d5)
+  First chunk      0
+  Last chunk       25
+  Next record ID   2226
+  Chunk count      26 (the file has room for 33)
+  Header size      128 (block 4096)
+
+Chunk  Offset      Record numbers  Record IDs  Flags  Header CRC32  Records CRC32
+0      0x00001000  1-91            1-91        DIRTY  ok            ok
+1      0x00011000  92-177          92-177      DIRTY  ok            ok
+2      0x00021000  178-260         178-260     DIRTY  ok            ok
+3      0x00031000  261-349         261-349     DIRTY  ok            ok
+4      0x00041000  350-441         350-441     DIRTY  ok            ok
+5      0x00051000  442-530         442-530     DIRTY  ok            ok
+6      0x00061000  531-622         531-622     DIRTY  ok            ok
+7      0x00071000  623-711         623-711     DIRTY  ok            ok
+8      0x00081000  712-802         712-802     DIRTY  ok            ok
+9      0x00091000  803-888         803-888     DIRTY  ok            ok
+10     0x000a1000  889-976         889-976     DIRTY  ok            ok
+11     0x000b1000  977-1063        977-1063    DIRTY  ok            ok
+12     0x000c1000  1064-1148       1064-1148   DIRTY  ok            ok
+13     0x000d1000  1149-1239       1149-1239   DIRTY  ok            ok
+14     0x000e1000  1240-1327       1240-1327   DIRTY  ok            ok
+15     0x000f1000  1328-1414       1328-1414   DIRTY  ok            ok
+16     0x00101000  1415-1501       1415-1501   DIRTY  ok            ok
+17     0x00111000  1502-1587       1502-1587   DIRTY  ok            ok
+18     0x00121000  1588-1682       1588-1682   DIRTY  ok            ok
+19     0x00131000  1683-1766       1683-1766   DIRTY  ok            ok
+20     0x00141000  1767-1847       1767-1847   DIRTY  ok            ok
+21     0x00151000  1848-1942       1848-1942   DIRTY  ok            ok
+22     0x00161000  1943-2027       1943-2027   DIRTY  ok            ok
+23     0x00171000  2028-2109       2028-2109   DIRTY  ok            ok
+24     0x00181000  2110-2201       2110-2201   DIRTY  ok            ok
+25     0x00191000  2202-2261       2202-2261   DIRTY  ok            ok
+26     0x001a1000  empty
+27     0x001b1000  empty
+28     0x001c1000  empty
+29     0x001d1000  empty
+30     0x001e1000  empty
+31     0x001f1000  empty
+32     0x00201000  empty
+
+33 chunks: 26 with records, 7 empty, 0 unreadable. 2261 records by the chunk headers. 0 chunks fail a CRC32 check.

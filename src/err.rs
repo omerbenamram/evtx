@@ -160,8 +160,18 @@ pub enum ChunkError {
     #[error("Failed to parse chunk header")]
     FailedToParseChunkHeader(#[from] DeserializationError),
 
-    #[error("chunk data CRC32 invalid")]
+    /// The CRC32 of the chunk's header doesn't match the one it stores.
+    #[error("chunk header CRC32 invalid (stored {expected:#010x}, computed {found:#010x})")]
+    InvalidChunkHeaderChecksum { expected: u32, found: u32 },
+
+    /// The CRC32 of the chunk's records doesn't match the one its header stores.
+    #[error("chunk data CRC32 invalid (stored {expected:#010x}, computed {found:#010x})")]
     InvalidChunkChecksum { expected: u32, found: u32 },
+
+    /// The header's free space offset, where the records end, is before the end of the header or
+    /// past the end of the chunk, so the records' CRC32 can't be checked.
+    #[error("chunk free space offset {offset} is outside the chunk's records area")]
+    InvalidFreeSpaceOffset { offset: u32 },
 
     #[error("Failed to build string cache")]
     FailedToBuildStringCache { source: DeserializationError },

@@ -1,3 +1,4 @@
+use crate::checksum_ieee;
 use crate::err::{DeserializationError, DeserializationResult};
 use crate::utils::bytes;
 
@@ -14,8 +15,11 @@ pub struct EvtxFileHeader {
     pub header_block_size: u16,
     pub chunk_count: u16,
     pub flags: HeaderFlags,
-    // Checksum is of first 120 bytes of header
+    /// The CRC32 of the header's first 120 bytes, as stored. A header with `NO_CRC32` stores 0.
     pub checksum: u32,
+    /// The CRC32 of the header's first 120 bytes as read, which an intact header stores (see
+    /// [`EvtxFileHeader::validate_checksum`]).
+    pub computed_checksum: u32,
 }
 
 bitflags! {
@@ -29,9 +33,18 @@ bitflags! {
 }
 
 impl EvtxFileHeader {
+    /// Whether the header is intact: its stored CRC32 is that of its first 120 bytes, or
+    /// `NO_CRC32` says that it stores none.
+    ///
+    /// [`EvtxParser`](crate::EvtxParser) reads a file whose header fails this anyway, and logs a
+    /// warning: it finds chunks at their fixed offsets, and each chunk has CRC32s of its own.
+    pub fn validate_checksum(&self) -> bool {
+        self.flags.contains(HeaderFlags::NO_CRC32) || self.checksum == self.computed_checksum
+    }
+
     pub fn from_bytes(data: &[u8]) -> DeserializationResult<EvtxFileHeader> {
         // We only need the fixed 128-byte header prefix (the full header block is 4096 bytes).
-        let _ = bytes::slice_r(data, 0, 128, "EVTX file header")?;
+        let prefix = bytes::slice_r(data, 0, 128, "EVTX file header")?;
 
         let magic = bytes::read_array_r::<8>(data, 0, "file header magic")?;
         if &magic != b"ElfFile\x00" {
@@ -48,8 +61,10 @@ impl EvtxFileHeader {
         let chunk_count = bytes::read_u16_le_r(data, 42, "file_header_chunk_count")?;
 
         let raw_flags = bytes::read_u32_le_r(data, 120, "file_header_flags")?;
-        let flags = HeaderFlags::from_bits_truncate(raw_flags);
+        // Keep the bits evtx doesn't know, so that they show.
+        let flags = HeaderFlags::from_bits_retain(raw_flags);
         let checksum = bytes::read_u32_le_r(data, 124, "file_header_checksum")?;
+        let computed_checksum = checksum_ieee(&prefix[..120]);
 
         Ok(EvtxFileHeader {
             first_chunk_number: oldest_chunk,
@@ -62,6 +77,7 @@ impl EvtxFileHeader {
             chunk_count,
             flags,
             checksum,
+            computed_checksum,
         })
     }
 
@@ -102,7 +118,55 @@ mod tests {
                 chunk_count: 26,
                 flags: HeaderFlags::DIRTY,
                 checksum: checksum_ieee(&evtx_file[..120]),
+                computed_checksum: checksum_ieee(&evtx_file[..120]),
             }
         );
+        assert!(parsing_result.validate_checksum());
+    }
+
+    #[test]
+    fn header_checksum_is_checked() {
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let mut header = evtx_file[..4096].to_vec();
+        // The next record ID, which the CRC32 covers.
+        header[24] ^= 1;
+        let parsed = EvtxFileHeader::from_bytes(&header).unwrap();
+        assert_eq!(parsed.next_record_id, 2227);
+        assert_eq!(parsed.checksum, 0x3f6e_33d5);
+        assert_eq!(parsed.computed_checksum, checksum_ieee(&header[..120]));
+        assert!(!parsed.validate_checksum());
+
+        // The flags come after the 120 bytes the CRC32 covers, and NO_CRC32 says it's unused.
+        header[120] |= HeaderFlags::NO_CRC32.bits() as u8;
+        assert!(
+            EvtxFileHeader::from_bytes(&header)
+                .unwrap()
+                .validate_checksum()
+        );
+    }
+
+    #[test]
+    fn header_without_crc32_is_valid() {
+        // Its header has NO_CRC32 and stores 0.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/samples/Application_no_crc32.evtx"
+        );
+        let mut file = std::fs::File::open(path).unwrap();
+        let header = EvtxFileHeader::from_stream(&mut file).unwrap();
+        assert_eq!(header.flags, HeaderFlags::NO_CRC32);
+        assert_eq!(header.checksum, 0);
+        assert_ne!(header.computed_checksum, 0);
+        assert!(header.validate_checksum());
+    }
+
+    #[test]
+    fn unknown_header_flags_are_kept() {
+        // None of the flags evtx knows, only bits it doesn't.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/samples/post-Security.evtx");
+        let mut file = std::fs::File::open(path).unwrap();
+        let header = EvtxFileHeader::from_stream(&mut file).unwrap();
+        assert_eq!(header.flags.bits(), 0x1b97_0000);
+        assert!(!header.flags.intersects(HeaderFlags::all()));
     }
 }

@@ -8,6 +8,26 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `EvtxParser::header()` returns the file header, which was private. The
+  header also has `computed_checksum`, the CRC32 of its first 120 bytes as
+  read, and `validate_checksum()`, which compares it with the stored
+  `checksum` unless `NO_CRC32` is set (the Application_no_crc32 sample's
+  header sets it and stores 0). evtx never checked the header's CRC32. A file
+  whose header fails the check is still read, since evtx finds chunks at fixed
+  offsets, but the parser logs a warning and `evtx_dump` prints one.
+  **Breaking:** code that builds an `EvtxFileHeader` with a struct literal
+  needs the new field.
+- `evtx_dump info -i <file>` shows what the file header and each chunk header
+  say: the version, flags, chunk numbers, next record ID and CRC32 of the
+  header, and each chunk's record numbers and IDs, flags, and header and
+  records CRC32s, with empty and unreadable chunks marked, without parsing
+  records. For triaging dirty, wrapped or damaged logs: security.evtx's dirty
+  header says the next record ID is 2226, where its last chunk ends at 2261.
+- `ChunkFlags`, the type of `EvtxChunkHeader::flags`, is exported, so that its
+  flags can be named.
+
 ### Changed
 
 - A log that has wrapped around comes out oldest record first, as Windows reads
@@ -178,6 +198,20 @@ and this project adheres to
   from the start again, repeating keys. Debug builds panicked. Numbering the
   children of an element with thousands of names took time quadratic in their
   number.
+- A chunk that failed a checksum check reported
+  `ChunkError::InvalidChunkChecksum { expected: 0, found: 0 }`, whichever check
+  failed. The error now says which: `InvalidChunkHeaderChecksum` for the
+  header's CRC32 and `InvalidChunkChecksum` for the records', both with the
+  stored and computed values, or `InvalidFreeSpaceOffset` when the header's
+  free space offset is outside the chunk, so the records' CRC32 can't be
+  computed. **Breaking:** `ChunkError` has these two new variants.
+- File and chunk headers dropped the flag bits evtx doesn't define, so the
+  post-Security sample's header, whose flags are 0x1b970000, read as having no
+  flags. `EvtxFileHeader::flags` and `EvtxChunkHeader::flags` now keep every
+  bit.
+- `ParserSettings` equality ignored the WEVT template cache, so settings with
+  different caches compared equal. Caches now compare by identity, as `.MTA`
+  files do.
 - `evtx_dump` built without the `multithreading` feature warned at every run
   that threads were turned on. It now warns only when `-t` asks for more than
   one thread.
