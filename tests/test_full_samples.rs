@@ -234,6 +234,10 @@ fn test_sample_with_zero_data_size_event() {
         if let Err(e) = r {
             assert_eq!(
                 e.to_string(),
+                "Failed to read the record at offset 0x820 of chunk 0 (file offset 0x1820)"
+            );
+            assert_eq!(
+                std::error::Error::source(&e).unwrap().to_string(),
                 "Invalid EVTX record data size, should be equals or greater than 28, found `0`"
             );
         }
@@ -248,43 +252,91 @@ fn test_sample_with_zero_data_size_event() {
 /// leak into the other chunk, whichever chunk is rendered first.
 #[test]
 fn test_shared_template_names_do_not_leak_across_chunks() {
-    let mut bytes = include_bytes!("../samples/2-vss_7-System.evtx").to_vec();
-    // `Keywords` -> `Keyɷords` in chunk 1's string table.
-    bytes[EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE + 0x475] = 0x02;
-    let mut swapped = bytes.clone();
-    swapped[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE]
-        .rotate_left(EVTX_CHUNK_SIZE);
-
+    let clean = include_bytes!("../samples/2-vss_7-System.evtx").to_vec();
     let parser = |bytes: &[u8]| {
         EvtxParser::from_buffer(bytes.to_vec())
             .unwrap()
             .with_configuration(ParserSettings::new().num_threads(1))
     };
     // Records API (validated lane).
-    let by_id = |bytes: &[u8]| {
+    let records = |bytes: &[u8]| -> Vec<(u64, String)> {
         parser(bytes)
             .records_json()
             .filter_map(Result::ok)
             .map(|r| (r.event_record_id, r.data))
-            .collect::<std::collections::BTreeMap<_, _>>()
+            .collect()
     };
-    let normal = by_id(&bytes);
-    assert!(normal.values().any(|r| r.contains("Keyɷords")));
-    assert_eq!(normal, by_id(&swapped));
+    // CLI chunk lane (raw bytes).
+    let chunks = |bytes: &[u8], json: bool| -> Vec<Vec<u8>> {
+        let mut parser = parser(bytes);
+        if json {
+            parser.chunks_json_bytes(false).map(|c| c.data).collect()
+        } else {
+            parser.chunks_xml_bytes(false).map(|c| c.data).collect()
+        }
+    };
 
-    // CLI chunk lane (raw bytes): chunk 0 and 1 trade places.
-    for json in [true, false] {
-        let chunks = |bytes: &[u8]| {
-            let mut parser = parser(bytes);
-            let chunks: Vec<_> = if json {
-                parser.chunks_json_bytes(false).map(|c| c.data).collect()
+    // Chunks render oldest first: chunk 0 holds records 1 to 131, then chunk 1 132 to 238. So
+    // corrupting chunk 0 renders the corrupt name first, and corrupting chunk 1 renders it second.
+    for (chunk, ids) in [(0, 1..=131), (1, 132..=238)] {
+        // `Keywords` -> `Keyɷords` in the chunk's string table.
+        let mut bytes = clean.clone();
+        bytes[EVTX_FILE_HEADER_SIZE + chunk * EVTX_CHUNK_SIZE + 0x475] = 0x02;
+
+        let mut corrupt = 0;
+        for (record, expected) in records(&bytes).into_iter().zip(records(&clean)) {
+            assert_eq!(record.0, expected.0);
+            if ids.contains(&record.0) {
+                corrupt += usize::from(record.1.contains("Keyɷords"));
             } else {
-                parser.chunks_xml_bytes(false).map(|c| c.data).collect()
-            };
-            chunks
-        };
-        let mut moved = chunks(&swapped);
-        moved.swap(0, 1);
-        assert_eq!(chunks(&bytes), moved, "json: {json}");
+                assert_eq!(record, expected, "chunk {chunk}");
+            }
+        }
+        assert!(corrupt > 0, "chunk {chunk}");
+
+        for json in [true, false] {
+            let (rendered, expected) = (chunks(&bytes, json), chunks(&clean, json));
+            assert_eq!(rendered.len(), expected.len());
+            for (i, (rendered, expected)) in rendered.iter().zip(&expected).enumerate() {
+                if i == chunk {
+                    assert!(String::from_utf8_lossy(rendered).contains("Keyɷords"));
+                } else {
+                    assert_eq!(rendered, expected, "chunk {chunk}, json: {json}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_wrapped_logs_come_out_oldest_first() {
+    // Both logs have wrapped around, so their oldest records are in the middle of the file, and
+    // Windows renders them in this order.
+    ensure_env_logger_initialized();
+    for (path, first, count) in [
+        (sample_issue_65(), 261, 459),
+        (sample_with_a_stale_oldest_chunk(), 2032, 399),
+    ] {
+        let expected: Vec<u64> = (first..first + count).collect();
+        let mut parser = EvtxParser::from_path(&path).unwrap();
+        let ids: Vec<u64> = parser
+            .records()
+            .map(|record| record.unwrap().event_record_id)
+            .collect();
+        assert_eq!(ids, expected, "{}", path.display());
+        let ids: Vec<u64> = EvtxParser::from_path(&path)
+            .unwrap()
+            .into_chunks()
+            .flat_map(|chunk| {
+                let mut chunk = chunk.unwrap();
+                let settings = std::sync::Arc::new(ParserSettings::default());
+                let mut chunk = chunk.parse(settings).unwrap();
+                chunk
+                    .iter()
+                    .map(|record| record.unwrap().event_record_id)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(ids, expected, "{}", path.display());
     }
 }

@@ -8,8 +8,34 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `EvtxParser::header()` returns the file header, which was private. The
+  header also has `computed_checksum`, the CRC32 of its first 120 bytes as
+  read, and `validate_checksum()`, which compares it with the stored
+  `checksum` unless `NO_CRC32` is set (the Application_no_crc32 sample's
+  header sets it and stores 0). evtx never checked the header's CRC32. A file
+  whose header fails the check is still read, since evtx finds chunks at fixed
+  offsets, but the parser logs a warning and `evtx_dump` prints one.
+  **Breaking:** code that builds an `EvtxFileHeader` with a struct literal
+  needs the new field.
+- `evtx_dump info -i <file>` shows what the file header and each chunk header
+  say: the version, flags, chunk numbers, next record ID and CRC32 of the
+  header, and each chunk's record numbers and IDs, flags, and header and
+  records CRC32s, with empty and unreadable chunks marked, without parsing
+  records. For triaging dirty, wrapped or damaged logs: security.evtx's dirty
+  header says the next record ID is 2226, where its last chunk ends at 2261.
+- `ChunkFlags`, the type of `EvtxChunkHeader::flags`, is exported, so that its
+  flags can be named.
+
 ### Changed
 
+- A log that has wrapped around comes out oldest record first, as Windows reads
+  it: from the chunk that holds its lowest record ID to the end of the file,
+  then from the start of the file. evtx read it in file order, so its newest
+  records came first. The file header names the oldest chunk too, but a log
+  that wasn't closed cleanly can be a chunk ahead of it, as the LiveId sample
+  is, and Windows still starts at the oldest records. 5 of the samples change.
 - Timestamps render with seven fractional digits, the 100 ns that a FILETIME
   counts, as Windows renders them: `2016-07-08T18:12:51.6816408Z` instead of
   `2016-07-08T18:12:51.681640Z`, which dropped the last digit. SYSTEMTIME
@@ -27,6 +53,28 @@ and this project adheres to
   other samples name the second `TargetLogonGuid`, so the second is now
   `LogonGuid_1` and `LogonGuid` is the first, which parsers used to lose. XML
   is unchanged, and so are arrays of one value, which render as that value.
+- Errors say where they are. A record that can't be read, such as one whose
+  header is damaged, fails with `EvtxError::FailedToReadRecordAt`, which names
+  its chunk and its offsets and has the error it replaces as its source:
+  `Failed to read the record at offset 0x2060 of chunk 7 (file offset
+  0x73060)`. A chunk parsed on its own, with `EvtxChunkData::parse`, doesn't
+  know its number, and says `of its chunk`. A position past the end of the data
+  reads `NullType Descriptor at offset 78404 is past the end of the data (65536
+  bytes)` (`DeserializationError::OutOfBounds`) instead of `buffer too small
+  for NullType Descriptor at offset 78404 (need 0 bytes, have 0)`, and a record
+  header whose timestamp is out of range fails with `InvalidRecordTimestamp`,
+  which gives the FILETIME, instead of `InvalidDateTimeError`. **Breaking:**
+  code that matches on such a record's error finds it under
+  `FailedToReadRecordAt`, and exhaustive matches on `EvtxError` and
+  `DeserializationError` need the new variants.
+
+### Fixed
+
+- A chunk whose string table couldn't be read was reported as `Failed to parse
+  chunk number N` with N its place among the chunks read, not its number in the
+  file. The two differ after an empty chunk and in a log that has wrapped
+  around.
+
 - GUIDs render as Windows renders them, lowercase and in braces:
   `{54849625-5478-4994-a5ba-3e3b0328c30d}` instead of
   `54849625-5478-4994-A5BA-3E3B0328C30D`. This covers GUID values in XML and
@@ -161,6 +209,20 @@ and this project adheres to
   from the start again, repeating keys. Debug builds panicked. Numbering the
   children of an element with thousands of names took time quadratic in their
   number.
+- A chunk that failed a checksum check reported
+  `ChunkError::InvalidChunkChecksum { expected: 0, found: 0 }`, whichever check
+  failed. The error now says which: `InvalidChunkHeaderChecksum` for the
+  header's CRC32 and `InvalidChunkChecksum` for the records', both with the
+  stored and computed values, or `InvalidFreeSpaceOffset` when the header's
+  free space offset is outside the chunk, so the records' CRC32 can't be
+  computed. **Breaking:** `ChunkError` has these two new variants.
+- File and chunk headers dropped the flag bits evtx doesn't define, so the
+  post-Security sample's header, whose flags are 0x1b970000, read as having no
+  flags. `EvtxFileHeader::flags` and `EvtxChunkHeader::flags` now keep every
+  bit.
+- `ParserSettings` equality ignored the WEVT template cache, so settings with
+  different caches compared equal. Caches now compare by identity, as `.MTA`
+  files do.
 - `evtx_dump` built without the `multithreading` feature warned at every run
   that threads were turned on. It now warns only when `-t` asks for more than
   one thread.

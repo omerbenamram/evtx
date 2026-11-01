@@ -2,18 +2,14 @@ use crate::err::{ChunkError, EvtxError, InputError, Result};
 
 use crate::AnsiCodec;
 use crate::binxml::compiled::{JsonProgram, StoredProgram, XmlProgram};
-use crate::evtx_chunk::{EvtxChunk, EvtxChunkData};
+use crate::evtx_chunk::{EVTX_CHUNK_HEADER_SIZE, EvtxChunk, EvtxChunkData, EvtxChunkHeader};
 use crate::evtx_file_header::EvtxFileHeader;
 use crate::evtx_record::SerializedEvtxRecord;
 use crate::mta::MtaFile;
 use bumpalo::Bump;
 use encoding_rs::WINDOWS_1252;
 
-use log::trace;
-#[cfg(not(feature = "multithreading"))]
-use log::warn;
-
-use log::{debug, info};
+use log::{debug, info, trace, warn};
 use std::fs::File;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 
@@ -336,6 +332,11 @@ impl Debug for ParserSettings {
 
 impl PartialEq for ParserSettings {
     fn eq(&self, other: &ParserSettings) -> bool {
+        // Caches and MTA files compare by identity.
+        #[cfg(feature = "wevt_templates")]
+        if self.wevt_cache.as_ref().map(Arc::as_ptr) != other.wevt_cache.as_ref().map(Arc::as_ptr) {
+            return false;
+        }
         self.ansi_codec.name() == other.ansi_codec.name()
             && self.num_threads == other.num_threads
             && self.validate_checksums == other.validate_checksums
@@ -529,6 +530,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         let chunk_count = chunk_data_size / EVTX_CHUNK_SIZE as u64;
 
         debug!("EVTX Header: {:#?}", evtx_header);
+        if !evtx_header.validate_checksum() {
+            warn!(
+                "EVTX file header CRC32 invalid (stored {:#010x}, computed {:#010x}); reading the file anyway",
+                evtx_header.checksum, evtx_header.computed_checksum
+            );
+        }
         Ok(EvtxParser {
             data: read_seek,
             header: evtx_header,
@@ -540,6 +547,14 @@ impl<T: ReadSeek> EvtxParser<T> {
     pub fn with_configuration(mut self, configuration: ParserSettings) -> Self {
         self.config = Arc::new(configuration);
         self
+    }
+
+    /// The file header, as read when the parser was created.
+    ///
+    /// Check [`EvtxFileHeader::validate_checksum`] to see whether it is intact: the parser reads
+    /// a file whose header isn't, since it doesn't need the header to find chunks.
+    pub fn header(&self) -> &EvtxFileHeader {
+        &self.header
     }
 
     /// Allocate a new chunk from the given data, at the offset expected by `chunk_number`.
@@ -582,14 +597,18 @@ impl<T: ReadSeek> EvtxParser<T> {
             .map_err(|e| EvtxError::chunk(chunk_number, e))
     }
 
-    /// Find the next chunk, staring at `chunk_number` (inclusive).
+    /// Find the next chunk, starting at `chunk_number` (inclusive) and before `end`.
     /// If a chunk is found, returns the data of the chunk or the relevant error,
     /// and the number of that chunk.
     pub(crate) fn find_next_chunk(
         &mut self,
         mut chunk_number: u64,
+        end: u64,
     ) -> Option<(Result<EvtxChunkData>, u64)> {
         loop {
+            if chunk_number >= end {
+                return None;
+            }
             match EvtxParser::allocate_chunk(
                 &mut self.data,
                 chunk_number,
@@ -617,30 +636,75 @@ impl<T: ReadSeek> EvtxParser<T> {
         }
     }
 
-    /// The next chunk at or after `*current`, advancing `*current` past it.
-    fn next_chunk(&mut self, current: &mut u64) -> Option<Result<EvtxChunkData>> {
-        let (chunk, chunk_number) = self.find_next_chunk(*current)?;
-        *current = chunk_number.checked_add(1)?;
-        Some(chunk)
-    }
-
-    /// Return an iterator over all the chunks.
-    /// Each chunk supports iterating over it's records in their un-serialized state
-    /// (before they are converted to XML or JSON).
-    pub fn chunks(&mut self) -> IterChunks<'_, T> {
-        IterChunks {
-            parser: self,
-            current_chunk_number: 0,
+    /// The next chunk in record order and its number, advancing `cursor` past it.
+    fn next_chunk(&mut self, cursor: &mut ChunkCursor) -> Option<(Result<EvtxChunkData>, u64)> {
+        loop {
+            // Once it has wrapped around, the walk ends where it started.
+            let end = if cursor.wrapped {
+                cursor.oldest
+            } else {
+                u64::MAX
+            };
+            if let Some((chunk, chunk_number)) = self.find_next_chunk(cursor.next, end) {
+                cursor.next = chunk_number.checked_add(1)?;
+                return Some((chunk, chunk_number));
+            }
+            if cursor.wrapped || cursor.oldest == 0 {
+                return None;
+            }
+            cursor.wrapped = true;
+            cursor.next = 0;
         }
     }
 
-    /// Consumes the parser, returning an iterator over all the chunks.
+    /// The chunk that holds the oldest records, where Windows starts reading a log: the one
+    /// whose header names the lowest record ID. A full log writes each new chunk over its oldest
+    /// one, so once it has wrapped around, its oldest chunk can be anywhere in the file. The file
+    /// header names that chunk too, but a log that wasn't closed cleanly can be ahead of its
+    /// header: the LiveId sample's header names the chunk after its oldest.
+    fn oldest_chunk(&mut self) -> u64 {
+        let mut oldest = (u64::MAX, 0);
+        let mut header = [0; EVTX_CHUNK_HEADER_SIZE];
+        for chunk_number in 0..self.calculated_chunk_count {
+            let offset = EVTX_FILE_HEADER_SIZE as u64 + chunk_number * EVTX_CHUNK_SIZE as u64;
+            if self.data.seek(SeekFrom::Start(offset)).is_err()
+                || self.data.read_exact(&mut header).is_err()
+            {
+                break;
+            }
+            // A header whose range is reversed says nothing about where its records belong.
+            if let Ok(chunk) = EvtxChunkHeader::from_bytes(&header)
+                && chunk.first_event_record_id <= chunk.last_event_record_id
+                && chunk.first_event_record_id < oldest.0
+            {
+                oldest = (chunk.first_event_record_id, chunk_number);
+            }
+        }
+        oldest.1
+    }
+
+    /// Return an iterator over all the chunks, in record order: from the chunk that holds the
+    /// oldest records to the end of the file, then from the start of the file, as Windows reads
+    /// a log that has wrapped around.
     /// Each chunk supports iterating over it's records in their un-serialized state
     /// (before they are converted to XML or JSON).
-    pub fn into_chunks(self) -> IntoIterChunks<T> {
+    pub fn chunks(&mut self) -> IterChunks<'_, T> {
+        let cursor = ChunkCursor::at(self.oldest_chunk());
+        IterChunks {
+            parser: self,
+            cursor,
+        }
+    }
+
+    /// Consumes the parser, returning an iterator over all the chunks, in record order (see
+    /// [`Self::chunks`]).
+    /// Each chunk supports iterating over it's records in their un-serialized state
+    /// (before they are converted to XML or JSON).
+    pub fn into_chunks(mut self) -> IntoIterChunks<T> {
+        let cursor = ChunkCursor::at(self.oldest_chunk());
         IntoIterChunks {
             parser: self,
-            current_chunk_number: 0,
+            cursor,
         }
     }
     /// Parse each chunk and turn it into a payload with `f` (a chunk that fails to
@@ -659,8 +723,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         let num_threads = max(self.config.num_threads, 1);
         let settings = Arc::clone(&self.config);
         let program_store = Arc::new(crate::binxml::compiled::ProgramStore::default());
-        // Parse one chunk into a reused `arena` and build its payload.
-        let work = move |chunk_res: Result<EvtxChunkData>, chunk_id: u64, arena: Bump| {
+        // Parse chunk `chunk_number` into a reused `arena` and build its payload.
+        let work = move |chunk_res: Result<EvtxChunkData>, chunk_number: u64, arena: Bump| {
             let chunk_data = match chunk_res {
                 Ok(chunk_data) => chunk_data,
                 Err(err) => {
@@ -676,9 +740,10 @@ impl<T: ReadSeek> EvtxParser<T> {
                 Arc::clone(&settings),
                 arena,
                 Arc::clone(&program_store),
+                Some(chunk_number),
             ) {
                 Err(err) => ChunkBatch {
-                    payload: on_err(EvtxError::chunk(chunk_id, err)),
+                    payload: on_err(EvtxError::chunk(chunk_number, err)),
                     arena: Bump::new(),
                 },
                 Ok(mut chunk) => ChunkBatch {
@@ -713,10 +778,9 @@ impl<T: ReadSeek> EvtxParser<T> {
             if num_threads == 1 {
                 // Single-threaded: process inline; a cross-thread round-trip per
                 // chunk costs ~3% wall time for no benefit.
-                let chunk_res = chunks.next()?;
+                let (chunk_res, chunk_number) = chunks.next_numbered()?;
                 let arena = arena_pool.pop().unwrap_or_else(new_arena);
-                let batch = work(chunk_res, next_seq, arena);
-                next_seq += 1;
+                let batch = work(chunk_res, chunk_number, arena);
                 arena_pool.push(batch.arena);
                 return Some(batch.payload);
             }
@@ -727,7 +791,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                 // Keep the pipeline full. Chunk allocation (I/O) stays on the
                 // consumer thread; parsing + serialization go to the rayon pool.
                 while !exhausted && in_flight < max_in_flight {
-                    let Some(chunk_res) = chunks.next() else {
+                    let Some((chunk_res, chunk_number)) = chunks.next_numbered() else {
                         exhausted = true;
                         break;
                     };
@@ -739,7 +803,7 @@ impl<T: ReadSeek> EvtxParser<T> {
                     let work = work.clone();
                     spawn(move || {
                         let batch = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            work(chunk_res, seq, arena)
+                            work(chunk_res, chunk_number, arena)
                         }));
                         // The receiver may be gone if the iterator was dropped.
                         let _ = tx.send((seq, batch));
@@ -872,28 +936,58 @@ impl<T: ReadSeek> EvtxParser<T> {
     }
 }
 
+/// Where a walk over the chunks in record order is (see [`EvtxParser::chunks`]).
+#[derive(Debug, Clone, Copy)]
+struct ChunkCursor {
+    /// The next chunk number to look at.
+    next: u64,
+    /// The chunk that holds the oldest records, where the walk starts.
+    oldest: u64,
+    /// Whether the walk has gone past the end of the file, on to its first chunk.
+    wrapped: bool,
+}
+
+impl ChunkCursor {
+    fn at(oldest: u64) -> Self {
+        ChunkCursor {
+            next: oldest,
+            oldest,
+            wrapped: false,
+        }
+    }
+}
+
 pub struct IterChunks<'c, T: ReadSeek> {
     parser: &'c mut EvtxParser<T>,
-    current_chunk_number: u64,
+    cursor: ChunkCursor,
+}
+
+impl<T: ReadSeek> IterChunks<'_, T> {
+    /// The next chunk and its number in the file.
+    fn next_numbered(&mut self) -> Option<(Result<EvtxChunkData>, u64)> {
+        self.parser.next_chunk(&mut self.cursor)
+    }
 }
 
 impl<T: ReadSeek> Iterator for IterChunks<'_, T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        self.parser.next_chunk(&mut self.current_chunk_number)
+        self.next_numbered().map(|(chunk, _)| chunk)
     }
 }
 
 pub struct IntoIterChunks<T: ReadSeek> {
     parser: EvtxParser<T>,
-    current_chunk_number: u64,
+    cursor: ChunkCursor,
 }
 
 impl<T: ReadSeek> Iterator for IntoIterChunks<T> {
     type Item = Result<EvtxChunkData>;
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        info!("Chunk {}", self.current_chunk_number);
-        self.parser.next_chunk(&mut self.current_chunk_number)
+        info!("Chunk {}", self.cursor.next);
+        self.parser
+            .next_chunk(&mut self.cursor)
+            .map(|(chunk, _)| chunk)
     }
 }
 
@@ -977,6 +1071,25 @@ mod tests {
     }
 
     #[test]
+    fn file_with_a_corrupt_header_is_read() {
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let mut corrupt = evtx_file.to_vec();
+        // The last chunk number, which the header's CRC32 covers.
+        corrupt[16] ^= 0xff;
+
+        let mut parser = EvtxParser::from_buffer(corrupt).unwrap();
+        let header = parser.header();
+        assert_eq!(header.checksum, 0x3f6e_33d5);
+        assert!(!header.validate_checksum());
+        let records = parser.records().filter(Result::is_ok).count();
+
+        let mut intact = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
+        assert!(intact.header().validate_checksum());
+        assert_eq!(records, intact.records().filter(Result::is_ok).count());
+    }
+
+    #[test]
     fn test_parses_records_from_different_chunks() {
         ensure_env_logger_initialized();
         let evtx_file = include_bytes!("../samples/security.evtx");
@@ -990,6 +1103,24 @@ mod tests {
                 Err(e) => println!("Error while reading record {}, {:?}", i, e),
             }
         }
+    }
+
+    #[test]
+    #[cfg(feature = "wevt_templates")]
+    fn settings_compare_wevt_caches_by_identity() {
+        use crate::wevt_templates::WevtCache;
+
+        let cache = Arc::new(WevtCache::new());
+        let with = |cache| ParserSettings::new().wevt_cache(cache);
+        assert_eq!(
+            with(Some(Arc::clone(&cache))),
+            with(Some(Arc::clone(&cache)))
+        );
+        assert_ne!(
+            with(Some(Arc::clone(&cache))),
+            with(Some(Arc::new(WevtCache::new())))
+        );
+        assert_ne!(with(Some(cache)), with(None));
     }
 
     #[test]

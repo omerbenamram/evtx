@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
 use crate::evtx_record::RecordId;
 use std::io;
 use std::path::Path;
@@ -45,6 +46,14 @@ pub enum DeserializationError {
         have: usize,
     },
 
+    /// A move to `offset`, for `what`, past the end of the `len` bytes of data.
+    #[error("{what} at offset {offset} is past the end of the data ({len} bytes)")]
+    OutOfBounds {
+        what: &'static str,
+        offset: u64,
+        len: usize,
+    },
+
     #[error(
         "Offset 0x{offset:08x}: WEVT inline name hash mismatch (expected 0x{expected:04x}, found 0x{found:04x})"
     )]
@@ -59,6 +68,10 @@ pub enum DeserializationError {
 
     #[error("An out-of-range date, invalid month and/or day")]
     InvalidDateTimeError,
+
+    /// A record header whose timestamp, a FILETIME, is past the dates evtx represents.
+    #[error("The record header's timestamp (FILETIME {filetime:#018x}) is out of range")]
+    InvalidRecordTimestamp { filetime: u64 },
 
     /// Assertion errors.
     #[error("Invalid EVTX record header magic, expected `2a2a0000`, found `{magic:2X?}`")]
@@ -147,8 +160,18 @@ pub enum ChunkError {
     #[error("Failed to parse chunk header")]
     FailedToParseChunkHeader(#[from] DeserializationError),
 
-    #[error("chunk data CRC32 invalid")]
+    /// The CRC32 of the chunk's header doesn't match the one it stores.
+    #[error("chunk header CRC32 invalid (stored {expected:#010x}, computed {found:#010x})")]
+    InvalidChunkHeaderChecksum { expected: u32, found: u32 },
+
+    /// The CRC32 of the chunk's records doesn't match the one its header stores.
+    #[error("chunk data CRC32 invalid (stored {expected:#010x}, computed {found:#010x})")]
     InvalidChunkChecksum { expected: u32, found: u32 },
+
+    /// The header's free space offset, where the records end, is before the end of the header or
+    /// past the end of the chunk, so the records' CRC32 can't be checked.
+    #[error("chunk free space offset {offset} is outside the chunk's records area")]
+    InvalidFreeSpaceOffset { offset: u32 },
 
     #[error("Failed to build string cache")]
     FailedToBuildStringCache { source: DeserializationError },
@@ -180,6 +203,15 @@ pub enum EvtxError {
         source: Box<EvtxError>,
     },
 
+    /// A record `offset` bytes into its chunk that can't be read, such as one whose header is
+    /// damaged. `chunk` is the chunk's number in the file, when the parser read the chunk.
+    #[error("Failed to read the record at {}", record_location(*.chunk, *.offset))]
+    FailedToReadRecordAt {
+        chunk: Option<u64>,
+        offset: u64,
+        source: Box<EvtxError>,
+    },
+
     #[error("Calculation Error, reason: {}", .0)]
     CalculationError(String),
 
@@ -198,6 +230,19 @@ pub enum EvtxError {
         "Invalid EVTX record data size, should be equals or greater than {expected}, found `{length}`"
     )]
     InvalidDataSize { length: u32, expected: u32 },
+}
+
+/// Where a record is in its chunk, and in the file when the chunk's number is known.
+fn record_location(chunk: Option<u64>, offset: u64) -> String {
+    match chunk {
+        Some(chunk) => {
+            let in_file = chunk
+                .saturating_mul(EVTX_CHUNK_SIZE as u64)
+                .saturating_add(EVTX_FILE_HEADER_SIZE as u64 + offset);
+            format!("offset {offset:#x} of chunk {chunk} (file offset {in_file:#x})")
+        }
+        None => format!("offset {offset:#x} of its chunk"),
+    }
 }
 
 impl EvtxError {
