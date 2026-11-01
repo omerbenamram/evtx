@@ -20,6 +20,8 @@ mod apply_wevt_cache;
 mod dump_template_instances;
 #[path = "evtx_dump/extract_wevt_templates.rs"]
 mod extract_wevt_templates;
+#[path = "evtx_dump/info.rs"]
+mod info;
 
 fn load_wevt_cache_from_wevtcache_file(
     path: &str,
@@ -559,12 +561,14 @@ fn main() -> Result<()> {
         .subcommand(extract_wevt_templates::command())
         .subcommand(dump_template_instances::command())
         .subcommand(apply_wevt_cache::command())
+        .subcommand(info::command())
         .get_matches();
 
     match matches.subcommand() {
         Some(("extract-wevt-templates", m)) => return extract_wevt_templates::run(m),
         Some(("dump-template-instances", m)) => return dump_template_instances::run(m),
         Some(("apply-wevt-cache", m)) => return apply_wevt_cache::run(m),
+        Some(("info", m)) => return info::run(m),
         _ => {}
     }
 
