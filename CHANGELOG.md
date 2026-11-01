@@ -19,6 +19,10 @@ and this project adheres to
 
 ### Fixed
 
+- A chunk whose string table links back to a string it has already listed, as
+  a damaged or crafted chunk can, made the parser loop forever: only a string
+  that links to itself ended the walk. Any string already read now ends it.
+  Found by fuzzing.
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with
