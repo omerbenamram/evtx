@@ -8,7 +8,8 @@ Both come from run [40975174734](https://github.com/omerbenamram/evtx/actions/ru
 of [`windows-xml.yml`](../../.github/workflows/windows-xml.yml), on the Windows version in
 `windows-info.txt`. `SHA256SUMS` has the log's hash. To make new ones, run the workflow and copy
 the `generated/` folder of its `windows-xml` artifact over this folder. The artifact's `samples/`
-folder has the same rendering for every log in `samples/` (about 100 MB, so it is not kept here).
+folder has the same rendering for every log in `samples/` (about 100 MB, so only a selection of it
+is kept here, in `samples.jsonl`).
 
 ## `types.evtx`
 
@@ -44,3 +45,21 @@ one line per event, in the order `EvtNext` returns them:
 | `record_id` | The record number in the event's bookmark. |
 | `xml` | `EvtRender(EvtRenderEventXml)`, exactly as returned. |
 | `render_error`, `next_error`, `seek_error`, `query_error` | The Win32 error when wevtapi could not render, read or query an event, instead of `xml`. |
+
+## `samples.jsonl`
+
+A selection of the artifact's `samples/` folder from run
+[40960741052](https://github.com/omerbenamram/evtx/actions/runs/40960741052), on the same Windows
+version: for each log in `samples/` that Windows reads, the first record of each event (provider,
+event ID and version), and of each difference from evtx that
+[`test_windows_samples.rs`](../../tests/test_windows_samples.rs) allows. That is 645 records of 27
+logs. Windows can't read 8 of the samples at all (`query_error`), and
+`Microsoft-Windows-WorkFolders%4WHC.evtx` has no live records, so they have none here.
+
+Each line has the log's path under `samples/` (`sample`), and `record_id` and `xml` as in
+`types.evtx.jsonl`. To make a new one, run the workflow, then the test on its artifact's
+`samples/` folder, which compares every record Windows rendered and writes the selection:
+
+```
+EVTX_WINDOWS_XML=<artifact>/samples EVTX_WINDOWS_XML_SAVE=1 cargo test --test test_windows_samples
+```
