@@ -5,7 +5,7 @@ expression: xml
 <?xml version="1.0" encoding="utf-8"?>
 <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
   <System>
-    <Provider Name="Microsoft-Windows-Shell-Core" Guid="30336ED4-E327-447C-9DE0-51B652C86108">
+    <Provider Name="Microsoft-Windows-Shell-Core" Guid="{30336ed4-e327-447c-9de0-51b652c86108}">
     </Provider>
     <EventID>23956</EventID>
     <Version>0</Version>

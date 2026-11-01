@@ -100,6 +100,35 @@ fn timestamps_render_as_windows_renders_them() {
     assert!(values >= 30, "only {values} timestamps compared");
 }
 
+/// The value of the first attribute `name` (with its `=`) in `xml`, quoted either way.
+fn attribute_value<'x>(xml: &'x str, name: &str) -> Option<&'x str> {
+    let rest = &xml[xml.find(name)? + name.len()..];
+    let quote = rest.chars().next()?;
+    rest[1..].split(quote).next()
+}
+
+/// GUIDs render in braces and lowercase, as Windows renders them: event 1's values, event 26's
+/// arrays (of three items, one and none), and each record's provider GUID and activity ID.
+#[test]
+fn guids_render_as_windows_renders_them() {
+    assert_eq!(
+        compare_with_windows(|_, name| name == "GUID" || name == "GUIDs"),
+        8
+    );
+    let evtx = evtx_records();
+    for (record_id, xml) in &windows_records() {
+        let rendered = evtx[record_id].as_ref().unwrap();
+        for name in ["Guid=", "ActivityID="] {
+            assert!(attribute_value(xml, name).is_some(), "record {record_id}");
+            assert_eq!(
+                attribute_value(rendered, name),
+                attribute_value(xml, name),
+                "record {record_id}"
+            );
+        }
+    }
+}
+
 #[test]
 fn ansi_string_arrays_render_as_windows_renders_them() {
     // Arrays of three items (one of them empty), one item and none.
