@@ -33,6 +33,36 @@ fn template_instance_dump_formats_nested_binxml_without_panicking() {
 }
 
 #[test]
+fn it_warns_about_a_corrupt_file_header_and_reads_the_file() {
+    let mut evtx = std::fs::read(regular_sample()).unwrap();
+    // The next record ID, which the header's CRC32 covers.
+    evtx[24] ^= 1;
+    let d = tempdir().unwrap();
+    let path = d.path().join("corrupt-header.evtx");
+    std::fs::write(&path, &evtx).unwrap();
+
+    let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["-o", "jsonl"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr
+            .contains("warning: the file header's CRC32 is invalid (stored 0x3f6e33d5, computed "),
+        "{stderr}"
+    );
+    let intact = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["-o", "jsonl"])
+        .arg(regular_sample())
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&intact.stderr).contains("CRC32"));
+    assert_eq!(output.stdout, intact.stdout);
+}
+
+#[test]
 fn it_respects_directory_output() {
     let _guard = CLI_TEST_LOCK.lock().unwrap();
     let d = tempdir().unwrap();
