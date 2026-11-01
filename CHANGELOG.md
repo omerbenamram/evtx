@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `evtx_dump` built with `fast-alloc` links on Windows again. rpmalloc calls
+  advapi32 functions without linking advapi32, and the dependency that had been
+  bringing them in is gone, so 0.15.0's Windows build failed and 0.15.0 wasn't
+  published to crates.io.
+
 ## [0.15.0 - 2026-11-01]
 
 Records now render as Windows renders them in many more ways, and all the
