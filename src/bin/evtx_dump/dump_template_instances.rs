@@ -3,6 +3,7 @@ use clap::{Arg, ArgMatches, Command};
 use evtx::{EvtxParser, ParserSettings};
 use indoc::indoc;
 use serde::Serialize;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 pub fn command() -> Command {
@@ -66,6 +67,8 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         .with_configuration(settings.clone());
 
     let source = input.to_string_lossy().to_string();
+    // Not `println!`, which panics once a reader such as `head` closes the pipe.
+    let mut out = io::stdout().lock();
 
     for chunk_res in parser.chunks() {
         let mut chunk_data = match chunk_res {
@@ -119,7 +122,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                 substitutions,
             };
 
-            println!("{}", serde_json::to_string(&line)?);
+            writeln!(out, "{}", serde_json::to_string(&line)?)?;
 
             if record_id_filter.is_some() {
                 // Found the record we wanted; keep going anyway in case there are duplicates? No.

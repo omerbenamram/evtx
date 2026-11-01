@@ -24,6 +24,7 @@ use std::fmt::Debug;
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(feature = "multithreading")]
 use rayon::spawn;
@@ -81,9 +82,14 @@ impl RenderedChunk {
 }
 
 /// Render all of a parsed chunk's records into a single buffer, in `P`'s format.
+///
+/// The buffer starts as big as `largest_output`, the largest output a chunk of
+/// this log has rendered so far, because growing it copies it unless the
+/// allocator happens to have free space right after it.
 fn render_chunk<P: StoredProgram>(
     chunk: &mut EvtxChunk<'_>,
     record_numbers: bool,
+    largest_output: &AtomicUsize,
 ) -> RenderedChunk {
     use crate::binxml::compiled::{
         ChunkBudget, MAX_RENDER_NODES, Preflight, ProgramCache, try_render_compiled,
@@ -94,7 +100,12 @@ fn render_chunk<P: StoredProgram>(
     let chunk_ref: &EvtxChunk = chunk;
     let settings = &chunk_ref.settings;
     let mta = settings.get_mta();
-    let mut data = Vec::with_capacity(2 * EVTX_CHUNK_SIZE);
+    // At least 128 KiB, and at most 1 MiB so that one unusual chunk doesn't
+    // make every later buffer that big.
+    let capacity = largest_output
+        .load(Ordering::Relaxed)
+        .clamp(2 * EVTX_CHUNK_SIZE, 16 * EVTX_CHUNK_SIZE);
+    let mut data = Vec::with_capacity(capacity);
     let mut items = Vec::new();
     let mut ir_cache =
         IrTemplateCache::with_capacity(chunk_ref.estimated_template_buckets(), &chunk_ref.arena);
@@ -180,6 +191,7 @@ fn render_chunk<P: StoredProgram>(
             }
         }
     }
+    largest_output.fetch_max(data.len(), Ordering::Relaxed);
     RenderedChunk { data, items }
 }
 
@@ -811,11 +823,13 @@ impl<T: ReadSeek> EvtxParser<T> {
             data: Vec::new(),
             items: vec![RenderedChunkItem::Failed(err)],
         };
+        // Shared by the workers, to size each chunk's buffer (see `render_chunk`).
+        let largest_output = Arc::new(AtomicUsize::new(0));
         self.chunk_pipeline(failed, move |chunk| {
             if json {
-                render_chunk::<JsonProgram>(chunk, record_numbers)
+                render_chunk::<JsonProgram>(chunk, record_numbers, &largest_output)
             } else {
-                render_chunk::<XmlProgram>(chunk, record_numbers)
+                render_chunk::<XmlProgram>(chunk, record_numbers, &largest_output)
             }
         })
     }
@@ -1078,5 +1092,23 @@ mod tests {
             assert!(record.data.is_object());
             assert!(record.data.as_object().unwrap().contains_key("Event"));
         }
+    }
+
+    #[test]
+    fn test_chunk_buffers_start_with_room_for_the_largest_output_so_far() {
+        ensure_env_logger_initialized();
+        // 18 of its 53 chunks render more than 2 * EVTX_CHUNK_SIZE of XML.
+        let evtx_file = include_bytes!("../samples/Application.evtx");
+        let mut parser = EvtxParser::from_buffer(evtx_file.to_vec())
+            .unwrap()
+            .with_configuration(ParserSettings::new().num_threads(1));
+
+        let mut largest = 0;
+        for chunk in parser.chunks_xml_bytes(false) {
+            let room = largest.clamp(2 * EVTX_CHUNK_SIZE, 16 * EVTX_CHUNK_SIZE);
+            assert!(chunk.data.capacity() >= room);
+            largest = largest.max(chunk.data.len());
+        }
+        assert!(largest > 2 * EVTX_CHUNK_SIZE);
     }
 }

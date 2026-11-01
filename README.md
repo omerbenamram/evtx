@@ -175,6 +175,10 @@ Throughput now saturates at around 8 threads on this 30MB sample: single-threade
 
 The numbers above come from a profile-guided build (`./build_pgo.sh`): it trains an instrumented binary on the sample corpus, then rebuilds with that profile. CI runs this for the Linux (x86_64) and macOS release binaries, so the table reflects the artifact most people download (output is byte-identical to a normal build). PGO is worth roughly 2–5% of single-threaded throughput over a plain `cargo build --release --features fast-alloc` (JSON 77.6 → 75 ms, XML 73.0 → 71 ms); at 8+ threads the workload is saturation-bound, so PGO there is within measurement noise.
 
+## Fuzzing
+
+[`fuzz/`](fuzz/README.md) has [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) targets for the parsers that read untrusted input: whole logs, single chunks, `WEVT_TEMPLATE` manifests and `.MTA` files, seeded from `samples/`.
+
 ## Caveats
 
 - Currently unimplemented:
