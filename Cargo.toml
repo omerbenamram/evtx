@@ -10,7 +10,7 @@ version = "0.14.0"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 
-exclude = ["**/*.evtx", "**/*.dat", "samples/mta/**", "samples/windows/**"]
+exclude = ["**/*.evtx", "**/*.dat", "samples/mta/**", "samples/windows/**", "fuzz/**"]
 
 [dependencies]
 bitflags = "2"

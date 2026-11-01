@@ -26,6 +26,12 @@ and this project adheres to
   `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
   can't represent still render. `to_timestamp()` converts them.
 - `BinXmlValue::AnsiStringArrayType` holds its strings, as a `&[&str]`.
+- `evtx_dump` starts each chunk's output buffer as big as the largest a chunk of
+  the log has needed so far (from 128 KiB up to 1 MiB), instead of at 128 KiB.
+  Most Security chunks render about 160 KiB of XML, and growing the buffer
+  copies it unless the allocator has free space right after it, so the cost of
+  a dump depended on heap layout: up to 6.5% more instructions on a 30 MB
+  Security log.
 
 ### Fixed
 
