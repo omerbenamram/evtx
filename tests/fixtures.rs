@@ -313,6 +313,18 @@ impl BinXml {
             .raw(&fragment.bytes)
     }
 
+    /// A character reference, `&#ch;`.
+    pub fn char_ref(&mut self, ch: u16) -> &mut Self {
+        self.u8(0x08).u16(ch)
+    }
+
+    /// A CDATA section holding `text`.
+    pub fn cdata(&mut self, text: &str) -> &mut Self {
+        self.u8(0x07)
+            .u16(text.encode_utf16().count() as u16)
+            .utf16(text)
+    }
+
     /// A normal substitution of value `id`, of type `value_type`.
     pub fn substitution(&mut self, id: u16, value_type: u8) -> &mut Self {
         self.u8(0x0d).u16(id).u8(value_type)

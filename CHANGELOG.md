@@ -44,6 +44,39 @@ and this project adheres to
   file. The two differ after an empty chunk and in a log that has wrapped
   around.
 
+- `BinXmlValue`'s FILETIME and SYSTEMTIME variants hold the stored value, a
+  `FileTime` or a `SysTime`, instead of a jiff `Timestamp`, so that values jiff
+  can't represent still render. `to_timestamp()` converts them.
+- `BinXmlValue::AnsiStringArrayType` holds its strings, as a `&[&str]`.
+- `evtx_dump` starts each chunk's output buffer as big as the largest a chunk of
+  the log has needed so far (from 128 KiB up to 1 MiB), instead of at 128 KiB.
+  Most Security chunks render about 160 KiB of XML, and growing the buffer
+  copies it unless the allocator has free space right after it, so the cost of
+  a dump depended on heap layout: up to 6.5% more instructions on a 30 MB
+  Security log.
+
+### Fixed
+
+- A record holding a FILETIME or SYSTEMTIME value that jiff can't represent
+  failed with `InvalidDateTimeError`: a FILETIME from 9999-12-30T22:00 UTC on,
+  and a SYSTEMTIME with a field out of range. Such values now render as Windows
+  renders them. Years past 9999 keep their last four digits, a FILETIME past
+  `i64::MAX` renders as `0000-00-00T00:00:00.0000000Z`, and an invalid
+  SYSTEMTIME as `1601-01-01T00:00:00.0000000Z`, as an unset one already did.
+  10 records of the Windows types sample failed this way.
+- A record holding an array of ANSI strings, which Windows stores for a
+  `win:AnsiString` field with a `count`, failed because evtx didn't implement
+  that value type. Each string now renders as an element of its own, as Windows
+  renders them. 3 records of the Windows types sample failed this way.
+- A record whose template holds a CDATA section or a character reference failed,
+  because evtx didn't implement those BinXML tokens. XML now writes them as
+  `<![CDATA[...]]>` and `&#65;`, and JSON gets their text. A `]]>` inside a
+  CDATA section splits it in two, so the XML stays well-formed. With this, every
+  record of the Windows types sample renders.
+- A chunk whose string table links back to a string it has already listed, as
+  a damaged or crafted chunk can, made the parser loop forever: only a string
+  that links to itself ended the walk. Any string already read now ends it.
+  Found by fuzzing.
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with
@@ -121,6 +154,20 @@ and this project adheres to
   from the start again, repeating keys. Debug builds panicked. Numbering the
   children of an element with thousands of names took time quadratic in their
   number.
+- `evtx_dump` built without the `multithreading` feature warned at every run
+  that threads were turned on. It now warns only when `-t` asks for more than
+  one thread.
+- Docs: the `--events` help said it counts records from the start of the file
+  ("offseted reltaive to file"); it filters by event record ID. The README said
+  threads could reorder records, but the records come out in the same order
+  with any number of threads. `EvtxParser::from_buffer`'s doc said it loads
+  from a path.
+- `evtx_dump` piped into a reader that stops early, such as `head`, ended with
+  `Error: Broken pipe (os error 32)` and exit status 1, and
+  `dump-template-instances` panicked. They now stop quietly, with status 0.
+- `evtx_dump` didn't flush its output before exiting, so a failure to write the
+  last of it, such as a full disk, was lost and the exit status was 0. It is
+  now an error.
 
 ### Security
 

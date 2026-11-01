@@ -1,11 +1,10 @@
 use crate::AnsiCodec;
 use crate::err::{DeserializationError, DeserializationResult as Result};
 use crate::utils::invalid_data;
-use crate::utils::windows::{filetime_to_timestamp, read_systime, systime_from_bytes};
+pub use crate::utils::windows::{FileTime, SysTime};
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use bumpalo::Bump;
-use jiff::Timestamp;
 use log::trace;
 use std::borrow::Cow;
 use std::fmt::{self, Display};
@@ -86,8 +85,8 @@ pub enum BinXmlValue<'a> {
     BinaryType(&'a [u8]),
     GuidType([u8; 16]),
     SizeTType(usize),
-    FileTimeType(Timestamp),
-    SysTimeType(Timestamp),
+    FileTimeType(FileTime),
+    SysTimeType(SysTime),
     SidType(SidRef<'a>),
     HexInt32Type(u32),
     HexInt64Type(u64),
@@ -99,7 +98,7 @@ pub enum BinXmlValue<'a> {
     EvtXml,
     /// Array of UTF-16LE strings (null-terminated items).
     StringArrayType(&'a [Utf16LeSlice<'a>]),
-    AnsiStringArrayType,
+    AnsiStringArrayType(&'a [&'a str]),
     Int8ArrayType(&'a [i8]),
     UInt8ArrayType(&'a [u8]),
     Int16ArrayType(&'a [i16]),
@@ -114,8 +113,8 @@ pub enum BinXmlValue<'a> {
     BinaryArrayType,
     GuidArrayType(&'a [[u8; 16]]),
     SizeTArrayType,
-    FileTimeArrayType(&'a [Timestamp]),
-    SysTimeArrayType(&'a [Timestamp]),
+    FileTimeArrayType(&'a [FileTime]),
+    SysTimeArrayType(&'a [SysTime]),
     SidArrayType(&'a [SidRef<'a>]),
     HexInt32ArrayType(&'a [u32]),
     HexInt64ArrayType(&'a [u64]),
@@ -392,10 +391,13 @@ impl<'a> BinXmlValue<'a> {
 
             (BinXmlValueType::GuidType, _) => BinXmlValue::GuidType(cursor.array::<16>("guid")?),
 
+            // Kept as stored: Windows renders values that are no valid time, and so does evtx.
             (BinXmlValueType::FileTimeType, _) => {
-                BinXmlValue::FileTimeType(filetime_to_timestamp(cursor.u64()?)?)
+                BinXmlValue::FileTimeType(FileTime(cursor.u64()?))
             }
-            (BinXmlValueType::SysTimeType, _) => BinXmlValue::SysTimeType(read_systime(cursor)?),
+            (BinXmlValueType::SysTimeType, _) => {
+                BinXmlValue::SysTimeType(SysTime::from_bytes(&cursor.array::<16>("systime")?))
+            }
             (BinXmlValueType::SidType, _) => BinXmlValue::SidType(cursor.read_sid_ref()?),
 
             (BinXmlValueType::SizeTType, Some(4)) => {
@@ -446,6 +448,23 @@ impl<'a> BinXmlValue<'a> {
                     out.push(s);
                 }
                 BinXmlValue::StringArrayType(out.into_bump_slice())
+            }
+            // NUL-terminated strings, one after the other, as Windows stores
+            // `win:AnsiString` arrays. A last string without its NUL still counts.
+            (BinXmlValueType::AnsiStringArrayType, Some(sz)) => {
+                let raw = cursor.take_bytes(usize::from(sz), "ansi_string_array")?;
+                let mut out = bumpalo::collections::Vec::new_in(arena);
+                if !raw.is_empty() {
+                    let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
+                    for item in raw.split(|&b| b == 0) {
+                        let text = match decode_ansi_strict(ansi_codec, item)? {
+                            Cow::Borrowed(text) => text,
+                            Cow::Owned(text) => arena.alloc_str(&text),
+                        };
+                        out.push(text);
+                    }
+                }
+                BinXmlValue::AnsiStringArrayType(out.into_bump_slice())
             }
             (BinXmlValueType::Int8ArrayType, Some(sz)) => {
                 let bytes = cursor.take_bytes(usize::from(sz), "i8_array")?;
@@ -509,7 +528,7 @@ impl<'a> BinXmlValue<'a> {
                     sz,
                     "filetime_array",
                     arena,
-                    |_off, b| filetime_to_timestamp(u64::from_le_bytes(*b)),
+                    |_off, b| Ok(FileTime(u64::from_le_bytes(*b))),
                 )?;
                 BinXmlValue::FileTimeArrayType(out)
             }
@@ -518,7 +537,7 @@ impl<'a> BinXmlValue<'a> {
                     sz,
                     "systime_array",
                     arena,
-                    |_off, b| systime_from_bytes(b),
+                    |_off, b| Ok(SysTime::from_bytes(b)),
                 )?;
                 BinXmlValue::SysTimeArrayType(out)
             }
@@ -589,6 +608,30 @@ mod error_tests {
             } if actual == what && need == usize::from(size)));
         }
     }
+
+    #[test]
+    fn ansi_string_arrays_split_at_nuls() {
+        let bump = Bump::new();
+        for (bytes, items) in [
+            (&b"x\0\0y z\0"[..], &["x", "", "y z"][..]),
+            (b"x\0", &["x"]),
+            (b"", &[]),
+            (b"a\0b", &["a", "b"]), // the last NUL is missing
+            (b"\xe9t\xe9\0", &["\u{e9}t\u{e9}"]),
+        ] {
+            let mut cursor = ByteCursor::with_pos(bytes, 0).unwrap();
+            let value = BinXmlValue::deserialize_value_type_cursor_in(
+                &BinXmlValueType::AnsiStringArrayType,
+                &mut cursor,
+                Some(bytes.len() as u16),
+                encoding_rs::WINDOWS_1252,
+                &bump,
+            )
+            .unwrap();
+            assert_eq!(value, BinXmlValue::AnsiStringArrayType(items), "{bytes:?}");
+            assert_eq!(cursor.pos(), bytes.len());
+        }
+    }
 }
 
 impl<'a> BinXmlValue<'a> {
@@ -599,6 +642,7 @@ impl<'a> BinXmlValue<'a> {
         match self {
             // Strings are stored as UTF-16LE slices in EVTX.
             BinXmlValue::StringArrayType(v) => Some(v.len()),
+            BinXmlValue::AnsiStringArrayType(v) => Some(v.len()),
 
             // Numeric/bool GUID/time/SID arrays.
             BinXmlValue::Int8ArrayType(v) => Some(v.len()),
@@ -620,8 +664,8 @@ impl<'a> BinXmlValue<'a> {
             BinXmlValue::HexInt64ArrayType(v) => Some(v.len()),
 
             // Not currently expanded:
-            // - `AnsiStringArrayType`, `BinaryArrayType`, `SizeTArrayType`, and the handle/binxml
-            //   array-ish variants don't have a typed slice representation here.
+            // - `BinaryArrayType`, `SizeTArrayType`, and the handle/binxml array-ish variants
+            //   don't have a typed slice representation here.
             _ => None,
         }
     }
@@ -632,6 +676,9 @@ impl<'a> BinXmlValue<'a> {
         match self {
             BinXmlValue::StringArrayType(items) => {
                 items.get(idx).copied().map(BinXmlValue::StringType)
+            }
+            BinXmlValue::AnsiStringArrayType(items) => {
+                items.get(idx).copied().map(BinXmlValue::AnsiStringType)
             }
             BinXmlValue::Int8ArrayType(items) => items.get(idx).copied().map(BinXmlValue::Int8Type),
             BinXmlValue::UInt8ArrayType(items) => {
