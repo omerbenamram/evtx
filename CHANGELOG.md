@@ -126,6 +126,14 @@ and this project adheres to
   from the start again, repeating keys. Debug builds panicked. Numbering the
   children of an element with thousands of names took time quadratic in their
   number.
+- `evtx_dump` built without the `multithreading` feature warned at every run
+  that threads were turned on. It now warns only when `-t` asks for more than
+  one thread.
+- Docs: the `--events` help said it counts records from the start of the file
+  ("offseted reltaive to file"); it filters by event record ID. The README said
+  threads could reorder records, but the records come out in the same order
+  with any number of threads. `EvtxParser::from_buffer`'s doc said it loads
+  from a path.
 - `evtx_dump` piped into a reader that stops early, such as `head`, ended with
   `Error: Broken pipe (os error 32)` and exit status 1, and
   `dump-template-instances` panicked. They now stop quietly, with status 0.
