@@ -72,7 +72,8 @@ impl EvtxRecordHeader {
         let record_id = bytes::read_u64_le_r(buf, offset + 8, "record.event_record_id")?;
         let filetime = bytes::read_u64_le_r(buf, offset + 16, "record.filetime")?;
 
-        let timestamp = filetime_to_timestamp(filetime)?;
+        let timestamp = filetime_to_timestamp(filetime)
+            .map_err(|_| DeserializationError::InvalidRecordTimestamp { filetime })?;
 
         Ok(EvtxRecordHeader {
             data_size: size,

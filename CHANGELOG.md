@@ -10,12 +10,40 @@ and this project adheres to
 
 ### Changed
 
+- A log that has wrapped around comes out oldest record first, as Windows reads
+  it: from the chunk that holds its lowest record ID to the end of the file,
+  then from the start of the file. evtx read it in file order, so its newest
+  records came first. The file header names the oldest chunk too, but a log
+  that wasn't closed cleanly can be a chunk ahead of it, as the LiveId sample
+  is, and Windows still starts at the oldest records. 5 of the samples change.
 - Timestamps render with seven fractional digits, the 100 ns that a FILETIME
   counts, as Windows renders them: `2016-07-08T18:12:51.6816408Z` instead of
   `2016-07-08T18:12:51.681640Z`, which dropped the last digit. SYSTEMTIME
   values, which store milliseconds, render as `.7890000Z`, as in Windows. This
   covers XML and JSON, `TimeCreated` included, so code that parses evtx's
   timestamps with exactly six digits needs to accept seven.
+- Errors say where they are. A record that can't be read, such as one whose
+  header is damaged, fails with `EvtxError::FailedToReadRecordAt`, which names
+  its chunk and its offsets and has the error it replaces as its source:
+  `Failed to read the record at offset 0x2060 of chunk 7 (file offset
+  0x73060)`. A chunk parsed on its own, with `EvtxChunkData::parse`, doesn't
+  know its number, and says `of its chunk`. A position past the end of the data
+  reads `NullType Descriptor at offset 78404 is past the end of the data (65536
+  bytes)` (`DeserializationError::OutOfBounds`) instead of `buffer too small
+  for NullType Descriptor at offset 78404 (need 0 bytes, have 0)`, and a record
+  header whose timestamp is out of range fails with `InvalidRecordTimestamp`,
+  which gives the FILETIME, instead of `InvalidDateTimeError`. **Breaking:**
+  code that matches on such a record's error finds it under
+  `FailedToReadRecordAt`, and exhaustive matches on `EvtxError` and
+  `DeserializationError` need the new variants.
+
+### Fixed
+
+- A chunk whose string table couldn't be read was reported as `Failed to parse
+  chunk number N` with N its place among the chunks read, not its number in the
+  file. The two differ after an empty chunk and in a log that has wrapped
+  around.
+
 - GUIDs render as Windows renders them, lowercase and in braces:
   `{54849625-5478-4994-a5ba-3e3b0328c30d}` instead of
   `54849625-5478-4994-A5BA-3E3B0328C30D`. This covers GUID values in XML and
