@@ -37,7 +37,7 @@ impl EvtxFileHeader {
     /// `NO_CRC32` says that it stores none.
     ///
     /// [`EvtxParser`](crate::EvtxParser) reads a file whose header fails this anyway, and logs a
-    /// warning: it finds chunks at their fixed offsets, and checks them with their own CRC32s.
+    /// warning: it finds chunks at their fixed offsets, and each chunk has CRC32s of its own.
     pub fn validate_checksum(&self) -> bool {
         self.flags.contains(HeaderFlags::NO_CRC32) || self.checksum == self.computed_checksum
     }
