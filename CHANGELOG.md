@@ -36,9 +36,19 @@ and this project adheres to
   values, which store milliseconds, render as `.7890000Z`, as in Windows. This
   covers XML and JSON, `TimeCreated` included, so code that parses evtx's
   timestamps with exactly six digits needs to accept seven.
+- `evtx_dump` starts each chunk's output buffer as big as the largest a chunk of
+  the log has needed so far (from 128 KiB up to 1 MiB), instead of at 128 KiB.
+  Most Security chunks render about 160 KiB of XML, and growing the buffer
+  copies it unless the allocator has free space right after it, so the cost of
+  a dump depended on heap layout: up to 6.5% more instructions on a 30 MB
+  Security log.
 
 ### Fixed
 
+- A chunk whose string table links back to a string it has already listed, as
+  a damaged or crafted chunk can, made the parser loop forever: only a string
+  that links to itself ended the walk. Any string already read now ends it.
+  Found by fuzzing.
 - Reading a `.wevtcache` file trusted each entry's length and allocated that
   many bytes before reading, so a 25-byte crafted file could request ~4 GiB.
   An entry longer than the rest of the file is now rejected with
@@ -130,6 +140,12 @@ and this project adheres to
 - `ParserSettings` equality ignored the WEVT template cache, so settings with
   different caches compared equal. Caches now compare by identity, as `.MTA`
   files do.
+- `evtx_dump` piped into a reader that stops early, such as `head`, ended with
+  `Error: Broken pipe (os error 32)` and exit status 1, and
+  `dump-template-instances` panicked. They now stop quietly, with status 0.
+- `evtx_dump` didn't flush its output before exiting, so a failure to write the
+  last of it, such as a full disk, was lost and the exit status was 0. It is
+  now an error.
 
 ### Security
 

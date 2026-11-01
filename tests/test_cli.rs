@@ -225,3 +225,51 @@ fn it_supports_stdin_input_with_dash() {
         "stdin and file input should produce identical output for the selected record"
     );
 }
+
+/// A reader that stops early, as `head` does, closes the pipe: `evtx_dump` and its subcommands
+/// stop there without an error. (The output is megabytes, past what a pipe buffers.)
+#[cfg(unix)]
+#[test]
+fn it_stops_quietly_when_the_reader_closes_the_pipe() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    for args in [
+        &["-o", "jsonl", "-t", "1"][..],
+        &["dump-template-instances", "-i"][..],
+    ] {
+        let mut child = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+            .args(args)
+            .arg(regular_sample())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        assert!(line.starts_with('{'), "{line}");
+        drop(stdout);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "", "{args:?}");
+    }
+}
+
+/// Output still buffered at the end is written before `evtx_dump` exits, and a failure to
+/// write it is an error, not lost.
+#[cfg(target_os = "linux")]
+#[test]
+fn it_reports_a_failure_to_write_the_last_output() {
+    let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["-o", "jsonl", "--events=1"])
+        .arg(regular_sample())
+        .stdout(File::create("/dev/full").unwrap())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("No space left on device"),
+        "{output:?}"
+    );
+}

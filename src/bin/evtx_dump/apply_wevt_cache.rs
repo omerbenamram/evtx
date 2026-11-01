@@ -282,7 +282,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         fs::write(out_path, xml.as_bytes())
             .with_context(|| format!("failed to write output `{out_path}`"))?;
     } else {
-        print!("{xml}");
+        // Not `print!`, which panics once a reader closes the pipe.
+        let mut out = std::io::stdout().lock();
+        std::io::Write::write_all(&mut out, xml.as_bytes())?;
+        std::io::Write::flush(&mut out)?;
     }
 
     Ok(())
