@@ -440,6 +440,134 @@ fn test_cdata_and_character_references_render() {
     );
 }
 
+/// An element whose DependencyId names a NULL value is left out, as MS-EVEN6 requires and
+/// Windows does for classic events' `Data` and `Binary`. All of an element's children can go,
+/// which leaves it empty. A template's root, and an element depending on a value past the
+/// instance's, stay.
+#[test]
+fn test_elements_depending_on_null_values_are_left_out() {
+    ensure_env_logger_initialized();
+    let null = || value(0x00, |_| {});
+    let evtx = synthetic_evtx_records(2, |i, record| {
+        record.fragment_header();
+        let values = if i == 0 {
+            vec![
+                null(),
+                value(0x06, |v| {
+                    v.raw(&5u16.to_le_bytes());
+                }),
+                null(),
+                value(0x0e, |v| {
+                    v.raw(&[0xab, 0xcd]);
+                }),
+                null(),
+            ]
+        } else {
+            vec![
+                value(0x04, |v| {
+                    v.raw(&[4]);
+                }),
+                null(),
+                null(),
+                null(),
+                null(),
+            ]
+        };
+        if i > 0 {
+            record.template_ref(values).eof();
+            return;
+        }
+        record
+            .template_instance(
+                |root| {
+                    root.open_depending("Event", 4).close_start();
+                    root.open("System", true).close_start();
+                    root.open_depending("Level", 0)
+                        .close_start()
+                        .optional_substitution(0, 0x04)
+                        .end_element();
+                    root.open_depending("Task", 1)
+                        .close_start()
+                        .optional_substitution(1, 0x06)
+                        .end_element();
+                    root.open_depending("Computer", 9)
+                        .close_start()
+                        .text("WIN")
+                        .end_element();
+                    root.end_element();
+                    root.open("EventData", true).close_start();
+                    root.open_depending("Data", 2)
+                        .close_start()
+                        .optional_substitution(2, 0x81)
+                        .end_element();
+                    root.open_depending("Binary", 3)
+                        .close_start()
+                        .optional_substitution(3, 0x0e)
+                        .end_element();
+                    root.end_element();
+                    root.end_element();
+                },
+                values,
+            )
+            .eof();
+    });
+
+    // `--separate-json-attributes` renders through the tree walker, which must agree.
+    let tree_json = |id| {
+        let settings = ParserSettings::new()
+            .num_threads(1)
+            .separate_json_attributes(true);
+        let mut parser = EvtxParser::from_buffer(evtx.clone())
+            .unwrap()
+            .with_configuration(settings);
+        let record = parser.records_json().map(Result::unwrap);
+        let data = record
+            .into_iter()
+            .find(|r| r.event_record_id == id)
+            .unwrap()
+            .data;
+        serde_json::from_str::<Value>(&data).unwrap()
+    };
+
+    let (xml, json) = render_record(&evtx, 1);
+    insta::assert_snapshot!(xml, @r#"
+    <?xml version="1.0" encoding="utf-8"?>
+    <Event>
+      <System>
+        <Task>5</Task>
+        <Computer>WIN</Computer>
+      </System>
+      <EventData>
+        <Binary>ABCD</Binary>
+      </EventData>
+    </Event>
+    "#);
+    let json: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"Event": {"System": {"Task": 5, "Computer": "WIN"}, "EventData": {"Binary": "ABCD"}}})
+    );
+    assert_eq!(tree_json(1), json);
+
+    let (xml, json) = render_record(&evtx, 2);
+    insta::assert_snapshot!(xml, @r#"
+    <?xml version="1.0" encoding="utf-8"?>
+    <Event>
+      <System>
+        <Level>4</Level>
+        <Computer>WIN</Computer>
+      </System>
+      <EventData></EventData>
+    </Event>
+    "#);
+    let json: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"Event": {"System": {"Level": 4, "Computer": "WIN"}, "EventData": null}})
+    );
+    assert_eq!(tree_json(2), json);
+}
+
 /// Record 17's last value is BinXML with no element in it (an EOF token, then zeroes): it
 /// renders nothing, in every output path.
 #[test]
