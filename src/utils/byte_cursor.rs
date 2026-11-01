@@ -37,9 +37,10 @@ pub(crate) struct ByteCursor<'a> {
 impl<'a> ByteCursor<'a> {
     #[inline]
     pub(crate) fn with_pos(buf: &'a [u8], pos: usize) -> DeserializationResult<Self> {
+        let mut cursor = Self { buf, pos: 0 };
         // Allow pos == len (EOF), reject pos > len.
-        let _ = bytes::slice_r(buf, pos, 0, "cursor.position")?;
-        Ok(Self { buf, pos })
+        cursor.set_pos(pos, "cursor.position")?;
+        Ok(cursor)
     }
 
     #[inline]
@@ -59,9 +60,7 @@ impl<'a> ByteCursor<'a> {
 
     #[inline]
     pub(crate) fn set_pos(&mut self, pos: usize, what: &'static str) -> DeserializationResult<()> {
-        let _ = bytes::slice_r(self.buf, pos, 0, what)?;
-        self.pos = pos;
-        Ok(())
+        self.set_pos_u64(pos as u64, what)
     }
 
     #[inline]
@@ -70,13 +69,18 @@ impl<'a> ByteCursor<'a> {
         pos: u64,
         what: &'static str,
     ) -> DeserializationResult<()> {
-        let pos_usize = usize::try_from(pos).map_err(|_| DeserializationError::Truncated {
-            what,
-            offset: pos,
-            need: 0,
-            have: 0,
-        })?;
-        self.set_pos(pos_usize, what)
+        let len = self.buf.len();
+        match usize::try_from(pos) {
+            Ok(pos) if pos <= len => {
+                self.pos = pos;
+                Ok(())
+            }
+            _ => Err(DeserializationError::OutOfBounds {
+                what,
+                offset: pos,
+                len,
+            }),
+        }
     }
 
     #[inline]
@@ -245,5 +249,28 @@ impl<'a> ByteCursor<'a> {
             .map(|v| decode_utf16le_bytes_to_bump_str(v.as_bytes(), v.as_bytes().len() / 2, arena))
             .transpose()
             .map_err(|_| invalid_data(what, start as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ByteCursor;
+
+    #[test]
+    fn positions_past_the_end_are_out_of_bounds() {
+        let data = [0; 4];
+        assert!(ByteCursor::with_pos(&data, 4).is_ok());
+        assert_eq!(
+            ByteCursor::with_pos(&data, 5).unwrap_err().to_string(),
+            "cursor.position at offset 5 is past the end of the data (4 bytes)"
+        );
+
+        let mut cursor = ByteCursor::with_pos(&data, 1).unwrap();
+        let error = cursor.set_pos_u64(u64::MAX, "descriptor").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "descriptor at offset 18446744073709551615 is past the end of the data (4 bytes)"
+        );
+        assert_eq!(cursor.pos, 1);
     }
 }

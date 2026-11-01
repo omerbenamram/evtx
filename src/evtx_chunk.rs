@@ -128,6 +128,8 @@ pub struct EvtxChunk<'chunk> {
     /// Cross-chunk compiled-program store (per parser run; fresh per chunk
     /// when constructed through the public standalone-chunk API).
     pub(crate) program_store: std::sync::Arc<crate::binxml::compiled::ProgramStore>,
+    /// The chunk's number in the file, when the parser read it, for where errors are.
+    pub(crate) number: Option<u64>,
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
@@ -137,7 +139,14 @@ impl<'chunk> EvtxChunk<'chunk> {
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
-        EvtxChunk::new_with_arena(data, header, settings, Bump::new(), Default::default())
+        EvtxChunk::new_with_arena(
+            data,
+            header,
+            settings,
+            Bump::new(),
+            Default::default(),
+            None,
+        )
     }
 
     /// Will fail if the data starts with an invalid evtx chunk header.
@@ -150,6 +159,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         settings: Arc<ParserSettings>,
         mut arena: Bump,
         program_store: Arc<crate::binxml::compiled::ProgramStore>,
+        number: Option<u64>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
         arena.reset();
 
@@ -166,6 +176,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             render_caches: Default::default(),
             render_budget: Default::default(),
             program_store,
+            number,
         })
     }
 
@@ -324,7 +335,11 @@ impl<'a> Iterator for IterRawRecords<'a> {
                     // starts when the header's `free_space_offset` is too large (issue
                     // #197), unless live records follow them.
                     if next.is_some() || !is_blank(&err) {
-                        return Some(Err(err));
+                        return Some(Err(EvtxError::FailedToReadRecordAt {
+                            chunk: self.chunk.number,
+                            offset,
+                            source: Box::new(err),
+                        }));
                     }
                 }
             }
@@ -416,6 +431,9 @@ impl<'a> IterRawRecords<'a> {
 
     /// The record at `record_start` and the offset it ends at. A carved one must also end
     /// with the copy of its size.
+    // Called once a record, and LLVM only just inlines it: a small change to the record header
+    // parse made it a call, ~24 instructions a record (0.2% of rendering security_big_sample).
+    #[inline(always)]
     fn record_at(
         &self,
         record_start: u64,

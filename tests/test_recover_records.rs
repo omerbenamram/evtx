@@ -1,8 +1,10 @@
 mod fixtures;
 
+use evtx::err::{DeserializationError, EvtxError};
 use evtx::{EvtxParser, ParserSettings, RenderedChunkItem};
 use fixtures::*;
 use std::path::Path;
+use std::sync::Arc;
 
 /// (live, recovered) counts via the record iterator and the CLI's chunk renderer.
 fn counts(path: impl AsRef<Path>, recover: bool) -> [(usize, usize); 2] {
@@ -80,4 +82,96 @@ fn resyncs_past_zeroed_records() {
     let path = sample_with_a_bad_chunk_magic();
     assert_eq!(counts(&path, false), [(301, 0); 2]);
     assert_eq!(counts(&path, true), [(301, 50); 2]);
+}
+
+/// security.evtx with its second record's header changed by `damage`, and where that record
+/// starts in the file.
+fn with_a_damaged_second_record(damage: impl FnOnce(&mut [u8])) -> (Vec<u8>, usize) {
+    let mut evtx = std::fs::read(regular_sample()).unwrap();
+    let first = 4096 + 512;
+    let size = u32::from_le_bytes(evtx[first + 4..first + 8].try_into().unwrap());
+    let second = first + size as usize;
+    damage(&mut evtx[second..second + 24]);
+    (evtx, second)
+}
+
+#[test]
+fn record_errors_say_where_the_record_is() {
+    let (evtx, in_file) = with_a_damaged_second_record(|header| header[..4].fill(0xff));
+    let offset = (in_file - 4096) as u64;
+
+    let mut parser = EvtxParser::from_buffer(evtx).unwrap();
+    let errors: Vec<_> = parser.records().filter_map(Result::err).collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    let EvtxError::FailedToReadRecordAt {
+        chunk: Some(0),
+        offset: at,
+        source,
+    } = &errors[0]
+    else {
+        panic!("{:?}", errors[0]);
+    };
+    assert_eq!(*at, offset);
+    assert!(matches!(
+        **source,
+        EvtxError::DeserializationError(DeserializationError::InvalidEvtxRecordHeaderMagic { .. })
+    ));
+    assert_eq!(
+        errors[0].to_string(),
+        format!(
+            "Failed to read the record at offset {offset:#x} of chunk 0 (file offset {in_file:#x})"
+        )
+    );
+
+    // A chunk parsed on its own doesn't know its number.
+    let mut chunk = parser.chunks().next().unwrap().unwrap();
+    let mut chunk = chunk.parse(Arc::new(ParserSettings::new())).unwrap();
+    let error = chunk.iter().find_map(Result::err).unwrap();
+    assert_eq!(
+        error.to_string(),
+        format!("Failed to read the record at offset {offset:#x} of its chunk")
+    );
+}
+
+#[test]
+fn record_timestamp_errors_name_the_field() {
+    let (evtx, _) =
+        with_a_damaged_second_record(|header| header[16..24].copy_from_slice(&[0xff; 8]));
+    let mut parser = EvtxParser::from_buffer(evtx).unwrap();
+    let error = parser.records().find_map(Result::err).unwrap();
+    let EvtxError::FailedToReadRecordAt { source, .. } = &error else {
+        panic!("{error:?}");
+    };
+    let EvtxError::DeserializationError(
+        error @ DeserializationError::InvalidRecordTimestamp { filetime: u64::MAX },
+    ) = &**source
+    else {
+        panic!("{source:?}");
+    };
+    assert_eq!(
+        error.to_string(),
+        "The record header's timestamp (FILETIME 0xffffffffffffffff) is out of range"
+    );
+}
+
+#[test]
+fn record_errors_name_the_chunk_in_the_file() {
+    // The walk starts at the chunk with the oldest records, but errors name chunks by their
+    // place in the file: the zeroed block is in chunk 7, at file offset 0x73060.
+    for threads in [1, 4] {
+        let settings = ParserSettings::new().num_threads(threads);
+        let mut parser = EvtxParser::from_path(sample_with_a_bad_chunk_magic())
+            .unwrap()
+            .with_configuration(settings);
+        let errors: Vec<_> = parser
+            .records()
+            .filter_map(Result::err)
+            .map(|error| error.to_string())
+            .filter(|error| error.starts_with("Failed to read the record"))
+            .collect();
+        assert_eq!(
+            errors,
+            ["Failed to read the record at offset 0x2060 of chunk 7 (file offset 0x73060)"]
+        );
+    }
 }

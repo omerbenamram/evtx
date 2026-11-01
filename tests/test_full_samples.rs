@@ -234,6 +234,10 @@ fn test_sample_with_zero_data_size_event() {
         if let Err(e) = r {
             assert_eq!(
                 e.to_string(),
+                "Failed to read the record at offset 0x820 of chunk 0 (file offset 0x1820)"
+            );
+            assert_eq!(
+                std::error::Error::source(&e).unwrap().to_string(),
                 "Invalid EVTX record data size, should be equals or greater than 28, found `0`"
             );
         }
