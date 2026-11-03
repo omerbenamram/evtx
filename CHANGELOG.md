@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A `WEVT_TEMPLATE` manifest whose MAPS table points a map past the table's
+  declared end no longer panics with an out-of-range slice (found by fuzzing).
+
 ## [0.15.1 - 2026-11-01]
 
 0.15.0's Windows build failed, so 0.15.0 never reached crates.io: this is the
