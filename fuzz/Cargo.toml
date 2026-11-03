@@ -47,3 +47,10 @@ path = "fuzz_targets/mta.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "wevt_pe"
+path = "fuzz_targets/wevt_pe.rs"
+test = false
+doc = false
+bench = false
