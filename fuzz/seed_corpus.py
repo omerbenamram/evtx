@@ -3,7 +3,8 @@
 
 - evtx_file: each log, cut to its file header and first two chunks.
 - evtx_chunk: the first chunks of each log, those that have the chunk magic.
-- wevt_template: the WEVT_TEMPLATE (CRIM) blobs in samples/dlls, which git-lfs keeps.
+- wevt_pe: the PE files in samples/dlls, which git-lfs keeps.
+- wevt_template: the WEVT_TEMPLATE (CRIM) blobs in those PE files.
 - mta: the .MTA files.
 """
 
@@ -41,6 +42,7 @@ for log in sorted(samples.rglob("*.evtx")):
 
 for pe in sorted((samples / "dlls").iterdir()):
     data = pe.read_bytes()
+    seed("wevt_pe", data)
     start = data.find(b"CRIM")
     while start != -1:
         if start + 8 <= len(data):

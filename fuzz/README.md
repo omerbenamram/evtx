@@ -8,10 +8,11 @@ input:
 | `evtx_file` | A whole log, read with `EvtxParser`: each record as XML, then as a JSON value, with the records recovered from slack space too. |
 | `evtx_chunk` | One chunk, read with `EvtxChunkData`: each record as XML, then as JSON. |
 | `wevt_template` | A `WEVT_TEMPLATE` resource (a CRIM manifest), as `--wevt-cache` loads it, with each template in it rendered. |
+| `wevt_pe` | A PE file (a provider DLL), as `evtx_dump extract-wevt-templates` reads it: its resource directory, walked for `WEVT_TEMPLATE` resources, each then loaded into a cache. |
 | `mta` | A LocaleMetaData (`.MTA`) file. |
 
 They need a nightly toolchain and cargo-fuzz (`cargo install cargo-fuzz`). Seed the corpora from
-`samples/` (the `WEVT_TEMPLATE` seeds come from the DLLs in `samples/dlls`, which git-lfs keeps),
+`samples/` (the `wevt_pe` and `WEVT_TEMPLATE` seeds come from the DLLs in `samples/dlls`, which git-lfs keeps),
 then fuzz a target:
 
 ```
