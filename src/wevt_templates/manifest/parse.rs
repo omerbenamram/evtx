@@ -903,33 +903,39 @@ fn parse_maps<'a>(crim: &'a [u8], off: u32) -> Result<MapsDefinitions<'a>> {
     for &map_off in &map_offsets {
         let map_off_usize = u32_to_usize(map_off, "MAPS map offset", crim.len())?;
         let sig = read_sig_named(crim, map_off_usize, "MAPS map signature")?;
+        // A map's bytes end at the MAPS region's end, or at the map's start for an offset past
+        // it, so that a hostile offset gives a short slice instead of a panic.
+        let map_bytes = |len: usize| {
+            let slice_end = map_off_usize
+                .saturating_add(len)
+                .min(end)
+                .max(map_off_usize);
+            &crim[map_off_usize..slice_end]
+        };
 
         match &sig {
             b"VMAP" => {
                 // VMAP has its own size field at offset 4.
                 require_len(crim, map_off_usize, 8, "VMAP size field")?;
                 let vmap_size = read_u32_named(crim, map_off_usize + 4, "VMAP.size")?;
-                let slice_end = map_off_usize.saturating_add(vmap_size as usize).min(end);
-                let map_slice = &crim[map_off_usize..slice_end];
+                let map_slice = map_bytes(vmap_size as usize);
                 maps.push(MapDefinition::ValueMap(parse_vmap(
                     crim, map_off, map_slice,
                 )?));
             }
             b"BMAP" => {
                 // BMAP format is undocumented (TODO in libfwevt). Capture just the signature.
-                let slice_end = (map_off_usize + 4).min(end);
                 maps.push(MapDefinition::Bitmap(BitmapMap {
                     offset: map_off,
-                    data: &crim[map_off_usize..slice_end],
+                    data: map_bytes(4),
                 }));
             }
             _ => {
                 // Unknown map type — capture just the signature.
-                let slice_end = (map_off_usize + 4).min(end);
                 maps.push(MapDefinition::Unknown {
                     signature: sig,
                     offset: map_off,
-                    data: &crim[map_off_usize..slice_end],
+                    data: map_bytes(4),
                 });
             }
         }
@@ -995,4 +1001,31 @@ fn parse_vmap<'a>(crim: &'a [u8], off: u32, map_slice: &'a [u8]) -> Result<Value
         map_string,
         trailing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A fuzz-found MAPS table whose second map starts past the table's declared end.
+    #[test]
+    fn map_offset_past_maps_end_does_not_panic() {
+        let mut crim = Vec::new();
+        crim.extend_from_slice(b"MAPS");
+        crim.extend_from_slice(&20u32.to_le_bytes()); // size: the table ends at 20
+        crim.extend_from_slice(&2u32.to_le_bytes()); // count
+        crim.extend_from_slice(&0u32.to_le_bytes()); // data_offset
+        crim.extend_from_slice(&24u32.to_le_bytes()); // map 1's offset, past the end
+        crim.extend_from_slice(b"BMAP"); // map 0, implied at 20
+        crim.extend_from_slice(b"BMAP"); // map 1
+
+        let maps = parse_maps(&crim, 0).expect("parses");
+        assert_eq!(maps.maps.len(), 2);
+        for map in &maps.maps {
+            let MapDefinition::Bitmap(bitmap) = map else {
+                panic!("expected a BMAP, got {map:?}");
+            };
+            assert!(bitmap.data.is_empty());
+        }
+    }
 }
