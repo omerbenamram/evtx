@@ -4,45 +4,32 @@ import { appDescription, appName, getPageMarkdownUrl, siteUrl } from '@/lib/shar
 
 export const revalidate = false;
 
-const sectionTitles: Record<string, string> = {
-  '': 'Start here',
-  cli: 'Command line',
-  python: 'Python',
-  rust: 'Rust',
-  guides: 'Guides: when to use what',
-};
-
-// Page URLs in sidebar order.
-function pageUrls(nodes: Node[]): string[] {
-  return nodes.flatMap((node) => {
-    if (node.type === 'page') return [node.url];
-    if (node.type === 'folder') return [...(node.index ? [node.index.url] : []), ...pageUrls(node.children)];
-    return [];
-  });
+function pageLink(node: Node): string[] {
+  if (node.type !== 'page') return [];
+  const page = source.getNodePage(node);
+  if (!page) return [];
+  const url = `${siteUrl}${getPageMarkdownUrl(page).url}`;
+  return [`- [${page.data.title}](${url}): ${page.data.description ?? ''}`];
 }
 
-// https://llmstxt.org: a title, a summary, then links to each page's markdown, grouped by the
-// folder the page is in.
+// https://llmstxt.org: a title, a summary, then links to each page's markdown in sidebar order,
+// under the sidebar's folder titles (meta.json).
 export async function GET() {
+  const tree = source.getPageTree().children;
   const lines = [
     `# ${appName}`,
     '',
     `> ${appDescription}`,
     '',
     `Every link below is the page as plain markdown. All pages in one file: ${siteUrl}/llms-full.txt`,
+    '',
+    '## Start here',
+    '',
+    ...tree.flatMap(pageLink),
   ];
-  const pages = new Map(source.getPages().map((page) => [page.url, page]));
-  let section: string | undefined;
-  for (const url of pageUrls(source.getPageTree().children)) {
-    const page = pages.get(url);
-    if (!page) continue;
-    const folder = page.slugs.length > 1 ? page.slugs[0] : '';
-    if (folder !== section) {
-      section = folder;
-      lines.push('', `## ${sectionTitles[folder] ?? folder}`, '');
-    }
-    const markdownUrl = `${siteUrl}${getPageMarkdownUrl(page).url}`;
-    lines.push(`- [${page.data.title}](${markdownUrl}): ${page.data.description ?? ''}`);
+  for (const node of tree) {
+    if (node.type !== 'folder') continue;
+    lines.push('', `## ${node.name}`, '', ...[node.index, ...node.children].flatMap((n) => (n ? pageLink(n) : [])));
   }
   return new Response(`${lines.join('\n')}\n`);
 }

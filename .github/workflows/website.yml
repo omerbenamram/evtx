@@ -26,7 +26,7 @@ jobs:
           cache: npm
           cache-dependency-path: website/package-lock.json
       - run: npm ci
-      - run: npm run types:check
+      # Generates route types and type-checks too.
       - run: npm run build
         env:
           # Where the site is served from, for absolute links in llms.txt. Set them as

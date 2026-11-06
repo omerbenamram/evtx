@@ -12,14 +12,12 @@ export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
   title: { default: appName, template: `%s | ${appName}` },
   description: appDescription,
+  alternates: { types: { 'text/plain': [{ url: 'llms.txt', title: 'llms.txt' }] } },
 };
 
 export default function Layout({ children }: LayoutProps<'/'>) {
   return (
     <html lang="en" className={inter.className} suppressHydrationWarning>
-      <head>
-        <link rel="alternate" type="text/plain" title="llms.txt" href={`${siteUrl}/llms.txt`} />
-      </head>
       <body className="flex flex-col min-h-screen">
         <Provider>{children}</Provider>
       </body>

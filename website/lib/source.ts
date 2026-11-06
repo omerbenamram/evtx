@@ -20,7 +20,6 @@ const docs = defineDocs({
 export const source = loader({
   baseUrl: docsRoute,
   source: docs.toFumadocsSource(),
-  plugins: [],
 });
 
 export const docsLlms = llms(source, {
