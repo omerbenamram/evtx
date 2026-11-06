@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `evtx_dump --carve` parses the EVTX chunks found anywhere in raw data (a disk image,
+  unallocated space, a memory dump, or a log whose file header is gone), skipping exact copies
+  of a chunk. With `-v` it lists where each one was found, and `--recover-records` also carves
+  their slack. In the library, `evtx::carve::CarvedEvtx` scans a `Read + Seek` source and reads
+  as a virtual EVTX file that `EvtxParser::from_read_seek` takes. A chunk counts when its header
+  fields are in range and its header CRC32 matches or a record starts right after it. Carving an
+  image built from every sample log, with noise between them and half of their file headers
+  dropped, gives the same set of records as parsing each log.
+
 ### Breaking changes
 
 - evtx no longer depends on `winstructs` (and through it on `chrono`). GUIDs

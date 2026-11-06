@@ -5,10 +5,11 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
 
+use evtx::carve::CarvedEvtx;
 use evtx::{AnsiCodec, EvtxParser, ParserSettings, RenderedChunk, RenderedChunkItem};
 use log::Level;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -75,6 +76,8 @@ struct EvtxDump {
     stop_after_error: bool,
     /// When set, only the records whose event record IDs are in these ranges are output.
     ranges: Option<Ranges>,
+    /// Whether the input is raw data to carve chunks from, rather than an EVTX file.
+    carve: bool,
 }
 
 impl EvtxDump {
@@ -176,6 +179,7 @@ impl EvtxDump {
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
+            carve: matches.get_flag("carve"),
         })
     }
 
@@ -185,9 +189,37 @@ impl EvtxDump {
             eprintln!("{:?}", err);
         }
 
-        let mut parser = self
-            .open_parser()
-            .map(|parser| parser.with_configuration(self.parser_settings.clone()))?;
+        let input = self.open_input()?;
+        if self.carve {
+            let carved = CarvedEvtx::new(input)
+                .with_context(|| format!("Failed to carve chunks from {}", self.input.display()))?;
+            eprintln!(
+                "Carved {} chunks from {}",
+                carved.chunk_offsets().len(),
+                self.input.display()
+            );
+            for (number, offset) in carved.chunk_offsets().iter().enumerate() {
+                log::info!("chunk {number}: offset {offset} ({offset:#x})");
+            }
+            let parser = EvtxParser::from_read_seek(carved).with_context(|| {
+                format!(
+                    "Failed to read the chunks carved from {}",
+                    self.input.display()
+                )
+            })?;
+            return self.dump(parser);
+        }
+        let parser = if Self::is_stdin_input(&self.input) {
+            EvtxParser::from_read_seek(input).context("Failed to parse EVTX data from stdin")
+        } else {
+            EvtxParser::from_read_seek(input)
+                .with_context(|| format!("Failed to open evtx file at: {}", self.input.display()))
+        }?;
+        self.dump(parser)
+    }
+
+    fn dump<T: Read + Seek>(&mut self, parser: EvtxParser<T>) -> Result<()> {
+        let mut parser = parser.with_configuration(self.parser_settings.clone());
         let header = parser.header();
         // With logging on, the parser's own warning says this.
         if !header.validate_checksum() && self.verbosity_level.is_none() {
@@ -215,7 +247,8 @@ impl EvtxDump {
         Ok(())
     }
 
-    fn open_parser(&self) -> Result<EvtxParser<File>> {
+    /// The input file, or a copy of stdin.
+    fn open_input(&self) -> Result<File> {
         if Self::is_stdin_input(&self.input) {
             let mut tmp =
                 tempfile().context("Failed to create temporary file for stdin buffering")?;
@@ -230,10 +263,9 @@ impl EvtxDump {
 
             tmp.seek(SeekFrom::Start(0))
                 .context("Failed to rewind stdin buffer")?;
-
-            EvtxParser::from_read_seek(tmp).context("Failed to parse EVTX data from stdin")
+            Ok(tmp)
         } else {
-            EvtxParser::from_path(&self.input)
+            File::open(&self.input)
                 .with_context(|| format!("Failed to open evtx file at: {}", &self.input.display()))
         }
     }
@@ -527,6 +559,14 @@ fn run_cli() -> Result<()> {
                 .long("recover-records")
                 .action(ArgAction::SetTrue)
                 .help("Also carve deleted/stale records from unallocated chunk space (cleared chunks, chunk slack)."),
+        )
+        .arg(
+            Arg::new("carve")
+                .long("carve")
+                .action(ArgAction::SetTrue)
+                .help(indoc!("Treats INPUT as raw data (a disk image, unallocated space, a memory dump, a damaged log) and
+                parses the EVTX chunks found anywhere in it, skipping exact copies. Prints how many it found;
+                with -v, where each one is. Combine with --recover-records to also carve their slack.")),
         )
         .arg(
             Arg::new("no-indent")

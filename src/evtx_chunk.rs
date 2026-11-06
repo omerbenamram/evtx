@@ -94,10 +94,7 @@ impl EvtxChunkData {
 
     /// Computed CRC32 of the header (bytes 0..120 and 128..512).
     fn header_crc(&self) -> u32 {
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&self.data[..120]);
-        hasher.update(&self.data[128..512]);
-        hasher.finalize()
+        chunk_header_crc(&self.data)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -562,6 +559,15 @@ impl EvtxChunkHeader {
             strings_offsets,
         })
     }
+}
+
+/// The CRC32 of a chunk's header, the one its `header_chunk_checksum` holds: bytes 0..120 and
+/// 128..512 of the chunk.
+pub(crate) fn chunk_header_crc(chunk: &[u8]) -> u32 {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&chunk[..120]);
+    hasher.update(&chunk[128..EVTX_CHUNK_HEADER_SIZE]);
+    hasher.finalize()
 }
 
 #[cfg(test)]
