@@ -1163,81 +1163,159 @@ fn clone_and_resolve<'a>(
     arena: &mut IrArena<'a>,
     budget: &Budget,
 ) -> Result<(ElementId, bool)> {
-    let element = template_arena
-        .get(element_id)
-        .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid template element id"))?;
+    // The elements being cloned, from the root down to the one whose children are being
+    // resolved. This walks the template with its own stack rather than recursing, since a
+    // template can nest elements `MAX_ELEMENT_DEPTH` deep and a debug build's frames are large.
+    let mut stack = vec![CloneFrame::open(
+        template_arena,
+        element_id,
+        values,
+        bump,
+        arena,
+        budget,
+    )?];
+    loop {
+        let frame = stack
+            .last_mut()
+            .expect("the root is on the stack until it returns");
+        if let Some(node) = frame.source.children.get(frame.next_child) {
+            frame.next_child += 1;
+            match node {
+                Node::Element(child) if !is_left_out(template_arena, *child, values) => {
+                    let child =
+                        CloneFrame::open(template_arena, *child, values, bump, arena, budget)?;
+                    stack.push(child);
+                }
+                _ => {
+                    let before = frame.resolved.children.len();
+                    resolve_node_into(
+                        template_arena,
+                        node,
+                        values,
+                        bump,
+                        arena,
+                        budget,
+                        &mut frame.resolved.children,
+                    )?;
+                    frame.note_children(before);
+                }
+            }
+            continue;
+        }
 
-    let mut resolved = Element {
-        name: element.name,
-        attrs: IrVec::with_capacity_in(element.attrs.len(), bump),
-        children: IrVec::with_capacity_in(element.children.len(), bump),
-        has_element_child: false,
-        self_closing: element.self_closing,
-        dependency: None,
-    };
-
-    // Fast-path hint for array expansion:
-    // If we never append an expandable array value (`Node::Value(<ArrayType>)` with len > 1)
-    // into this element's attrs/children, we can skip the array-expansion scan entirely.
-    let mut needs_array_expansion = false;
-
-    for attr in &element.attrs {
-        let mut new_attr = Attr {
-            name: attr.name,
-            value: IrVec::with_capacity_in(attr.value.len(), bump),
+        let done = stack.pop().expect("checked above");
+        let needs_array_expansion = done.needs_array_expansion;
+        let cloned = arena.new_node(done.resolved);
+        let Some(parent) = stack.last_mut() else {
+            return Ok((cloned, needs_array_expansion));
         };
-        for node in &attr.value {
-            let before = new_attr.value.len();
-            resolve_node_into(
-                template_arena,
-                node,
-                values,
-                bump,
-                arena,
-                budget,
-                &mut new_attr.value,
-            )?;
-            if !needs_array_expansion
-                && new_attr.value[before..]
+        let before = parent.resolved.children.len();
+        push_cloned_element(
+            arena,
+            bump,
+            budget,
+            cloned,
+            needs_array_expansion,
+            &mut parent.resolved.children,
+        )?;
+        parent.note_children(before);
+    }
+}
+
+/// One element of [`clone_and_resolve`]'s walk: the template element, its clone so far, and
+/// the next of its children to resolve.
+struct CloneFrame<'t, 'a> {
+    source: &'t Element<'a>,
+    resolved: Element<'a>,
+    /// Fast-path hint for array expansion: if no expandable array value (`Node::Value(<ArrayType>)`
+    /// with len > 1) goes into this element's attrs/children, the array-expansion scan is skipped.
+    needs_array_expansion: bool,
+    next_child: usize,
+}
+
+impl<'t, 'a> CloneFrame<'t, 'a> {
+    /// Starts cloning `element_id`, resolving its attributes, which hold no elements.
+    fn open(
+        template_arena: &'t IrArena<'a>,
+        element_id: ElementId,
+        values: &[ValidatedValue<'a>],
+        bump: &'a Bump,
+        arena: &mut IrArena<'a>,
+        budget: &Budget,
+    ) -> Result<Self> {
+        let source = template_arena
+            .get(element_id)
+            .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid template element id"))?;
+        let mut resolved = Element {
+            name: source.name,
+            attrs: IrVec::with_capacity_in(source.attrs.len(), bump),
+            children: IrVec::with_capacity_in(source.children.len(), bump),
+            has_element_child: false,
+            self_closing: source.self_closing,
+            dependency: None,
+        };
+        let mut needs_array_expansion = false;
+        for attr in &source.attrs {
+            let mut new_attr = Attr {
+                name: attr.name,
+                value: IrVec::with_capacity_in(attr.value.len(), bump),
+            };
+            for node in &attr.value {
+                let before = new_attr.value.len();
+                resolve_node_into(
+                    template_arena,
+                    node,
+                    values,
+                    bump,
+                    arena,
+                    budget,
+                    &mut new_attr.value,
+                )?;
+                needs_array_expansion |= new_attr.value[before..]
                     .iter()
-                    .any(node_needs_array_expansion)
-            {
-                needs_array_expansion = true;
+                    .any(node_needs_array_expansion);
+            }
+            if !new_attr.value.is_empty() {
+                resolved.attrs.push(new_attr);
             }
         }
-        if !new_attr.value.is_empty() {
-            resolved.attrs.push(new_attr);
-        }
+        Ok(CloneFrame {
+            source,
+            resolved,
+            needs_array_expansion,
+            next_child: 0,
+        })
     }
 
-    for node in &element.children {
-        let before = resolved.children.len();
-        resolve_node_into(
-            template_arena,
-            node,
-            values,
-            bump,
-            arena,
-            budget,
-            &mut resolved.children,
-        )?;
-        if !resolved.has_element_child
-            && resolved.children[before..]
-                .iter()
-                .any(|n| matches!(n, Node::Element(_)))
-        {
-            resolved.has_element_child = true;
-        }
-        if !needs_array_expansion
-            && resolved.children[before..]
-                .iter()
-                .any(node_needs_array_expansion)
-        {
-            needs_array_expansion = true;
-        }
+    /// Updates the element's hints for the children appended from `before` on.
+    fn note_children(&mut self, before: usize) {
+        let added = &self.resolved.children[before..];
+        self.resolved.has_element_child |= added.iter().any(|n| matches!(n, Node::Element(_)));
+        self.needs_array_expansion |= added.iter().any(node_needs_array_expansion);
     }
+}
 
-    Ok((arena.new_node(resolved), needs_array_expansion))
+/// Appends a cloned element to `out`: once, or once for each item of the array substitutions
+/// it holds (MS-EVEN6 §3.1.4.7.5: an array substitution repeats its containing element). After
+/// placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)` inside an
+/// element's content or attributes; expanding them here gives renderers the repeated-element
+/// structure (as libevtx does).
+fn push_cloned_element<'a>(
+    arena: &mut IrArena<'a>,
+    bump: &'a Bump,
+    budget: &Budget,
+    cloned: ElementId,
+    needs_array_expansion: bool,
+    out: &mut IrVec<'a, Node<'a>>,
+) -> Result<()> {
+    if needs_array_expansion
+        && let Some(expanded) = expand_array_substitutions_in_element(arena, bump, cloned, budget)?
+    {
+        out.extend(expanded.into_iter().map(Node::Element));
+    } else {
+        out.push(Node::Element(cloned));
+    }
+    Ok(())
 }
 
 /// Resolve one template [`Node`] and append the result into `out`.
@@ -1264,21 +1342,7 @@ fn resolve_node_into<'a>(
         Node::Element(element_id) => {
             let (cloned, needs_array_expansion) =
                 clone_and_resolve(template_arena, *element_id, values, bump, arena, budget)?;
-            // MS-EVEN6 §3.1.4.7.5: array substitutions expand by repeating the containing element.
-            // After placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)`
-            // inside an element's content/attributes. Expand them here so renderers see the proper
-            // repeated-element structure (matching common tools like libevtx).
-            if needs_array_expansion
-                && let Some(expanded) =
-                    expand_array_substitutions_in_element(arena, bump, cloned, budget)?
-            {
-                for id in expanded {
-                    out.push(Node::Element(id));
-                }
-                return Ok(());
-            }
-            out.push(Node::Element(cloned));
-            Ok(())
+            push_cloned_element(arena, bump, budget, cloned, needs_array_expansion, out)
         }
         other => {
             out.push(other.clone());

@@ -1015,6 +1015,40 @@ fn depth_is_capped() {
 }
 
 #[test]
+fn a_deep_template_renders_from_its_tree_on_a_small_stack() {
+    // Cloning a template into a record's tree recursed once per element level, with frames of
+    // nearly 4 KiB a level in a debug build: a template nesting 500 elements overflowed 1 MiB.
+    // The records API renders from the tree when it has an `.MTA` file.
+    let evtx = synthetic_evtx(|record| {
+        record.fragment_header().template_instance(
+            |root| {
+                for _ in 0..500 {
+                    root.open("R", true).close_start();
+                }
+                root.open("E", true).close_empty();
+                for _ in 0..500 {
+                    root.end_element();
+                }
+            },
+            Vec::new(),
+        );
+    });
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            let mta = mta_naming_level("P", "Info");
+            let mta = MtaFile::from_bytes(&mta).unwrap();
+            let settings = ParserSettings::new().mta(Some(Arc::new(mta)));
+            for pass in render_passes_with(&evtx, 1 << 20, settings) {
+                assert!(pass[0].is_ok(), "{:?}", pass[0]);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn many_children_of_one_name_get_distinct_keys() {
     // 4,096 places hold a fragment of 16 `<D/>`, then one more: 65,537 children named D.
     let evtx = synthetic_evtx(|record| {
