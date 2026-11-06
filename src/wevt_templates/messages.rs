@@ -986,10 +986,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("en-us")).unwrap();
         std::fs::write(dir.path().join("en-us").join("adtschema.dll.mui"), b"").unwrap();
-        assert_eq!(
-            find_mui(dir.path(), "en-US", "AdtSchema.dll"),
-            Some(dir.path().join("en-us").join("adtschema.dll.mui"))
-        );
+        // On a case-insensitive filesystem (macOS, Windows) the exact path is found as it is.
+        let found = find_mui(dir.path(), "en-US", "AdtSchema.dll").unwrap();
+        assert!(found.is_file(), "{found:?}");
         assert_eq!(find_mui(dir.path(), "de-DE", "AdtSchema.dll"), None);
     }
 
