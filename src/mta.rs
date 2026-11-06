@@ -526,7 +526,7 @@ fn parse_publisher(payload: &[u8], messages: &[(u32, Box<str>)]) -> Option<MtaPu
 }
 
 /// Decodes UTF-16LE text up to the first NUL, replacing unpaired surrogates.
-fn decode_utf16(bytes: &[u8]) -> Box<str> {
+pub(crate) fn decode_utf16(bytes: &[u8]) -> Box<str> {
     let units = bytes.as_chunks::<2>().0;
     // Strings usually end with their NUL.
     let units = units.strip_suffix(&[[0, 0]]).unwrap_or(units);
@@ -822,7 +822,7 @@ fn attribute<'e, 'a>(element: &'e Element<'a>, name: &str) -> Option<&'e [Node<'
 }
 
 /// A missing or out-of-range value counts as 0.
-fn narrow<T: TryFrom<u64> + Default>(value: Option<u64>) -> T {
+pub(crate) fn narrow<T: TryFrom<u64> + Default>(value: Option<u64>) -> T {
     value
         .and_then(|value| T::try_from(value).ok())
         .unwrap_or_default()
@@ -830,7 +830,7 @@ fn narrow<T: TryFrom<u64> + Default>(value: Option<u64>) -> T {
 
 /// The value of a number-valued element or attribute: a single typed value, or text in decimal
 /// or `0x`-prefixed hex.
-fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
+pub(crate) fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
     if let [Node::Value(value)] = nodes
         && let Some(number) = value_number(value)
     {
@@ -844,7 +844,7 @@ fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
     }
 }
 
-fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
+pub(crate) fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
     match *value {
         BinXmlValue::UInt8Type(v) => Some(v.into()),
         BinXmlValue::UInt16Type(v) => Some(v.into()),

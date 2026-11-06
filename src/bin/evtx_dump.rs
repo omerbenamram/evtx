@@ -157,6 +157,25 @@ impl EvtxDump {
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
 
+        let messages = match matches.get_many::<PathBuf>("messages") {
+            Some(paths) => {
+                let locale = matches
+                    .get_one::<String>("messages-locale")
+                    .map(String::as_str);
+                let mut catalog = evtx::wevt_templates::messages::MessageCatalog::new();
+                for path in paths {
+                    catalog.add_path(path, locale).with_context(|| {
+                        format!("failed to read messages from `{}`", path.display())
+                    })?;
+                }
+                if catalog.provider_count() == 0 {
+                    eprintln!("warning: found no event providers in the --messages paths");
+                }
+                Some(std::sync::Arc::new(catalog))
+            }
+            None => None,
+        };
+
         let parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
@@ -165,7 +184,8 @@ impl EvtxDump {
             .ansi_codec(ansi_codec)
             .recover_records(matches.get_flag("recover-records"))
             .wevt_cache(wevt_cache)
-            .mta(mta);
+            .mta(mta)
+            .messages(messages);
 
         Ok(EvtxDump {
             parser_settings,
@@ -569,6 +589,21 @@ fn run_cli() -> Result<()> {
                 .value_name("MTA")
                 .value_parser(clap::value_parser!(PathBuf))
                 .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element."),
+        )
+        .arg(
+            Arg::new("messages")
+                .long("messages")
+                .value_name("PATH")
+                .action(ArgAction::Append)
+                .value_parser(clap::value_parser!(PathBuf))
+                .help("A copy of a Windows binaries folder (such as C:\\Windows\\System32, with its en-US folder), or one provider binary. Adds each event's message, level, task, opcode and keyword names from the providers' manifests and message tables as a RenderingInfo element. Can be given more than once. Strings from --mta win. Slows rendering down several times."),
+        )
+        .arg(
+            Arg::new("messages-locale")
+                .long("messages-locale")
+                .value_name("LOCALE")
+                .requires("messages")
+                .help("The folder next to each binary that holds its .mui file for --messages (default: en-US)."),
         )
         .arg(
             Arg::new("stop-after-one-error")

@@ -115,6 +115,14 @@ When a log is saved with display information (Event Viewer's *Save All Events As
 
 In the library, this is `ParserSettings::mta` (see the `evtx::mta` module). See [`docs/mta.md`](docs/mta.md) for the file format and how Windows matches its strings to events.
 
+## Event messages from provider binaries
+
+Without an `.MTA` file, `evtx_dump` can build the same `RenderingInfo` from the providers' own binaries, copied off a Windows system: the manifests in their `WEVT_TEMPLATE` resources and the strings in their message tables (in the `.mui` files of a locale folder such as `en-US`). The message's inserts (`%1`, `%2`, ...) are filled with the event's data.
+
+- `evtx_dump --messages C:/copy/of/Windows/System32 Security.evtx`
+
+`--messages` takes a folder or a single binary, and can be given more than once; `--messages-locale` picks another locale folder. In the library, this is `ParserSettings::messages` with a `wevt_templates::messages::MessageCatalog`.
+
 ## Example usage (as library):
 ```rust
 use evtx::EvtxParser;
