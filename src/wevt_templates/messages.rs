@@ -382,19 +382,23 @@ impl MessageCatalog {
         {
             return Ok(());
         }
-        let bytes = read(path)?;
-        let mui = path
-            .parent()
-            .map(|parent| parent.join(locale).join(format!("{name}.mui")))
-            .filter(|mui| mui.is_file())
-            .map(|mui| read(&mui))
-            .transpose()?;
-        let result = if lower == "msobjs.dll" {
-            self.add_parameter_file(mui.as_deref().unwrap_or(&bytes))
-        } else {
-            let message_files: Vec<&[u8]> = mui.as_deref().into_iter().collect();
-            self.add_provider_files(&bytes, &message_files).map(drop)
-        };
+        let files = read(path).and_then(|bytes| {
+            let mui = path
+                .parent()
+                .map(|parent| parent.join(locale).join(format!("{name}.mui")))
+                .filter(|mui| mui.is_file())
+                .map(|mui| read(&mui))
+                .transpose()?;
+            Ok((bytes, mui))
+        });
+        let result = files.and_then(|(bytes, mui)| {
+            if lower == "msobjs.dll" {
+                self.add_parameter_file(mui.as_deref().unwrap_or(&bytes))
+            } else {
+                let message_files: Vec<&[u8]> = mui.as_deref().into_iter().collect();
+                self.add_provider_files(&bytes, &message_files).map(drop)
+            }
+        });
         match result {
             Err(e) if !strict => {
                 log::debug!("skipping `{}`: {e}", path.display());
