@@ -728,7 +728,7 @@ impl<'a> TemplateContent<'a> {
 ///
 /// Nested instances are materialized first so every placeholder resolves to a scalar or an
 /// element; the template tree is then deep-cloned with all placeholders resolved and array
-/// substitutions expanded (see `push_cloned_element`). The returned `ElementId` is *spliced* into
+/// substitutions expanded (see `clone_and_resolve`). The returned `ElementId` is *spliced* into
 /// the record tree at the template instance location. `budget` pays for the clone up front;
 /// the fragments that placeholders place, and the elements arrays repeat, are charged where
 /// they are placed.
@@ -1165,13 +1165,15 @@ fn clone_and_resolve<'a>(
     // The elements being cloned, from the root down to the one whose children are being
     // resolved. This walks the template with its own stack rather than recursing, since a
     // template can nest elements `MAX_ELEMENT_DEPTH` deep and a debug build's frames are large.
-    let mut stack = vec![CloneFrame::open(
+    // Event templates are rarely more than a few elements deep.
+    let mut stack = Vec::with_capacity(8);
+    stack.push(CloneFrame::open(
         template_arena,
         element_id,
         values,
         bump,
         budget,
-    )?];
+    )?);
     loop {
         let frame = stack
             .last_mut()
@@ -1194,22 +1196,30 @@ fn clone_and_resolve<'a>(
             continue;
         }
 
-        let done = stack.pop().expect("checked above");
-        let needs_array_expansion = done.needs_array_expansion;
-        let cloned = arena.new_node(done.resolved);
+        let CloneFrame {
+            resolved,
+            needs_array_expansion,
+            ..
+        } = stack.pop().expect("checked above");
+        let cloned = arena.new_node(resolved);
         let Some(parent) = stack.last_mut() else {
             return Ok((cloned, needs_array_expansion));
         };
-        let before = parent.resolved.children.len();
-        push_cloned_element(
-            arena,
-            bump,
-            budget,
-            cloned,
-            needs_array_expansion,
-            &mut parent.resolved.children,
-        )?;
-        parent.note_children(before);
+        // An array substitution repeats its containing element (MS-EVEN6 §3.1.4.7.5). After
+        // placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)` inside
+        // an element's content or attributes; expanding them here gives renderers the
+        // repeated-element structure (as libevtx does). Either way only elements are added, so
+        // the parent's array flag is unchanged.
+        let children = &mut parent.resolved.children;
+        if needs_array_expansion
+            && let Some(expanded) =
+                expand_array_substitutions_in_element(arena, bump, cloned, budget)?
+        {
+            children.extend(expanded.into_iter().map(Node::Element));
+        } else {
+            children.push(Node::Element(cloned));
+        }
+        parent.resolved.has_element_child = true;
     }
 }
 
@@ -1280,29 +1290,6 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
     }
 }
 
-/// Appends a cloned element to `out`: once, or once for each item of the array substitutions
-/// it holds (MS-EVEN6 §3.1.4.7.5: an array substitution repeats its containing element). After
-/// placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)` inside an
-/// element's content or attributes; expanding them here gives renderers the repeated-element
-/// structure (as libevtx does).
-fn push_cloned_element<'a>(
-    arena: &mut IrArena<'a>,
-    bump: &'a Bump,
-    budget: &Budget,
-    cloned: ElementId,
-    needs_array_expansion: bool,
-    out: &mut IrVec<'a, Node<'a>>,
-) -> Result<()> {
-    if needs_array_expansion
-        && let Some(expanded) = expand_array_substitutions_in_element(arena, bump, cloned, budget)?
-    {
-        out.extend(expanded.into_iter().map(Node::Element));
-    } else {
-        out.push(Node::Element(cloned));
-    }
-    Ok(())
-}
-
 /// Resolve one template [`Node`] that isn't an element, and append the result into `out`.
 ///
 /// This function is intentionally "append-only" because some input nodes expand to multiple
@@ -1333,8 +1320,8 @@ fn resolve_node_into<'a>(
 
 /// Whether a template's element is left out of an instance: MS-EVEN6 2.2.12 says an element
 /// whose DependencyId names a NullType value MUST NOT be rendered, and Windows leaves it out. A
-/// template's root has no parent to leave it out of, so it is always rendered: callers clone it
-/// directly rather than through [`resolve_node_into`]. A dependency past the values is none.
+/// template's root has no parent to leave it out of, so it is always rendered: the clone walk
+/// only checks children. A dependency past the values is none.
 fn is_left_out(template_arena: &IrArena<'_>, id: ElementId, values: &[ValidatedValue<'_>]) -> bool {
     template_arena
         .get(id)
