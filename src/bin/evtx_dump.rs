@@ -201,7 +201,12 @@ impl EvtxDump {
             for (number, offset) in carved.chunk_offsets().iter().enumerate() {
                 log::info!("chunk {number}: offset {offset} ({offset:#x})");
             }
-            let parser = EvtxParser::from_read_seek(carved)?;
+            let parser = EvtxParser::from_read_seek(carved).with_context(|| {
+                format!(
+                    "Failed to read the chunks carved from {}",
+                    self.input.display()
+                )
+            })?;
             return self.dump(parser);
         }
         let parser = if Self::is_stdin_input(&self.input) {

@@ -35,12 +35,11 @@ use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::checksum_ieee;
-use crate::evtx_chunk::{EVTX_CHUNK_HEADER_SIZE, EvtxChunkHeader, chunk_header_crc};
+use crate::evtx_chunk::{ChunkFlags, EVTX_CHUNK_HEADER_SIZE, EvtxChunkHeader, chunk_header_crc};
 use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
+use crate::evtx_record::EVTX_RECORD_MAGIC;
 
 const CHUNK_MAGIC: &[u8; 8] = b"ElfChnk\0";
-/// The magic of a record, `**\0\0`.
-const RECORD_MAGIC: &[u8; 4] = b"\x2a\x2a\x00\x00";
 /// How much of the source is searched at once.
 const SCAN_BLOCK_SIZE: usize = 8 << 20;
 
@@ -135,36 +134,46 @@ fn find_chunks<R: Read + Seek>(source: &mut R, source_len: u64) -> io::Result<(V
     let mut seen = HashSet::new();
     let mut block = vec![0u8; SCAN_BLOCK_SIZE];
     let mut chunk = vec![0u8; EVTX_CHUNK_SIZE];
-    // Where the next block starts, and where the last chunk carved ends.
+    // Where the next block starts, and where the records of the last chunk carved end, when
+    // its events CRC32 shows that they are intact.
     let mut block_start = 0u64;
-    let mut carved_end = 0u64;
+    let mut records_end = 0u64;
+    // Enough of a candidate to tell whether it is a chunk.
+    let head_size = EVTX_CHUNK_HEADER_SIZE + EVTX_RECORD_MAGIC.len();
 
     while block_start < source_len {
         let len = (source_len - block_start).min(SCAN_BLOCK_SIZE as u64) as usize;
         source.seek(SeekFrom::Start(block_start))?;
         source.read_exact(&mut block[..len])?;
 
-        let candidates: Vec<u64> = finder
-            .find_iter(&block[..len])
-            .map(|at| block_start + at as u64)
-            .collect();
-        for offset in candidates {
-            // A chunk's records could hold the magic as data.
-            if offset < carved_end {
+        for at in finder.find_iter(&block[..len]) {
+            let offset = block_start + at as u64;
+            // A chunk's records could hold the magic as data. Only intact records are skipped:
+            // a chunk cut short can be followed by another chunk at any offset.
+            if offset < records_end {
                 continue;
             }
             let available = (source_len - offset).min(EVTX_CHUNK_SIZE as u64) as usize;
+            // Read the header first: most candidates are the magic by chance.
+            let head = available.min(head_size);
             source.seek(SeekFrom::Start(offset))?;
-            source.read_exact(&mut chunk[..available])?;
-            chunk[available..].fill(0);
-            let Some(last_record_id) = looks_like_a_chunk(&chunk) else {
+            source.read_exact(&mut chunk[..head])?;
+            chunk[head..head_size].fill(0);
+            let Some(header) = looks_like_a_chunk(&chunk) else {
                 continue;
             };
-            carved_end = offset + EVTX_CHUNK_SIZE as u64;
+            source.read_exact(&mut chunk[head..available])?;
+            chunk[available..].fill(0);
+            let records = &chunk[EVTX_CHUNK_HEADER_SIZE..header.free_space_offset as usize];
+            if header.flags.contains(ChunkFlags::NO_CRC32)
+                || checksum_ieee(records) == header.events_checksum
+            {
+                records_end = offset + u64::from(header.free_space_offset);
+            }
             // The same chunk in a copy of the log (a volume shadow copy, a backup) adds nothing.
             if seen.insert(chunk_identity(&chunk)) {
                 offsets.push(offset);
-                next_record_id = next_record_id.max(last_record_id.saturating_add(1));
+                next_record_id = next_record_id.max(header.last_event_record_id.saturating_add(1));
             }
         }
 
@@ -180,8 +189,8 @@ fn find_chunks<R: Read + Seek>(source: &mut R, source_len: u64) -> io::Result<(V
 
 /// Whether a chunk header is that of a chunk rather than the magic by chance: its fields are
 /// in range, and its header CRC32 matches or a record starts right after it. Gives the chunk's
-/// last record ID if so.
-fn looks_like_a_chunk(chunk: &[u8]) -> Option<u64> {
+/// header if so. Reads only the header and the 4 bytes after it.
+fn looks_like_a_chunk(chunk: &[u8]) -> Option<EvtxChunkHeader> {
     let header = EvtxChunkHeader::from_bytes(chunk).ok()?;
     let in_range = header.header_size == 128
         && (EVTX_CHUNK_HEADER_SIZE as u32..=EVTX_CHUNK_SIZE as u32)
@@ -193,8 +202,8 @@ fn looks_like_a_chunk(chunk: &[u8]) -> Option<u64> {
         return None;
     }
     (chunk_header_crc(chunk) == header.header_chunk_checksum
-        || chunk[EVTX_CHUNK_HEADER_SIZE..].starts_with(RECORD_MAGIC))
-    .then_some(header.last_event_record_id)
+        || chunk[EVTX_CHUNK_HEADER_SIZE..].starts_with(EVTX_RECORD_MAGIC))
+    .then_some(header)
 }
 
 /// Tells chunks apart: two chunks with the same CRC32 and record range are taken to be the
@@ -291,6 +300,18 @@ mod tests {
                 Some(chunk.last_event_record_id)
             )
         );
+    }
+
+    #[test]
+    fn a_chunk_cut_short_by_another_chunk_does_not_hide_it() {
+        let log = include_bytes!("../samples/security.evtx");
+        let chunks = &log[EVTX_FILE_HEADER_SIZE..];
+        // The first 4 KiB of the first chunk (the rest was overwritten), then the second chunk.
+        let mut image = chunks[..4096].to_vec();
+        image.extend_from_slice(&chunks[EVTX_CHUNK_SIZE..2 * EVTX_CHUNK_SIZE]);
+
+        let carved = CarvedEvtx::new(Cursor::new(image)).unwrap();
+        assert_eq!(carved.chunk_offsets(), [0, 4096]);
     }
 
     #[test]
