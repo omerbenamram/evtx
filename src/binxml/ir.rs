@@ -728,7 +728,7 @@ impl<'a> TemplateContent<'a> {
 ///
 /// Nested instances are materialized first so every placeholder resolves to a scalar or an
 /// element; the template tree is then deep-cloned with all placeholders resolved and array
-/// substitutions expanded (see `resolve_node_into`). The returned `ElementId` is *spliced* into
+/// substitutions expanded (see `push_cloned_element`). The returned `ElementId` is *spliced* into
 /// the record tree at the template instance location. `budget` pays for the clone up front;
 /// the fragments that placeholders place, and the elements arrays repeat, are charged where
 /// they are placed.
@@ -1171,7 +1171,6 @@ fn clone_and_resolve<'a>(
         element_id,
         values,
         bump,
-        arena,
         budget,
     )?];
     loop {
@@ -1181,22 +1180,15 @@ fn clone_and_resolve<'a>(
         if let Some(node) = frame.source.children.get(frame.next_child) {
             frame.next_child += 1;
             match node {
-                Node::Element(child) if !is_left_out(template_arena, *child, values) => {
-                    let child =
-                        CloneFrame::open(template_arena, *child, values, bump, arena, budget)?;
-                    stack.push(child);
+                Node::Element(child) => {
+                    if !is_left_out(template_arena, *child, values) {
+                        let child = CloneFrame::open(template_arena, *child, values, bump, budget)?;
+                        stack.push(child);
+                    }
                 }
                 _ => {
                     let before = frame.resolved.children.len();
-                    resolve_node_into(
-                        template_arena,
-                        node,
-                        values,
-                        bump,
-                        arena,
-                        budget,
-                        &mut frame.resolved.children,
-                    )?;
+                    resolve_node_into(node, values, budget, &mut frame.resolved.children)?;
                     frame.note_children(before);
                 }
             }
@@ -1240,7 +1232,6 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
         element_id: ElementId,
         values: &[ValidatedValue<'a>],
         bump: &'a Bump,
-        arena: &mut IrArena<'a>,
         budget: &Budget,
     ) -> Result<Self> {
         let source = template_arena
@@ -1262,18 +1253,11 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
             };
             for node in &attr.value {
                 let before = new_attr.value.len();
-                resolve_node_into(
-                    template_arena,
-                    node,
-                    values,
-                    bump,
-                    arena,
-                    budget,
-                    &mut new_attr.value,
-                )?;
-                needs_array_expansion |= new_attr.value[before..]
-                    .iter()
-                    .any(node_needs_array_expansion);
+                resolve_node_into(node, values, budget, &mut new_attr.value)?;
+                needs_array_expansion = needs_array_expansion
+                    || new_attr.value[before..]
+                        .iter()
+                        .any(node_needs_array_expansion);
             }
             if !new_attr.value.is_empty() {
                 resolved.attrs.push(new_attr);
@@ -1290,8 +1274,10 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
     /// Updates the element's hints for the children appended from `before` on.
     fn note_children(&mut self, before: usize) {
         let added = &self.resolved.children[before..];
-        self.resolved.has_element_child |= added.iter().any(|n| matches!(n, Node::Element(_)));
-        self.needs_array_expansion |= added.iter().any(node_needs_array_expansion);
+        self.resolved.has_element_child =
+            self.resolved.has_element_child || added.iter().any(|n| matches!(n, Node::Element(_)));
+        self.needs_array_expansion =
+            self.needs_array_expansion || added.iter().any(node_needs_array_expansion);
     }
 }
 
@@ -1318,32 +1304,27 @@ fn push_cloned_element<'a>(
     Ok(())
 }
 
-/// Resolve one template [`Node`] and append the result into `out`.
+/// Resolve one template [`Node`] that isn't an element, and append the result into `out`.
 ///
 /// This function is intentionally "append-only" because some input nodes expand to multiple
 /// output nodes:
 /// - `Node::Placeholder(..)` → 0 or more nodes (optional empties disappear; a fragment gives
 ///   one node per top-level element).
-/// - `Node::Element(..)` → none when its dependency is NULL ([`is_left_out`]), else 1 or many
-///   nodes (array substitution expansion may repeat the element).
 /// - Everything else → exactly 1 node (shallow clone).
+///
+/// Elements are cloned by [`clone_and_resolve`]'s walk, and an attribute never holds one (the
+/// builder rejects them), so an element here is an error rather than a recursion.
 fn resolve_node_into<'a>(
-    template_arena: &IrArena<'a>,
     node: &Node<'a>,
     values: &[ValidatedValue<'a>],
-    bump: &'a Bump,
-    arena: &mut IrArena<'a>,
     budget: &Budget,
     out: &mut IrVec<'a, Node<'a>>,
 ) -> Result<()> {
     match node {
         Node::Placeholder(ph) => resolve_placeholder_into(ph, values, budget, out),
-        Node::Element(element_id) if is_left_out(template_arena, *element_id, values) => Ok(()),
-        Node::Element(element_id) => {
-            let (cloned, needs_array_expansion) =
-                clone_and_resolve(template_arena, *element_id, values, bump, arena, budget)?;
-            push_cloned_element(arena, bump, budget, cloned, needs_array_expansion, out)
-        }
+        Node::Element(_) => Err(EvtxError::FailedToCreateRecordModel(
+            "template element outside of element content",
+        )),
         other => {
             out.push(other.clone());
             Ok(())
