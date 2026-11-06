@@ -45,9 +45,10 @@ use super::manifest::{CrimManifest, EventDefinition, WevtManifestError};
 use super::normalize_guid;
 use super::types::ResourceIdentifier;
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::ir::{Element, IrTree, Node, Text};
+use crate::model::ir::{Element, ElementId, IrTree, Node, Text};
 use crate::mta::RenderingInfo;
-use crate::mta::{decode_utf16, narrow, number_value};
+use crate::mta::{decode_utf16, narrow, number_value, value_number};
+use crate::utils::bytes::{read_u16_le, read_u32_le};
 
 /// The language id of `en-US`, preferred when a binary has message tables in several languages.
 const EN_US: u32 = 1033;
@@ -79,10 +80,7 @@ impl MessageTable {
     /// Parses a `MESSAGE_RESOURCE_DATA` structure: the content of one `RT_MESSAGETABLE`
     /// resource.
     pub fn parse(data: &[u8]) -> Result<Self, MessageCatalogError> {
-        let u32_at = |at: usize| {
-            data.get(at..at + 4)
-                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        };
+        let u32_at = |at: usize| read_u32_le(data, at);
         let malformed = MessageCatalogError::MessageTable;
         let blocks = u32_at(0).ok_or(malformed("no block count"))? as usize;
         let mut messages = HashMap::new();
@@ -95,17 +93,21 @@ impl MessageTable {
             };
             for id in low..=high {
                 let entry_at = entry as usize;
-                let header = data
-                    .get(entry_at..entry_at + 4)
-                    .ok_or(malformed("entry runs past the table"))?;
-                let length = usize::from(u16::from_le_bytes([header[0], header[1]]));
-                let flags = u16::from_le_bytes([header[2], header[3]]);
-                let text = data
-                    .get(entry_at + 4..entry_at + length.max(4))
-                    .ok_or(malformed("entry text runs past the table"))?;
+                let (Some(length), Some(flags)) = (
+                    read_u16_le(data, entry_at),
+                    read_u16_le(data, entry_at.wrapping_add(2)),
+                ) else {
+                    return Err(malformed("entry runs past the table"));
+                };
+                let length = usize::from(length);
                 if length < 4 {
                     return Err(malformed("entry shorter than its header"));
                 }
+                // `entry_at + 4` can't overflow: the header read above ends there.
+                let text = entry_at
+                    .checked_add(length)
+                    .and_then(|end| data.get(entry_at + 4..end))
+                    .ok_or(malformed("entry text runs past the table"))?;
                 let text = if flags & 1 != 0 {
                     String::from(decode_utf16(text))
                 } else {
@@ -142,10 +144,12 @@ impl MessageTable {
         self.messages.get(&id).map(AsRef::as_ref)
     }
 
+    /// The number of messages in the table.
     pub fn len(&self) -> usize {
         self.messages.len()
     }
 
+    /// Whether the table has no messages.
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
@@ -157,7 +161,7 @@ type ItemTypes = Vec<(u8, u8)>;
 /// The messages of one provider.
 #[derive(Debug, Clone, Default)]
 struct ProviderMessages {
-    /// The tables to look message ids up in: the provider's resource file, then its `.mui` files.
+    /// The tables to look message ids up in: the provider's `.mui` files, then its resource file.
     tables: Vec<usize>,
     /// Event message ids by `(event id, version)`, with the rest of each event's descriptor to
     /// pick between events that share both.
@@ -184,6 +188,7 @@ pub struct MessageCatalog {
 }
 
 impl MessageCatalog {
+    /// An empty catalog, to fill with [`MessageCatalog::add_path`] and the other `add_` methods.
     pub fn new() -> Self {
         Self::default()
     }
@@ -203,28 +208,59 @@ impl MessageCatalog {
 
     /// Adds the manifest providers of `resource_file` (a binary with a `WEVT_TEMPLATE`), with
     /// strings from its own message table and from `message_files` (its `.mui` files). Returns
-    /// how many providers it added; a provider already in the catalog keeps its first strings.
+    /// how many providers it added; a provider already in the catalog keeps its first strings,
+    /// unless it has none. The `.mui` files' strings win over the resource file's, as they do
+    /// for Windows' resource loader.
     pub fn add_provider_files(
         &mut self,
         resource_file: &[u8],
         message_files: &[&[u8]],
     ) -> Result<usize, MessageCatalogError> {
-        let manifests = extract_wevt_template_resources(resource_file)?;
-        if manifests.is_empty() {
+        self.add_providers(resource_file, || Ok(message_files.to_vec()))
+    }
+
+    /// [`MessageCatalog::add_provider_files`], reading the message files only when the resource
+    /// file has providers that the catalog takes.
+    fn add_providers<M: AsRef<[u8]>>(
+        &mut self,
+        resource_file: &[u8],
+        message_files: impl FnOnce() -> Result<Vec<M>, MessageCatalogError>,
+    ) -> Result<usize, MessageCatalogError> {
+        let resources = extract_wevt_template_resources(resource_file)?;
+        let manifests = resources
+            .iter()
+            .map(|manifest| CrimManifest::parse(&manifest.data))
+            .collect::<Result<Vec<_>, _>>()?;
+        // A provider already in the catalog with no strings takes them from a later copy.
+        let is_new = |catalog: &Self, guid: &str| {
+            catalog
+                .providers
+                .get(guid)
+                .is_none_or(|provider| provider.tables.is_empty())
+        };
+        let any_new = manifests
+            .iter()
+            .flat_map(|m| &m.providers)
+            .any(|provider| is_new(self, &normalize_guid(&provider.guid.to_string())));
+        if !any_new {
             return Ok(0);
         }
+        let message_files = message_files()?;
         let mut tables = Vec::new();
-        for bytes in std::iter::once(&resource_file).chain(message_files) {
+        let files = message_files
+            .iter()
+            .map(AsRef::as_ref)
+            .chain(std::iter::once(resource_file));
+        for bytes in files {
             if let Some(index) = self.add_table(MessageTable::from_pe_bytes(bytes)?) {
                 tables.push(index);
             }
         }
         let mut added = 0;
         for manifest in &manifests {
-            let manifest = CrimManifest::parse(&manifest.data)?;
             for provider in &manifest.providers {
                 let guid = normalize_guid(&provider.guid.to_string());
-                if self.providers.contains_key(&guid) {
+                if !is_new(self, &guid) {
                     continue;
                 }
                 let elements = &provider.wevt.elements;
@@ -342,15 +378,24 @@ impl MessageCatalog {
         }
         let mut pending = vec![path.to_path_buf()];
         while let Some(dir) = pending.pop() {
-            let entries = std::fs::read_dir(&dir).map_err(|source| MessageCatalogError::Io {
-                path: dir.clone(),
-                source,
-            })?;
-            let mut paths: Vec<PathBuf> =
-                entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                // Only the folder given has to be readable; others are skipped like files.
+                Err(e) if dir != path => {
+                    log::debug!("skipping `{}`: {e}", dir.display());
+                    continue;
+                }
+                Err(source) => return Err(MessageCatalogError::Io { path: dir, source }),
+            };
+            let mut paths: Vec<(PathBuf, bool)> = entries
+                .filter_map(Result::ok)
+                // Not following links to folders, which can loop (such as the `Application
+                // Data` junction under `config\systemprofile`).
+                .map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir())))
+                .collect();
             paths.sort();
-            for path in paths {
-                if path.is_dir() {
+            for (path, is_dir) in paths {
+                if is_dir {
                     pending.push(path);
                     continue;
                 }
@@ -383,21 +428,21 @@ impl MessageCatalog {
         {
             return Ok(());
         }
-        let files = read(path).and_then(|bytes| {
-            let mui = path
-                .parent()
+        let read_mui = || {
+            path.parent()
                 .map(|parent| parent.join(locale).join(format!("{name}.mui")))
                 .filter(|mui| mui.is_file())
                 .map(|mui| read(&mui))
-                .transpose()?;
-            Ok((bytes, mui))
-        });
-        let result = files.and_then(|(bytes, mui)| {
+                .transpose()
+        };
+        let result = read(path).and_then(|bytes| {
             if lower == "msobjs.dll" {
+                let mui = read_mui()?;
                 self.add_parameter_file(mui.as_deref().unwrap_or(&bytes))
             } else {
-                let message_files: Vec<&[u8]> = mui.as_deref().into_iter().collect();
-                self.add_provider_files(&bytes, &message_files).map(drop)
+                // Only binaries with providers the catalog takes read their `.mui`.
+                let message_files = || Ok(read_mui()?.into_iter().collect::<Vec<_>>());
+                self.add_providers(&bytes, message_files).map(drop)
             }
         });
         match result {
@@ -419,6 +464,7 @@ impl MessageCatalog {
     fn rendering_info<'b>(
         &'b self,
         event: &EventFields<'_>,
+        tree: &IrTree<'_>,
         bump: &'b Bump,
     ) -> Option<RenderingInfo<'b>> {
         if let Some(provider) = event
@@ -444,7 +490,7 @@ impl MessageCatalog {
                 let template = self.lookup(&provider.tables, d.message_identifier)?;
                 Some(self.format(
                     template,
-                    &event.inserts,
+                    &event.inserts(tree),
                     input_types,
                     &provider.tables,
                     bump,
@@ -486,7 +532,7 @@ impl MessageCatalog {
         let id = (u32::from(event.qualifiers) << 16) | u32::from(event.event_id);
         let message = self
             .lookup(tables, id)
-            .map(|template| self.format(template, &event.inserts, &[], tables, bump));
+            .map(|template| self.format(template, &event.inserts(tree), &[], tables, bump));
         Some(RenderingInfo {
             message,
             level: winmeta_level(event.level),
@@ -656,7 +702,7 @@ const OUTTYPE_HEX: std::ops::RangeInclusive<u8> = 16..=19;
 #[derive(Debug, Default)]
 struct Insert {
     text: String,
-    /// The value, when it is an unsigned integer.
+    /// The value, when it is a non-negative integer.
     number: Option<u64>,
 }
 
@@ -672,9 +718,8 @@ struct EventFields<'t> {
     task: u16,
     opcode: u8,
     keywords: u64,
-    /// The event's data values, in order: the `Data` elements of `EventData`, or the leaf
-    /// elements under `UserData`.
-    inserts: Vec<Insert>,
+    /// The record's `EventData` and `UserData` elements, whose values fill the message.
+    data: Vec<ElementId>,
 }
 
 impl<'t> EventFields<'t> {
@@ -720,22 +765,30 @@ impl<'t> EventFields<'t> {
                         }
                     }
                 }
-                "EventData" => {
-                    for data in element_children(tree, element) {
-                        fields.inserts.push(insert(&data.children));
-                    }
-                }
-                "UserData" => {
-                    for child in element_children(tree, element) {
-                        collect_leaves(tree, child, &mut fields.inserts);
-                    }
-                }
+                "EventData" | "UserData" => fields.data.push(*id),
                 "RenderingInfo" => has_rendering_info = true,
                 _ => {}
             }
         }
         fields.provider_guid = guid_text;
         Some((fields, has_rendering_info))
+    }
+
+    /// The event's data values, in order: the `Data` elements of `EventData`, or the leaf
+    /// elements under `UserData`. Read only for a message the catalog has.
+    fn inserts(&self, tree: &IrTree<'_>) -> Vec<Insert> {
+        let mut inserts = Vec::new();
+        for &id in &self.data {
+            let element = tree.element(id);
+            for child in element_children(tree, element) {
+                if element.name.as_str() == "EventData" {
+                    inserts.push(insert(&child.children));
+                } else {
+                    collect_leaves(tree, child, &mut inserts);
+                }
+            }
+        }
+        inserts
     }
 }
 
@@ -762,13 +815,7 @@ fn collect_leaves(tree: &IrTree<'_>, element: &Element<'_>, out: &mut Vec<Insert
 
 fn insert(nodes: &[Node<'_>]) -> Insert {
     let number = match nodes {
-        [Node::Value(value)] => match *value {
-            BinXmlValue::UInt8Type(v) => Some(v.into()),
-            BinXmlValue::UInt16Type(v) => Some(v.into()),
-            BinXmlValue::UInt32Type(v) | BinXmlValue::HexInt32Type(v) => Some(v.into()),
-            BinXmlValue::UInt64Type(v) | BinXmlValue::HexInt64Type(v) => Some(v),
-            _ => None,
-        },
+        [Node::Value(value)] => value_number(value),
         _ => None,
     };
     let text = node_text(nodes);
@@ -802,11 +849,22 @@ fn node_text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
             Node::Text(Text::Utf8(s)) | Node::Value(BinXmlValue::AnsiStringType(s)) => {
                 Cow::Borrowed(*s)
             }
-            Node::Text(Text::Utf16(s)) | Node::Value(BinXmlValue::StringType(s)) => {
+            Node::Text(Text::Utf16(s))
+            | Node::CData(Text::Utf16(s))
+            | Node::Value(BinXmlValue::StringType(s)) => {
                 Cow::Owned(decode_utf16(s.as_bytes()).into())
             }
+            Node::CData(Text::Utf8(s)) => Cow::Borrowed(*s),
             Node::Value(value) => Cow::Owned(value.to_string()),
             Node::CharRef(c) => Cow::Owned(char::from_u32(u32::from(*c)).unwrap_or('_').into()),
+            Node::EntityRef(name) => Cow::Borrowed(match name.as_str() {
+                "amp" => "&",
+                "lt" => "<",
+                "gt" => ">",
+                "quot" => "\"",
+                "apos" => "'",
+                _ => "",
+            }),
             _ => Cow::Borrowed(""),
         }
     };
@@ -829,7 +887,7 @@ pub(crate) fn add_rendering_info<'a>(
     if has_rendering_info {
         return;
     }
-    let Some(info) = catalog.rendering_info(&fields, bump) else {
+    let Some(info) = catalog.rendering_info(&fields, tree, bump) else {
         return;
     };
     let root = tree.root();

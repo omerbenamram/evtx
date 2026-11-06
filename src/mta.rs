@@ -844,7 +844,7 @@ pub(crate) fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
     }
 }
 
-fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
+pub(crate) fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
     match *value {
         BinXmlValue::UInt8Type(v) => Some(v.into()),
         BinXmlValue::UInt16Type(v) => Some(v.into()),

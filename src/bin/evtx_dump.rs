@@ -602,6 +602,7 @@ fn run_cli() -> Result<()> {
             Arg::new("messages-locale")
                 .long("messages-locale")
                 .value_name("LOCALE")
+                .requires("messages")
                 .help("The folder next to each binary that holds its .mui file for --messages (default: en-US)."),
         )
         .arg(
