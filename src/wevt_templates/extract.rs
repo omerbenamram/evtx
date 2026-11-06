@@ -122,6 +122,23 @@ fn parse_resource_data_entry(
 pub fn extract_wevt_template_resources(
     pe_bytes: &[u8],
 ) -> Result<Vec<WevtTemplateResource>, WevtTemplateExtractError> {
+    extract_resources(
+        pe_bytes,
+        &ResourceIdentifier::Name("WEVT_TEMPLATE".to_string()),
+    )
+}
+
+/// The resource type id of message tables (`RT_MESSAGETABLE`).
+pub const RT_MESSAGETABLE: u32 = 11;
+
+/// Extract the resources of one type from a PE file, such as `RT_MESSAGETABLE` (by id) or
+/// `WEVT_TEMPLATE` (by name), with each one's id and language.
+///
+/// Returns an empty vector if the PE has no resources of that type.
+pub fn extract_resources(
+    pe_bytes: &[u8],
+    resource_type: &ResourceIdentifier,
+) -> Result<Vec<WevtTemplateResource>, WevtTemplateExtractError> {
     let mut opts = ParseOptions::default();
     // We only need sections + data directories; parsing TLS/certificates is wasted work here.
     opts.parse_tls_data = false;
@@ -178,19 +195,15 @@ pub fn extract_wevt_template_resources(
 
     let root_entries = directory_entries(rsrc, 0)?;
 
-    let mut wevt_template_entry = None;
+    let mut type_entry = None;
     for entry in root_entries {
-        if !entry.name_is_string() {
-            continue;
-        }
-        let name = parse_resource_name(rsrc, entry.name_offset() as usize)?;
-        if name == "WEVT_TEMPLATE" {
-            wevt_template_entry = Some(entry);
+        if entry_identifier(entry, rsrc)? == *resource_type {
+            type_entry = Some(entry);
             break;
         }
     }
 
-    let Some(wevt_template_entry) = wevt_template_entry else {
+    let Some(wevt_template_entry) = type_entry else {
         return Ok(Vec::new());
     };
     if !wevt_template_entry.data_is_directory() {
