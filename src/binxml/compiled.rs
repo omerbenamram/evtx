@@ -46,7 +46,7 @@ const XML_DECL: &[u8] = b"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
 /// compiled lanes before each instance and array item), and once the record is rendered. The
 /// compiled lanes render each value once (see `each_slot_once`) from programs of at most
 /// `MAX_PROGRAM_SIZE`.
-const MAX_RECORD_OUTPUT: usize = 16 << 20;
+pub(crate) const MAX_RECORD_OUTPUT: usize = 16 << 20;
 
 /// Nodes one record may build and visit, which bounds its tree to about 30 MB. The samples'
 /// records cost at most 198. Each instance of a template copies its elements, so a crafted

@@ -197,23 +197,31 @@ pub fn extract_resources(
 
     let mut type_entry = None;
     for entry in root_entries {
-        if entry_identifier(entry, rsrc)? == *resource_type {
+        // Only a type looked up by name reads the names of the named types, so that one with
+        // a malformed name doesn't hide the types with ids.
+        let matches = match resource_type {
+            ResourceIdentifier::Id(id) => !entry.name_is_string() && entry.name_offset() == *id,
+            ResourceIdentifier::Name(_) => {
+                entry.name_is_string() && entry_identifier(entry, rsrc)? == *resource_type
+            }
+        };
+        if matches {
             type_entry = Some(entry);
             break;
         }
     }
 
-    let Some(wevt_template_entry) = type_entry else {
+    let Some(type_entry) = type_entry else {
         return Ok(Vec::new());
     };
-    if !wevt_template_entry.data_is_directory() {
+    if !type_entry.data_is_directory() {
         return Ok(Vec::new());
     }
 
     let mut out = Vec::new();
 
-    let wevt_dir_offset = wevt_template_entry.offset_to_directory() as usize;
-    for resource_entry in directory_entries(rsrc, wevt_dir_offset)? {
+    let type_dir_offset = type_entry.offset_to_directory() as usize;
+    for resource_entry in directory_entries(rsrc, type_dir_offset)? {
         if !resource_entry.data_is_directory() {
             continue;
         }

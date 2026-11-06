@@ -35,6 +35,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use bumpalo::Bump;
 use thiserror::Error;
@@ -44,6 +45,7 @@ use super::extract::{RT_MESSAGETABLE, extract_resources, extract_wevt_template_r
 use super::manifest::{CrimManifest, EventDefinition, WevtManifestError};
 use super::normalize_guid;
 use super::types::ResourceIdentifier;
+use crate::binxml::compiled::MAX_RECORD_OUTPUT;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrTree, Node, Text};
 use crate::mta::RenderingInfo;
@@ -84,6 +86,10 @@ impl MessageTable {
         let malformed = MessageCatalogError::MessageTable;
         let blocks = u32_at(0).ok_or(malformed("no block count"))? as usize;
         let mut messages = HashMap::new();
+        // A real table stores each entry once, so its entries fit in it. A crafted one could
+        // point every block at the same entries, to decode them once for each block: only as
+        // many bytes of entries as the table has are read.
+        let mut room = data.len();
         for block in 0..blocks.min(data.len() / 12) {
             let at = 4 + block * 12;
             let (Some(low), Some(high), Some(mut entry)) =
@@ -103,13 +109,19 @@ impl MessageTable {
                 if length < 4 {
                     return Err(malformed("entry shorter than its header"));
                 }
+                room = room
+                    .checked_sub(length)
+                    .ok_or(malformed("blocks share entries"))?;
                 // `entry_at + 4` can't overflow: the header read above ends there.
                 let text = entry_at
                     .checked_add(length)
                     .and_then(|end| data.get(entry_at + 4..end))
                     .ok_or(malformed("entry text runs past the table"))?;
+                // `MESSAGE_RESOURCE_UNICODE`, then `MESSAGE_RESOURCE_UTF8`.
                 let text = if flags & 1 != 0 {
                     String::from(decode_utf16(text))
+                } else if flags & 2 != 0 {
+                    String::from_utf8_lossy(text).into_owned()
                 } else {
                     // ANSI entries: Latin-1 is close enough for the ASCII Windows writes there.
                     text.iter().map(|&b| char::from(b)).collect()
@@ -155,8 +167,9 @@ impl MessageTable {
     }
 }
 
-/// The input and output types of an event template's items, in order.
-type ItemTypes = Vec<(u8, u8)>;
+/// The input and output types of an event template's items, in order, shared by the events
+/// that use the template.
+type ItemTypes = Arc<[(u8, u8)]>;
 
 /// The messages of one provider.
 #[derive(Debug, Clone, Default)]
@@ -206,6 +219,22 @@ impl MessageCatalog {
         Some(self.tables.len() - 1)
     }
 
+    /// Adds the message tables of `files`, in order, and returns their indexes. Adds none
+    /// when one of them fails to parse, so that its error doesn't leave the others unused.
+    fn add_tables<'f>(
+        &mut self,
+        files: impl IntoIterator<Item = &'f [u8]>,
+    ) -> Result<Vec<usize>, MessageCatalogError> {
+        let tables = files
+            .into_iter()
+            .map(MessageTable::from_pe_bytes)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(tables
+            .into_iter()
+            .filter_map(|table| self.add_table(table))
+            .collect())
+    }
+
     /// Adds the manifest providers of `resource_file` (a binary with a `WEVT_TEMPLATE`), with
     /// strings from its own message table and from `message_files` (its `.mui` files). Returns
     /// how many providers it added; a provider already in the catalog keeps its first strings,
@@ -246,16 +275,11 @@ impl MessageCatalog {
             return Ok(0);
         }
         let message_files = message_files()?;
-        let mut tables = Vec::new();
         let files = message_files
             .iter()
             .map(AsRef::as_ref)
             .chain(std::iter::once(resource_file));
-        for bytes in files {
-            if let Some(index) = self.add_table(MessageTable::from_pe_bytes(bytes)?) {
-                tables.push(index);
-            }
-        }
+        let tables = self.add_tables(files)?;
         let mut added = 0;
         for manifest in &manifests {
             for provider in &manifest.providers {
@@ -265,7 +289,7 @@ impl MessageCatalog {
                 }
                 let elements = &provider.wevt.elements;
                 // Each template's item input and output types, by the template's offset.
-                let input_types: HashMap<u32, Vec<(u8, u8)>> = elements
+                let input_types: HashMap<u32, ItemTypes> = elements
                     .templates
                     .iter()
                     .flat_map(|t| &t.templates)
@@ -327,12 +351,7 @@ impl MessageCatalog {
         name: &str,
         message_files: &[&[u8]],
     ) -> Result<(), MessageCatalogError> {
-        let mut tables = Vec::new();
-        for bytes in message_files {
-            if let Some(index) = self.add_table(MessageTable::from_pe_bytes(bytes)?) {
-                tables.push(index);
-            }
-        }
+        let tables = self.add_tables(message_files.iter().copied())?;
         self.sources
             .entry(name.to_ascii_lowercase())
             .or_default()
@@ -430,8 +449,7 @@ impl MessageCatalog {
         }
         let read_mui = || {
             path.parent()
-                .map(|parent| parent.join(locale).join(format!("{name}.mui")))
-                .filter(|mui| mui.is_file())
+                .and_then(|parent| find_mui(parent, locale, name))
                 .map(|mui| read(&mui))
                 .transpose()
         };
@@ -503,14 +521,19 @@ impl MessageCatalog {
             let level = name(provider.levels.get(&u32::from(event.level)))
                 .or_else(|| winmeta_level(event.level));
             let task = name(provider.tasks.get(&u32::from(event.task)))
-                .or_else(|| (event.task == 0).then_some("None"));
-            let opcode = name(
-                provider
-                    .opcodes
-                    .get(&((u32::from(event.opcode) << 16) | u32::from(event.task)))
-                    .or_else(|| provider.opcodes.get(&(u32::from(event.opcode) << 16))),
-            )
-            .or_else(|| winmeta_opcode(event.opcode));
+                .or_else(|| winmeta_task(event.task));
+            // As `MtaFile::rendering_info`: no opcode for events from classic event sources.
+            let opcode = if event.qualifiers == 0 {
+                name(
+                    provider
+                        .opcodes
+                        .get(&((u32::from(event.opcode) << 16) | u32::from(event.task)))
+                        .or_else(|| provider.opcodes.get(&(u32::from(event.opcode) << 16))),
+                )
+                .or_else(|| winmeta_opcode(event.opcode))
+            } else {
+                None
+            };
             let keywords = (0..64)
                 .filter(|bit| event.keywords & (1 << bit) != 0)
                 .filter_map(|bit| {
@@ -533,11 +556,14 @@ impl MessageCatalog {
         let message = self
             .lookup(tables, id)
             .map(|template| self.format(template, &event.inserts(tree), &[], tables, bump));
+        // The standard names, as for a manifest provider that names none of its own.
         Some(RenderingInfo {
             message,
             level: winmeta_level(event.level),
-            task: None,
-            opcode: None,
+            task: winmeta_task(event.task),
+            opcode: (event.qualifiers == 0)
+                .then(|| winmeta_opcode(event.opcode))
+                .flatten(),
             keywords: (0..64)
                 .filter(|bit| event.keywords & (1 << bit) != 0)
                 .filter_map(winmeta_keyword)
@@ -547,6 +573,10 @@ impl MessageCatalog {
 
     /// Fills the inserts of `template` with `inserts`, as `FormatMessage` does, and replaces the
     /// `%%<id>` parameters in them.
+    ///
+    /// Stops once the message is longer than a record may render ([`MAX_RECORD_OUTPUT`]),
+    /// which then fails its record: a crafted record can fill an insert with parameters that
+    /// each name a long message, and so make the message far larger than itself.
     fn format<'b>(
         &self,
         template: &str,
@@ -557,7 +587,9 @@ impl MessageCatalog {
     ) -> &'b str {
         let mut out = String::with_capacity(template.len());
         let mut chars = template.chars().peekable();
-        while let Some(c) = chars.next() {
+        while out.len() <= MAX_RECORD_OUTPUT
+            && let Some(c) = chars.next()
+        {
             if c != '%' {
                 out.push(c);
                 continue;
@@ -601,7 +633,10 @@ impl MessageCatalog {
                         {
                             out.push_str(&format!("0x{number:X}"))
                         }
-                        Some(insert) => out.push_str(&self.parameters(&insert.text, tables)),
+                        Some(insert) => {
+                            let room = MAX_RECORD_OUTPUT.saturating_sub(out.len());
+                            out.push_str(&self.parameters(&insert.text, tables, room));
+                        }
                         None => out.push_str(&written),
                     }
                 }
@@ -617,14 +652,17 @@ impl MessageCatalog {
         bump.alloc_str(trim_message(&out))
     }
 
-    /// Replaces each `%%<id>` in an event data value with the parameter string `id`.
-    fn parameters<'v>(&self, value: &'v str, tables: &[usize]) -> Cow<'v, str> {
+    /// Replaces each `%%<id>` in an event data value with the parameter string `id`, until the
+    /// value is longer than `limit` (the rest is then left as it is).
+    fn parameters<'v>(&self, value: &'v str, tables: &[usize], limit: usize) -> Cow<'v, str> {
         if !value.contains("%%") {
             return Cow::Borrowed(value);
         }
         let mut out = String::with_capacity(value.len());
         let mut rest = value;
-        while let Some(at) = rest.find("%%") {
+        while out.len() <= limit
+            && let Some(at) = rest.find("%%")
+        {
             out.push_str(&rest[..at]);
             let digits = rest[at + 2..]
                 .find(|c: char| !c.is_ascii_digit())
@@ -645,6 +683,26 @@ impl MessageCatalog {
     }
 }
 
+/// The `.mui` of the binary `name` in the `locale` folder of `folder`. Windows names them in any
+/// case, so on a case-sensitive filesystem (a copy of `System32` on Linux) the folder and the
+/// file are matched ignoring ASCII case when the exact names aren't there.
+fn find_mui(folder: &Path, locale: &str, name: &str) -> Option<PathBuf> {
+    let file_name = format!("{name}.mui");
+    let exact = folder.join(locale).join(&file_name);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let find = |folder: &Path, wanted: &str, want_dir: bool| {
+        std::fs::read_dir(folder).ok()?.flatten().find_map(|entry| {
+            let matches = entry.file_name().to_str()?.eq_ignore_ascii_case(wanted)
+                && entry.file_type().ok()?.is_dir() == want_dir;
+            matches.then(|| entry.path())
+        })
+    };
+    let locale_folder = find(folder, locale, true)?;
+    find(&locale_folder, &file_name, false)
+}
+
 /// Drops the line break (and padding) a message table entry ends with.
 fn trim_message(message: &str) -> &str {
     message.trim_end_matches(['\r', '\n', ' ', '\0'])
@@ -661,6 +719,10 @@ fn winmeta_level(level: u8) -> Option<&'static str> {
         5 => "Verbose",
         _ => return None,
     })
+}
+
+fn winmeta_task(task: u16) -> Option<&'static str> {
+    (task == 0).then_some("None")
 }
 
 fn winmeta_opcode(opcode: u8) -> Option<&'static str> {
@@ -775,22 +837,26 @@ impl<'t> EventFields<'t> {
     }
 
     /// The event's data values, in order: the `Data` elements of `EventData`, or the leaf
-    /// elements under `UserData`. Read only for a message the catalog has.
+    /// elements under `UserData`, up to the [`MAX_INSERTS`] a message can use. Read only for a
+    /// message the catalog has.
     fn inserts(&self, tree: &IrTree<'_>) -> Vec<Insert> {
         let mut inserts = Vec::new();
         for &id in &self.data {
             let element = tree.element(id);
-            for child in element_children(tree, element) {
-                if element.name.as_str() == "EventData" {
-                    inserts.push(insert(&child.children));
-                } else {
-                    collect_leaves(tree, child, &mut inserts);
-                }
+            if element.name.as_str() == "EventData" {
+                let room = MAX_INSERTS - inserts.len();
+                let values = element_children(tree, element).take(room);
+                inserts.extend(values.map(|child| insert(&child.children)));
+            } else {
+                collect_leaves(tree, element, &mut inserts);
             }
         }
         inserts
     }
 }
+
+/// The most inserts a message can use: `FormatMessage` numbers them `%1` to `%99`.
+const MAX_INSERTS: usize = 99;
 
 fn element_children<'e, 'a>(
     tree: &'e IrTree<'a>,
@@ -802,14 +868,26 @@ fn element_children<'e, 'a>(
     })
 }
 
-/// Pushes the text of each leaf element under `element`, in document order.
-fn collect_leaves(tree: &IrTree<'_>, element: &Element<'_>, out: &mut Vec<Insert>) {
-    if !element.has_element_child {
-        out.push(insert(&element.children));
-        return;
-    }
-    for child in element_children(tree, element) {
-        collect_leaves(tree, child, out);
+/// Pushes the text of each leaf element under `element`, in document order, until `out` holds
+/// [`MAX_INSERTS`]. A crafted record's tree can nest values tens of thousands of elements deep,
+/// and place one value's elements in many places, so that it has far more paths to leaves than
+/// nodes: this walks with a stack of its own, and stops at the inserts a message can use.
+fn collect_leaves<'e, 'a>(tree: &'e IrTree<'a>, element: &'e Element<'a>, out: &mut Vec<Insert>) {
+    let mut stack = vec![element.children.iter()];
+    while out.len() < MAX_INSERTS
+        && let Some(children) = stack.last_mut()
+    {
+        let Some(node) = children.next() else {
+            stack.pop();
+            continue;
+        };
+        let Node::Element(id) = node else { continue };
+        let child = tree.element(*id);
+        if child.has_element_child {
+            stack.push(child.children.iter());
+        } else {
+            out.push(insert(&child.children));
+        }
     }
 }
 
@@ -903,6 +981,18 @@ pub(crate) fn add_rendering_info<'a>(
 mod tests {
     use super::*;
 
+    #[test]
+    fn finds_a_mui_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("en-us")).unwrap();
+        std::fs::write(dir.path().join("en-us").join("adtschema.dll.mui"), b"").unwrap();
+        assert_eq!(
+            find_mui(dir.path(), "en-US", "AdtSchema.dll"),
+            Some(dir.path().join("en-us").join("adtschema.dll.mui"))
+        );
+        assert_eq!(find_mui(dir.path(), "de-DE", "AdtSchema.dll"), None);
+    }
+
     /// A `MESSAGE_RESOURCE_DATA` with one block of Unicode entries from id `low`.
     fn table(low: u32, messages: &[&str]) -> Vec<u8> {
         let mut entries = Vec::new();
@@ -936,6 +1026,23 @@ mod tests {
         let mut truncated = table(1, &["Cut"]);
         truncated.truncate(20);
         assert!(MessageTable::parse(&truncated).is_err());
+    }
+
+    #[test]
+    fn blocks_cannot_share_entries() {
+        // 2,000 blocks of 6,000 ids each, all at the same 6,000 empty entries: 48 KB that made
+        // 12 million messages.
+        let (blocks, entries) = (2000u32, 6000u32);
+        let mut data = blocks.to_le_bytes().to_vec();
+        for block in 0..blocks {
+            data.extend_from_slice(&(block * entries).to_le_bytes());
+            data.extend_from_slice(&(block * entries + entries - 1).to_le_bytes());
+            data.extend_from_slice(&(4 + 12 * blocks).to_le_bytes());
+        }
+        for _ in 0..entries {
+            data.extend_from_slice(&[4, 0, 1, 0]);
+        }
+        assert!(MessageTable::parse(&data).is_err());
     }
 
     fn catalog_with(messages: &[&str]) -> MessageCatalog {
@@ -994,9 +1101,22 @@ mod tests {
         let mut catalog = catalog_with(&["Yes\r\n", "No\r\n"]);
         catalog.parameter_tables.push(0);
         assert_eq!(
-            catalog.parameters("%%100 then %%101, %%7 and 100%", &[]),
+            catalog.parameters("%%100 then %%101, %%7 and 100%", &[], usize::MAX),
             "Yes then No, %%7 and 100%"
         );
+    }
+
+    #[test]
+    fn messages_stop_past_the_record_cap() {
+        // A 30,000-character parameter, named 1,000 times in each of two inserts.
+        let long = "x".repeat(30_000);
+        let mut catalog = catalog_with(&[&long]);
+        catalog.parameter_tables.push(0);
+        let bump = Bump::new();
+        let inserts = [insert(&"%%100".repeat(1000)), insert(&"%%100".repeat(1000))];
+        let message = catalog.format("%1%2", &inserts, &[], &[], &bump);
+        assert!(message.len() > MAX_RECORD_OUTPUT);
+        assert!(message.len() < MAX_RECORD_OUTPUT + 2 * 5000 + 30_000);
     }
 
     #[test]
