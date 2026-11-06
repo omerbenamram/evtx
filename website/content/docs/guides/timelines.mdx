@@ -1,0 +1,45 @@
+---
+title: Building a timeline
+description: Merge $MFT, event logs and the change journal into one sorted timeline.
+---
+
+## File system timeline with mactime
+
+```bash
+mft_dump -o bodyfile '$MFT' > mft.body
+mactime -b mft.body -d -y > timeline.csv
+```
+
+`-o bodyfile` writes the same format as The Sleuth Kit's `fls -m`, one line per name and per stream, using `$STANDARD_INFORMATION` times (lines ending `($FILE_NAME)` carry the `$FILE_NAME` ones):
+
+```text
+0|/WIN98/EXTRACT.EXE|35-128-3|r/rrwxrwxrwx|0|0|93242|1092787200|924906120|1092934941|924906120
+```
+
+In Python: `PyMftParser("$MFT").entries_bodyfile()` (coming in the next release).
+
+## Adding event logs
+
+Turn each source into `time, source, what` rows, then sort:
+
+```bash
+evtx_dump -o jsonl Security.evtx | jq -r '
+  [.Event.System.TimeCreated["#attributes"].SystemTime, "evtx",
+   "\(.Event.System.EventID) \(.Event.EventData.TargetUserName // "")"] | @csv' > evtx.csv
+
+mft_dump -o jsonl -m '$MFT' '$J' | jq -r '
+  [.timestamp, "usn", "\(.reason) \(.full_path)"] | @csv' > usn.csv
+
+sort -t, -k1,1 evtx.csv usn.csv > timeline.csv
+```
+
+Both write UTC times in the same ISO 8601 form, so a plain text sort orders them.
+
+## Which timestamps to trust
+
+| Source | Field | Changes when |
+| --- | --- | --- |
+| `$MFT` `$STANDARD_INFORMATION` | `StandardInfo*` | normal file activity. Easy to fake (timestomping) |
+| `$MFT` `$FILE_NAME` | `FileName*` | create, rename, move. Hard to fake from user mode |
+| `$J` | `timestamp` | every change, with the reason |
+| Event log | `TimeCreated` | when the event was logged |

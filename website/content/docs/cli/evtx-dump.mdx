@@ -1,0 +1,85 @@
+---
+title: evtx_dump
+description: Turn .evtx event logs into JSON, JSON lines or XML.
+---
+
+```bash
+evtx_dump -o jsonl Security.evtx > security.jsonl
+```
+
+One event per line, ready for `jq`, `grep` or a SIEM upload:
+
+```json
+{"Event":{"System":{"Provider":{"#attributes":{"Name":"Microsoft-Windows-Security-Auditing"}},"EventID":4624,"TimeCreated":{"#attributes":{"SystemTime":"2016-07-08T18:12:51.6816408Z"}},"EventRecordID":2,"Channel":"Security","Computer":"37L4247F27-25"},"EventData":{"TargetUserName":"SYSTEM","LogonType":0,"IpAddress":"-"}}}
+```
+
+(Trimmed. Real records carry every `System` and `EventData` field.)
+
+## Pick an output format
+
+| Flag | You get | Use it when |
+| --- | --- | --- |
+| `-o jsonl` | one JSON object per line | piping into `jq`, a SIEM or a script. **Start here.** |
+| `-o json` | indented JSON with a `Record <id>` line before each | reading by eye |
+| `-o xml` (default) | the XML Event Viewer shows | comparing with Windows, or tools that want XML |
+
+## Recipes
+
+**Logons, as a table**
+
+```bash
+evtx_dump -o jsonl Security.evtx | jq -c '
+  select(.Event.System.EventID == 4624) |
+  {time: .Event.System.TimeCreated["#attributes"].SystemTime,
+   user: .Event.EventData.TargetUserName,
+   type: .Event.EventData.LogonType}'
+```
+
+```json
+{"time":"2016-07-08T18:12:51.7908409Z","user":"SYSTEM","type":5}
+{"time":"2016-07-08T18:12:51.8532411Z","user":"NETWORK SERVICE","type":5}
+```
+
+**Which event IDs are in this log?**
+
+```bash
+evtx_dump -o jsonl Security.evtx | jq '.Event.System.EventID' | sort | uniq -c | sort -rn
+```
+
+**Only some records**
+
+```bash
+evtx_dump --events 1000-1200,5000 Security.evtx
+```
+
+**Write to a file, no prompt** (for scripts)
+
+```bash
+evtx_dump -o jsonl -f out/security.jsonl --no-confirm-overwrite Security.evtx
+```
+
+**Read from stdin**
+
+```bash
+cat Security.evtx | evtx_dump -o jsonl -
+```
+
+**A whole folder of logs**
+
+```bash
+for f in winevt/Logs/*.evtx; do evtx_dump -o jsonl "$f" > "out/$(basename "$f" .evtx).jsonl"; done
+```
+
+## When you need more
+
+| Situation | Flag | Read |
+| --- | --- | --- |
+| You want the sentence Event Viewer shows ("An account was successfully logged on...") | `--mta`, `--messages` | [Event messages](/docs/guides/event-messages) |
+| The log was cleared, or you want records from chunk slack | `--recover-records` | [Deleted and damaged logs](/docs/guides/deleted-events) |
+| You have a disk image or unallocated space, not a `.evtx` | `--carve` | [Deleted and damaged logs](/docs/guides/deleted-events) |
+| Your SIEM rejects fields that are sometimes a number, sometimes an object | `--separate-json-attributes` | [Feeding a SIEM](/docs/guides/siem-pipelines) |
+| Strings in a non-Latin code page come out garbled | `--ansi-codec windows-1251` (or `gbk`, ...) | |
+| A log looks damaged and you want to see its chunks | `evtx_dump info --input Security.evtx` | [Deleted and damaged logs](/docs/guides/deleted-events) |
+| Only trust chunks whose CRC32 matches | `--validate-checksums` | |
+
+`-t 1` turns threading off. By default `evtx_dump` uses every core, and records still come out in order.
