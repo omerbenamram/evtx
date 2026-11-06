@@ -1,0 +1,82 @@
+---
+title: mft (Python)
+description: pip install mft. Iterate $MFT entries with their paths, timestamps and attributes.
+---
+
+```bash
+pip install mft
+```
+
+```python
+from mft import PyMftParser
+
+parser = PyMftParser("$MFT")
+for entry in parser.entries():
+    if not entry.is_allocated and not entry.is_dir:
+        print(entry.entry_id, entry.full_path, entry.file_size)
+```
+
+```text
+47 1\2\3\4\file.txt 3
+```
+
+That's every deleted file still in the table, with its path.
+
+## Recipes
+
+**Timestamps from both attributes**
+
+```python
+from mft import PyMftParser, PyMftAttributeX10, PyMftAttributeX30
+
+for entry in PyMftParser("$MFT").entries():
+    for attribute in entry.attributes():
+        content = attribute.attribute_content
+        if isinstance(content, PyMftAttributeX10):    # $STANDARD_INFORMATION
+            print(entry.full_path, "SI created", content.created)
+        elif isinstance(content, PyMftAttributeX30):  # $FILE_NAME
+            print(entry.full_path, "FN created", content.created)
+```
+
+Timestamps are timezone-aware `datetime` objects in UTC. A `$STANDARD_INFORMATION` time earlier than the `$FILE_NAME` one is a classic sign of timestomping.
+
+**The same rows as `mft_dump -o csv`**
+
+```python
+with open("mft.csv", "wb") as out:
+    for line in PyMftParser("$MFT").entries_csv():
+        out.write(line)
+```
+
+`entries_json()` gives one JSON string per entry, with every attribute.
+
+**One entry by number**
+
+```python
+entry = PyMftParser("$MFT").get_entry(5)  # the root directory
+```
+
+**Keep going past damaged entries**
+
+```python
+parser = PyMftParser("$MFT", skip_errors=True)
+```
+
+Each skipped entry is a `RuntimeWarning`.
+
+## Bodyfile and file contents
+
+> **Coming in the next mft release** ([pymft-rs#38](https://github.com/omerbenamram/pymft-rs/pull/38)).
+
+```python
+parser = PyMftParser("$MFT")
+
+with open("mft.body", "w", encoding="utf-8", newline="") as body:
+    body.writelines(parser.entries_bodyfile())   # for mactime
+
+for stream in parser.data_streams(12938):
+    if stream.name == "Zone.Identifier" and stream.data is not None:
+        print(stream.data.decode())  # [ZoneTransfer] ZoneId=3
+```
+
+`data_streams` gives a file's `$DATA` streams, alternate data streams included, with the bytes of the resident ones. See [Building a timeline](/docs/guides/timelines).

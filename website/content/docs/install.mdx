@@ -1,0 +1,33 @@
+---
+title: Install
+description: Prebuilt binaries, pip or cargo.
+---
+
+```bash tab="Binaries"
+# Download evtx_dump and mft_dump for Windows, macOS or Linux:
+# https://github.com/omerbenamram/evtx/releases
+# https://github.com/omerbenamram/mft/releases
+```
+
+```bash tab="cargo install"
+cargo install evtx   # evtx_dump
+cargo install mft    # mft_dump
+```
+
+```bash tab="Python"
+pip install evtx mft
+```
+
+```bash tab="Rust crates"
+cargo add evtx mft
+```
+
+Python wheels cover Linux, macOS and Windows for CPython 3.10 and newer, including free-threaded 3.14. Nothing to compile.
+
+Check it works:
+
+```bash
+evtx_dump --version
+mft_dump --version
+python -c "import evtx, mft"
+```

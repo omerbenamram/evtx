@@ -1,0 +1,65 @@
+---
+title: Event messages
+description: When to add the sentence Event Viewer shows, and how (--mta or --messages).
+---
+
+An `.evtx` record stores the event ID and its data fields. The sentence Event Viewer shows, "An account was successfully logged on...", isn't in the log. It lives in DLLs on the machine that wrote it. The parsers can add it back as a `RenderingInfo` element:
+
+```json
+"RenderingInfo": {
+  "Message": "An account was successfully logged on.\r\n\r\nSubject:\r\n\tSecurity ID:\t\tS-1-5-18\r\n\tAccount Name:\t\tWIN-03DLIIOFRRA$ ...",
+  "Level": "Log Always",
+  "Task": "Logon",
+  "Opcode": "Info",
+  "Keywords": {"Keyword": "Audit Success"}
+}
+```
+
+## Do you need it?
+
+| You are | Turn it on? | Why |
+| --- | --- | --- |
+| Ingesting into a SIEM for detection | **No** | Rules match `EventID` and fields like `TargetUserName`, which you already have. Messages make parsing several times slower. |
+| Showing events to analysts in a UI | Maybe | The familiar text helps people who don't know event IDs by heart. Add it on the events they look at, not on everything. |
+| Ingesting third-party or custom providers | Yes | Nobody knows their event IDs, and the message says what the event means. |
+| Working a case from a disk image | **Yes** | You have the machine's own DLLs, so you get the exact text it would show. Good for timelines, reports and grepping for phrases. |
+| Reading logs exported with "display information" | Yes, with `--mta` | The strings are already in the export. No DLLs needed. |
+
+## Which source?
+
+| You have | Use |
+| --- | --- |
+| A `LocaleMetaData` folder next to the `.evtx` (Event Viewer's *Save All Events As*, with display information) | `--mta` |
+| A disk image or a copy of `C:\Windows\System32` (with its `en-US` folder) | `--messages` |
+| Neither | Nothing to do: the fields are all there, only the sentence is missing |
+
+## With an exported log: `--mta`
+
+```bash tab="CLI"
+evtx_dump -o jsonl --mta LocaleMetaData/Security_1033.MTA Security.evtx
+```
+
+```python tab="Python"
+PyEvtxParser("Security.evtx", mta="LocaleMetaData/Security_1033.MTA")
+```
+
+`1033` is English (US). Pick the file for the language you want.
+
+## From the machine's own DLLs: `--messages`
+
+> **Coming in evtx 0.16** ([evtx#365](https://github.com/omerbenamram/evtx/pull/365), in review). CLI and Rust first; not in Python yet.
+
+```bash tab="CLI"
+evtx_dump -o jsonl --messages /mnt/image/Windows/System32 Security.evtx
+```
+
+```rust tab="Rust"
+let catalog = Arc::new(MessageCatalog::from_directory("/mnt/image/Windows/System32", None)?);
+let settings = ParserSettings::new().messages(Some(catalog));
+```
+
+- Point it at the `System32` of the **same machine** that wrote the logs. Messages change between Windows builds, and third-party providers only exist where they were installed.
+- `--messages` takes a folder or one file, and can be given more than once (for example `System32` and an application's install folder).
+- `--messages-locale de-DE` reads the German `.mui` files instead of `en-US`.
+- If both are given, `--mta` strings win.
+- In a library, build the catalog once and share it: reading the DLLs is the slow part.

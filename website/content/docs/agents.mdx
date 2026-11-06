@@ -1,0 +1,26 @@
+---
+title: For AI agents
+description: Plain-markdown versions of every page, and llms.txt.
+---
+
+Every page on this site has a plain markdown version, so an agent can read it without a browser.
+
+| What | Where |
+| --- | --- |
+| Index of all pages, with links to their markdown | [`/llms.txt`](/llms.txt) |
+| Every page in one file | [`/llms-full.txt`](/llms-full.txt) |
+| One page as markdown | the **Copy Markdown** button on the page, or `/llms.mdx/docs/<page>/content.md` |
+
+To give an agent the parsers in one go, paste this into its context:
+
+```text
+Read https://<this site>/llms-full.txt. Use evtx_dump / `pip install evtx` for .evtx files and
+mft_dump / `pip install mft` for $MFT, $J, $I30, $LogFile, $Boot and $Secure:$SDS.
+Prefer `-o jsonl` output: one JSON object per line.
+```
+
+Tips for agents driving the CLIs:
+
+- `-o jsonl` gives one record per line, so `head`, `grep` and `jq -c` work without loading the whole output.
+- `--events 100-200` (evtx) and `-r 0-50` (mft) cut a big file down before you read it.
+- Errors go to stderr, records to stdout. evtx_dump keeps going past a damaged record.
