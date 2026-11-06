@@ -36,6 +36,7 @@ evtx_dump -o jsonl Security.evtx | jq -c '
 ```
 
 ```json
+{"time":"2016-07-08T18:12:51.6816408Z","user":"SYSTEM","type":0}
 {"time":"2016-07-08T18:12:51.7908409Z","user":"SYSTEM","type":5}
 {"time":"2016-07-08T18:12:51.8532411Z","user":"NETWORK SERVICE","type":5}
 ```
@@ -74,9 +75,9 @@ for f in winevt/Logs/*.evtx; do evtx_dump -o jsonl "$f" > "out/$(basename "$f" .
 
 | Situation | Flag | Read |
 | --- | --- | --- |
-| You want the sentence Event Viewer shows ("An account was successfully logged on...") | `--mta`, `--messages` | [Event messages](/docs/guides/event-messages) |
+| You want the sentence Event Viewer shows ("An account was successfully logged on...") | `--mta` (`--messages` coming in 0.16) | [Event messages](/docs/guides/event-messages) |
 | The log was cleared, or you want records from chunk slack | `--recover-records` | [Deleted and damaged logs](/docs/guides/deleted-events) |
-| You have a disk image or unallocated space, not a `.evtx` | `--carve` | [Deleted and damaged logs](/docs/guides/deleted-events) |
+| You have a disk image or unallocated space, not a `.evtx` | `--carve` (coming in 0.16) | [Deleted and damaged logs](/docs/guides/deleted-events) |
 | Your SIEM rejects fields that are sometimes a number, sometimes an object | `--separate-json-attributes` | [Feeding a SIEM](/docs/guides/siem-pipelines) |
 | Strings in a non-Latin code page come out garbled | `--ansi-codec windows-1251` (or `gbk`, ...) | |
 | A log looks damaged and you want to see its chunks | `evtx_dump info --input Security.evtx` | [Deleted and damaged logs](/docs/guides/deleted-events) |

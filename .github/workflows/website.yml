@@ -28,6 +28,11 @@ jobs:
       - run: npm ci
       - run: npm run types:check
       - run: npm run build
+        env:
+          # Where the site is served from, for absolute links in llms.txt. Set them as
+          # repository variables once the site is hosted.
+          DOCS_SITE_URL: ${{ vars.DOCS_SITE_URL }}
+          DOCS_BASE_PATH: ${{ vars.DOCS_BASE_PATH }}
       - uses: actions/upload-artifact@v4
         with:
           name: docs-site

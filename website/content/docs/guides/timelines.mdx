@@ -30,10 +30,10 @@ evtx_dump -o jsonl Security.evtx | jq -r '
 mft_dump -o jsonl -m '$MFT' '$J' | jq -r '
   [.timestamp, "usn", "\(.reason) \(.full_path)"] | @csv' > usn.csv
 
-sort -t, -k1,1 evtx.csv usn.csv > timeline.csv
+LC_ALL=C sort -t, -k1,1 evtx.csv usn.csv > timeline.csv
 ```
 
-Both write UTC times in the same ISO 8601 form, so a plain text sort orders them.
+Both write UTC times in the same form, always with 7 fractional digits, so a byte-wise sort (`LC_ALL=C`) orders them.
 
 ## Which timestamps to trust
 

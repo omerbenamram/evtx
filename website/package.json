@@ -5,7 +5,6 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev",
-    "start": "serve out",
     "types:check": "next typegen && tsc --noEmit"
   },
   "dependencies": {
@@ -25,7 +24,6 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "postcss": "^8.5.31",
-    "serve": "^14.2.6",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2"
   }

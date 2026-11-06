@@ -7,7 +7,7 @@ export const appDescription =
 // Where the site is served from. `DOCS_BASE_PATH` is the path prefix (such as `/docs` on
 // GitHub Pages), and `DOCS_SITE_URL` the origin, so that llms.txt can give absolute links.
 export const basePath = process.env.DOCS_BASE_PATH ?? '';
-export const siteUrl = `${process.env.DOCS_SITE_URL ?? 'http://localhost:3000'}${basePath}`;
+export const siteUrl = `${process.env.DOCS_SITE_URL || 'http://localhost:3000'}${basePath}`;
 
 export const docsRoute = '/docs';
 export const docsImageRoute = '/og/docs';
