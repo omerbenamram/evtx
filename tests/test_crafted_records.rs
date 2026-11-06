@@ -694,12 +694,17 @@ fn open_event(root: &mut BinXml) {
     root.end_element();
 }
 
+/// Settings with an `.MTA` file that names level 0 of `P`.
+fn naming_level(level: &str) -> ParserSettings {
+    let mta = mta_naming_level("P", level);
+    ParserSettings::new().mta(Some(Arc::new(MtaFile::from_bytes(&mta).unwrap())))
+}
+
 /// Settings with an `.MTA` file that names level 0 of `P` with 16 Mi characters: the
 /// `RenderingInfo` of an event of `P` passes the cap on its own. The JSON writer reserves six
 /// bytes a character for a string, so the chunk renderer's buffer reaches 96 MiB.
 fn long_level_name() -> ParserSettings {
-    let mta = mta_naming_level("P", &"L".repeat(16 << 20));
-    ParserSettings::new().mta(Some(Arc::new(MtaFile::from_bytes(&mta).unwrap())))
+    naming_level(&"L".repeat(16 << 20))
 }
 
 #[test]
@@ -1012,6 +1017,38 @@ fn depth_is_capped() {
     assert_fails_everywhere(&nested(213), DEPTH_ERROR);
     // Each instance nests 101 elements: 1,212 levels would overflow the stack of the walkers.
     assert_fails_everywhere(&fan_out(12, 1, 100), DEPTH_ERROR);
+}
+
+#[test]
+fn a_deep_template_renders_from_its_tree_on_a_small_stack() {
+    // Cloning a template into a record's tree recursed once per element level, with frames of
+    // nearly 4 KiB a level in a debug build: a template nesting elements as deep as the cap
+    // (`MAX_ELEMENT_DEPTH`, 512) overflowed 1 MiB.
+    // The records API renders from the tree when it has an `.MTA` file.
+    let evtx = synthetic_evtx(|record| {
+        record.fragment_header().template_instance(
+            |root| {
+                for _ in 0..512 {
+                    root.open("R", true).close_start();
+                }
+                root.open("E", true).close_empty();
+                for _ in 0..512 {
+                    root.end_element();
+                }
+            },
+            Vec::new(),
+        );
+    });
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            for pass in render_passes_with(&evtx, 2 << 20, naming_level("Info")) {
+                assert!(pass[0].is_ok(), "{:?}", pass[0]);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
