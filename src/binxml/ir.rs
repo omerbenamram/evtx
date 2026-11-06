@@ -1011,8 +1011,7 @@ pub(crate) struct TemplateStats {
 impl TemplateStats {
     /// Fails for a template with an element in more than [`MAX_ELEMENT_DEPTH`] others, as in one
     /// stream. One stream can't nest them deeper, but a BinXML value in a template is a stream of
-    /// its own, which can hold instances, and instantiating or compiling a template recurses once
-    /// per level.
+    /// its own, which can hold instances, and compiling a template recurses once per level.
     pub(crate) fn of(tree: &IrTree<'_>) -> Result<Self> {
         let arena = tree.arena();
         let mut stats = TemplateStats::default();
