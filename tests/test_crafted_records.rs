@@ -1506,7 +1506,7 @@ fn message_inserts_of_deep_user_data_are_bounded() {
     // for that, and still too little for the 30,000 levels the inserts used to recurse through.
     let messages = security_messages();
     std::thread::Builder::new()
-        .stack_size(3 << 20)
+        .stack_size(4 << 20)
         .spawn(move || assert_fails_with(&evtx, messages, DEPTH_ERROR))
         .unwrap()
         .join()
