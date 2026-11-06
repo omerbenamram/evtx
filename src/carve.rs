@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::checksum_ieee;
-use crate::evtx_chunk::{EVTX_CHUNK_HEADER_SIZE, EvtxChunkHeader};
+use crate::evtx_chunk::{EVTX_CHUNK_HEADER_SIZE, EvtxChunkHeader, chunk_header_crc};
 use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
 
 const CHUNK_MAGIC: &[u8; 8] = b"ElfChnk\0";
@@ -192,10 +192,7 @@ fn looks_like_a_chunk(chunk: &[u8]) -> Option<u64> {
     if !in_range {
         return None;
     }
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&chunk[..120]);
-    hasher.update(&chunk[128..EVTX_CHUNK_HEADER_SIZE]);
-    (hasher.finalize() == header.header_chunk_checksum
+    (chunk_header_crc(chunk) == header.header_chunk_checksum
         || chunk[EVTX_CHUNK_HEADER_SIZE..].starts_with(RECORD_MAGIC))
     .then_some(header.last_event_record_id)
 }
