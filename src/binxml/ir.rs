@@ -237,7 +237,7 @@ impl<'a> IrTemplateCache<'a> {
         budget: &Budget,
     ) -> Option<IrTree<'a>> {
         let cache = chunk.settings.get_wevt_cache()?;
-        let guid = winstructs::guid::Guid::from_buffer(&header.guid).ok()?;
+        let guid = crate::Guid::from_bytes(header.guid);
         let binxml = cache
             .load_temp_binxml_fragment_in(&guid.to_string(), self.arena)
             .ok()?;

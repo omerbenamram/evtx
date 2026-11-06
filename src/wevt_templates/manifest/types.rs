@@ -1,5 +1,5 @@
+use crate::Guid;
 use std::collections::HashMap;
-use winstructs::guid::Guid;
 
 #[derive(Debug, Clone)]
 pub struct CrimManifest<'a> {

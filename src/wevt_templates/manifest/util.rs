@@ -1,4 +1,4 @@
-use winstructs::guid::Guid;
+use crate::Guid;
 
 use super::error::{Result, WevtManifestError};
 use crate::utils::bytes;
@@ -79,12 +79,9 @@ pub(super) fn read_u64_named(buf: &[u8], offset: usize, what: &'static str) -> R
 }
 
 pub(super) fn read_guid_named(buf: &[u8], offset: usize, what: &'static str) -> Result<Guid> {
-    let bytes =
-        bytes::read_array::<16>(buf, offset).ok_or_else(|| truncated(buf, offset, 16, what))?;
-    Guid::from_buffer(&bytes).map_err(|_| WevtManifestError::InvalidGuid {
-        what,
-        offset: usize_to_u32(offset),
-    })
+    bytes::read_array::<16>(buf, offset)
+        .map(Guid::from_bytes)
+        .ok_or_else(|| truncated(buf, offset, 16, what))
 }
 
 pub(super) fn u32_to_usize(offset: u32, what: &'static str, len: usize) -> Result<usize> {

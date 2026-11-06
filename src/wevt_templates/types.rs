@@ -1,4 +1,4 @@
-use winstructs::guid::Guid;
+use crate::Guid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResourceIdentifier {

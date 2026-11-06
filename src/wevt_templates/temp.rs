@@ -32,7 +32,7 @@ pub fn extract_temp_templates_from_wevt_blob(
                     item_name_count: tpl.item_name_count,
                     template_items_offset: tpl.template_items_offset,
                     event_type: tpl.event_type,
-                    guid: tpl.guid.clone(),
+                    guid: tpl.guid,
                 },
             })
         })
