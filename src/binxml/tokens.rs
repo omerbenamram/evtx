@@ -1,6 +1,6 @@
 use crate::err::{DeserializationError, DeserializationResult as Result, Result as EvtxResult};
 
-use winstructs::guid::Guid;
+use crate::Guid;
 
 use crate::AnsiCodec;
 use crate::ChunkOffset;
@@ -255,7 +255,7 @@ pub(crate) fn read_template_values_cursor<'a>(
     // Need to skip over the template data.
     if (cursor.position() as u32) == template_definition_data_offset {
         let template_header = read_template_header(cursor)?;
-        template_guid = Some(Guid::from_buffer(&template_header.guid).expect("16-byte GUID"));
+        template_guid = Some(Guid::from_bytes(template_header.guid));
         cursor.set_pos_u64(
             cursor.position() + u64::from(template_header.data_size),
             "Skip cached template",

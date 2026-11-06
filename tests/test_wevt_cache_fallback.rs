@@ -83,7 +83,7 @@ mod wevt_cache_fallback {
 
     fn find_first_template_instance_guid_and_offset(
         evtx_bytes: &[u8],
-    ) -> (usize, u64, u32, winstructs::guid::Guid) {
+    ) -> (usize, u64, u32, evtx::Guid) {
         let settings = ParserSettings::default().num_threads(1);
         let mut parser = EvtxParser::from_buffer(evtx_bytes.to_vec())
             .expect("parse EVTX buffer")
@@ -104,7 +104,7 @@ mod wevt_cache_fallback {
 
                 let template_def_offset = tpl.template_def_offset;
                 let guid = if let Some(g) = tpl.template_guid.as_ref() {
-                    g.clone()
+                    *g
                 } else {
                     // Template header: u32 next + [u8;16] guid + u32 size
                     let off = template_def_offset as usize + 4;
@@ -113,7 +113,7 @@ mod wevt_cache_fallback {
                         .data
                         .get(off..off + 16)
                         .expect("guid bytes in chunk");
-                    winstructs::guid::Guid::from_buffer(guid_bytes).expect("guid parse")
+                    evtx::Guid::from_buffer(guid_bytes).expect("guid parse")
                 };
 
                 return (

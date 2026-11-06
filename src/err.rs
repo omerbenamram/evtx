@@ -1,10 +1,10 @@
 use thiserror::Error;
 
+use crate::Guid;
 use crate::evtx_parser::{EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE};
 use crate::evtx_record::RecordId;
 use std::io;
 use std::path::Path;
-use winstructs::guid::Guid;
 
 /// This is the only `Result` type that should be exposed on public interfaces.
 pub type Result<T> = std::result::Result<T, EvtxError>;

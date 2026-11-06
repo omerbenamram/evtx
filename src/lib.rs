@@ -14,6 +14,7 @@ pub use evtx_parser::{RenderedChunk, RenderedChunkItem};
 pub use evtx_record::{
     EvtxRecord, EvtxRecordHeader, Offset, RecordId, SerializedEvtxRecord, Timestamp,
 };
+pub use guid::Guid;
 pub use utils::utf16::{Utf16LeDecodeError, Utf16LeSlice};
 
 pub mod binxml;
@@ -29,6 +30,7 @@ mod evtx_chunk;
 mod evtx_file_header;
 mod evtx_parser;
 mod evtx_record;
+mod guid;
 mod string_cache;
 mod utils;
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use winstructs::guid::Guid;
+use crate::Guid;
 
 use super::error::{Result, WevtManifestError};
 use super::types::*;
@@ -99,7 +99,7 @@ impl<'a> CrimManifest<'a> {
 
                     let entry = event_to_template_guids.entry(key).or_default();
                     if !entry.contains(&tpl.guid) {
-                        entry.push(tpl.guid.clone());
+                        entry.push(tpl.guid);
                     }
                 }
             }
