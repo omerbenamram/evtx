@@ -47,6 +47,7 @@ use super::types::ResourceIdentifier;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, IrTree, Node, Text};
 use crate::mta::RenderingInfo;
+use crate::mta::{decode_utf16, narrow, number_value};
 
 /// The language id of `en-US`, preferred when a binary has message tables in several languages.
 const EN_US: u32 = 1033;
@@ -106,7 +107,7 @@ impl MessageTable {
                     return Err(malformed("entry shorter than its header"));
                 }
                 let text = if flags & 1 != 0 {
-                    decode_utf16_lossy(text)
+                    String::from(decode_utf16(text))
                 } else {
                     // ANSI entries: Latin-1 is close enough for the ASCII Windows writes there.
                     text.iter().map(|&b| char::from(b)).collect()
@@ -598,18 +599,6 @@ impl MessageCatalog {
     }
 }
 
-/// Decodes UTF-16LE bytes, replacing unpaired surrogates with U+FFFD.
-fn decode_utf16_lossy(bytes: &[u8]) -> String {
-    let units = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|unit| u16::from_le_bytes(*unit));
-    char::decode_utf16(units)
-        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect()
-}
-
 /// Drops the line break (and padding) a message table entry ends with.
 fn trim_message(message: &str) -> &str {
     message.trim_end_matches(['\r', '\n', ' ', '\0'])
@@ -703,14 +692,7 @@ impl<'t> EventFields<'t> {
             match element.name.as_str() {
                 "System" => {
                     for child in element_children(tree, element) {
-                        let number = || node_text(&child.children).trim().parse::<u64>().ok();
-                        let hex = || {
-                            let text = node_text(&child.children);
-                            let text = text.trim();
-                            text.strip_prefix("0x")
-                                .and_then(|h| u64::from_str_radix(h, 16).ok())
-                                .or_else(|| text.parse().ok())
-                        };
+                        let number = || number_value(&child.children);
                         match child.name.as_str() {
                             "Provider" => {
                                 for attr in child.attrs.iter() {
@@ -722,19 +704,18 @@ impl<'t> EventFields<'t> {
                                 }
                             }
                             "EventID" => {
-                                fields.event_id = number().unwrap_or_default() as u16;
+                                fields.event_id = narrow(number());
                                 if let Some(q) =
                                     child.attrs.iter().find(|a| a.name.as_str() == "Qualifiers")
                                 {
-                                    fields.qualifiers =
-                                        node_text(&q.value).trim().parse().unwrap_or_default();
+                                    fields.qualifiers = narrow(number_value(&q.value));
                                 }
                             }
-                            "Version" => fields.version = number().unwrap_or_default() as u8,
-                            "Level" => fields.level = number().unwrap_or_default() as u8,
-                            "Task" => fields.task = number().unwrap_or_default() as u16,
-                            "Opcode" => fields.opcode = number().unwrap_or_default() as u8,
-                            "Keywords" => fields.keywords = hex().unwrap_or_default(),
+                            "Version" => fields.version = narrow(number()),
+                            "Level" => fields.level = narrow(number()),
+                            "Task" => fields.task = narrow(number()),
+                            "Opcode" => fields.opcode = narrow(number()),
+                            "Keywords" => fields.keywords = number().unwrap_or_default(),
                             _ => {}
                         }
                     }
@@ -822,7 +803,7 @@ fn node_text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
                 Cow::Borrowed(*s)
             }
             Node::Text(Text::Utf16(s)) | Node::Value(BinXmlValue::StringType(s)) => {
-                Cow::Owned(decode_utf16_lossy(s.as_bytes()))
+                Cow::Owned(decode_utf16(s.as_bytes()).into())
             }
             Node::Value(value) => Cow::Owned(value.to_string()),
             Node::CharRef(c) => Cow::Owned(char::from_u32(u32::from(*c)).unwrap_or('_').into()),
