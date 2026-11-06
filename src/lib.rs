@@ -18,6 +18,7 @@ pub use guid::Guid;
 pub use utils::utf16::{Utf16LeDecodeError, Utf16LeSlice};
 
 pub mod binxml;
+pub mod carve;
 pub mod err;
 pub mod model;
 pub mod mta;

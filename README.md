@@ -44,7 +44,7 @@
  - ⚡ Fast - see benchmarks below. It's faster than any other implementation by order(s) of magnitude!
  - 🚀 Multi-threaded.
  - ✨ Supports XML and JSON outputs, both being directly constructed from a shared intermediate representation (IR) (no xml2json conversion is performed!)
- - ⛏️ Supports some basic recovery of missing records/chunks!
+ - ⛏️ Recovers stale records from chunk slack (`--recover-records`), and carves chunks out of raw data such as disk images (`--carve`).
  - 🐍 Python bindings are available as well at https://github.com/omerbenamram/pyevtx-rs (and at PyPi https://pypi.org/project/evtx/)
 
 ## Web-based Viewer (EVTX Web)
@@ -106,6 +106,15 @@ Debugging helpers:
   - `evtx_dump apply-wevt-cache --cache /tmp/wevt_cache.wevtcache --template-guid <GUID> --evtx <log.evtx> --record-id <ID>`
 
 See [`docs/wevt_templates.md`](docs/wevt_templates.md) for details and background (issue #103).
+
+## Carving chunks from raw data
+
+`evtx_dump --carve` takes any file (a disk image, unallocated space, a memory dump, a log whose file header is gone) and parses every EVTX chunk it finds in it, skipping exact copies:
+
+- `evtx_dump --carve -o jsonl unallocated.bin`
+- `evtx_dump --carve --recover-records -v -o jsonl disk.raw` also carves the chunks' slack, and lists where each chunk was found.
+
+A chunk holds the templates and strings its records need, so records are carved a chunk at a time. A record whose chunk header was overwritten can't be rendered. In the library, `evtx::carve::CarvedEvtx` turns a source into a virtual EVTX file for `EvtxParser::from_read_seek`.
 
 ## Localized strings from `.MTA` files
 

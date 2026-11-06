@@ -273,3 +273,31 @@ fn it_reports_a_failure_to_write_the_last_output() {
         "{output:?}"
     );
 }
+
+#[test]
+fn it_carves_chunks_from_raw_data() {
+    let evtx = std::fs::read(regular_sample()).unwrap();
+    // The log's chunks without its file header, between runs of noise.
+    let mut image: Vec<u8> = (0..50_001u32).map(|i| (i * 13 + 5) as u8).collect();
+    image.extend_from_slice(&evtx[4096..]);
+    image.extend_from_slice(&[0x5A; 777]);
+    let d = tempdir().unwrap();
+    let path = d.path().join("image.bin");
+    std::fs::write(&path, &image).unwrap();
+
+    let carved = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["--carve", "-o", "jsonl"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&carved.stderr);
+    assert!(carved.status.success(), "{stderr}");
+    assert!(stderr.contains("Carved 26 chunks from "), "{stderr}");
+
+    let intact = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["-o", "jsonl"])
+        .arg(regular_sample())
+        .output()
+        .unwrap();
+    assert_eq!(carved.stdout, intact.stdout);
+}
