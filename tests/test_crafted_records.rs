@@ -1501,7 +1501,16 @@ fn message_inserts_of_deep_user_data_are_bounded() {
             d.end_element();
         }
     });
-    assert_fails_with(&evtx, security_messages(), DEPTH_ERROR);
+    // The tree builder recurses through the 500 levels of one instance, which takes more than the
+    // 2 MiB of a test thread in a debug build on some targets (macOS on arm64). 4 MiB is enough
+    // for that, and still too little for the 30,000 levels the inserts used to recurse through.
+    let messages = security_messages();
+    std::thread::Builder::new()
+        .stack_size(3 << 20)
+        .spawn(move || assert_fails_with(&evtx, messages, DEPTH_ERROR))
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[cfg(feature = "wevt_templates")]
