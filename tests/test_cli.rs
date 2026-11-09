@@ -301,3 +301,77 @@ fn it_carves_chunks_from_raw_data() {
         .unwrap();
     assert_eq!(carved.stdout, intact.stdout);
 }
+
+/// The JSON lines that `evtx_dump <args>` prints.
+fn json_lines(args: &[&str]) -> Vec<serde_json::Value> {
+    let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(args)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let lines = output.stdout.split(|&b| b == b'\n');
+    lines
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn template_instance_dump_lists_the_instances_inside_the_outer_one() {
+    let sample = regular_sample();
+    let sample = sample.to_str().unwrap();
+    // Record 3 is event 4902: `System`'s instance, and inside it `EventData`'s.
+    let args = ["dump-template-instances", "-i", sample, "--record-id", "3"];
+    let lines = json_lines(&args);
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["template_instance_index"], 0);
+    assert_eq!(lines[0]["substitutions"][3], "4902");
+    assert_eq!(lines[1]["template_instance_index"], 1);
+    assert_eq!(
+        lines[1]["substitutions"],
+        serde_json::json!(["0", "0x35cb0"])
+    );
+
+    let only = json_lines(&[&args[..], &["--template-instance-index", "1"]].concat());
+    assert_eq!(only, lines[1..]);
+}
+
+#[test]
+fn applying_a_cached_template_takes_the_values_of_the_records_own_instance() {
+    let d = tempdir().unwrap();
+    let cache = d.as_ref().join("templates.wevtcache");
+    let cache = cache.to_str().unwrap();
+    let dll = samples_dir().join("dlls").join("adtschema.dll");
+    Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["extract-wevt-templates", "--output", cache, "--input"])
+        .arg(dll)
+        .assert()
+        .success();
+
+    // Event 4902 of Microsoft-Windows-Security-Auditing, with the values of record 3. It used
+    // to get the values of the instance that fills in `System`, and print 0 for both.
+    let sample = regular_sample();
+    let apply = |extra: &[&str]| {
+        let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+            .args(["apply-wevt-cache", "--cache", cache])
+            .args(["--provider-guid", "54849625-5478-4994-a5ba-3e3b0328c30d"])
+            .args(["--event-id", "4902", "--version", "0", "--record-id", "3"])
+            .arg("--evtx")
+            .arg(&sample)
+            .args(extra)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let xml = apply(&[]);
+    assert!(xml.contains(r#"<Data Name="PuaCount">0</Data>"#), "{xml}");
+    assert!(
+        xml.contains(r#"<Data Name="PuaPolicyId">0x35cb0</Data>"#),
+        "{xml}"
+    );
+    assert_eq!(apply(&["--template-instance-index", "1"]), xml);
+    assert_ne!(apply(&["--template-instance-index", "0"]), xml);
+}

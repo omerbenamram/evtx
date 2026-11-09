@@ -70,9 +70,8 @@ pub fn command() -> Command {
             Arg::new("template-instance-index")
                 .long("template-instance-index")
                 .value_parser(clap::value_parser!(usize))
-                .default_value("0")
                 .value_name("N")
-                .help("When a record contains multiple TemplateInstance tokens, select which one to use (default: 0)."),
+                .help("Which of the record's template instances to take the values from, counted from 0 in document order (0 is the one that fills in System). Default: the instance of the template being rendered when the record has one with its GUID, otherwise the second instance (the provider's own template in a Windows event)."),
         )
         .arg(
             Arg::new("substitutions")
@@ -162,9 +161,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     }
 
     // Resolve substitutions.
-    let template_instance_index: usize = *matches
-        .get_one::<usize>("template-instance-index")
-        .expect("has default");
+    let template_instance_index = matches.get_one::<usize>("template-instance-index").copied();
 
     let evtx_subs = matches
         .get_one::<String>("evtx")
@@ -248,13 +245,36 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                     }
 
                     let instances = record.template_instances()?;
-                    let instance = instances.get(template_instance_index).ok_or_else(|| {
-                        format_err!(
-                            "record {} has no TemplateInstance at index {}",
-                            record.event_record_id,
-                            template_instance_index
-                        )
-                    })?;
+                    let instance = match template_instance_index {
+                        Some(index) => instances.get(index).ok_or_else(|| {
+                            format_err!(
+                                "record {} has no TemplateInstance at index {} (it has {})",
+                                record.event_record_id,
+                                index,
+                                instances.len()
+                            )
+                        })?,
+                        // The log's copy of a template often has another GUID than the
+                        // manifest's (they come from different builds), so the GUID picks
+                        // the instance only when it can. Otherwise it is the second one: in
+                        // a Windows event the first fills in `System`, and the second is the
+                        // provider's own template.
+                        None => instances
+                            .iter()
+                            .find(|instance| {
+                                instance.template_guid.as_ref().is_some_and(|guid| {
+                                    normalize_guid(&guid.to_string()) == template_guid
+                                })
+                            })
+                            .or(instances.get(1))
+                            .or(instances.first())
+                            .ok_or_else(|| {
+                                format_err!(
+                                    "record {} has no TemplateInstance",
+                                    record.event_record_id
+                                )
+                            })?,
+                    };
                     break 'found render_template_definition_to_xml_with_values(
                         tpl,
                         &instance.values,

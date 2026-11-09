@@ -36,9 +36,8 @@ pub fn command() -> Command {
             Arg::new("template-instance-index")
                 .long("template-instance-index")
                 .value_parser(clap::value_parser!(usize))
-                .default_value("0")
                 .value_name("N")
-                .help("When a record contains multiple TemplateInstance tokens, select which one to dump (default: 0)."),
+                .help("Dump only this one of each record's template instances, counted from 0 in document order (0 is the one that fills in System, 1 is usually the provider's own template). Default: all of them, one line each."),
         )
 }
 
@@ -57,9 +56,7 @@ struct DumpTemplateInstanceOutputLine {
 pub fn run(matches: &ArgMatches) -> Result<()> {
     let input = PathBuf::from(matches.get_one::<String>("input").expect("required"));
     let record_id_filter = matches.get_one::<u64>("record-id").copied();
-    let template_instance_index: usize = *matches
-        .get_one::<usize>("template-instance-index")
-        .expect("has default");
+    let only_index = matches.get_one::<usize>("template-instance-index").copied();
 
     let settings = ParserSettings::default();
     let mut parser = EvtxParser::from_path(&input)
@@ -101,28 +98,30 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
             }
 
             let instances = record.template_instances()?;
-            let Some(tpl) = instances.get(template_instance_index) else {
-                continue;
-            };
+            for (template_instance_index, tpl) in instances.iter().enumerate() {
+                if only_index.is_some_and(|only| only != template_instance_index) {
+                    continue;
+                }
 
-            let substitutions = tpl
-                .values
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>();
+                let substitutions = tpl
+                    .values
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>();
 
-            let line = DumpTemplateInstanceOutputLine {
-                source: source.clone(),
-                record_id: record.event_record_id,
-                timestamp: record.timestamp.to_string(),
-                template_instance_index,
-                template_id: tpl.template_id,
-                template_def_offset: tpl.template_def_offset,
-                template_guid: tpl.template_guid.as_ref().map(|g| g.to_string()),
-                substitutions,
-            };
+                let line = DumpTemplateInstanceOutputLine {
+                    source: source.clone(),
+                    record_id: record.event_record_id,
+                    timestamp: record.timestamp.to_string(),
+                    template_instance_index,
+                    template_id: tpl.template_id,
+                    template_def_offset: tpl.template_def_offset,
+                    template_guid: tpl.template_guid.as_ref().map(|g| g.to_string()),
+                    substitutions,
+                };
 
-            writeln!(out, "{}", serde_json::to_string(&line)?)?;
+                writeln!(out, "{}", serde_json::to_string(&line)?)?;
+            }
 
             if record_id_filter.is_some() {
                 // Found the record we wanted; keep going anyway in case there are duplicates? No.

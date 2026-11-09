@@ -159,9 +159,15 @@ You can also render a single record/template offline using the cache + substitut
 ```bash
 evtx_dump apply-wevt-cache \
   --cache /tmp/wevt_cache.wevtcache \
+  --provider-guid 54849625-5478-4994-a5ba-3e3b0328c30d --event-id 4624 --version 2 \
   --evtx /path/to/log.evtx \
   --record-id 12345
 ```
+
+The template comes from `--template-guid`, or from the provider, event ID and version. The
+values come from the record's instance of that template: a Windows event has two template
+instances, one that fills in `System` and, inside it, the provider's own. `--template-instance-index`
+picks another one, and `evtx_dump dump-template-instances` lists them.
 
 ## Implementation map (where to read the code)
 
