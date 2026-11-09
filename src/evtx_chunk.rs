@@ -188,8 +188,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         arena.reset();
 
         info!("Initializing string cache");
-        let string_cache = StringCache::populate(data, &header.strings_offsets)
-            .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
+        let string_cache = StringCache::populate(data, &header.strings_offsets);
 
         Ok(EvtxChunk {
             header,
@@ -739,6 +738,37 @@ mod tests {
         };
 
         assert_eq!(corrupted_count, baseline_count);
+    }
+
+    #[test]
+    fn records_render_the_same_with_a_damaged_string_table() {
+        let file = include_bytes!("../samples/security.evtx");
+        let original = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        let render = |data: &[u8]| -> Vec<String> {
+            let mut chunk_data = EvtxChunkData::new(data.to_vec(), false).unwrap();
+            let mut chunk = chunk_data.parse(Arc::new(ParserSettings::new())).unwrap();
+            chunk
+                .iter()
+                .map(|record| record.unwrap().into_xml().unwrap().data)
+                .collect()
+        };
+        let expected = render(original);
+        assert_eq!(expected.len(), 91);
+
+        // Every bucket of the string table points past the end of the chunk, or at bytes that
+        // aren't a name. The records name their strings by offset, so they still resolve.
+        for bad_offset in [u32::MAX, EVTX_CHUNK_SIZE as u32 - 3] {
+            let mut data = original.to_vec();
+            let mut buckets = 0;
+            for bucket in data[128..384].as_chunks_mut::<4>().0 {
+                if *bucket != [0; 4] {
+                    bucket.copy_from_slice(&bad_offset.to_le_bytes());
+                    buckets += 1;
+                }
+            }
+            assert!(buckets > 0);
+            assert_eq!(render(&data), expected);
+        }
     }
 
     /// Chunk 0 of security.evtx (records 1 to 91), and the offset of each record by ID.
