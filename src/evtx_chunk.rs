@@ -82,14 +82,14 @@ impl EvtxChunkData {
 
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new_with_arena(
+        Ok(EvtxChunk::new_with_arena(
             &self.data,
             &self.header,
             settings,
             Bump::new(),
             Default::default(),
             self.number,
-        )
+        ))
     }
 
     /// Computed CRC32 of the header (bytes 0..120 and 128..512).
@@ -157,21 +157,22 @@ pub struct EvtxChunk<'chunk> {
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
-    /// A chunk over `data` and its already parsed `header`. It doesn't fail: a damaged string
-    /// table costs only the cache of its names, which records then read where they are.
+    /// A chunk over `data` and its already parsed `header`. It always succeeds, and returns a
+    /// `Result` only because it used to fail on a damaged string table. That now costs only
+    /// the cache of the table's names, which records then read where they are.
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
-        EvtxChunk::new_with_arena(
+        Ok(EvtxChunk::new_with_arena(
             data,
             header,
             settings,
             Bump::new(),
             Default::default(),
             None,
-        )
+        ))
     }
 
     /// See [`EvtxChunk::new`].
@@ -185,13 +186,13 @@ impl<'chunk> EvtxChunk<'chunk> {
         mut arena: Bump,
         program_store: Arc<crate::binxml::compiled::ProgramStore>,
         number: Option<u64>,
-    ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
+    ) -> EvtxChunk<'chunk> {
         arena.reset();
 
         info!("Initializing string cache");
         let string_cache = StringCache::populate(data, &header.strings_offsets);
 
-        Ok(EvtxChunk {
+        EvtxChunk {
             header,
             data,
             string_cache,
@@ -201,7 +202,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             render_budget: Default::default(),
             program_store,
             number,
-        })
+        }
     }
 
     /// Iterate raw record windows (header walk only, no content build).
@@ -743,8 +744,7 @@ mod tests {
 
     #[test]
     fn records_render_the_same_with_a_damaged_string_table() {
-        let file = include_bytes!("../samples/security.evtx");
-        let original = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        let (original, _) = security_chunk();
         let render = |data: &[u8]| -> Vec<String> {
             let mut chunk_data = EvtxChunkData::new(data.to_vec(), false).unwrap();
             let mut chunk = chunk_data.parse(Arc::new(ParserSettings::new())).unwrap();
@@ -753,7 +753,7 @@ mod tests {
                 .map(|record| record.unwrap().into_xml().unwrap().data)
                 .collect()
         };
-        let expected = render(original);
+        let expected = render(&original);
         assert_eq!(expected.len(), 91);
 
         // Every bucket of the string table points past the end of the chunk, at a name cut off
@@ -764,7 +764,7 @@ mod tests {
             EVTX_CHUNK_SIZE as u32 - 3,
             EVTX_CHUNK_HEADER_SIZE as u32,
         ] {
-            let mut data = original.to_vec();
+            let mut data = original.clone();
             let mut buckets = 0;
             for bucket in data[128..384].as_chunks_mut::<4>().0 {
                 if *bucket != [0; 4] {
