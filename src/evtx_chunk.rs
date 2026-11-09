@@ -344,20 +344,12 @@ impl<'a> Iterator for IterRawRecords<'a> {
                 self.skip_to(offset, None);
                 // The chunk's data ends where its header says more records are: the end of
                 // the file cut the chunk off between two records.
-                if self.cut_off() && offset < u64::from(self.chunk.header.free_space_offset) {
-                    return Some(Err(EvtxError::FailedToReadRecordAt {
-                        chunk: self.chunk.number,
-                        offset,
-                        source: Box::new(
-                            bytes::truncated(
-                                "EVTX record header",
-                                offset as usize,
-                                EVTX_RECORD_HEADER_SIZE,
-                                self.chunk.data.len(),
-                            )
-                            .into(),
-                        ),
-                    }));
+                if self.cut_off()
+                    && offset < u64::from(self.chunk.header.free_space_offset)
+                    && let Err(err) =
+                        EvtxRecordHeader::from_bytes_at(self.chunk.data, offset as usize)
+                {
+                    return Some(Err(self.unreadable_record(offset, err.into())));
                 }
                 continue;
             }
@@ -377,11 +369,7 @@ impl<'a> Iterator for IterRawRecords<'a> {
                     // starts when the header's `free_space_offset` is too large (issue
                     // #197), unless live records follow them.
                     if next.is_some() || !self.is_blank(&err, offset) {
-                        return Some(Err(EvtxError::FailedToReadRecordAt {
-                            chunk: self.chunk.number,
-                            offset,
-                            source: Box::new(err),
-                        }));
+                        return Some(Err(self.unreadable_record(offset, err)));
                     }
                 }
             }
@@ -390,6 +378,16 @@ impl<'a> Iterator for IterRawRecords<'a> {
 }
 
 impl<'a> IterRawRecords<'a> {
+    /// The error for a record at `offset` that can't be read.
+    #[cold]
+    fn unreadable_record(&self, offset: u64, source: EvtxError) -> EvtxError {
+        EvtxError::FailedToReadRecordAt {
+            chunk: self.chunk.number,
+            offset,
+            source: Box::new(source),
+        }
+    }
+
     /// Whether the chunk's data is shorter than a chunk: the end of its file cut it off.
     fn cut_off(&self) -> bool {
         self.chunk.data.len() < crate::evtx_parser::EVTX_CHUNK_SIZE

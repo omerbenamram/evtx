@@ -160,7 +160,7 @@ pub enum ChunkError {
     FailedToReadChunk(#[source] io::Error),
 
     #[error("Failed to seek to start of chunk.")]
-    FailedToSeekToChunk(io::Error),
+    FailedToSeekToChunk(#[source] io::Error),
 
     #[error("Failed to parse chunk header")]
     FailedToParseChunkHeader(#[from] DeserializationError),
