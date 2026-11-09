@@ -301,3 +301,25 @@ fn it_carves_chunks_from_raw_data() {
         .unwrap();
     assert_eq!(carved.stdout, intact.stdout);
 }
+
+#[test]
+fn carving_fails_when_there_is_nothing_to_carve() {
+    let d = tempdir().unwrap();
+    let no_chunks = d.as_ref().join("zeros.bin");
+    std::fs::write(&no_chunks, vec![0u8; 100_000]).unwrap();
+
+    // A directory opens like a file and then fails every read: this used to never end.
+    for (input, message) in [
+        (d.as_ref(), "Failed to carve chunks from"),
+        (no_chunks.as_path(), "No EVTX chunks were found in"),
+    ] {
+        let assert = assert_cmd::Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+            .arg("--carve")
+            .arg(input)
+            .timeout(std::time::Duration::from_secs(60))
+            .assert()
+            .failure();
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+        assert!(stderr.contains(message), "{stderr}");
+    }
+}

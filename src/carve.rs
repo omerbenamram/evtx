@@ -33,6 +33,7 @@
 
 use std::collections::HashSet;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Range;
 
 use crate::checksum_ieee;
 use crate::evtx_chunk::{EVTX_CHUNK_HEADER_SIZE, EvtxChunkHeader, chunk_header_crc};
@@ -43,6 +44,9 @@ use crate::utils::bytes;
 const CHUNK_MAGIC: &[u8; 8] = b"ElfChnk\0";
 /// How much of the source is searched at once.
 const SCAN_BLOCK_SIZE: usize = 8 << 20;
+/// How much is given up around a byte that can't be read: a page, which is what a read of a
+/// bad sector through the page cache loses.
+const UNREADABLE_STEP: u64 = 4096;
 
 /// The chunks carved from a source, read as a virtual EVTX file (see the [module docs](self)).
 ///
@@ -50,6 +54,10 @@ const SCAN_BLOCK_SIZE: usize = 8 << 20;
 /// open, not copied. A chunk that the source holds only part of, because the source ends or the
 /// next chunk carved starts within its 64 KiB, reads as zeros from the first of its records that
 /// the source doesn't hold whole: the rest of that record isn't there.
+///
+/// Where the source can't be read (a bad sector), the scan goes on past it, and
+/// [`unreadable_bytes`](Self::unreadable_bytes) says how much was given up. A chunk with such
+/// a hole in it ends there, like one that the source holds only part of.
 #[derive(Debug)]
 pub struct CarvedEvtx<R> {
     source: R,
@@ -58,10 +66,15 @@ pub struct CarvedEvtx<R> {
     ends: Vec<u64>,
     header: Vec<u8>,
     position: u64,
+    unreadable: u64,
 }
 
 impl<R: Read + Seek> CarvedEvtx<R> {
     /// Scans all of `source` for chunks.
+    ///
+    /// Fails when the source can't be read from its start (nothing in its first 8 MiB): it is
+    /// not a file, or it is gone. A read error further in is not an error, see
+    /// [`unreadable_bytes`](Self::unreadable_bytes).
     pub fn new(mut source: R) -> io::Result<Self> {
         let source_len = source.seek(SeekFrom::End(0))?;
         let found = find_chunks(&mut source, source_len)?;
@@ -72,7 +85,14 @@ impl<R: Read + Seek> CarvedEvtx<R> {
             ends: found.ends,
             header,
             position: 0,
+            unreadable: found.unreadable,
         })
+    }
+
+    /// How many bytes of the source the scan could not read, and so did not search. Zero for a
+    /// source that reads without errors.
+    pub fn unreadable_bytes(&self) -> u64 {
+        self.unreadable
     }
 
     /// Where in the source each chunk was found, by chunk number: errors about chunk `n` of
@@ -139,6 +159,10 @@ struct Found {
     /// The record ID after the highest one they hold.
     next_record_id: u64,
     seen: HashSet<(u32, [u8; 32])>,
+    /// How many bytes of the source could not be read.
+    unreadable: u64,
+    /// Where those bytes are, in order.
+    holes: Vec<Range<u64>>,
 }
 
 impl Found {
@@ -166,36 +190,46 @@ fn find_chunks<R: Read + Seek>(source: &mut R, source_len: u64) -> io::Result<Fo
         ends: Vec::new(),
         next_record_id: 1,
         seen: HashSet::new(),
+        unreadable: 0,
+        holes: Vec::new(),
     };
-    let mut block = vec![0u8; SCAN_BLOCK_SIZE];
+    // Each block is searched with the end of the one before it in front, so that a magic that
+    // straddles them is found.
+    let overlap = CHUNK_MAGIC.len() - 1;
+    let mut block = vec![0u8; overlap + SCAN_BLOCK_SIZE];
+    let mut carried = 0usize;
     // The candidate looked at, and the last chunk found, which is added once it is known where
     // it ends: the next chunk found can start inside it.
     let mut chunk = vec![0u8; EVTX_CHUNK_SIZE];
     let mut last_chunk = vec![0u8; EVTX_CHUNK_SIZE];
-    let mut last: Option<(u64, EvtxChunkHeader)> = None;
-    // Where the next block starts, and where the records of the last chunk found end, when
-    // its events CRC32 shows that they are intact.
-    let mut block_start = 0u64;
+    // With it, where it ends at the latest: after 64 KiB, or at the first byte of it that
+    // can't be read.
+    let mut last: Option<(u64, EvtxChunkHeader, u64)> = None;
+    // How much of the source has been read, and where the records of the last chunk found
+    // end, when its events CRC32 shows that they are intact.
+    let mut read_to = 0u64;
     let mut records_end = 0u64;
     // Enough of a candidate to tell whether it is a chunk.
     let head_size = EVTX_CHUNK_HEADER_SIZE + EVTX_RECORD_MAGIC.len();
 
-    while block_start < source_len {
-        let len = (source_len - block_start).min(SCAN_BLOCK_SIZE as u64) as usize;
+    while read_to < source_len {
+        let len = (source_len - read_to).min(SCAN_BLOCK_SIZE as u64) as usize;
         // An unreadable region (a bad sector) is skipped, not the end of the scan: the chunks
         // around it are still worth carving.
-        let read = source
-            .seek(SeekFrom::Start(block_start))
-            .and_then(|_| source.read_exact(&mut block[..len]));
-        if let Err(error) = read {
-            log::warn!("carving: skipping {len} bytes at offset {block_start}: {error}");
-            if block_start + (len as u64) >= source_len {
-                break;
+        let unread = read_or_zero(source, read_to, &mut block[carried..carried + len]);
+        if let Some(Unreadable { holes, error }) = unread {
+            let bytes: u64 = holes.iter().map(|hole| hole.end - hole.start).sum();
+            found.unreadable += bytes;
+            // A source that gives nothing from its start is not one with a bad sector, and
+            // could go on failing without end: a directory is as long as a file can be.
+            if found.unreadable == read_to + len as u64 {
+                return Err(error);
             }
-            block_start += len as u64;
-            continue;
+            log::warn!("carving: skipping {bytes} bytes after offset {read_to}: {error}");
+            found.holes.extend(holes);
         }
-        let searched = &block[..len];
+        let block_start = read_to - carried as u64;
+        let searched = &block[..carried + len];
 
         for at in finder.find_iter(searched) {
             let offset = block_start + at as u64;
@@ -207,62 +241,100 @@ fn find_chunks<R: Read + Seek>(source: &mut R, source_len: u64) -> io::Result<Fo
             let available = (source_len - offset).min(EVTX_CHUNK_SIZE as u64) as usize;
             // Read the header first: most candidates are the magic by chance.
             let head = available.min(head_size);
-            if read_at(source, searched, at, offset, &mut chunk[..head]).is_err() {
-                continue;
-            }
+            let head_hole = read_at(source, searched, at, offset, &mut chunk[..head]);
             chunk[head..head_size].fill(0);
             let Some(header) = looks_like_a_chunk(&chunk) else {
                 continue;
             };
             let rest = &mut chunk[head..available];
-            if let Err(error) = read_at(source, searched, at + head, offset + head as u64, rest) {
-                log::warn!("carving: can't read the chunk at offset {offset}: {error}");
-                continue;
-            }
+            let rest_hole = read_at(source, searched, at + head, offset + head as u64, rest);
             chunk[available..].fill(0);
+            // The holes found so far are before the end of this block, and the other two are
+            // the first ones after it.
+            let after = found.holes.partition_point(|hole| hole.end <= offset);
+            let known_hole = found.holes.get(after).map(|hole| hole.start);
+            let limit = [known_hole, head_hole, rest_hole]
+                .into_iter()
+                .flatten()
+                .fold(offset + available as u64, u64::min);
             // A chunk without CRC32s (`NO_CRC32`) can't show that its records are intact.
             let records = &chunk[EVTX_CHUNK_HEADER_SIZE..header.free_space_offset as usize];
             if checksum_ieee(records) == header.events_checksum {
                 records_end = offset + u64::from(header.free_space_offset);
             }
             // The last chunk found ends where this one starts, if not before.
-            if let Some((last_offset, last_header)) = last.take() {
-                let end = offset.min(last_offset + EVTX_CHUNK_SIZE as u64);
+            if let Some((last_offset, last_header, last_limit)) = last.take() {
+                let end = offset.min(last_limit);
                 found.add(last_offset, &last_header, &mut last_chunk, end);
             }
             std::mem::swap(&mut chunk, &mut last_chunk);
-            last = Some((offset, header));
+            last = Some((offset, header, limit));
         }
 
-        // The next block overlaps this one by the magic's length less one, so a magic that
-        // straddles them is found.
-        if block_start + (len as u64) >= source_len {
-            break;
-        }
-        block_start += (len - (CHUNK_MAGIC.len() - 1)) as u64;
+        let searched_len = searched.len();
+        read_to += len as u64;
+        carried = overlap.min(searched_len);
+        block.copy_within(searched_len - carried..searched_len, 0);
     }
-    if let Some((last_offset, last_header)) = last {
-        let end = source_len.min(last_offset + EVTX_CHUNK_SIZE as u64);
-        found.add(last_offset, &last_header, &mut last_chunk, end);
+    if let Some((last_offset, last_header, last_limit)) = last {
+        found.add(last_offset, &last_header, &mut last_chunk, last_limit);
     }
     Ok(found)
 }
 
 /// Fills `buf` with the bytes of the source at `offset`: from `searched`, where they are at
-/// `at`, when it holds all of them.
+/// `at`, when it holds all of them. Otherwise it reads them, and gives where the first of them
+/// that can't be read is. The scan of the block that they are in counts and reports those.
 fn read_at<R: Read + Seek>(
     source: &mut R,
     searched: &[u8],
     at: usize,
     offset: u64,
     buf: &mut [u8],
-) -> io::Result<()> {
+) -> Option<u64> {
     if let Some(bytes) = searched.get(at..at + buf.len()) {
         buf.copy_from_slice(bytes);
-        return Ok(());
+        return None;
     }
-    source.seek(SeekFrom::Start(offset))?;
-    source.read_exact(buf)
+    let unreadable = read_or_zero(source, offset, buf)?;
+    unreadable.holes.first().map(|hole| hole.start)
+}
+
+/// What a read had to give up.
+struct Unreadable {
+    /// Where, in order. Never empty.
+    holes: Vec<Range<u64>>,
+    /// The first error.
+    error: io::Error,
+}
+
+/// Fills `buf` with the bytes of the source at `offset`. If that fails, it reads them a page
+/// at a time, leaves zeros for each page that can't be read, and says where those are.
+fn read_or_zero<R: Read + Seek>(source: &mut R, offset: u64, buf: &mut [u8]) -> Option<Unreadable> {
+    let mut read = |offset: u64, buf: &mut [u8]| {
+        source
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| source.read_exact(buf))
+    };
+    let error = read(offset, buf).err()?;
+    let mut holes: Vec<Range<u64>> = Vec::new();
+    let mut done = 0usize;
+    while done < buf.len() {
+        let at = offset + done as u64;
+        let to_page_end = UNREADABLE_STEP - at % UNREADABLE_STEP;
+        let step = (buf.len() - done).min(to_page_end as usize);
+        let page = &mut buf[done..done + step];
+        if read(at, page).is_err() {
+            page.fill(0);
+            match holes.last_mut() {
+                Some(hole) if hole.end == at => hole.end += step as u64,
+                _ => holes.push(at..at + step as u64),
+            }
+        }
+        done += step;
+    }
+    // Nothing given up: the error did not come back.
+    (!holes.is_empty()).then_some(Unreadable { holes, error })
 }
 
 /// How much of a chunk of which the source holds only the first `held` bytes to read: up to
@@ -404,6 +476,77 @@ mod tests {
         let carved = CarvedEvtx::new(source).unwrap();
         assert!(!carved.chunk_offsets().is_empty());
         assert_eq!(carved.chunk_offsets()[0], (SCAN_BLOCK_SIZE + 4096) as u64);
+        assert_eq!(carved.unreadable_bytes(), 4096);
+    }
+
+    #[test]
+    fn a_bad_sector_costs_its_page_and_not_the_chunks_near_it() {
+        let log = include_bytes!("../samples/security.evtx");
+        let expected = record_ids(&mut EvtxParser::from_buffer(log.to_vec()).unwrap());
+        let chunks = &log[EVTX_FILE_HEADER_SIZE..];
+        // A bad sector, and the log's chunks 1 MiB after it, in the same scan block.
+        let mut image = vec![0u8; 1 << 20];
+        image.extend_from_slice(chunks);
+        let source = BadSectors {
+            inner: Cursor::new(image),
+            bad: 512..1024,
+        };
+        let carved = CarvedEvtx::new(source).unwrap();
+        assert_eq!(carved.chunk_offsets().len(), 26);
+        assert_eq!(carved.unreadable_bytes(), 4096);
+        let mut parser = EvtxParser::from_read_seek(carved).unwrap();
+        assert_eq!(record_ids(&mut parser), expected);
+    }
+
+    #[test]
+    fn a_chunk_with_a_bad_sector_ends_there() {
+        let log = include_bytes!("../samples/security.evtx");
+        let chunks = &log[EVTX_FILE_HEADER_SIZE..];
+        // Records 1 to 9 are whole in the first chunk's first 8 KiB, and the page after that,
+        // where record 10 goes on, is bad: zeros there would read as its values. The second
+        // chunk starts at record 92. The chunk is in the first scan block, and then astride
+        // the first two.
+        for chunks_at in [0, SCAN_BLOCK_SIZE - 4096] {
+            let mut image = vec![0u8; chunks_at];
+            image.extend_from_slice(chunks);
+            let bad = chunks_at as u64 + 8192;
+            let source = BadSectors {
+                inner: Cursor::new(image),
+                bad: bad..bad + 8,
+            };
+            let carved = CarvedEvtx::new(source).unwrap();
+            assert_eq!(carved.chunk_offsets().len(), 26);
+            assert_eq!(carved.unreadable_bytes(), 4096);
+            let mut parser = EvtxParser::from_read_seek(carved).unwrap();
+            let ids = record_ids(&mut parser);
+            assert_eq!(ids.len(), 9 + (2261 - 91));
+            assert!(ids.range(..92).eq(&(1..=9).collect::<BTreeSet<u64>>()));
+        }
+    }
+
+    #[test]
+    fn a_magic_that_straddles_two_scan_blocks_is_found() {
+        let log = include_bytes!("../samples/security.evtx");
+        let chunk = &log[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
+        for before_block_end in 1..CHUNK_MAGIC.len() {
+            let mut image = vec![0u8; SCAN_BLOCK_SIZE - before_block_end];
+            image.extend_from_slice(chunk);
+            let carved = CarvedEvtx::new(Cursor::new(image)).unwrap();
+            let at = (SCAN_BLOCK_SIZE - before_block_end) as u64;
+            assert_eq!(carved.chunk_offsets(), [at]);
+        }
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_is_an_error() {
+        // It ends at once, where a directory would go on failing: it is as long as a file can
+        // be.
+        let source = BadSectors {
+            inner: Cursor::new(vec![0u8; 3 * SCAN_BLOCK_SIZE]),
+            bad: 0..u64::MAX,
+        };
+        let error = CarvedEvtx::new(source).err().unwrap();
+        assert_eq!(error.to_string(), "bad sector");
     }
 
     #[test]
