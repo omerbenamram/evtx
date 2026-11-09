@@ -20,7 +20,7 @@ and this project adheres to
   dropped, gives the same set of records as parsing each log. Where the source can't be read
   (a bad sector), the scan gives up that 4 KiB page and goes on: `evtx_dump` says how many
   bytes it skipped, and `CarvedEvtx::unreadable_bytes()` gives the count. A chunk with such a
-  hole ends at it. A source that can't be read from its start (a directory, a device that is
+  hole ends at it. A source of which nothing can be read (a directory, a device that is
   gone) is an error, and so is one where `evtx_dump --carve` finds no chunks.
 
 ### Breaking changes
