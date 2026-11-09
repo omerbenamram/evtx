@@ -35,6 +35,13 @@ fn spawn(f: impl FnOnce()) {
 pub(crate) const EVTX_CHUNK_SIZE: usize = 65536;
 pub(crate) const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
+/// Where chunk `chunk_number` starts in the file, if that fits a `u64`.
+fn chunk_offset(chunk_number: u64) -> Option<u64> {
+    chunk_number
+        .checked_mul(EVTX_CHUNK_SIZE as u64)?
+        .checked_add(EVTX_FILE_HEADER_SIZE as u64)
+}
+
 /// One processed chunk's payload plus its (reusable) bump arena.
 struct ChunkBatch<P> {
     payload: P,
@@ -570,9 +577,8 @@ impl<T: ReadSeek> EvtxParser<T> {
         validate_checksum: bool,
     ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
-        let chunk_offset = chunk_number
-            .checked_mul(EVTX_CHUNK_SIZE as u64)
-            .and_then(|offset| offset.checked_add(EVTX_FILE_HEADER_SIZE as u64))
+        // No file reaches an offset that doesn't fit.
+        let chunk_offset = chunk_offset(chunk_number)
             .ok_or_else(|| EvtxError::chunk(chunk_number, ChunkError::IncompleteChunk))?;
 
         trace!(
@@ -599,16 +605,15 @@ impl<T: ReadSeek> EvtxParser<T> {
             return Ok(None);
         }
 
+        let mut chunk = EvtxChunkData::new(chunk_data, validate_checksum)
+            .map_err(|e| EvtxError::chunk(chunk_number, e))?;
+        chunk.number = Some(chunk_number);
         if amount_read < EVTX_CHUNK_SIZE {
             warn!(
                 "Chunk {chunk_number} is cut off by the end of the file after {amount_read} of \
                  its {EVTX_CHUNK_SIZE} bytes; reading the records that fit"
             );
         }
-
-        let mut chunk = EvtxChunkData::new(chunk_data, validate_checksum)
-            .map_err(|e| EvtxError::chunk(chunk_number, e))?;
-        chunk.number = Some(chunk_number);
         Ok(Some(chunk))
     }
 
@@ -691,7 +696,9 @@ impl<T: ReadSeek> EvtxParser<T> {
         let mut header = [0; EVTX_CHUNK_HEADER_SIZE];
         // One more than the whole chunks, for a last chunk that the end of the file cuts off.
         for chunk_number in 0..=self.calculated_chunk_count {
-            let offset = EVTX_FILE_HEADER_SIZE as u64 + chunk_number * EVTX_CHUNK_SIZE as u64;
+            let Some(offset) = chunk_offset(chunk_number) else {
+                break;
+            };
             if self.data.seek(SeekFrom::Start(offset)).is_err()
                 || self.data.read_exact(&mut header).is_err()
             {
@@ -1173,6 +1180,25 @@ mod tests {
                 &errors[..],
                 [EvtxError::FailedToParseChunk { chunk_id: 25, source }]
                     if matches!(**source, ChunkError::InvalidFreeSpaceOffset { .. })
+            ),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn last_chunk_cut_off_between_two_records_reports_the_loss() {
+        ensure_env_logger_initialized();
+        // Record 2232 starts 25,656 bytes into the chunk.
+        let (ids, errors) = records_of_cut_off_log(EVTX_CHUNK_SIZE - 25_656, ParserSettings::new());
+        assert_eq!(ids, (1..=2231).collect::<Vec<_>>());
+        assert!(
+            matches!(
+                &errors[..],
+                [EvtxError::FailedToReadRecordAt {
+                    chunk: Some(25),
+                    offset: 25_656,
+                    ..
+                }]
             ),
             "{errors:?}"
         );
