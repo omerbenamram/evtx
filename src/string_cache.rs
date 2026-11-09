@@ -4,7 +4,7 @@ use crate::err::DeserializationResult;
 use crate::utils::ByteCursor;
 
 use ahash::AHashMap;
-use log::{debug, trace};
+use log::{trace, warn};
 
 #[derive(Debug)]
 pub(crate) struct StringCache(AHashMap<ChunkOffset, BinXmlName>);
@@ -20,7 +20,7 @@ impl StringCache {
             // from the chunk when a record uses it. So a damaged bucket ends its own chain
             // and nothing else, and the records that don't use its names are unaffected.
             if let Err(err) = Self::read_chain(data, offset, &mut cache) {
-                debug!("String table chain at offset {offset} is damaged: {err}");
+                warn!("String table chain at offset {offset} is damaged: {err}");
             }
         }
 
@@ -101,14 +101,14 @@ mod tests {
     #[test]
     fn a_damaged_chain_keeps_the_names_read_before_it_and_the_other_chains() {
         let mut data = vec![0; 128];
-        // A links past the end of the chunk, and the third bucket starts there too.
+        // A links past the end of the chunk, where the second bucket starts too.
         write_entry(&mut data, 16, 4096, "A");
         write_entry(&mut data, 48, 0, "B");
         // D's length runs past the end of the chunk.
         write_entry(&mut data, 80, 0, "D");
         data[86..88].copy_from_slice(&u16::MAX.to_le_bytes());
 
-        let cache = StringCache::populate(&data, &[16, u32::MAX, 80, 48]);
+        let cache = StringCache::populate(&data, &[16, 4096, 80, 48]);
 
         for (offset, name) in [(16, "A"), (48, "B")] {
             assert_eq!(cache.get_cached_string(offset).unwrap().as_str(), name);

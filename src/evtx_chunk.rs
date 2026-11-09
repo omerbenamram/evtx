@@ -157,7 +157,8 @@ pub struct EvtxChunk<'chunk> {
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
-    /// Will fail if the data starts with an invalid evtx chunk header.
+    /// A chunk over `data` and its already parsed `header`. It doesn't fail: a damaged string
+    /// table costs only the cache of its names, which records then read where they are.
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
@@ -173,7 +174,7 @@ impl<'chunk> EvtxChunk<'chunk> {
         )
     }
 
-    /// Will fail if the data starts with an invalid evtx chunk header.
+    /// See [`EvtxChunk::new`].
     ///
     /// The provided arena is reset before use, so any previously allocated chunk-scoped
     /// data is cleared while retaining the bump capacity.
@@ -755,9 +756,14 @@ mod tests {
         let expected = render(original);
         assert_eq!(expected.len(), 91);
 
-        // Every bucket of the string table points past the end of the chunk, or at bytes that
-        // aren't a name. The records name their strings by offset, so they still resolve.
-        for bad_offset in [u32::MAX, EVTX_CHUNK_SIZE as u32 - 3] {
+        // Every bucket of the string table points past the end of the chunk, at a name cut off
+        // by it, or at the first record instead of a name. The records name their strings by
+        // offset, so they still resolve.
+        for bad_offset in [
+            u32::MAX,
+            EVTX_CHUNK_SIZE as u32 - 3,
+            EVTX_CHUNK_HEADER_SIZE as u32,
+        ] {
             let mut data = original.to_vec();
             let mut buckets = 0;
             for bucket in data[128..384].as_chunks_mut::<4>().0 {
