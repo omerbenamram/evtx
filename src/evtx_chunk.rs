@@ -359,7 +359,7 @@ impl<'a> Iterator for IterRawRecords<'a> {
                     // Zeroes where a record should start are where the free space really
                     // starts when the header's `free_space_offset` is too large (issue
                     // #197), unless live records follow them.
-                    if next.is_some() || !is_blank(&err) {
+                    if next.is_some() || !self.is_blank(&err) {
                         return Some(Err(EvtxError::FailedToReadRecordAt {
                             chunk: self.chunk.number,
                             offset,
@@ -372,19 +372,23 @@ impl<'a> Iterator for IterRawRecords<'a> {
     }
 }
 
-/// A zeroed or truncated record header.
-fn is_blank(err: &EvtxError) -> bool {
-    matches!(
-        err,
-        EvtxError::DeserializationError(
-            DeserializationError::InvalidEvtxRecordHeaderMagic {
-                magic: [0, 0, 0, 0]
-            } | DeserializationError::Truncated { .. }
-        )
-    )
-}
-
 impl<'a> IterRawRecords<'a> {
+    /// A zeroed record header, or one that the end of a whole chunk leaves no room for. In a
+    /// chunk that the end of its file cut off, a header without room is a record lost.
+    fn is_blank(&self, err: &EvtxError) -> bool {
+        match err {
+            EvtxError::DeserializationError(
+                DeserializationError::InvalidEvtxRecordHeaderMagic {
+                    magic: [0, 0, 0, 0],
+                },
+            ) => true,
+            EvtxError::DeserializationError(DeserializationError::Truncated { .. }) => {
+                self.chunk.data.len() >= crate::evtx_parser::EVTX_CHUNK_SIZE
+            }
+            _ => false,
+        }
+    }
+
     /// End of the live area: the free space, or the chunk's end when it says more.
     fn live_end(&self) -> u64 {
         u64::from(self.chunk.header.free_space_offset).min(self.chunk.data.len() as u64)
