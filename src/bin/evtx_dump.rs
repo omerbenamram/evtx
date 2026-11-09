@@ -25,12 +25,12 @@ mod extract_wevt_templates;
 mod info;
 
 fn load_wevt_cache_from_wevtcache_file(
-    path: &str,
+    path: &Path,
 ) -> Result<std::sync::Arc<evtx::wevt_templates::WevtCache>> {
     use evtx::wevt_templates::wevtcache::{EntryKind, WevtCacheReader};
 
     let mut cache = evtx::wevt_templates::WevtCache::new();
-    let mut reader = WevtCacheReader::open(Path::new(path))?;
+    let mut reader = WevtCacheReader::open(path)?;
     while let Some((kind, bytes)) = reader.next_entry()? {
         match kind {
             EntryKind::Crim => {
@@ -66,13 +66,6 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
-/// The file that `-f` names.
-struct OutputFile {
-    path: PathBuf,
-    /// Ask before overwriting a file that exists.
-    confirm_overwrite: bool,
-}
-
 struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
@@ -80,7 +73,8 @@ struct EvtxDump {
     output_format: EvtxOutputFormat,
     /// Where the records go: stdout, until `open_output` has created the `-f` file.
     output: Box<dyn Write>,
-    output_file: Option<OutputFile>,
+    /// The `-f` file, until it has been created.
+    output_file: Option<PathBuf>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
     /// When set, only the records whose event record IDs are in these ranges are output.
@@ -147,22 +141,30 @@ impl EvtxDump {
             .get_one::<AnsiCodec>("ansi-codec")
             .expect("has default");
 
-        // The file is created once the input has been opened (see `open_output`).
+        let wevt_cache_path = matches.get_one::<String>("wevt-cache").map(Path::new);
+        let mta_path = matches.get_one::<PathBuf>("mta").map(PathBuf::as_path);
+
+        // What can be checked about the output file is checked (and asked) now, before any
+        // long work. The file itself is created once the input has been opened (see
+        // `open_output`).
         let output_file = matches
             .get_one::<String>("output-target")
-            .map(|path| OutputFile {
-                path: PathBuf::from(path),
-                confirm_overwrite: !matches.get_flag("no-confirm-overwrite"),
-            });
+            .map(PathBuf::from);
+        if let Some(output_file) = &output_file {
+            let read = (!Self::is_stdin_input(&input)).then_some(input.as_path());
+            Self::check_output_file(
+                output_file,
+                !matches.get_flag("no-confirm-overwrite"),
+                read.into_iter().chain(wevt_cache_path).chain(mta_path),
+            )?;
+        }
         let output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout()));
 
-        let wevt_cache = matches
-            .get_one::<String>("wevt-cache")
-            .map(|p| load_wevt_cache_from_wevtcache_file(p))
+        let wevt_cache = wevt_cache_path
+            .map(load_wevt_cache_from_wevtcache_file)
             .transpose()?;
 
-        let mta = matches
-            .get_one::<PathBuf>("mta")
+        let mta = mta_path
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
 
@@ -229,24 +231,10 @@ impl EvtxDump {
     /// `.MTA` file have been opened, so that a run that can't start leaves an existing file as
     /// it was: creating it empties it.
     fn open_output(&mut self) -> Result<()> {
-        let Some(OutputFile {
-            path,
-            confirm_overwrite,
-        }) = self.output_file.take()
-        else {
+        let Some(path) = self.output_file.take() else {
             return Ok(());
         };
-        // Emptying the input would leave nothing to read, and destroy the log.
-        if !Self::is_stdin_input(&self.input)
-            && let (Ok(input), Ok(output)) = (self.input.canonicalize(), path.canonicalize())
-            && input == output
-        {
-            bail!(
-                "The output file {} is the input file, refusing to overwrite it",
-                path.display()
-            );
-        }
-        let file = Self::create_output_file(&path, confirm_overwrite).with_context(|| {
+        let file = Self::create_output_file(&path).with_context(|| {
             format!(
                 "An error occurred while creating output file at `{}`",
                 path.display()
@@ -322,49 +310,61 @@ impl EvtxDump {
             || path == Path::new("/proc/self/fd/0")
     }
 
-    /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
-    fn create_output_file(path: impl AsRef<Path>, prompt: bool) -> Result<File> {
-        let p = path.as_ref();
-
+    /// Refuse an output file that this run can't or mustn't write, without touching it.
+    /// `inputs` are the files the run reads. If `prompt` is passed, will display a
+    /// confirmation prompt before overwriting a file.
+    fn check_output_file<'a>(
+        p: &Path,
+        prompt: bool,
+        inputs: impl Iterator<Item = &'a Path>,
+    ) -> Result<()> {
         if p.is_dir() {
             bail!(
                 "There is a directory at {}, refusing to overwrite",
                 p.display()
             );
         }
-
-        if p.exists() {
-            if prompt {
-                match Confirm::new()
-                    .with_prompt(format!(
-                        "Are you sure you want to override output file at {}",
-                        p.display()
-                    ))
-                    .default(false)
-                    .interact()
-                {
-                    Ok(true) => Ok(File::create(p)?),
-                    Ok(false) => bail!("Cancelled"),
-                    Err(_e) => bail!("Failed to display confirmation prompt"),
-                }
-            } else {
-                Ok(File::create(p)?)
-            }
-        } else {
-            // Ok to assume p is not an existing directory
-            match p.parent() {
-                Some(parent) =>
-                // Parent exist
-                {
-                    if !parent.exists() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    Ok(File::create(p)?)
-                }
-                None => bail!("Output file cannot be root."),
+        if p.parent().is_none() {
+            bail!("Output file cannot be root.");
+        }
+        if !p.exists() {
+            return Ok(());
+        }
+        // Creating the output empties it, under any of its names (a link, another spelling).
+        for input in inputs {
+            if same_file::is_same_file(input, p).unwrap_or(false) {
+                bail!(
+                    "The output file {} is the input file {}, refusing to overwrite it",
+                    p.display(),
+                    input.display()
+                );
             }
         }
+        if prompt {
+            match Confirm::new()
+                .with_prompt(format!(
+                    "Are you sure you want to override output file at {}",
+                    p.display()
+                ))
+                .default(false)
+                .interact()
+            {
+                Ok(true) => {}
+                Ok(false) => bail!("Cancelled"),
+                Err(_e) => bail!("Failed to display confirmation prompt"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Create (or empty) an output file that `check_output_file` has accepted.
+    fn create_output_file(p: &Path) -> Result<File> {
+        if let Some(parent) = p.parent()
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(File::create(p)?)
     }
 
     /// Write one rendered chunk: a single `write_all` on the common path, or a

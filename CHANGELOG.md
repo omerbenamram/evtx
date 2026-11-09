@@ -38,8 +38,9 @@ and this project adheres to
   isn't an EVTX file, or a `--wevt-cache` or `--mta` file that failed to load, left a
   zero-byte file where the last export had been. It is now created once all of them have
   been read.
-- `evtx_dump -f` refuses an output file that is the input file, which emptied the log before
-  reading it.
+- `evtx_dump -f` refuses an output file that is the input file, the `--wevt-cache` file or the
+  `--mta` file, under any name (another spelling of the path, a symlink, a hard link). It
+  used to empty the log before reading it.
 - A `WEVT_TEMPLATE` manifest whose MAPS table points a map past the table's
   declared end no longer panics with an out-of-range slice (found by fuzzing).
 

@@ -338,18 +338,40 @@ fn a_run_that_cannot_start_leaves_the_output_file_as_it_was() {
 }
 
 #[test]
-fn the_input_file_is_refused_as_the_output_file() {
+fn a_file_the_run_reads_is_refused_as_the_output_file() {
     let _guard = CLI_TEST_LOCK.lock().unwrap();
     let d = tempdir().unwrap();
     let log = d.as_ref().join("log.evtx");
     std::fs::copy(regular_sample(), &log).unwrap();
     let original = std::fs::read(&log).unwrap();
+    let log_arg = log.to_str().unwrap();
 
-    // Named another way, too.
+    // The input under its own name, another spelling of it, and a hard link to it.
     let other_spelling = d.as_ref().join(".").join("log.evtx");
-    for output in [&log, &other_spelling] {
-        let stderr = failing_dump_to(output, &[log.to_str().unwrap()]);
+    let link = d.as_ref().join("link.evtx");
+    std::fs::hard_link(&log, &link).unwrap();
+    for output in [&log, &other_spelling, &link] {
+        let stderr = failing_dump_to(output, &[log_arg]);
         assert!(stderr.contains("is the input file"), "{stderr}");
         assert!(std::fs::read(&log).unwrap() == original);
     }
+
+    // The side files are refused before they are read, so they needn't be valid.
+    let side = d.as_ref().join("side-file");
+    for flag in ["--wevt-cache", "--mta"] {
+        std::fs::write(&side, b"precious").unwrap();
+        let stderr = failing_dump_to(&side, &[flag, side.to_str().unwrap(), log_arg]);
+        assert!(stderr.contains("is the input file"), "{stderr}");
+        assert_eq!(std::fs::read(&side).unwrap(), b"precious");
+    }
+}
+
+#[test]
+fn a_bad_output_path_fails_before_the_input_is_read() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
+    let d = tempdir().unwrap();
+    // The input doesn't exist, and the complaint is about the output.
+    let missing = d.as_ref().join("missing.evtx");
+    let stderr = failing_dump_to(d.as_ref(), &[missing.to_str().unwrap()]);
+    assert!(stderr.contains("There is a directory at"), "{stderr}");
 }
