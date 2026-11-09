@@ -158,7 +158,6 @@ impl EvtxDump {
                 read.into_iter().chain(wevt_cache_path).chain(mta_path),
             )?;
         }
-        let output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout()));
 
         let wevt_cache = wevt_cache_path
             .map(load_wevt_cache_from_wevtcache_file)
@@ -183,7 +182,7 @@ impl EvtxDump {
             input,
             show_record_number: !no_show_record_number,
             output_format,
-            output,
+            output: Box::new(BufWriter::new(io::stdout())),
             output_file,
             verbosity_level,
             stop_after_error,
@@ -334,7 +333,7 @@ impl EvtxDump {
         for input in inputs {
             if same_file::is_same_file(input, p).unwrap_or(false) {
                 bail!(
-                    "The output file {} is the input file {}, refusing to overwrite it",
+                    "The output file {} is {}, which this run reads: refusing to overwrite it",
                     p.display(),
                     input.display()
                 );

@@ -352,7 +352,7 @@ fn a_file_the_run_reads_is_refused_as_the_output_file() {
     std::fs::hard_link(&log, &link).unwrap();
     for output in [&log, &other_spelling, &link] {
         let stderr = failing_dump_to(output, &[log_arg]);
-        assert!(stderr.contains("is the input file"), "{stderr}");
+        assert!(stderr.contains("which this run reads"), "{stderr}");
         assert!(std::fs::read(&log).unwrap() == original);
     }
 
@@ -361,7 +361,7 @@ fn a_file_the_run_reads_is_refused_as_the_output_file() {
     for flag in ["--wevt-cache", "--mta"] {
         std::fs::write(&side, b"precious").unwrap();
         let stderr = failing_dump_to(&side, &[flag, side.to_str().unwrap(), log_arg]);
-        assert!(stderr.contains("is the input file"), "{stderr}");
+        assert!(stderr.contains("which this run reads"), "{stderr}");
         assert_eq!(std::fs::read(&side).unwrap(), b"precious");
     }
 }
