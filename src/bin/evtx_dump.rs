@@ -66,12 +66,21 @@ pub enum EvtxOutputFormat {
     XML,
 }
 
+/// The file that `-f` names.
+struct OutputFile {
+    path: PathBuf,
+    /// Ask before overwriting a file that exists.
+    confirm_overwrite: bool,
+}
+
 struct EvtxDump {
     parser_settings: ParserSettings,
     input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
+    /// Where the records go: stdout, until `open_output` has created the `-f` file.
     output: Box<dyn Write>,
+    output_file: Option<OutputFile>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
     /// When set, only the records whose event record IDs are in these ranges are output.
@@ -138,17 +147,14 @@ impl EvtxDump {
             .get_one::<AnsiCodec>("ansi-codec")
             .expect("has default");
 
-        let output: Box<dyn Write> = if let Some(path) = matches.get_one::<String>("output-target")
-        {
-            Box::new(BufWriter::new(
-                Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite"))
-                    .with_context(|| {
-                        format!("An error occurred while creating output file at `{}`", path)
-                    })?,
-            ))
-        } else {
-            Box::new(BufWriter::new(io::stdout()))
-        };
+        // The file is created once the input has been opened (see `open_output`).
+        let output_file = matches
+            .get_one::<String>("output-target")
+            .map(|path| OutputFile {
+                path: PathBuf::from(path),
+                confirm_overwrite: !matches.get_flag("no-confirm-overwrite"),
+            });
+        let output: Box<dyn Write> = Box::new(BufWriter::new(io::stdout()));
 
         let wevt_cache = matches
             .get_one::<String>("wevt-cache")
@@ -176,6 +182,7 @@ impl EvtxDump {
             show_record_number: !no_show_record_number,
             output_format,
             output,
+            output_file,
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
@@ -218,7 +225,39 @@ impl EvtxDump {
         self.dump(parser)
     }
 
+    /// Create the `-f` output file. This comes after the input, the template cache and the
+    /// `.MTA` file have been opened, so that a run that can't start leaves an existing file as
+    /// it was: creating it empties it.
+    fn open_output(&mut self) -> Result<()> {
+        let Some(OutputFile {
+            path,
+            confirm_overwrite,
+        }) = self.output_file.take()
+        else {
+            return Ok(());
+        };
+        // Emptying the input would leave nothing to read, and destroy the log.
+        if !Self::is_stdin_input(&self.input)
+            && let (Ok(input), Ok(output)) = (self.input.canonicalize(), path.canonicalize())
+            && input == output
+        {
+            bail!(
+                "The output file {} is the input file, refusing to overwrite it",
+                path.display()
+            );
+        }
+        let file = Self::create_output_file(&path, confirm_overwrite).with_context(|| {
+            format!(
+                "An error occurred while creating output file at `{}`",
+                path.display()
+            )
+        })?;
+        self.output = Box::new(BufWriter::new(file));
+        Ok(())
+    }
+
     fn dump<T: Read + Seek>(&mut self, parser: EvtxParser<T>) -> Result<()> {
+        self.open_output()?;
         let mut parser = parser.with_configuration(self.parser_settings.clone());
         let header = parser.header();
         // With logging on, the parser's own warning says this.

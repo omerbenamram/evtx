@@ -301,3 +301,55 @@ fn it_carves_chunks_from_raw_data() {
         .unwrap();
     assert_eq!(carved.stdout, intact.stdout);
 }
+
+/// Runs `evtx_dump -f <output> --no-confirm-overwrite <args>`, which must fail, and returns
+/// what it printed to stderr.
+fn failing_dump_to(output: &std::path::Path, args: &[&str]) -> String {
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("evtx_dump"));
+    cmd.args(["-f", output.to_str().unwrap(), "--no-confirm-overwrite"]);
+    cmd.args(args);
+    let assert = cmd.assert().failure();
+    String::from_utf8_lossy(&assert.get_output().stderr).into_owned()
+}
+
+#[test]
+fn a_run_that_cannot_start_leaves_the_output_file_as_it_was() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
+    let d = tempdir().unwrap();
+    let output = d.as_ref().join("kept.xml");
+    let missing = d.as_ref().join("missing");
+    let missing = missing.to_str().unwrap();
+    let not_a_log = d.as_ref().join("not-a-log.evtx");
+    std::fs::write(&not_a_log, b"not an EVTX file").unwrap();
+    let sample = regular_sample();
+    let sample = sample.to_str().unwrap();
+
+    for args in [
+        // No input, an input that isn't a log, and side files that can't be loaded.
+        &[missing][..],
+        &[not_a_log.to_str().unwrap()],
+        &["--wevt-cache", missing, sample],
+        &["--mta", missing, sample],
+    ] {
+        std::fs::write(&output, b"precious").unwrap();
+        failing_dump_to(&output, args);
+        assert_eq!(std::fs::read(&output).unwrap(), b"precious", "{args:?}");
+    }
+}
+
+#[test]
+fn the_input_file_is_refused_as_the_output_file() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
+    let d = tempdir().unwrap();
+    let log = d.as_ref().join("log.evtx");
+    std::fs::copy(regular_sample(), &log).unwrap();
+    let original = std::fs::read(&log).unwrap();
+
+    // Named another way, too.
+    let other_spelling = d.as_ref().join(".").join("log.evtx");
+    for output in [&log, &other_spelling] {
+        let stderr = failing_dump_to(output, &[log.to_str().unwrap()]);
+        assert!(stderr.contains("is the input file"), "{stderr}");
+        assert!(std::fs::read(&log).unwrap() == original);
+    }
+}

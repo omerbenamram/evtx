@@ -33,6 +33,13 @@ and this project adheres to
 
 ### Fixed
 
+- `evtx_dump -f <file>` no longer empties an existing output file when the run can't start.
+  The file was created before the input was opened, so a mistyped input path, an input that
+  isn't an EVTX file, or a `--wevt-cache` or `--mta` file that failed to load, left a
+  zero-byte file where the last export had been. It is now created once all of them have
+  been read.
+- `evtx_dump -f` refuses an output file that is the input file, which emptied the log before
+  reading it.
 - A `WEVT_TEMPLATE` manifest whose MAPS table points a map past the table's
   declared end no longer panics with an out-of-range slice (found by fuzzing).
 
