@@ -337,7 +337,8 @@ fn a_data_named_as_the_attributes_key_keeps_the_attributes() {
 #[test]
 fn separate_attributes_keys_never_repeat() {
     for in_template in [true, false] {
-        // The second `A` can be neither `A_1`, an element, nor own `A_1_attributes`.
+        // The second `A` is `A_1`, so the element `A_1` is `A_1_1`, and the element
+        // `A_1_attributes`, which is the key of the second `A`'s attributes, takes a number.
         let evtx = event(in_template, |root, in_template| {
             root.open("EventData", in_template).close_start();
             for name in ["A", "A", "A_1", "A_1_attributes"] {
@@ -377,4 +378,78 @@ fn separate_attributes_keys_never_repeat() {
             ]
         );
     }
+}
+
+/// The record's JSON from the records API and the chunk renderer, which agree, and with
+/// attributes apart, which no template is compiled for.
+fn json_and_separate(evtx: &[u8]) -> [String; 2] {
+    let [_, json, _, chunk_json] = render_everywhere(evtx).map(Result::unwrap);
+    assert_eq!(chunk_json.trim_end(), json);
+    let settings = evtx::ParserSettings::new()
+        .num_threads(1)
+        .separate_json_attributes(true);
+    let mut parser = evtx::EvtxParser::from_buffer(evtx.to_vec())
+        .unwrap()
+        .with_configuration(settings);
+    [json, parser.records_json().next().unwrap().unwrap().data]
+}
+
+#[test]
+fn data_names_that_render_alike_get_keys_of_their_own() {
+    // An unpaired surrogate renders as U+FFFD, whichever it is.
+    for in_template in [true, false] {
+        let evtx = event_data(in_template, |parent, in_template| {
+            for surrogate in [0xd800u16, 0xd801] {
+                parent
+                    .open_with_attributes("Data", in_template)
+                    .attribute("Name")
+                    .raw(&[0x05, 0x01, 1, 0])
+                    .raw(&surrogate.to_le_bytes())
+                    .close_start()
+                    .text("v")
+                    .end_element();
+            }
+        });
+        for json in json_and_separate(&evtx) {
+            assert_eq!(
+                json,
+                "{\"Event\":{\"EventData\":{\"\u{fffd}\":\"v\",\"\u{fffd}_1\":\"v\"}}}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_key_is_not_numbered_after_a_member_that_was_left_out() {
+    // `<A>` depends on a value that is NULL, so the `Data` named `A` is the only `A`.
+    let evtx = synthetic_evtx(|record| {
+        record.fragment_header().template_instance(
+            |root| {
+                root.open("Event", true).close_start();
+                root.open("EventData", true).close_start();
+                root.open_depending("A", 0)
+                    .close_start()
+                    .optional_substitution(0, 0x01)
+                    .end_element();
+                named_data(root, true, "A", "v");
+                root.end_element().end_element();
+            },
+            vec![value(0x00, |_| {})],
+        );
+        record.eof();
+    });
+    for json in json_and_separate(&evtx) {
+        assert_eq!(json, r#"{"Event":{"EventData":{"A":"v"}}}"#);
+    }
+}
+
+#[test]
+fn a_name_takes_its_next_number_that_is_free() {
+    let members = event_data_members(&event_data(true, |parent, in_template| {
+        for name in ["A", "A_1", "A", "A_1"] {
+            el(parent, in_template, name, "v");
+        }
+    }));
+    let keys: Vec<_> = members.keys().collect();
+    assert_eq!(keys, ["A", "A_1", "A_2", "A_1_1"]);
 }
