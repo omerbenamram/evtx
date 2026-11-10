@@ -415,6 +415,10 @@ impl ParserSettings {
     /// log saved with display information) to every record as a `RenderingInfo` element. See
     /// [`crate::mta`].
     ///
+    /// It must be the file saved with the log. An event's message is found by its record's
+    /// position and `EventRecordID`, so a record that is not an event of that log (another
+    /// log's, a carved one, one recovered from slack) can get another event's message.
+    ///
     /// This slows rendering down, most of all through the record API ([`EvtxParser::records`]
     /// and the like), which then builds each record's tree to add the element.
     pub fn mta(mut self, mta: Option<Arc<MtaFile>>) -> Self {

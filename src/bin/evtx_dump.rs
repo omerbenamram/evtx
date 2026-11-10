@@ -167,13 +167,22 @@ impl EvtxDump {
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
 
+        let carve = matches.get_flag("carve");
+        let recover_records = matches.get_flag("recover-records");
+        if mta.is_some() && (carve || recover_records) {
+            eprintln!(
+                "warning: a carved or recovered record may get another event's message unless \
+                 the .MTA file is this log's own (see --help)"
+            );
+        }
+
         let parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
             .ansi_codec(ansi_codec)
-            .recover_records(matches.get_flag("recover-records"))
+            .recover_records(recover_records)
             .wevt_cache(wevt_cache)
             .mta(mta);
 
@@ -187,7 +196,7 @@ impl EvtxDump {
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
-            carve: matches.get_flag("carve"),
+            carve,
         })
     }
 
@@ -657,7 +666,7 @@ fn run_cli() -> Result<()> {
                 .long("mta")
                 .value_name("MTA")
                 .value_parser(clap::value_parser!(PathBuf))
-                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element."),
+                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element. It must be the file saved with this log: an event's message is found by the record's position and EventRecordID, which a record of another log (or one found by --carve or --recover-records) can have too."),
         )
         .arg(
             Arg::new("stop-after-one-error")

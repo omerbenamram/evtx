@@ -49,6 +49,11 @@ and this project adheres to
 
 ### Fixed
 
+- `evtx_dump` warns when `--mta` is given with `--carve` or `--recover-records`. An `.MTA`
+  file finds an event's message by its record's position and `EventRecordID`, so a carved or
+  recovered record that is not an event of the file's log can get another event's message.
+  The `--mta` help, `ParserSettings::mta` and `docs/mta.md` now say that the file must be the
+  log's own.
 - `.MTA`: a crafted file of 200 KB could take 2 GB to refuse or to load. A page chain that
   came back to a page, or slots that all named one record, had the same bytes read and
   decoded again and again; and a publisher's table kept a copy of its string for every
