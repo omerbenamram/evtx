@@ -4087,20 +4087,19 @@ fn json_bare_type(ty: u8) -> bool {
     matches!(ty, value_ty::INT8..=value_ty::UINT64 | value_ty::BOOL)
 }
 
+/// Whether `value` renders as a bare JSON number or bool: one of those types, or an array of
+/// one of them with a single item. An array of more is an element for each item (see
+/// `array_expand`), each with a bare value, so one of one item is the same.
 fn json_bare_value(value: &BinXmlValue<'_>) -> bool {
     use BinXmlValue::*;
-    matches!(
-        value,
-        Int8Type(_)
-            | UInt8Type(_)
-            | Int16Type(_)
-            | UInt16Type(_)
-            | Int32Type(_)
-            | UInt32Type(_)
-            | Int64Type(_)
-            | UInt64Type(_)
-            | BoolType(_)
-    )
+    match value {
+        Int8Type(_) | UInt8Type(_) | Int16Type(_) | UInt16Type(_) | Int32Type(_)
+        | UInt32Type(_) | Int64Type(_) | UInt64Type(_) | BoolType(_) => true,
+        Int8ArrayType(_) | UInt8ArrayType(_) | Int16ArrayType(_) | UInt16ArrayType(_)
+        | Int32ArrayType(_) | UInt32ArrayType(_) | Int64ArrayType(_) | UInt64ArrayType(_)
+        | BoolArrayType(_) => value.expandable_array_len() == Some(1),
+        _ => false,
+    }
 }
 
 fn exec_json<'a, V: ValueSource<'a>>(

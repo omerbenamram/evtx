@@ -44,6 +44,9 @@ and this project adheres to
 
 ### Fixed
 
+- JSON: an array value with one item, of an integer or Bool type, is a number or a bool, as
+  each item of a longer array is. It was a string (`"5"`), so a field's JSON type depended on
+  how many items its array had.
 - JSON: in an `EventData` or `UserData` where a `Data` has a name, each `Data` is written
   under its name with its text for a value, and a `Data` that didn't fit that was dropped: one
   with text and no name (or an empty one), and the attributes of one with more than `Name`.
