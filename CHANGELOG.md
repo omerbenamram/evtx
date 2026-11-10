@@ -47,6 +47,10 @@ and this project adheres to
 
 ### Fixed
 
+- `.MTA`: a crafted file of 200 KB could take 2 GB to refuse. Its page chain came back to a
+  page, or its slots all named one record, and every visit read the record and decoded its
+  text again. A page that comes up twice now ends the read (`PageLoop`), and records that
+  together are longer than their section are refused (`Corrupt`).
 - JSON: a record whose template puts a BinXML value with an element in it in an attribute
   fails, as it does in XML (`element node inside attribute value`). JSON output wrote the
   element as `null` and dropped the value.

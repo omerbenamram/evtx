@@ -47,7 +47,7 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use ahash::AHashMap as HashMap;
+use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 use bumpalo::Bump;
 use thiserror::Error;
 
@@ -449,8 +449,15 @@ impl<'b> Section<'b> {
         }
         let at = |offset: usize| self.base.saturating_add(offset as u64);
         let mut page = 0;
+        let mut pages = HashSet::new();
+        // Records don't share bytes, so together they are no longer than the section. Without
+        // this, slots that all name one record have it read (and its text decoded) once each.
+        let mut unread = data.len();
         // Every page has its own header, so a longer chain revisits a page.
         for _ in 0..=data.len() / PAGE_HEADER_SIZE {
+            if !pages.insert(page) {
+                break;
+            }
             let header = page_header(data, page).ok_or(corrupt("page", at(page)))?;
             // An empty page has 0 here, and no records.
             if read_u32_le(header, 0) != Some(0) {
@@ -462,6 +469,9 @@ impl<'b> Section<'b> {
                     let offset = usize::try_from(offset).unwrap_or(usize::MAX);
                     let (index, payload) =
                         record(data, offset).ok_or(corrupt("record", at(offset)))?;
+                    unread = unread
+                        .checked_sub(RECORD_HEADER_SIZE + payload.len())
+                        .ok_or(corrupt("record", at(offset)))?;
                     f(index, payload, at(offset))?;
                 }
             }
@@ -1219,6 +1229,18 @@ mod tests {
         assert!(matches!(
             MtaFile::from_bytes(&file(&looping)),
             Err(MtaError::PageLoop { section: "EVT" })
+        ));
+
+        // Slots that all name one record: its bytes would be read once for each.
+        let mut shared = sections();
+        let msg = &mut shared[1].1;
+        let first: [u8; 8] = msg[PAGE_RECORDS..][..8].try_into().unwrap();
+        for slot in 0..(PAGE_HEADER_SIZE - PAGE_RECORDS) / 8 {
+            msg[PAGE_RECORDS + slot * 8..][..8].copy_from_slice(&first);
+        }
+        assert!(matches!(
+            MtaFile::from_bytes(&file(&shared)),
+            Err(MtaError::Corrupt { what: "record", .. })
         ));
 
         let mut outside = sections();
