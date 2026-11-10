@@ -519,7 +519,7 @@ pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) 
                 other_elements = true;
                 continue;
             }
-            [name] if name.name.as_str() == "Name" => &name.value[..],
+            [attr] if attr.name.as_str() == "Name" => &attr.value[..],
             _ => return true,
         };
         named = true;
@@ -4415,7 +4415,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let name = data_name(data).filter(|name| self.has_text_content_plain(name));
         match name {
             Some(name) if !Self::has_attributes_beside_name(data) => NamedData::Named(name),
-            None if !Self::has_attribute_text(data, |_| true)
+            None if !self.attr_flags_plain(&data.attrs).1
                 && Self::content_layout_plain(data) == (false, false) =>
             {
                 NamedData::Nothing
@@ -4424,16 +4424,13 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
     }
 
-    /// Whether a `Data` has an attribute to write that isn't its `Name`.
+    /// Whether a `Data` has an attribute to write that isn't its `Name`. (`data_run` asks
+    /// this of each `Data` of a run, so it doesn't charge the scan as `has_text_content_plain`
+    /// does: the walk charges each of those elements when it writes it.)
     fn has_attributes_beside_name(data: &Element<'_>) -> bool {
-        data.attrs.len() > 1 && Self::has_attribute_text(data, |name| name != "Name")
-    }
-
-    /// Whether one of the attributes of `data` that `which` picks by name has text.
-    fn has_attribute_text(data: &Element<'_>, which: impl Fn(&str) -> bool) -> bool {
         data.attrs
             .iter()
-            .any(|a| which(a.name.as_str()) && a.value.iter().any(Self::node_is_content_plain))
+            .any(|a| a.name.as_str() != "Name" && a.value.iter().any(Self::node_is_content_plain))
     }
 
     /// How many `Data` elements in a row, one named `name` and those of `following` right after
@@ -4966,29 +4963,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
 
         if body.in_data_container && is_data_element_name(child.name.as_str()) {
-            let named = match body.should_flatten_named_data {
-                true => Some(self.named_data_plain(child)),
-                false => None,
-            };
-            if let Some(NamedData::Nothing) = named {
-                return Ok(MemberPlain::None);
-            }
-            if let Some(NamedData::Named(name)) = named {
-                if body.wrote_any {
-                    self.lits.push(b',');
-                }
-                body.wrote_any = true;
-                let (run, keys) = if self.data_names {
-                    let run = self.data_run(name, following);
-                    body.skip = run - 1;
-                    (run, Some(&mut body.keys))
-                } else {
-                    (1, None)
-                };
-                self.data_key_plain(name, keys)?;
-                return Ok(MemberPlain::Data { run });
-            }
-            if named.is_none() {
+            if !body.should_flatten_named_data {
                 if body.positional_data_emitted || body.positional_data_count == 0 {
                     return Ok(MemberPlain::None);
                 }
@@ -5000,7 +4975,26 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
                 return Ok(MemberPlain::PositionalData(body.positional_data_count));
             }
-            // `NamedData::Element`: a member as any other element is.
+            match self.named_data_plain(child) {
+                NamedData::Nothing => return Ok(MemberPlain::None),
+                NamedData::Named(name) => {
+                    if body.wrote_any {
+                        self.lits.push(b',');
+                    }
+                    body.wrote_any = true;
+                    let (run, keys) = if self.data_names {
+                        let run = self.data_run(name, following);
+                        body.skip = run - 1;
+                        (run, Some(&mut body.keys))
+                    } else {
+                        (1, None)
+                    };
+                    self.data_key_plain(name, keys)?;
+                    return Ok(MemberPlain::Data { run });
+                }
+                // A member as any other element is.
+                NamedData::Element => {}
+            }
         }
 
         // Normal child member with `_N` suffixing.
