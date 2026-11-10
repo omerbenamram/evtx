@@ -1,0 +1,69 @@
+---
+title: Feeding a SIEM or pipeline
+description: Settings for ingesting event logs and MFTs at scale, and the JSON shapes to expect.
+---
+
+The short version for event logs:
+
+```bash tab="CLI"
+evtx_dump -o jsonl --separate-json-attributes Security.evtx
+```
+
+```python tab="Python"
+PyEvtxParser(f, indent=False, separate_json_attributes=True, skip_errors=True)
+```
+
+```rust tab="Rust"
+ParserSettings::new().indent(false).separate_json_attributes(true)
+```
+
+Here is why each of those matters.
+
+## Fields that change type
+
+An XML element with attributes becomes an object. Most events have a plain `EventID`, but classic events add a `Qualifiers` attribute:
+
+```json
+"EventID": 12
+"EventID": {"#attributes": {"Qualifiers": 32768}, "#text": 6009}
+```
+
+Elasticsearch, OpenSearch and anything else with a schema rejects the second one after it has seen the first. `--separate-json-attributes` keeps the value where it was and moves the attributes next to it:
+
+```json
+"EventID": 6009, "EventID_attributes": {"Qualifiers": 32768}
+```
+
+**Turn it on for any store with typed fields.** Leave it off if your queries already use `#attributes` (it's the default, so existing pipelines don't change).
+
+## What `EventData` looks like
+
+| Event kind | Shape | Example |
+| --- | --- | --- |
+| Manifest events (most modern ones) | named fields | `"EventData": {"TargetUserName": "bob", "LogonType": 3}` |
+| Classic events (`Application`, many `System`) | unnamed values in a list | `"EventData": {"Data": {"#text": ["10.00.", "15063", ""]}}` |
+| Some providers | `UserData` instead of `EventData` | `"UserData": {"LogFileCleared": {...}}` |
+
+Detection rules (Sigma and the like) match the named fields. For classic events, match by `Provider`, `EventID` and the position in `Data`.
+
+## Errors
+
+- **CLI:** a bad record is printed to stderr and the run goes on. `--stop-after-one-error` stops instead.
+- **Python:** a bad record raises unless `skip_errors=True`, which turns it into a `RuntimeWarning`.
+- **Rust:** each item is a `Result`; skip the `Err`s you don't care about.
+
+Dirty logs (copied from a live system) are normal and parse fine. Don't pass `--validate-checksums` unless you want to drop chunks that were mid-write.
+
+## Speed
+
+Each file is parsed on every core by default. For many files, run one process per file and let each use a few threads (`-t 4`, `number_of_threads=4`). Keep the record order you get: it is the file's order, even with threads.
+
+Leave [message text](/docs/guides/event-messages) off for bulk ingestion: it makes parsing several times slower and rules don't need it.
+
+## Timestamps
+
+`System.TimeCreated.#attributes.SystemTime` is UTC with 100 ns precision (`2016-07-08T18:12:51.6816408Z`). Map it to a nanosecond date type (`date_nanos` in Elasticsearch) to keep event order within a second.
+
+## MFTs
+
+`mft_dump -o jsonl` gives every attribute; `-o csv` gives one flat row per file with fixed columns, which is easier to map. For path-based searches, the CSV `FullPath` column is what you want.

@@ -1,0 +1,5 @@
+{
+  "title": "When to use what",
+  "pages": ["siem-pipelines", "event-messages", "deleted-events", "ntfs-which-file", "timelines"],
+  "defaultOpen": true
+}
