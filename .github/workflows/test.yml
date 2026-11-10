@@ -21,14 +21,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      # `--all` also formats `utf16-simd`, which `evtx` uses by path. `evtx-wasm` and `fuzz`
-      # are packages of their own.
-      - name: Check evtx and utf16-simd
-        run: cargo fmt --all -- --check
-      - name: Check evtx-wasm
-        run: cargo fmt --manifest-path evtx-wasm/Cargo.toml -- --check
-      - name: Check the fuzz targets
-        run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+      # Each Cargo.toml is a package of its own (evtx, utf16-simd, evtx-wasm and two fuzz crates),
+      # so a new one is checked without a change here.
+      - name: Check every package
+        run: |
+          for manifest in $(git ls-files '*Cargo.toml'); do
+            echo "::group::$manifest"
+            cargo fmt --manifest-path "$manifest" -- --check
+            echo "::endgroup::"
+          done
 
   build_and_test:
     name: Test EVTX Library
