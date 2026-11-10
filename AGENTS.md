@@ -44,7 +44,7 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 5. **CI.** Every check is green. Fix the cause of a red check. Do not skip, disable or loosen a test to get there.
 6. **Merge.** Merge the pull request yourself. Do not wait for Omer. The exception is a `chore(release)` pull request, which merges only when he tells you to.
 
-Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
+Before you push, run the checks in "This repository" that match what you changed. A change to these instruction files alone needs none. Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
 
 A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job failed for a reason outside the change, such as a runner or a network fault, check whether `master` has moved since. If it has, merging it into the branch starts a new run. If it has not, tell Omer which job needs a re-run, and carry on with other work while you wait.
 
@@ -78,14 +78,14 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ### Checks
 
-`.github/workflows/test.yml` runs all of these on every pull request. It does not run on `master`, so the last run of a pull request is the check of what merges. Before you push, run the ones that match what you changed. A change to these instruction files alone needs none.
+`.github/workflows/test.yml` runs all of these on every pull request. It does not run on `master`, so the last run of a pull request is the check of what merges.
 
 - `git lfs pull`, once in each checkout. Without it the WEVT template tests fail on LFS pointer files. In a cloud session `.claude/hooks/cloud-setup.sh` does this at startup.
 - When you change Rust code, tests, samples or dependencies: `cargo test`. Run one test with `cargo test <name>`, and add `RUST_LOG=debug` for logs.
 - When you change `utf16-simd/`: `cargo test --manifest-path utf16-simd/Cargo.toml`
 - When you change dependencies or `src/bin/`: `cargo build --bin evtx_dump --features fast-alloc`. The release builds `evtx_dump` with a different allocator on each platform. The Windows link once failed only there, and only CI can show that.
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
-- When you change the parser: `python3 fuzz/seed_corpus.py`, then `cargo +nightly fuzz run <target> -- -runs=0` for each target that `cargo fuzz list` prints.
+- When you change the parser: `python3 fuzz/seed_corpus.py`, then `cargo +nightly fuzz run <target> -- -runs=0` for each target that `cargo fuzz list` prints. In a cloud session, add `--target x86_64-unknown-linux-gnu`, because the `cargo-fuzz` installed there defaults to musl.
 - When you change `src/`: `cargo check --manifest-path evtx-wasm/Cargo.toml --target wasm32-unknown-unknown`. The `viewer` job builds this crate for WebAssembly without its default features on every pull request, so code that needs threads, files or an `evtx_dump` dependency outside its feature gate fails there.
 - When you change `evtx-wasm/`: `wasm-pack build evtx-wasm --target web --out-dir evtx-viewer/src/wasm --out-name evtx_wasm --release`, then `bun install --frozen-lockfile` and `bun run check` in `evtx-wasm/evtx-viewer`. In a cloud session, replace `--release` with `--no-opt`, because the optimizer cannot be downloaded there.
 
