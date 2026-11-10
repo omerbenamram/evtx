@@ -412,7 +412,10 @@ fn cli_mta_flag() {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains("warning: --mta with"), "{flag}: {stderr}");
+        assert!(
+            stderr.contains("may get another event's message"),
+            "{flag}: {stderr}"
+        );
         let stdout = String::from_utf8(output.stdout).unwrap();
         let first: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
         assert_eq!(

@@ -167,12 +167,12 @@ impl EvtxDump {
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
 
-        if mta.is_some() && (matches.get_flag("carve") || matches.get_flag("recover-records")) {
+        let carve = matches.get_flag("carve");
+        let recover_records = matches.get_flag("recover-records");
+        if mta.is_some() && (carve || recover_records) {
             eprintln!(
-                "warning: --mta with --carve or --recover-records: an event's message is found by \
-                 its record's position and EventRecordID. A carved or recovered record that is \
-                 not an event of the log the .MTA file was saved with can get another event's \
-                 message."
+                "warning: a carved or recovered record may get another event's message unless \
+                 the .MTA file is this log's own (see --help)"
             );
         }
 
@@ -182,7 +182,7 @@ impl EvtxDump {
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
             .ansi_codec(ansi_codec)
-            .recover_records(matches.get_flag("recover-records"))
+            .recover_records(recover_records)
             .wevt_cache(wevt_cache)
             .mta(mta);
 
@@ -196,7 +196,7 @@ impl EvtxDump {
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
-            carve: matches.get_flag("carve"),
+            carve,
         })
     }
 
