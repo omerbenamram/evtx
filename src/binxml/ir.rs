@@ -1256,7 +1256,10 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
     ///
     /// Inlined, and filling the frame in place on `stack`: on the CAPI2 sample, an outlined call
     /// cost 0.5% more instructions, and returning the frame in a `Result` copied it once more per
-    /// element (+0.9%).
+    /// element (+0.9%). Plain `#[inline]` left it outlined (+0.7%).
+    ///
+    /// On `Err` the half-built frame stays on `stack`; callers return the error and drop the
+    /// stack, so nothing attaches it.
     #[inline(always)]
     fn push(
         stack: &mut Vec<Self>,
