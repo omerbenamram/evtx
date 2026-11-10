@@ -25,6 +25,8 @@ and this project adheres to
 
 ### Breaking changes
 
+- `EvtxError` has a new variant, `NotAnXmlName`, for a record with a name that can't be
+  written (see Fixed).
 - `ChunkError` has a new variant, `FailedToReadChunk`, which holds the reader's error. A read
   that fails used to be reported as `IncompleteChunk` ("Reached EOF"), which now only means
   that the file ends before the end of a chunk's header.
@@ -42,6 +44,12 @@ and this project adheres to
 
 ### Fixed
 
+- An element, attribute, entity or processing-instruction name that isn't an XML name (one
+  with a quote, a space, `<`, `>`, `=` or a control character in it, or an empty one) now fails
+  its record with the new `EvtxError::NotAnXmlName`. Names are written as they are, so a crafted
+  log could close a tag or a JSON key early and have the rest of the name read as markup:
+  a name of `x":1,"y` gave the JSON keys `x` and `y`, and one of `x y="1"` an XML attribute.
+  Windows writes names from a provider's manifest, which are XML names.
 - `EvtxRecord::template_instances()` now includes the template instances inside
   BinXML-typed values. It returned only the outer instance, the one that fills in `System`,
   for every Windows event, so the provider's own values (`EventData`, `UserData`) were out of

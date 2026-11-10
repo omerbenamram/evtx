@@ -534,7 +534,10 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             Some(chunk) => expand_string_ref(offset, chunk, self.src.bump),
             None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
         }?;
-        Ok(Name::new(name))
+        Name::parse(name).ok_or_else(|| EvtxError::NotAnXmlName {
+            name: name.to_string(),
+            offset,
+        })
     }
 
     fn push_node(&mut self, node: Node<'a>) -> Result<()> {
