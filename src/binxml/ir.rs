@@ -1158,10 +1158,11 @@ pub(crate) fn template_body_at<'d>(
 /// attribute values and child nodes in order, and appends the resolved representation
 /// into new bump-allocated vectors.
 ///
-/// The key design choice is that resolution is done via `*_into(.., out: &mut IrVec<Node>)`
-/// helpers. This enables **splicing**:
-/// - optional placeholders can disappear (0 output nodes),
-/// - array substitutions can repeat an element (1 input child element → N output elements).
+/// The key design choice is that resolved nodes are appended to their parent rather than
+/// returned one for one. This enables **splicing**:
+/// - optional placeholders can disappear (0 output nodes; see `resolve_node_into`),
+/// - array substitutions can repeat an element (1 input child element → N output elements;
+///   done by the walk when it attaches a finished element to its parent).
 ///
 /// `has_element_child` is recomputed based on what was actually appended after resolution.
 ///
@@ -1220,7 +1221,9 @@ fn clone_and_resolve<'a>(
             resolved,
             needs_array_expansion,
             ..
-        } = stack.pop().expect("checked above");
+        } = stack
+            .pop()
+            .expect("the root is on the stack until it returns");
         let cloned = arena.new_node(resolved);
         let Some(parent) = stack.last_mut() else {
             return Ok((cloned, needs_array_expansion));
@@ -1228,8 +1231,8 @@ fn clone_and_resolve<'a>(
         // An array substitution repeats its containing element (MS-EVEN6 §3.1.4.7.5). After
         // placeholder resolution, array substitutions appear as `Node::Value(<ArrayType>)` inside
         // an element's content or attributes; expanding them here gives renderers the
-        // repeated-element structure (as libevtx does). Either way only elements are added, so
-        // the parent's array flag is unchanged.
+        // repeated-element structure (as libevtx does).
+        let before = parent.resolved.children.len();
         let children = &mut parent.resolved.children;
         if needs_array_expansion
             && let Some(expanded) =
@@ -1239,7 +1242,7 @@ fn clone_and_resolve<'a>(
         } else {
             children.push(Node::Element(cloned));
         }
-        parent.resolved.has_element_child = true;
+        parent.note_children(before);
     }
 }
 
@@ -1249,7 +1252,7 @@ struct CloneFrame<'t, 'a> {
     source: &'t Element<'a>,
     resolved: Element<'a>,
     /// Fast-path hint for array expansion: if no expandable array value (`Node::Value(<ArrayType>)`
-    /// with len > 1) goes into this element's attrs/children, the array-expansion scan is skipped.
+    /// with an item) goes into this element's attrs/children, the array-expansion scan is skipped.
     needs_array_expansion: bool,
     next_child: usize,
 }
@@ -1331,8 +1334,9 @@ pub(crate) fn element_in_attr() -> EvtxError {
 ///   one node per top-level element).
 /// - Everything else → exactly 1 node (shallow clone).
 ///
-/// Elements are cloned by [`clone_and_resolve`]'s walk, and an attribute never holds one (the
-/// builder rejects them), so an element here is an error rather than a recursion.
+/// Elements in element content are cloned by [`clone_and_resolve`]'s walk and never reach this
+/// function. An element in an attribute value is copied like any other node, and the walk then
+/// rejects it with the elements a placeholder fragment gives there.
 fn resolve_node_into<'a>(
     node: &Node<'a>,
     values: &[ValidatedValue<'a>],
@@ -1341,7 +1345,6 @@ fn resolve_node_into<'a>(
 ) -> Result<()> {
     match node {
         Node::Placeholder(ph) => resolve_placeholder_into(ph, values, budget, out),
-        Node::Element(_) => Err(element_in_attr()),
         other => {
             out.push(other.clone());
             Ok(())
