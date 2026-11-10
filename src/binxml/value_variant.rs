@@ -755,6 +755,19 @@ mod tests {
         );
         assert_eq!(BinXmlValue::UInt32Type(7).to_string(), "7");
         assert_eq!(BinXmlValue::NullType.to_string(), "");
+
+        // Long enough to leave the scalar path, with a character outside the BMP, an embedded
+        // NUL and a surrogate with no partner, which has no text and is U+FFFD.
+        let long = "0123456789abcdef\u{1F600}\0\"tail\\ of the string";
+        let mut units: Vec<u16> = long.encode_utf16().collect();
+        units.push(0xD800);
+        let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+        let value = BinXmlValue::StringType(Utf16LeSlice::new(&bytes, units.len()));
+        assert_eq!(value.to_string(), format!("{long}\u{FFFD}"));
+        assert_eq!(
+            BinXmlValue::AnsiStringArrayType(&["a\"b", "c\n"]).to_string(),
+            "a\"b,c\n"
+        );
     }
 
     #[test]
@@ -859,6 +872,8 @@ impl<'a> Display for BinXmlValue<'a> {
             return Ok(());
         }
 
+        // The renderer writes UTF-8; a panic in `Display` would be worse than U+FFFD.
+        debug_assert!(std::str::from_utf8(&writer).is_ok());
         f.write_str(&String::from_utf8_lossy(&writer))
     }
 }
