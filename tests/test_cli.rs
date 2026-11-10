@@ -374,6 +374,7 @@ fn applying_a_cached_template_takes_the_values_of_the_records_own_instance() {
     );
     assert_eq!(apply(&["--template-instance-index", "1"]), xml);
     assert_ne!(apply(&["--template-instance-index", "0"]), xml);
+}
 
 #[test]
 fn carving_fails_when_there_is_nothing_to_carve() {
