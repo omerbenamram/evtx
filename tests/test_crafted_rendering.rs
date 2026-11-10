@@ -107,7 +107,8 @@ fn xml_names_render() {
         for place in PLACES {
             let [xml, json, chunk_xml, chunk_json] =
                 render_everywhere(&named([good; 4], place)).map(Result::unwrap);
-            let element = format!("<{good} {good}=\"v\">&{good};<?{good} data?></{good}>");
+            // A reference to an entity XML doesn't define is its text.
+            let element = format!("<{good} {good}=\"v\">&amp;{good};<?{good} data?></{good}>");
             assert!(xml.contains(&element), "{xml}");
             assert_eq!(chunk_xml.trim_end(), xml.trim_end());
             let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -635,4 +636,60 @@ fn a_string_array_ends_with_its_own_bytes() {
     let (xml, json) = xml_and_json(&value_then_uint32(0x81, &[b'a', 0, 0, 0, b'b', 0]));
     assert_eq!(xml, "<Event><A>a</A><A>b</A><B>7</B></Event>");
     assert_eq!(json, r#"{"Event":{"A":"a","A_1":"b","B":7}}"#);
+}
+
+#[test]
+fn xml_has_no_character_it_does_not_allow_wherever_text_is() {
+    for in_template in [true, false] {
+        let evtx = event(in_template, |root, in_template| {
+            root.open("A", in_template)
+                .close_start()
+                .cdata("a\u{1}b\u{ffff}c\td")
+                .char_ref(0x41)
+                .char_ref(0x1)
+                .char_ref(0xffff)
+                .char_ref(0xd800)
+                .entity_ref("amp")
+                .entity_ref("foo")
+                .processing_instruction("p", "x?>y\u{2}z??>")
+                .end_element();
+        });
+        let [xml, json, chunk_xml, chunk_json] = render_everywhere(&evtx).map(Result::unwrap);
+        assert_eq!(chunk_xml.trim_end(), xml.trim_end());
+        assert_eq!(chunk_json.trim_end(), json);
+        assert!(
+            xml.contains("<A><![CDATA[a_b_c\td]]>&#65;___&amp;&amp;foo;<?p x? >y_z?? >?></A>"),
+            "{xml}"
+        );
+        // And it parses, to the text and the instruction a reader should see.
+        let parsed = roxmltree::Document::parse(&xml).unwrap();
+        let a = parsed.descendants().find(|n| n.has_tag_name("A")).unwrap();
+        let text: String = a.children().filter_map(|n| n.text()).collect();
+        assert_eq!(text, "a_b_c\tdA___&&foo;");
+        let pi = a.children().find_map(|n| n.pi()).unwrap();
+        assert_eq!((pi.target, pi.value), ("p", Some("x? >y_z?? >")));
+        // JSON has escapes for every character, and U+FFFD for a surrogate.
+        assert_eq!(
+            json,
+            "{\"Event\":{\"A\":\"a\\u0001b\u{ffff}c\\tdA\\u0001\u{ffff}\u{fffd}&&foo;\"}}"
+        );
+    }
+}
+
+#[test]
+fn a_processing_instruction_named_xml_fails_the_record_in_xml() {
+    for target in ["xml", "XmL"] {
+        let evtx = event(true, |root, in_template| {
+            root.open("A", in_template)
+                .close_start()
+                .processing_instruction(target, "version=\"1.0\"")
+                .end_element();
+        });
+        let [xml, json, chunk_xml, chunk_json] = render_everywhere(&evtx);
+        for xml in [xml, chunk_xml] {
+            assert!(xml.unwrap_err().contains("which XML reserves"));
+        }
+        // JSON has no processing instructions.
+        assert_eq!(chunk_json.unwrap().trim_end(), json.unwrap());
+    }
 }

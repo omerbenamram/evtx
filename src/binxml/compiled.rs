@@ -1405,6 +1405,18 @@ fn chunk_spent() -> EvtxError {
     model_err("earlier records of the chunk spent its render budget")
 }
 
+/// What a reference to one of the five entities XML defines stands for.
+fn predefined_entity(name: &str) -> Option<&'static str> {
+    match name {
+        "quot" => Some("\""),
+        "apos" => Some("'"),
+        "amp" => Some("&"),
+        "lt" => Some("<"),
+        "gt" => Some(">"),
+        _ => None,
+    }
+}
+
 fn model_err(msg: &'static str) -> EvtxError {
     EvtxError::FailedToCreateRecordModel(msg)
 }
@@ -1677,11 +1689,29 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                         // Mirror `render_nodes`' processing-instruction
                         // pairing: `<?target data?>` / `<?target?>`.
                         Node::PITarget(name) => {
+                            if name.as_str().eq_ignore_ascii_case("xml") {
+                                return Err(model_err(
+                                    "a processing instruction named `xml`, which XML reserves",
+                                ));
+                            }
                             self.lits.extend_from_slice(b"<?");
                             self.lits.extend_from_slice(name.as_str().as_bytes());
                             if let Some(Node::PIData(data)) = nodes.get(idx + 1) {
                                 self.lits.push(b' ');
+                                let start = self.lits.len();
                                 self.compile_raw_text(data);
+                                // A `?>` in the data would end the instruction early.
+                                let ends = |bytes: &[u8]| bytes.windows(2).position(|w| w == b"?>");
+                                if ends(&self.lits[start..]).is_some() {
+                                    let body = self.lits.split_off(start);
+                                    let mut rest = &body[..];
+                                    while let Some(at) = ends(rest) {
+                                        self.lits.extend_from_slice(&rest[..=at]);
+                                        self.lits.push(b' ');
+                                        rest = &rest[at + 1..];
+                                    }
+                                    self.lits.extend_from_slice(rest);
+                                }
                                 self.lits.extend_from_slice(b"?>");
                                 idx += 2;
                                 continue;
@@ -1949,13 +1979,25 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 res
             }
             Node::EntityRef(name) => {
-                self.lits.push(b'&');
-                self.lits.extend_from_slice(name.as_str().as_bytes());
+                // XML defines five entities, and a record can't declare another: a reference
+                // to one is its text, `&name;`, as in JSON.
+                let name = name.as_str();
+                let defined = predefined_entity(name).is_some();
+                self.lits
+                    .extend_from_slice(if defined { b"&" } else { b"&amp;" });
+                self.lits.extend_from_slice(name.as_bytes());
                 self.lits.push(b';');
                 Ok(())
             }
             Node::CharRef(ch) => {
-                self.lits.extend_from_slice(format!("&#{};", ch).as_bytes());
+                // A reference to a character XML doesn't allow is no more allowed than the
+                // character: `_`, as for one in text.
+                match ch {
+                    0x09 | 0x0A | 0x0D | 0x20..=0xD7FF | 0xE000..=0xFFFD => {
+                        self.lits.extend_from_slice(format!("&#{};", ch).as_bytes())
+                    }
+                    _ => self.lits.push(b'_'),
+                }
                 Ok(())
             }
             Node::CData(text) => {
@@ -1993,7 +2035,44 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         }
     }
 
+    /// Text as it is, for where XML has no escapes (a CDATA section, a processing
+    /// instruction's data), but for the characters XML doesn't allow anywhere, which are `_`
+    /// as in text (see `ValueRenderer::write_xml_escaped_str`). An unpaired surrogate is
+    /// U+FFFD here, which XML allows, where text has `_` for it.
     fn compile_raw_text(&mut self, text: &Text<'a>) {
+        /// How many bytes at `at` are a character XML doesn't allow: a C0 control other than
+        /// tab, LF and CR, U+FFFE or U+FFFF.
+        fn not_allowed(text: &[u8], at: usize) -> usize {
+            match text[at] {
+                b'\t' | b'\n' | b'\r' => 0,
+                0x00..=0x1F => 1,
+                0xEF if matches!(text.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])) => 3,
+                _ => 0,
+            }
+        }
+        let start = self.lits.len();
+        self.write_raw_text(text);
+        let written = &self.lits[start..];
+        if (0..written.len()).all(|at| not_allowed(written, at) == 0) {
+            return;
+        }
+        let written = self.lits.split_off(start);
+        let mut at = 0;
+        while at < written.len() {
+            match not_allowed(&written, at) {
+                0 => {
+                    self.lits.push(written[at]);
+                    at += 1;
+                }
+                len => {
+                    self.lits.push(b'_');
+                    at += len;
+                }
+            }
+        }
+    }
+
+    fn write_raw_text(&mut self, text: &Text<'a>) {
         match text {
             Text::Utf16(value) => {
                 let bytes = value.as_bytes();
@@ -4549,35 +4628,21 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     res?;
                 }
                 Node::CharRef(ch) => {
-                    // In JSON, emit the resolved character (not `&#...;`).
-                    if let Some(ch) = char::from_u32(u32::from(*ch)) {
-                        let mut buf = [0_u8; 4];
-                        let s = ch.encode_utf8(&mut buf);
-                        self.json_escaped_str_plain(s)?;
-                    } else {
-                        self.lits.extend_from_slice(b"&#");
-                        self.vr.write_u64(&mut self.lits, u64::from(*ch))?;
+                    // In JSON, emit the resolved character (not `&#...;`). A surrogate isn't
+                    // one: U+FFFD, as for an unpaired surrogate in text.
+                    let ch = char::from_u32(u32::from(*ch)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                    let mut buf = [0_u8; 4];
+                    let s = ch.encode_utf8(&mut buf);
+                    self.json_escaped_str_plain(s)?;
+                }
+                Node::EntityRef(name) => match predefined_entity(name.as_str()) {
+                    Some(s) => self.json_escaped_str_plain(s)?,
+                    None => {
+                        self.lits.push(b'&');
+                        self.lits.extend_from_slice(name.as_str().as_bytes());
                         self.lits.push(b';');
                     }
-                }
-                Node::EntityRef(name) => {
-                    let resolved = match name.as_str() {
-                        "quot" => Some("\""),
-                        "apos" => Some("'"),
-                        "amp" => Some("&"),
-                        "lt" => Some("<"),
-                        "gt" => Some(">"),
-                        _ => None,
-                    };
-                    match resolved {
-                        Some(s) => self.json_escaped_str_plain(s)?,
-                        None => {
-                            self.lits.push(b'&');
-                            self.lits.extend_from_slice(name.as_str().as_bytes());
-                            self.lits.push(b';');
-                        }
-                    }
-                }
+                },
                 Node::PITarget(_) | Node::PIData(_) => {}
                 Node::Placeholder(_) => return Err(unresolved_placeholder()),
                 Node::Element(_) => {
