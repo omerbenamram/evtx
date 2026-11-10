@@ -484,6 +484,7 @@ dependencies = [
  "rexpect",
  "roxmltree",
  "rpmalloc",
+ "same-file",
  "serde",
  "serde_json",
  "simplelog",

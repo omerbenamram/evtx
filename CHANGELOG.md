@@ -25,6 +25,11 @@ and this project adheres to
 
 ### Breaking changes
 
+- `ChunkError` has a new variant, `FailedToReadChunk`, which holds the reader's error. A read
+  that fails used to be reported as `IncompleteChunk` ("Reached EOF"), which now only means
+  that the file ends before the end of a chunk's header.
+- `ChunkError::FailedToBuildStringCache` is gone: a damaged string table no longer fails its
+  chunk (see Fixed).
 - evtx no longer depends on `winstructs` (and through it on `chrono`). GUIDs
   are now `evtx::Guid` instead of `winstructs::guid::Guid`: in
   `binxml::BinXmlTemplateValues::template_guid`, `DeserializationError::FailedToDeserializeTemplate`
@@ -37,6 +42,30 @@ and this project adheres to
 
 ### Fixed
 
+- `evtx_dump -f <file>` no longer empties an existing output file when the run can't start.
+  The file was created before the input was opened, so a mistyped input path, an input that
+  isn't an EVTX file, or a `--wevt-cache` or `--mta` file that failed to load, left a
+  zero-byte file where the last export had been. It is now created once all of them have
+  been read.
+- `evtx_dump -f` refuses an output file that is the input file, the `--wevt-cache` file or the
+  `--mta` file, under any name (another spelling of the path, a symlink, a hard link). It
+  used to empty the log before reading it.
+- A log whose last chunk is cut off by the end of the file (an interrupted copy, a file
+  recovered in part) lost that chunk's records without an error or a warning: `security.evtx`
+  short of 1,000 bytes of its last chunk's free space gave 2,201 of its 2,261 records. The
+  records that fit are now read, the record that the end of the file cuts into is an error, and
+  a `warn!` names the chunk. A chunk whose header is cut off is still left out.
+- An error from the reader while a chunk is read (a disk that can't be read, an exception from
+  a Python file object) was reported as "Reached EOF while trying to allocate chunk", and its
+  cause was dropped. It is now `ChunkError::FailedToReadChunk`, with the reader's error as its
+  source.
+- Chunk offsets are computed in 64 bits, so on 32-bit targets a log larger than 4 GiB no longer
+  overflows (a panic with overflow checks, the wrong chunks read without).
+- A chunk whose string table is damaged (a bucket offset past the end of the chunk, a name
+  that can't be decoded) lost all of its records to `Failed to build string cache`, although
+  records name their strings by offset and already read the ones the table doesn't list. The
+  damaged chain is now left out and every record renders: one bad offset in the first chunk of
+  `security.evtx` used to cost its 91 records.
 - A `WEVT_TEMPLATE` manifest whose MAPS table points a map past the table's
   declared end no longer panics with an out-of-range slice (found by fuzzing).
 

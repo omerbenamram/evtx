@@ -11,6 +11,7 @@ use std::path::PathBuf;
 /// Chunks start after the header block, at fixed offsets: where evtx reads them.
 const HEADER_BLOCK_SIZE: u64 = 4096;
 const CHUNK_SIZE: u64 = 65536;
+const CHUNK_HEADER_SIZE: u64 = 512;
 
 pub fn command() -> Command {
     Command::new("info")
@@ -103,12 +104,17 @@ fn write_info(file: &mut (impl Read + Seek), out: &mut impl Write) -> Result<()>
             ),
         ),
     ];
+    // A last chunk that the end of the file cuts off is read too, when its header is whole.
+    let cut_off = trailing >= CHUNK_HEADER_SIZE;
     if trailing > 0 {
-        fields.push((
-            "Trailing bytes",
-            format!("{trailing}, after the last chunk"),
-        ));
+        let what = if cut_off {
+            format!("read as chunk {chunks}, cut off by the end of the file")
+        } else {
+            "after the last chunk".to_string()
+        };
+        fields.push(("Trailing bytes", format!("{trailing}, {what}")));
     }
+    let chunks = chunks + u64::from(cut_off);
     writeln!(out, "File header")?;
     for (name, value) in fields {
         writeln!(out, "  {name:<16} {value}")?;
@@ -118,9 +124,11 @@ fn write_info(file: &mut (impl Read + Seek), out: &mut impl Write) -> Result<()>
     let (mut used, mut empty, mut failing, mut records) = (0_u64, 0_u64, 0_u64, 0_u64);
     for number in 0..chunks {
         let offset = HEADER_BLOCK_SIZE + number * CHUNK_SIZE;
-        let mut data = vec![0; CHUNK_SIZE as usize];
+        let mut data = Vec::with_capacity(CHUNK_SIZE as usize);
         file.seek(SeekFrom::Start(offset))?;
-        file.read_exact(&mut data)
+        file.by_ref()
+            .take(CHUNK_SIZE)
+            .read_to_end(&mut data)
             .with_context(|| format!("Failed to read chunk {number}"))?;
         let (number, offset) = (number.to_string(), format!("{offset:#010x}"));
         if data.iter().all(|&byte| byte == 0) {
