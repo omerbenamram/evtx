@@ -44,9 +44,16 @@ and this project adheres to
 - `BinXmlValue`'s `Display` gives the value's text as it is. It gave the text escaped for a
   JSON string, so a quote came out as `\"` and a newline as `\n`. Code that built JSON from
   `to_string()` must escape the text itself (or use `serde_json`).
+- `MtaError` has a new variant, `SharedRecord`, for an `.MTA` section whose records share
+  bytes (see Fixed).
 
 ### Fixed
 
+- `.MTA`: a crafted file of 200 KB could take 2 GB to refuse or to load. A page chain that
+  came back to a page, or slots that all named one record, had the same bytes read and
+  decoded again and again; and a publisher's table kept a copy of its string for every
+  entry. The pages and records read may no longer be longer together than their section
+  (`PageLoop`, or the new `SharedRecord`), and table entries share their string.
 - A record with a BinXML value that can't be read fails in `evtx_dump` and the chunk
   renderers (`chunks_xml_bytes`, `chunks_json_bytes`) too when its template doesn't use the
   value. They rendered such a record, where `records()` and `records_json()` failed it, so

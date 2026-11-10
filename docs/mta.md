@@ -89,6 +89,10 @@ A section is a chain of pages. Each page is an 888-byte header followed by up to
 Offsets are relative to the start of the section. A record is a u32 entry index, a u32 payload
 size and the payload. An empty section is a single empty page.
 
+Pages and records don't share bytes. The parser refuses a section whose pages and records,
+as it reads them, are longer together than the section: a chain that comes back to a page, or
+two slots that name one record.
+
 ### `MSG`: strings
 
 Each entry is a u32 byte length (including the terminating NUL, 0 for an empty string) and the
