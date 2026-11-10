@@ -472,3 +472,128 @@ fn a_bad_output_path_fails_before_the_input_is_read() {
     let stderr = failing_dump_to(d.as_ref(), &[missing.to_str().unwrap()]);
     assert!(stderr.contains("There is a directory at"), "{stderr}");
 }
+
+/// Runs `evtx_dump -o jsonl <args>` and gives its exit status, stdout and stderr.
+fn dump_jsonl(args: &[&std::ffi::OsStr]) -> (Option<i32>, String, String) {
+    let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+        .args(["-o", "jsonl"])
+        .args(args)
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn a_run_that_could_not_read_everything_says_so_in_its_exit_status() {
+    // Eight of this log's chunks have no magic. The run used to print eight errors and exit
+    // with 0, as it does for a log it read all of.
+    let sample = samples_dir().join("sysmon.evtx");
+    let (status, stdout, stderr) = dump_jsonl(&[sample.as_os_str()]);
+    assert_eq!(status, Some(3), "{stderr}");
+    assert!(
+        stderr.contains("Error: could not read 0 record(s), 8 chunk(s)"),
+        "{stderr}"
+    );
+    // What could be read was all written.
+    assert_eq!(stdout.lines().count(), 358);
+
+    let (status, _, stderr) = dump_jsonl(&[regular_sample().as_os_str()]);
+    assert_eq!(status, Some(0), "{stderr}");
+}
+
+#[test]
+fn events_leaves_out_the_errors_of_the_records_it_leaves_out() {
+    // Records 1 and 3 render; record 2 has an element name that can't be written.
+    let evtx = synthetic_evtx_records(3, |index, record| {
+        let name = if index == 1 { "not a name" } else { "Event" };
+        record.fragment_header();
+        record.open(name, false).close_empty();
+        record.eof();
+    });
+    let d = tempdir().unwrap();
+    let path = d.path().join("one-bad-record.evtx");
+    std::fs::write(&path, evtx).unwrap();
+    let events =
+        |ranges: &str| dump_jsonl(&["--events".as_ref(), ranges.as_ref(), path.as_os_str()]);
+
+    let (status, stdout, stderr) = events("1-3");
+    assert_eq!(status, Some(3), "{stderr}");
+    assert!(
+        stderr.contains("could not read 1 record(s), 0 chunk(s)"),
+        "{stderr}"
+    );
+    assert_eq!(stdout.lines().count(), 2);
+    assert!(
+        stderr.contains("Failed to parse record number 2"),
+        "{stderr}"
+    );
+
+    let (status, stdout, stderr) = events("3,1");
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(stdout.lines().count(), 2);
+    assert!(!stderr.contains("record number 2"), "{stderr}");
+
+    // A range that ends before it starts holds nothing: it used to print nothing and succeed.
+    // (2 is clap's status for arguments it refuses.)
+    let (status, stdout, stderr) = events("3-1");
+    assert_eq!(status, Some(2), "{stderr}");
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("ends before it starts"), "{stderr}");
+}
+
+#[test]
+fn extract_wevt_templates_refuses_inputs_it_would_read_nothing_from() {
+    let d = tempdir().unwrap();
+    let cache = d.path().join("templates.wevtcache");
+    let extract = |args: &[&std::ffi::OsStr]| {
+        let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+            .args(["extract-wevt-templates", "--overwrite", "--output"])
+            .arg(&cache)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    };
+
+    // It used to write an empty cache and say "wrote 0 resource blob(s)".
+    let missing = d.path().join("no-such.dll");
+    let (ok, stderr) = extract(&["--input".as_ref(), missing.as_os_str()]);
+    assert!(!ok && stderr.contains("does not exist"), "{stderr}");
+    let dlls = samples_dir().join("dlls");
+    let (ok, stderr) = extract(&["--input".as_ref(), dlls.as_os_str()]);
+    assert!(!ok && stderr.contains("pass --recursive"), "{stderr}");
+    // A glob may match a directory, which is passed over: with nothing else, nothing is read.
+    let (ok, stderr) = extract(&["--glob".as_ref(), dlls.as_os_str()]);
+    assert!(!ok && stderr.contains("No files to read"), "{stderr}");
+    assert!(!cache.exists());
+
+    // A link back up the tree used to keep the walk going until paths got too long.
+    #[cfg(unix)]
+    {
+        let tree = d.path().join("tree");
+        std::fs::create_dir(&tree).unwrap();
+        std::fs::copy(dlls.join("adtschema.dll"), tree.join("adtschema.dll")).unwrap();
+        std::os::unix::fs::symlink(&tree, tree.join("again")).unwrap();
+        let (ok, once) = extract(&["--recursive".as_ref(), "--input".as_ref(), tree.as_os_str()]);
+        assert!(ok, "{once}");
+        assert!(once.contains("resource blob(s)"), "{once}");
+        assert!(!once.contains("wrote 0 "), "{once}");
+        // Nor is the directory read again for being named again, through the link.
+        let (ok, twice) = extract(&[
+            "--recursive".as_ref(),
+            "--input".as_ref(),
+            tree.as_os_str(),
+            "--input".as_ref(),
+            tree.join("again").as_os_str(),
+        ]);
+        assert!(ok, "{twice}");
+        assert_eq!(twice, once);
+    }
+}

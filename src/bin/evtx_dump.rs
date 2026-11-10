@@ -6,6 +6,7 @@ use dialoguer::Confirm;
 use indoc::indoc;
 
 use evtx::carve::CarvedEvtx;
+use evtx::err::EvtxError;
 use evtx::{AnsiCodec, EvtxParser, ParserSettings, RenderedChunk, RenderedChunkItem};
 use log::Level;
 use std::fs::{self, File};
@@ -79,6 +80,8 @@ struct EvtxDump {
     stop_after_error: bool,
     /// When set, only the records whose event record IDs are in these ranges are output.
     ranges: Option<Ranges>,
+    /// What could not be read, and so is missing from the output.
+    missing: Incomplete,
     /// Whether the input is raw data to carve chunks from, rather than an EVTX file.
     carve: bool,
 }
@@ -196,6 +199,7 @@ impl EvtxDump {
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
+            missing: Incomplete::default(),
             carve,
         })
     }
@@ -215,6 +219,7 @@ impl EvtxDump {
                 carved.chunk_offsets().len(),
                 self.input.display()
             );
+            self.missing.unread_bytes = carved.unreadable_bytes();
             if carved.unreadable_bytes() > 0 {
                 eprintln!(
                     "{} bytes of {} could not be read and were skipped",
@@ -290,6 +295,10 @@ impl EvtxDump {
 
         // Dropping the buffer flushes it too, but ignores a failed write.
         self.output.flush()?;
+        // The output is whole but for these: a script must be able to tell.
+        if self.missing != Incomplete::default() {
+            return Err(self.missing.into());
+        }
         Ok(())
     }
 
@@ -420,6 +429,19 @@ impl EvtxDump {
                 }
                 // This error is non fatal.
                 RenderedChunkItem::Failed(e) => {
+                    // A record that `--events` leaves out is not one this run was asked for.
+                    // (`--stop-after-one-error` is for finding any record that fails.)
+                    if let (Some(ranges), EvtxError::FailedToParseRecord { record_id, .. }) =
+                        (&self.ranges, &e)
+                        && !ranges.contains(&(*record_id as usize))
+                        && !self.stop_after_error
+                    {
+                        continue;
+                    }
+                    match e {
+                        EvtxError::FailedToParseChunk { .. } => self.missing.chunks += 1,
+                        _ => self.missing.records += 1,
+                    }
                     eprintln!(
                         "{:?}",
                         anyhow::Error::from(e).context("Failed to dump the next record.")
@@ -479,6 +501,9 @@ impl FromStr for Ranges {
         for range in s.split(',') {
             let (start, stop) = range.split_once('-').unwrap_or((range, range));
             match (start.parse::<usize>(), stop.parse::<usize>()) {
+                (Ok(start), Ok(stop)) if start > stop => {
+                    bail!("Range {range} ends before it starts and holds no record ID")
+                }
                 (Ok(start), Ok(stop)) => res.push(start..=stop),
                 _ => bail!("Expected range to be a positive number, got: {}", range),
             }
@@ -512,6 +537,8 @@ fn test_ranges() {
     assert!(matches_ranges("1").is_ok());
     assert!(matches_ranges("1-").is_err());
     assert!(matches_ranges("-2").is_err());
+    assert!(matches_ranges("3-3").is_ok());
+    assert!(matches_ranges("5-3").is_err());
 }
 
 #[test]
@@ -535,8 +562,29 @@ fn main() -> Result<()> {
         // A reader that stops early, such as `head`, closes the pipe: that ends the output, as
         // it does for other command-line tools, rather than being an error.
         Err(error) if is_broken_pipe(&error) => Ok(()),
+        Err(error) if error.is::<Incomplete>() => {
+            eprintln!("Error: {error}");
+            std::process::exit(INCOMPLETE_EXIT_CODE)
+        }
         result => result,
     }
+}
+
+/// The exit status of a run that wrote everything it could read, but could not read it all.
+/// A failure that stops the run exits with 1, and clap exits with 2 for arguments it refuses.
+const INCOMPLETE_EXIT_CODE: i32 = 3;
+
+/// What a run could not read. Its output is complete but for these.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "could not read {records} record(s), {chunks} chunk(s) and {unread_bytes} byte(s) of the input: \
+     they are missing from the output (see the errors above)"
+)]
+struct Incomplete {
+    records: u64,
+    chunks: u64,
+    /// Bytes of a carved source that could not be read.
+    unread_bytes: u64,
 }
 
 fn is_broken_pipe(error: &anyhow::Error) -> bool {
@@ -599,7 +647,8 @@ fn run_cli() -> Result<()> {
                 .long("events")
                 .action(ArgAction::Set)
                 .value_parser(matches_ranges)
-                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output.
+                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output,
+                and only their errors are reported.
                 For example:
                     --events=1 outputs the record whose ID is 1.
                     --events=0-10,20-30 outputs the records with IDs 0 to 10 and 20 to 30.
@@ -672,7 +721,7 @@ fn run_cli() -> Result<()> {
             Arg::new("stop-after-one-error")
                 .long("stop-after-one-error")
                 .action(ArgAction::SetTrue)
-                .help("When set, will exit after any failure of reading a record. Useful for debugging."),
+                .help("When set, will exit after any failure of reading a record, also one that --events leaves out. Useful for debugging."),
         )
         .arg(Arg::new("verbose")
             .short('v')
