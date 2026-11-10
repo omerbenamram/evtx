@@ -258,7 +258,7 @@ enum BuildMode {
 /// Hard cap on BinXML fragment / template-instance nesting per record. Real
 /// records nest one or two levels; the cap exists to bound recursion depth on
 /// crafted input (a 64 KiB chunk could otherwise chain thousands of levels).
-const MAX_BINXML_NESTING: usize = 64;
+pub(crate) const MAX_BINXML_NESTING: usize = 64;
 
 /// Hard cap on open-element depth within one BinXML stream, bounding tree
 /// depth (and the walkers' recursion over it) on crafted input.

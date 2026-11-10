@@ -100,8 +100,8 @@ EVTX records can reference template definitions stored in provider binaries (EXE
   - `evtx_dump --wevt-cache /tmp/wevt_cache.wevtcache <log.evtx>`
 
 Debugging helpers:
-- Dump a record’s `TemplateInstance` substitution values (JSONL):
-  - `evtx_dump dump-template-instances --input <log.evtx> --record-id <ID> | head -n1`
+- Dump a record’s `TemplateInstance` substitution values (JSONL, one line per instance: the first fills in `System`, the second is usually the provider’s own template):
+  - `evtx_dump dump-template-instances --input <log.evtx> --record-id <ID>`
 - Render a specific template GUID with substitutions (XML to stdout):
   - `evtx_dump apply-wevt-cache --cache /tmp/wevt_cache.wevtcache --template-guid <GUID> --evtx <log.evtx> --record-id <ID>`
 

@@ -42,6 +42,17 @@ and this project adheres to
 
 ### Fixed
 
+- `EvtxRecord::template_instances()` now includes the template instances inside
+  BinXML-typed values. It returned only the outer instance, the one that fills in `System`,
+  for every Windows event, so the provider's own values (`EventData`, `UserData`) were out of
+  reach. Each instance now has its template's GUID, also when the definition is stored
+  earlier in the chunk.
+- `evtx_dump apply-wevt-cache --evtx --record-id` rendered the provider's template with the
+  values of the `System` instance (event 4902's `PuaPolicyId` printed `0`, not `0x35cb0`). It
+  now takes the values of the record's instance of that template, or of its second instance
+  when the GUIDs differ. `--template-instance-index` still picks one by hand.
+- `evtx_dump dump-template-instances` prints every instance of each record, one line each,
+  where it printed the `System` one only. `--template-instance-index` limits it to one.
 - `evtx_dump -f <file>` no longer empties an existing output file when the run can't start.
   The file was created before the input was opened, so a mistyped input path, an input that
   isn't an EVTX file, or a `--wevt-cache` or `--mta` file that failed to load, left a
