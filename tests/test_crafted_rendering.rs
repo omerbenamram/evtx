@@ -823,3 +823,91 @@ fn a_binxml_value_with_an_element_in_an_attribute_fails_the_record() {
         }
     }
 }
+
+/// A record whose template writes its first value, a string, and has a second value of type
+/// BinXML that the template never uses.
+fn unused_binxml_value(stream: impl Fn(&mut BinXml)) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record.fragment_header();
+        record.template_instance(
+            |root| {
+                root.open("Event", true).close_start();
+                root.open("A", true)
+                    .close_start()
+                    .substitution(0, 0x01)
+                    .end_element();
+                root.end_element();
+            },
+            vec![
+                value(0x01, |text| {
+                    text.raw(&[b'o', 0, b'k', 0]);
+                }),
+                value(0x21, |fragment| stream(fragment)),
+            ],
+        );
+        record.eof();
+    })
+}
+
+/// Every renderer fails the record, with one error.
+fn fails_alike(evtx: &[u8]) {
+    let [first, rest @ ..] = render_everywhere(evtx).map(Result::unwrap_err);
+    for err in rest {
+        assert_eq!(err, first);
+    }
+}
+
+#[test]
+fn a_binxml_value_the_template_does_not_use_is_still_read() {
+    // The records API builds every BinXML value, so one that can't be read fails the record.
+    // The chunk renderer read only the values its template writes, and rendered the record.
+    let bad: [&[u8]; 3] = [
+        // An element whose name is out of the chunk.
+        &[
+            0x0f, 1, 1, 0, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        ],
+        // A template instance that is cut off.
+        &[0x0f, 1, 1, 0, 0x0c, 0x01],
+        // An element that is cut off.
+        &[0x01, 0xff],
+    ];
+    for stream in bad {
+        let evtx = unused_binxml_value(|fragment| {
+            fragment.raw(stream);
+        });
+        fails_alike(&evtx);
+    }
+
+    // Nor did it read one in an element it left out, here for the NULL the element depends on.
+    let evtx = synthetic_evtx(|record| {
+        record.fragment_header();
+        record.template_instance(
+            |root| {
+                root.open("Event", true).close_start();
+                root.open_depending("Outer", 0)
+                    .close_start()
+                    .substitution(1, 0x21)
+                    .end_element();
+                root.end_element();
+            },
+            vec![
+                value(0x00, |_| {}),
+                value(0x21, |fragment| {
+                    fragment.raw(bad[0]);
+                }),
+            ],
+        );
+        record.eof();
+    });
+    fails_alike(&evtx);
+
+    // One that can be read changes nothing.
+    let evtx = unused_binxml_value(|fragment| {
+        fragment.fragment_header();
+        fragment.open("In", false).close_empty();
+        fragment.eof();
+    });
+    let (xml, json) = xml_and_json(&evtx);
+    assert_eq!(xml, "<Event><A>ok</A></Event>");
+    assert_eq!(json, r#"{"Event":{"A":"ok"}}"#);
+}

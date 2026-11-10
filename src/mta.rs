@@ -281,7 +281,7 @@ impl MtaFile {
                 .get(4..)
                 .and_then(|text| text.get(..len))
                 .ok_or(corrupt("MSG entry", at))?;
-            messages.push((index, decode_utf16(text).into()));
+            messages.push((index, Arc::from(decode_utf16(text))));
             Ok(())
         })?;
         sort_by_index(&mut messages, |(index, _)| *index);
@@ -459,10 +459,9 @@ impl<'b> Section<'b> {
         let mut unread = data.len();
         loop {
             let header = page_header(data, page).ok_or(corrupt("page", at(page)))?;
-            let Some(rest) = unread.checked_sub(PAGE_HEADER_SIZE) else {
-                return Err(MtaError::PageLoop { section: self.name });
-            };
-            unread = rest;
+            unread = unread
+                .checked_sub(PAGE_HEADER_SIZE)
+                .ok_or(MtaError::PageLoop { section: self.name })?;
             // An empty page has 0 here, and no records.
             if read_u32_le(header, 0) != Some(0) {
                 for slot in header[PAGE_RECORDS..].as_chunks::<8>().0 {
@@ -473,13 +472,12 @@ impl<'b> Section<'b> {
                     let offset = usize::try_from(offset).unwrap_or(usize::MAX);
                     let (index, payload) =
                         record(data, offset).ok_or(corrupt("record", at(offset)))?;
-                    let Some(rest) = unread.checked_sub(RECORD_HEADER_SIZE + payload.len()) else {
-                        return Err(MtaError::SharedRecord {
+                    unread = unread
+                        .checked_sub(RECORD_HEADER_SIZE + payload.len())
+                        .ok_or(MtaError::SharedRecord {
                             section: self.name,
                             offset: at(offset),
-                        });
-                    };
-                    unread = rest;
+                        })?;
                     f(index, payload, at(offset))?;
                 }
             }
@@ -535,7 +533,7 @@ fn parse_publisher(payload: &[u8], messages: &[(u32, Arc<str>)]) -> Option<MtaPu
     let name_len = read_u32_le(payload, offset)? as usize;
     let name = payload.get(offset + 4..)?.get(..name_len)?;
     Some(MtaPublisher {
-        name: decode_utf16(name).into(),
+        name: decode_utf16(name),
         levels,
         tasks,
         opcodes,
@@ -544,7 +542,7 @@ fn parse_publisher(payload: &[u8], messages: &[(u32, Arc<str>)]) -> Option<MtaPu
 }
 
 /// Decodes UTF-16LE text up to the first NUL, replacing unpaired surrogates.
-fn decode_utf16(bytes: &[u8]) -> Box<str> {
+fn decode_utf16(bytes: &[u8]) -> String {
     let units = bytes.as_chunks::<2>().0;
     // Strings usually end with their NUL.
     let units = units.strip_suffix(&[[0, 0]]).unwrap_or(units);
@@ -562,7 +560,7 @@ fn decode_utf16(bytes: &[u8]) -> Box<str> {
     if let Some(nul) = text.find('\0') {
         text.truncate(nul);
     }
-    text.into_boxed_str()
+    text
 }
 
 fn utf16_eq(bytes: &[u8], ascii: &str) -> bool {
@@ -883,7 +881,7 @@ fn text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
             Cow::Borrowed(*s)
         }
         Node::Text(Text::Utf16(s)) | Node::Value(BinXmlValue::StringType(s)) => {
-            Cow::Owned(decode_utf16(s.as_bytes()).into())
+            Cow::Owned(decode_utf16(s.as_bytes()))
         }
         _ => Cow::Borrowed(""),
     };
