@@ -10,9 +10,9 @@ version = "0.15.1"
 authors = ["Omer Ben-Amram <omerbenamram@gmail.com>"]
 edition = "2024"
 
-# Only these paths go to crates.io. The tests are left out because they need the logs under
+# Only these paths go to crates.io. No test runs from the crate: they all need the logs under
 # `samples/`, which are too large to publish.
-include = ["/src/", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
+include = ["/src/", "/docs/*.md", "/README.md", "/CHANGELOG.md", "/LICENSE-*"]
 
 [dependencies]
 bitflags = "2"

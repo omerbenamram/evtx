@@ -75,10 +75,11 @@ and this project adheres to
 
 ### Changed
 
-- The crate on crates.io holds only the source, the README, this changelog and the licences:
-  0.24 MB compressed, down from 4.1 MB. It no longer carries the integration tests, which could
-  not run without the sample logs, nor the Windows DLLs under `samples/dlls`, the scripts, the
-  docs and the CI workflows. All of these stay in the repository.
+- The crate on crates.io holds only `src/`, the Markdown files of `docs/`, the README, this
+  changelog and the licences, which makes it about 0.25 MB compressed where 0.15.1 was 4.1 MB.
+  Everything else stays in the repository alone: the integration tests (no test could run from
+  the crate, as the sample logs were never in it), the Windows DLLs under `samples/dlls`, the
+  scripts and build scripts, `MS-EVEN6.md`, `RELEASING.md`, the images and the CI workflows.
 
 ### Fixed
 

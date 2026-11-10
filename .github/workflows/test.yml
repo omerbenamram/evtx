@@ -34,6 +34,11 @@ jobs:
       # on Windows, whose link failed only there (0.15.0).
       - name: Build evtx_dump with fast-alloc
         run: cargo build --bin evtx_dump --features fast-alloc
+      # Only the paths in `include` in Cargo.toml are published. This builds the crate from
+      # them alone, so a file that the build needs and the list lacks fails here, not at release.
+      - name: Build the crate as published
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo package --locked
 
   fuzz:
     name: Check fuzz targets
