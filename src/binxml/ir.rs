@@ -1190,7 +1190,7 @@ fn clone_and_resolve<'a>(
     };
 
     // Fast-path hint for array expansion:
-    // If we never append an expandable array value (`Node::Value(<ArrayType>)` with len > 1)
+    // If we never append an expandable array value (`Node::Value(<ArrayType>)` with an item)
     // into this element's attrs/children, we can skip the array-expansion scan entirely.
     let mut needs_array_expansion = false;
 

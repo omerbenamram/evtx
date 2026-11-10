@@ -86,17 +86,14 @@ fn expand_first_array_in_element<'a>(
         )
     };
 
-    if len == 0 {
-        return Ok(None);
-    }
-    if len > 1 {
-        // The copies share their names, `Data`'s included.
-        arena.mark_repeated_names();
-    }
-    // Each copy is a new element, and its element children are those of every other copy.
+    // Each copy is a new element.
     budget.build(len.saturating_mul(nodes))?;
-    if has_element_child {
-        arena.mark_shared();
+    if len > 1 {
+        // The copies share their names, `Data`'s included, and their element children.
+        arena.mark_repeated_names();
+        if has_element_child {
+            arena.mark_shared();
+        }
     }
 
     let mut out = Vec::with_capacity(len);
@@ -490,8 +487,8 @@ mod tests {
 
     #[test]
     fn a_single_item_array_is_its_item_and_later_arrays_still_expand() {
-        // Regression: if a single-item array appears before a multi-item array in the same
-        // element, we must ignore the first and still expand the later one.
+        // A single-item array before a multi-item array in the same element is replaced by
+        // its item, and the later one still expands.
         //
         // Conceptual template fragment (after placeholder resolution, before array expansion):
         //
@@ -499,7 +496,7 @@ mod tests {
         //
         // With substitution values:
         // - %{0} = UInt8ArrayType([7])            // len = 1 (one copy, with its item)
-        // - %{1} = UInt8ArrayType([10, 20, 30])   // len = 3 (DOES trigger repetition)
+        // - %{1} = UInt8ArrayType([10, 20, 30])   // len = 3 (a copy for each item)
         //
         // Expected expanded tree (array substitution repeats the *containing element*):
         //
