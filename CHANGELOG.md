@@ -51,6 +51,28 @@ and this project adheres to
   missing. It exited with 0, as for a log it read all of, so a script could not tell. Status 1
   is still a failure that stops the run, and 2 arguments that are refused.
 
+### Added
+
+- Event messages from provider binaries, as Event Viewer shows them, in the
+  new `wevt_templates::messages` module. `MessageCatalog` reads the
+  `WEVT_TEMPLATE` manifests and `RT_MESSAGETABLE` strings of binaries copied
+  off a Windows system (a folder such as `System32` with its `en-US` `.mui`
+  files, or single files), and `ParserSettings::messages` adds each record's
+  message, with its data filled in, and its level, task, opcode and keyword
+  names as a `RenderingInfo` element, like `--mta` does. Classic event
+  sources (`MessageCatalog::add_classic_source`) and parameter files such as
+  `msobjs.dll` (`%%1793` values, which are looked up only there, as Windows
+  does) are supported. A binary's own message tables are read in the
+  locale's language when it has them, and a `.mui` that doesn't parse is
+  skipped with a warning. `evtx_dump --messages <PATH>` (and
+  `--messages-locale`) does the same, and `-f` refuses to overwrite a
+  `--messages` file. Records then render through their
+  tree, several times slower. On the Security sample with `adtschema.dll`,
+  56 of 59 messages match the ones Windows wrote to its `.MTA` file exactly;
+  the other 3 need `msobjs.dll`, which the samples don't have.
+- `wevt_templates::extract_resources` reads any PE resource type (as
+  `PeResource`s), and `RT_MESSAGETABLE` names the message table type.
+
 ### Fixed
 
 - `evtx_dump --events 5-3`, a range that ends before it starts, is refused. It printed nothing
