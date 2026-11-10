@@ -90,7 +90,7 @@ impl EvtxChunkData {
             data,
             number: None,
         };
-        // A lost header has its own error, which the records iterator reports.
+        // A lost header has no checksums: its error is the one the records iterator reports.
         if validate_checksum
             && !chunk.header.lost
             && let Some(err) = chunk.checksum_error()
@@ -138,14 +138,11 @@ impl EvtxChunkData {
     }
 
     pub fn validate_checksum(&self) -> bool {
-        self.checksum_error().is_none()
+        !self.header.lost && self.checksum_error().is_none()
     }
 
     /// The first check `validate_checksum` fails: the header's CRC32, then the records'.
     fn checksum_error(&self) -> Option<ChunkError> {
-        if self.header.lost {
-            return lost_header_error(&self.data);
-        }
         if self.header.flags.contains(ChunkFlags::NO_CRC32) {
             return None;
         }
@@ -372,11 +369,8 @@ impl<'a> Iterator for IterRawRecords<'a> {
             let offset = self.walk?;
             if offset >= self.live_end() {
                 self.skip_to(offset, None);
-                if self.chunk.header.lost
-                    && let Some(err) = lost_header_error(self.chunk.data)
-                {
-                    let chunk = self.chunk.number.unwrap_or_default();
-                    return Some(Err(EvtxError::chunk(chunk, err)));
+                if self.chunk.header.lost {
+                    return Some(Err(self.lost_header()));
                 }
                 // The chunk's data ends where its header says more records are: the end of
                 // the file cut the chunk off between two records.
@@ -422,6 +416,18 @@ impl<'a> IterRawRecords<'a> {
             offset,
             source: Box::new(source),
         }
+    }
+
+    /// The error of a chunk that is read without its header (see [`EvtxChunkData::read`]):
+    /// why the header couldn't be read.
+    #[cold]
+    fn lost_header(&self) -> EvtxError {
+        let source = match EvtxChunkHeader::from_bytes(self.chunk.data) {
+            Err(err) => err.into(),
+            // The data isn't what the chunk was read from.
+            Ok(_) => ChunkError::IncompleteChunk,
+        };
+        EvtxError::chunk(self.chunk.number.unwrap_or_default(), source)
     }
 
     /// Whether the chunk's data is shorter than a chunk: the end of its file cut it off.
@@ -643,12 +649,6 @@ impl EvtxChunkHeader {
             lost: false,
         })
     }
-}
-
-/// Why the header of a chunk that is read without one (see [`EvtxChunkData::read`]) was lost.
-#[cold]
-fn lost_header_error(chunk: &[u8]) -> Option<ChunkError> {
-    EvtxChunkHeader::from_bytes(chunk).err().map(Into::into)
 }
 
 /// The CRC32 of a chunk's header, the one its `header_chunk_checksum` holds: bytes 0..120 and
