@@ -28,7 +28,7 @@ Take every other step without asking. These are the common ones:
 - Create a branch, and push commits to a branch that you created.
 - Open a pull request, edit its description, and change its base branch.
 - Merge `master` into the branch of your pull request.
-- Retry a build, a test run, a download, a fetch or a push that failed.
+- Retry a build, a test run, a download, a fetch or a push that failed, and re-run a CI job that failed for a reason outside the change.
 - Reply to a review comment on your own pull request and resolve its thread. This includes the comments of Cursor Bugbot.
 - Merge your own pull request when it has passed every step in "How a change ships". A release pull request is the exception: see rule 1.
 - Edit these instructions.
@@ -46,7 +46,7 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 
 Before you push, run the checks in "This repository" that match what you changed. A change to these instruction files alone needs none. Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
 
-A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job failed for a reason outside the change, such as a runner or a network fault, check whether `master` has moved since. If it has, merging it into the branch starts a new run. If it has not, tell Omer which job needs a re-run, and carry on with other work while you wait.
+When a CI job failed for a reason outside the change, such as a runner or a network fault, or was cancelled before it got a runner, re-run the failed jobs of that run once. A cloud session does this with the `rerun_failed_jobs` method of the GitHub tool `actions_run_trigger`, and a local session with `gh run rerun <run id> --failed`. If the job fails the same way again, tell Omer which job it is, and carry on with other work while you wait. Do not re-run a job that failed because of the change: fix the cause. A re-run of a release run publishes, so rule 1 covers it: re-run one only to finish a release that Omer told you to merge.
 
 Do not force-push unless a person in the session asks you to. Cloud sessions refuse it in any case, even `--force-with-lease` on your own branch. Correct a pushed commit with a new commit, and bring a branch up to date by merging `master` into it.
 
