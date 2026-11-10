@@ -19,43 +19,18 @@ Choose a **TAG**: a short, unique slug for this pass (e.g. `json_writer_01`).
 
 ## Measure: once before the change, once after
 
-Run this script from the root of the repository with `STAGE=pre` before you change any code, and with `STAGE=post` after the change. It saves the binary, benchmarks it, and records a profile. The folders `binaries/`, `benchmarks/` and `profile/` are in `.gitignore`.
+`scripts/perf_pass.sh` saves the release binary, benchmarks it with `hyperfine`, and records a `samply` profile with tables of the hottest functions. Run it from the root of the repository:
 
 ```bash
-set -euo pipefail
-
-TAG="REPLACE_WITH_PASS_TAG"
-STAGE="pre"   # "pre" before the change, "post" after it
-SAMPLE=samples/security_big_sample.evtx
-mkdir -p binaries benchmarks profile
-
-# `bench` builds `bench_evtx_dump_loop`, which the profile uses.
-cargo build --release --features "fast-alloc bench" --bin evtx_dump --bin bench_evtx_dump_loop
-BIN="binaries/evtx_dump_${TAG}_${STAGE}"
-cp target/release/evtx_dump "$BIN"
-cp target/release/bench_evtx_dump_loop "${BIN}_loop"
-
-# Benchmark: change the command to fit this pass. The post run compares both binaries.
-CMDS=("binaries/evtx_dump_${TAG}_pre -t 1 -o json $SAMPLE")
-if [ "$STAGE" = post ]; then
-  CMDS+=("$BIN -t 1 -o json $SAMPLE")
-fi
-hyperfine -w 10 -r 20 "${CMDS[@]}" | tee "benchmarks/benchmark_${TAG}_${STAGE}.txt"
-
-# Profile: `samply` records it, and the script writes tables of the hottest functions
-# (`top_leaves_<label>_cpu.md`, `top_inclusive_<label>_cpu.md`, `leaf_callers_<label>.md`).
-samply record --save-only --unstable-presymbolicate \
-  -o "profile/${TAG}_${STAGE}.json.gz" -- \
-  "${BIN}_loop" --file "$SAMPLE" --loops 20 --threads 1
-python3 scripts/samply_extract_tables.py \
-  --profile "profile/${TAG}_${STAGE}.json.gz" \
-  --syms "profile/${TAG}_${STAGE}.json.syms.json" \
-  --out-dir profile --label "${TAG}_${STAGE}"
+scripts/perf_pass.sh <TAG> pre    # before you change any code
+scripts/perf_pass.sh <TAG> post   # after the change: benchmarks the pre binary against the new one
 ```
 
-`bench_evtx_dump_loop` renders JSON. For a pass on another output, profile `evtx_dump` itself with the options of that pass.
-
-When the difference is within the noise of `hyperfine`, count instructions instead: `valgrind --tool=cachegrind --cache-sim=no binaries/evtx_dump_${TAG}_pre -t 1 -o json "$SAMPLE" > /dev/null`, and the same for the post binary.
+- The benchmark is `evtx_dump -t 1 -o json` on `samples/security_big_sample.evtx`. For another scenario, pass `--file <path>` and the `evtx_dump` arguments after `--`, the same for both stages: `scripts/perf_pass.sh <TAG> pre --file <path> -- -t 1 -o jsonl --separate-json-attributes`. Use one tag for each scenario that "Speed is a feature" asks for.
+- When the difference is within the noise of `hyperfine`, add `--cachegrind` to both stages and compare the instruction counts.
+- The profile comes from `bench_evtx_dump_loop`, which always renders JSON without indentation and uses the system allocator. Use it to find hotspots in parsing and rendering. The benchmark, not the profile, is the measure of the pass.
+- Where `samply` cannot run, such as a cloud container, the script says so and keeps the benchmark. `--skip-samply` leaves the profile out.
+- `scripts/perf_pass.sh --help` lists the files that it writes.
 
 Use the pre benchmark and profile to:
 
@@ -77,7 +52,6 @@ Use the pre benchmark and profile to:
   - A performance trick must be explainable in a comment.
 
 - **Use what exists**:
-  - Keep `--features fast-alloc` on for every measurement.
   - Reuse the existing arenas, caches and writers before you add new state.
 
 ---
