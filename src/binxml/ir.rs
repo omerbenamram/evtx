@@ -537,8 +537,9 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             // Chunk streams reference the string table, whose names were checked as they
             // were read.
             Some(chunk) => match chunk.string_cache.get_cached_string(offset) {
-                Some(name) if name.is_xml_name() => return Ok(Name::new(name.as_str())),
-                Some(name) => return Err(not_a_name(name.as_str())),
+                Some(name) => {
+                    return Name::from_table(name).ok_or_else(|| not_a_name(name.as_str()));
+                }
                 None => read_string_at(offset, chunk, self.src.bump),
             },
             // WEVT templates inline names.
