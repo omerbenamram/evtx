@@ -42,6 +42,12 @@ and this project adheres to
 
 ### Fixed
 
+- An element, attribute, entity or processing-instruction name that isn't an XML name (one
+  with a quote, a space, `<`, `>`, `=` or a control character in it, or an empty one) now fails
+  its record with "a name that is not an XML name". Names are written as they are, so a crafted
+  log could close a tag or a JSON key early and have the rest of the name read as markup:
+  a name of `x":1,"y` gave the JSON keys `x` and `y`, and one of `x y="1"` an XML attribute.
+  Windows writes names from a provider's manifest, which are XML names.
 - `EvtxRecord::template_instances()` now includes the template instances inside
   BinXML-typed values. It returned only the outer instance, the one that fills in `System`,
   for every Windows event, so the provider's own values (`EventData`, `UserData`) were out of

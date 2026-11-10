@@ -534,6 +534,11 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             Some(chunk) => expand_string_ref(offset, chunk, self.src.bump),
             None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
         }?;
+        if !is_xml_name(name) {
+            return Err(EvtxError::FailedToCreateRecordModel(
+                "a name that is not an XML name",
+            ));
+        }
         Ok(Name::new(name))
     }
 
@@ -1379,6 +1384,30 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
         ),
         other => Ok(Node::Value(other)),
     }
+}
+
+/// Whether `name` can be written as it is where XML and JSON output put a name: as an element
+/// or attribute name, an entity reference, a processing instruction target, or a JSON key.
+///
+/// Names are written without escaping (XML has no way to escape one), so a name with a quote,
+/// a space or an angle bracket in it would end its tag or its key early and have the rest read
+/// as markup. Windows writes names that came from a manifest, which are XML names; these are
+/// the ASCII rules of an XML `Name`, with every other character allowed unless it is a control
+/// or white space.
+fn is_xml_name(name: &str) -> bool {
+    let ascii_start = |b: u8| b.is_ascii_alphabetic() || b == b'_' || b == b':';
+    let ascii_rest = |b: u8| ascii_start(b) || b.is_ascii_digit() || b == b'-' || b == b'.';
+    let Some(&first) = name.as_bytes().first() else {
+        return false;
+    };
+    if name.is_ascii() {
+        return ascii_start(first) && name.bytes().all(ascii_rest);
+    }
+    (!first.is_ascii() || ascii_start(first))
+        && name.chars().all(|c| match u8::try_from(c) {
+            Ok(b) if b.is_ascii() => ascii_rest(b),
+            _ => !c.is_control() && !c.is_whitespace(),
+        })
 }
 
 fn expand_string_ref<'a>(
