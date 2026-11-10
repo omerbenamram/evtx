@@ -1,7 +1,9 @@
 use crate::EvtxChunk;
 use crate::binxml::BinXmlTemplateValues;
 use crate::binxml::compiled::Budget;
-use crate::binxml::ir::{MAX_BINXML_NESTING, RecordContent, binxml_slice_offset_in};
+use crate::binxml::ir::{
+    MAX_BINXML_NESTING, RecordContent, binxml_slice_offset_in, read_template_definition_header_at,
+};
 use crate::binxml::tokens::{Stream, TokenSink, walk_tokens};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
@@ -212,7 +214,8 @@ impl<'a> EvtxRecord<'a> {
     /// value, the provider's own template, that fills in `EventData` or `UserData`.
     ///
     /// Each has its template's GUID, also when the record refers to a definition stored
-    /// earlier in the chunk; it is `None` only when the definition can't be read.
+    /// earlier in the chunk: it is read from where the instance says the definition is, and is
+    /// `None` when that is outside the chunk.
     ///
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
     /// values without building a legacy token vector.
@@ -259,10 +262,15 @@ fn collect_template_instances<'a>(
     walk_tokens(stream, start, len, false, &mut sink)?;
 
     let embedded = |bytes: &'a [u8], instances: &mut Vec<_>| {
-        // An empty one is an optional value left out. Past the depth the renderer allows, the
-        // record doesn't render either.
-        if bytes.is_empty() || depth >= MAX_BINXML_NESTING {
+        // An empty one is an optional value left out.
+        if bytes.is_empty() {
             return Ok(());
+        }
+        // As for rendering the record.
+        if depth >= MAX_BINXML_NESTING {
+            return Err(EvtxError::FailedToCreateRecordModel(
+                "BinXML fragments nested too deeply",
+            ));
         }
         let start = binxml_slice_offset_in(chunk.data, bytes)? as usize;
         collect_template_instances(chunk, start, bytes.len(), depth + 1, instances)
@@ -273,21 +281,16 @@ fn collect_template_instances<'a>(
             Found::Instance(mut instance) => {
                 // An instance carries the GUID itself only where the definition is inline.
                 if instance.template_guid.is_none() {
-                    let guid_at = instance.template_def_offset as usize + 4;
-                    instance.template_guid =
-                        bytes::read_array::<16>(chunk.data, guid_at).map(Guid::from_bytes);
+                    let offset = instance.template_def_offset;
+                    let header = read_template_definition_header_at(chunk.data, offset);
+                    instance.template_guid = header.ok().map(|h| Guid::from_bytes(h.guid));
                 }
-                let streams: Vec<&'a [u8]> = instance
-                    .values
-                    .iter()
-                    .filter_map(|value| match value {
-                        BinXmlValue::BinXmlType(bytes) => Some(*bytes),
-                        _ => None,
-                    })
-                    .collect();
+                let at = instances.len();
                 instances.push(instance);
-                for bytes in streams {
-                    embedded(bytes, instances)?;
+                for value in 0..instances[at].values.len() {
+                    if let BinXmlValue::BinXmlType(bytes) = instances[at].values[value] {
+                        embedded(bytes, instances)?;
+                    }
                 }
             }
         }

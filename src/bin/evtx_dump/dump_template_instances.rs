@@ -97,7 +97,13 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                 continue;
             }
 
-            let instances = record.template_instances()?;
+            let instances = match record.template_instances() {
+                Ok(instances) => instances,
+                Err(e) => {
+                    eprintln!("record {}: {e}", record.event_record_id);
+                    continue;
+                }
+            };
             for (template_instance_index, tpl) in instances.iter().enumerate() {
                 if only_index.is_some_and(|only| only != template_instance_index) {
                     continue;

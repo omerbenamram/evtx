@@ -259,21 +259,30 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                         // the instance only when it can. Otherwise it is the second one: in
                         // a Windows event the first fills in `System`, and the second is the
                         // provider's own template.
-                        None => instances
-                            .iter()
-                            .find(|instance| {
+                        None => {
+                            let same_template = instances.iter().position(|instance| {
                                 instance.template_guid.as_ref().is_some_and(|guid| {
                                     normalize_guid(&guid.to_string()) == template_guid
                                 })
-                            })
-                            .or(instances.get(1))
-                            .or(instances.first())
-                            .ok_or_else(|| {
+                            });
+                            let index = same_template.unwrap_or(usize::from(instances.len() > 1));
+                            let instance = instances.get(index).ok_or_else(|| {
                                 format_err!(
                                     "record {} has no TemplateInstance",
                                     record.event_record_id
                                 )
-                            })?,
+                            })?;
+                            if same_template.is_none() {
+                                eprintln!(
+                                    "note: record {} has no instance of template {}; using the values of instance {} of {} (--template-instance-index picks another)",
+                                    record.event_record_id,
+                                    template_guid,
+                                    index,
+                                    instances.len()
+                                );
+                            }
+                            instance
+                        }
                     };
                     break 'found render_template_definition_to_xml_with_values(
                         tpl,
