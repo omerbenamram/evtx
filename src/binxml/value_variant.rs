@@ -440,12 +440,22 @@ impl<'a> BinXmlValue<'a> {
                 if size_usize == 0 {
                     return Ok(BinXmlValue::StringArrayType(&[]));
                 }
-                let start = cursor.pos();
-                let end = start.saturating_add(size_usize);
+                // NUL-terminated strings, one after the other, within the value's own bytes. A
+                // last string without its NUL still counts.
+                let raw = cursor.take_bytes(size_usize & !1, "string_array")?;
+                cursor.take_bytes(size_usize & 1, "string_array")?;
                 let mut out = bumpalo::collections::Vec::new_in(arena);
-                while cursor.pos() < end {
-                    let s = cursor.null_terminated_utf16_string("string_array")?;
-                    out.push(s);
+                let mut start = 0;
+                let item =
+                    |from: usize, to: usize| Utf16LeSlice::new(&raw[from..to], (to - from) / 2);
+                for (at, unit) in raw.chunks_exact(2).enumerate() {
+                    if unit == [0, 0] {
+                        out.push(item(start, at * 2));
+                        start = at * 2 + 2;
+                    }
+                }
+                if start < raw.len() {
+                    out.push(item(start, raw.len()));
                 }
                 BinXmlValue::StringArrayType(out.into_bump_slice())
             }

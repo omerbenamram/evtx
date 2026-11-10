@@ -285,7 +285,7 @@ pub(crate) fn read_template_values_cursor<'a>(
             substitution = descriptor.value_type,
         );
 
-        let value = BinXmlValue::deserialize_value_type_cursor_in(
+        let mut value = BinXmlValue::deserialize_value_type_cursor_in(
             &descriptor.value_type,
             cursor,
             Some(descriptor.size),
@@ -306,7 +306,12 @@ pub(crate) fn read_template_values_cursor<'a>(
         let current_position = cursor.position();
         let expected_position = position_before_reading_value + u64::from(descriptor.size);
 
-        if current_position > expected_position {
+        if current_position > expected_position && descriptor.size == 0 {
+            // A value of a type with a width that has no bytes is no value, as a string, an
+            // array or a BinXML fragment with none is. What was read was the next value's.
+            value = BinXmlValue::NullType;
+            cursor.set_pos_u64(expected_position, "empty template value")?;
+        } else if current_position > expected_position {
             // The value took more bytes than are its own: the rest were the next values'. It
             // isn't what its descriptor says, and nothing after it is where it should be.
             return Err(DeserializationError::Truncated {
