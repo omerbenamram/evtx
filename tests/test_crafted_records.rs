@@ -694,12 +694,17 @@ fn open_event(root: &mut BinXml) {
     root.end_element();
 }
 
+/// Settings with an `.MTA` file that names level 0 of `P`.
+fn naming_level(level: &str) -> ParserSettings {
+    let mta = mta_naming_level("P", level);
+    ParserSettings::new().mta(Some(Arc::new(MtaFile::from_bytes(&mta).unwrap())))
+}
+
 /// Settings with an `.MTA` file that names level 0 of `P` with 16 Mi characters: the
 /// `RenderingInfo` of an event of `P` passes the cap on its own. The JSON writer reserves six
 /// bytes a character for a string, so the chunk renderer's buffer reaches 96 MiB.
 fn long_level_name() -> ParserSettings {
-    let mta = mta_naming_level("P", &"L".repeat(16 << 20));
-    ParserSettings::new().mta(Some(Arc::new(MtaFile::from_bytes(&mta).unwrap())))
+    naming_level(&"L".repeat(16 << 20))
 }
 
 #[test]
@@ -1012,6 +1017,38 @@ fn depth_is_capped() {
     assert_fails_everywhere(&nested(213), DEPTH_ERROR);
     // Each instance nests 101 elements: 1,212 levels would overflow the stack of the walkers.
     assert_fails_everywhere(&fan_out(12, 1, 100), DEPTH_ERROR);
+}
+
+#[test]
+fn a_deep_template_renders_from_its_tree_on_a_small_stack() {
+    // Cloning a template into a record's tree recursed once per element level, with frames of
+    // nearly 4 KiB a level in a debug build: a template nesting elements as deep as the cap
+    // (`MAX_ELEMENT_DEPTH`, 512) overflowed 1 MiB.
+    // The records API renders from the tree when it has an `.MTA` file.
+    let evtx = synthetic_evtx(|record| {
+        record.fragment_header().template_instance(
+            |root| {
+                for _ in 0..512 {
+                    root.open("R", true).close_start();
+                }
+                root.open("E", true).close_empty();
+                for _ in 0..512 {
+                    root.end_element();
+                }
+            },
+            Vec::new(),
+        );
+    });
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            for pass in render_passes_with(&evtx, 2 << 20, naming_level("Info")) {
+                assert!(pass[0].is_ok(), "{:?}", pass[0]);
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
@@ -1423,4 +1460,168 @@ fn a_record_builds_within_one_budget() {
             .eof();
     });
     assert_fails_as(&evtx, None, Some(NODES_ERROR));
+}
+
+/// Settings with the messages of `samples/dlls`, which has event 4624 of
+/// `Microsoft-Windows-Security-Auditing`.
+#[cfg(feature = "wevt_templates")]
+fn security_messages() -> ParserSettings {
+    use evtx::wevt_templates::messages::MessageCatalog;
+    let catalog = MessageCatalog::from_directory(samples_dir().join("dlls"), None).unwrap();
+    ParserSettings::new().messages(Some(Arc::new(catalog)))
+}
+
+/// Event 4624 of `Microsoft-Windows-Security-Auditing` (which `security_messages` has the
+/// message of), whose `UserData` holds an instance of the template `definition` writes. Its
+/// value 0 holds another instance of that template, `instances` deep, then a string.
+#[cfg(feature = "wevt_templates")]
+fn logon_with_user_data(instances: u32, definition: impl FnOnce(&mut BinXml)) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Event", true).close_start();
+                    root.open("System", true).close_start();
+                    (root.open_with_attributes("Provider", true))
+                        .attribute("Guid")
+                        .text("{54849625-5478-4994-a5ba-3e3b0328c30d}")
+                        .close_empty();
+                    root.open("EventID", true)
+                        .close_start()
+                        .text("4624")
+                        .end_element();
+                    root.end_element();
+                    root.open("UserData", true)
+                        .close_start()
+                        .substitution(0, 0x21)
+                        .end_element();
+                    root.end_element();
+                },
+                vec![value(0x21, move |fragment| {
+                    fragment
+                        .fragment_header()
+                        .template_instance(definition, vec![nested_refs(instances - 1, string_x)])
+                        .eof();
+                })],
+            )
+            .eof();
+    })
+}
+
+/// Each pass renders the one record of `evtx` with `settings`, which fails with `error`.
+#[cfg(feature = "wevt_templates")]
+fn assert_fails_with(evtx: &[u8], settings: ParserSettings, error: &str) {
+    for pass in render_passes_with(evtx, 32 << 20, settings) {
+        let [result] = pass.as_slice() else {
+            panic!("{} records", pass.len());
+        };
+        assert_error(result, error);
+    }
+}
+
+#[cfg(feature = "wevt_templates")]
+#[test]
+fn message_inserts_of_deep_user_data_are_bounded() {
+    // 60 instances of 500 elements: reading the message's inserts recursed 30,000 times, and
+    // overflowed the stack.
+    let evtx = logon_with_user_data(60, |d| {
+        for level in 0..500 {
+            match level {
+                0 => d.open("N", true),
+                _ => d.reopen(true),
+            }
+            .close_start();
+        }
+        d.substitution(0, 0x21);
+        for _ in 0..500 {
+            d.end_element();
+        }
+    });
+    // The tree builder recurses through the 500 levels of one instance, which takes more than the
+    // 2 MiB of a test thread in a debug build on some targets (macOS on arm64). 4 MiB is enough
+    // for that, and still too little for the 30,000 levels the inserts used to recurse through.
+    let messages = security_messages();
+    std::thread::Builder::new()
+        .stack_size(4 << 20)
+        .spawn(move || assert_fails_with(&evtx, messages, DEPTH_ERROR))
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[cfg(feature = "wevt_templates")]
+#[test]
+fn message_inserts_of_shared_user_data_are_bounded() {
+    // 16 uses, 8 instances deep: reading the message's inserts walked to 16^8 leaves, and ran
+    // out of memory.
+    let evtx = logon_with_user_data(8, |d| {
+        d.open("R", true).close_start();
+        for _ in 0..16 {
+            d.open("A", true)
+                .close_start()
+                .substitution(0, 0x21)
+                .end_element();
+        }
+        d.end_element();
+    });
+    assert_fails_with(&evtx, security_messages(), NODES_ERROR);
+}
+
+/// The message of event 4624 of `Microsoft-Windows-Security-Auditing` whose `EventData` holds
+/// `strings` strings, then the number 255.
+#[cfg(feature = "wevt_templates")]
+fn logon_message(strings: usize) -> String {
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Event", true).close_start();
+                    root.open("System", true).close_start();
+                    (root.open_with_attributes("Provider", true))
+                        .attribute("Guid")
+                        .text("{54849625-5478-4994-a5ba-3e3b0328c30d}")
+                        .close_empty();
+                    root.open("EventID", true)
+                        .close_start()
+                        .text("4624")
+                        .end_element();
+                    root.end_element();
+                    root.open("EventData", true).close_start();
+                    for _ in 0..strings {
+                        root.open("Data", true).close_start().text("s").end_element();
+                    }
+                    root.open("Data", true)
+                        .close_start()
+                        .substitution(0, 0x0A)
+                        .end_element();
+                    root.end_element();
+                    root.end_element();
+                },
+                vec![value(0x0A, |v| {
+                    v.raw(&255u64.to_le_bytes());
+                })],
+            )
+            .eof();
+    });
+    let mut parser = EvtxParser::from_buffer(evtx)
+        .unwrap()
+        .with_configuration(security_messages());
+    let record = parser.records_json_value().next().unwrap().unwrap();
+    record.data["Event"]["RenderingInfo"]["Message"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[cfg(feature = "wevt_templates")]
+#[test]
+fn message_inserts_are_hex_only_by_their_own_item() {
+    // The fourth item of event 4624's template, `SubjectLogonId`, is shown in hex. Its value
+    // here is the fourth of four, but the template has 27 items: the values can't be told to
+    // be the template's items, and render as their XML does.
+    let message = logon_message(3);
+    assert!(message.contains("255"), "{message}");
+    assert!(!message.contains("0xFF"), "{message}");
 }

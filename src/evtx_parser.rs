@@ -102,7 +102,6 @@ fn render_chunk<P: StoredProgram>(
 
     let chunk_ref: &EvtxChunk = chunk;
     let settings = &chunk_ref.settings;
-    let mta = settings.get_mta();
     // At least 128 KiB, and at most 1 MiB so that one unusual chunk doesn't
     // make every later buffer that big.
     let capacity = largest_output
@@ -138,17 +137,18 @@ fn render_chunk<P: StoredProgram>(
         let body_start = data.len();
         let rendered = budget
             .render(MAX_RENDER_NODES, &mut data, |budget, data| {
-                let compiled = try_render_compiled(
-                    raw.bytes,
-                    event_record_id,
-                    chunk_ref,
-                    &mut ir_cache,
-                    &mut progs,
-                    &mut preflight,
-                    &mut value_renderer,
-                    budget,
-                    data,
-                )?;
+                let compiled = !settings.needs_tree_for_strings()
+                    && try_render_compiled(
+                        raw.bytes,
+                        event_record_id,
+                        chunk_ref,
+                        &mut ir_cache,
+                        &mut progs,
+                        &mut preflight,
+                        &mut value_renderer,
+                        budget,
+                        data,
+                    )?;
                 if compiled {
                     return Ok(());
                 }
@@ -160,14 +160,7 @@ fn render_chunk<P: StoredProgram>(
                     &mut ir_cache,
                     budget,
                 )?;
-                if let Some(mta) = mta {
-                    crate::mta::add_rendering_info(
-                        &mut tree,
-                        event_record_id,
-                        mta,
-                        &chunk_ref.arena,
-                    );
-                }
+                settings.add_rendering_info(&mut tree, event_record_id, &chunk_ref.arena);
                 P::render_tree(&tree, settings, budget, data)
             })
             // Errors match the shape of `into_xml_bytes`/`into_json_bytes`.
@@ -316,6 +309,9 @@ pub struct ParserSettings {
     wevt_cache: Option<Arc<crate::wevt_templates::WevtCache>>,
     /// Optional `.MTA` file whose localized strings are added to records as `RenderingInfo`.
     mta: Option<Arc<MtaFile>>,
+    /// Optional provider messages added to records as `RenderingInfo`.
+    #[cfg(feature = "wevt_templates")]
+    messages: Option<Arc<crate::wevt_templates::messages::MessageCatalog>>,
 }
 
 impl Debug for ParserSettings {
@@ -332,6 +328,8 @@ impl Debug for ParserSettings {
         ds.field("wevt_cache", &self.wevt_cache.is_some());
 
         ds.field("mta", &self.mta.is_some());
+        #[cfg(feature = "wevt_templates")]
+        ds.field("messages", &self.messages.is_some());
 
         ds.finish()
     }
@@ -341,7 +339,9 @@ impl PartialEq for ParserSettings {
     fn eq(&self, other: &ParserSettings) -> bool {
         // Caches and MTA files compare by identity.
         #[cfg(feature = "wevt_templates")]
-        if self.wevt_cache.as_ref().map(Arc::as_ptr) != other.wevt_cache.as_ref().map(Arc::as_ptr) {
+        if self.wevt_cache.as_ref().map(Arc::as_ptr) != other.wevt_cache.as_ref().map(Arc::as_ptr)
+            || self.messages.as_ref().map(Arc::as_ptr) != other.messages.as_ref().map(Arc::as_ptr)
+        {
             return false;
         }
         self.ansi_codec.name() == other.ansi_codec.name()
@@ -366,6 +366,8 @@ impl Default for ParserSettings {
             #[cfg(feature = "wevt_templates")]
             wevt_cache: None,
             mta: None,
+            #[cfg(feature = "wevt_templates")]
+            messages: None,
         }
     }
 }
@@ -426,6 +428,20 @@ impl ParserSettings {
         self
     }
 
+    /// Add each record's message, and its level, task, opcode and keyword names, from provider
+    /// binaries as a `RenderingInfo` element. See [`crate::wevt_templates::messages`]. An `.MTA`
+    /// file's strings ([`ParserSettings::mta`]) win over these.
+    ///
+    /// Rendering then builds each record's tree, which makes it several times slower.
+    #[cfg(feature = "wevt_templates")]
+    pub fn messages(
+        mut self,
+        messages: Option<Arc<crate::wevt_templates::messages::MessageCatalog>>,
+    ) -> Self {
+        self.messages = messages;
+        self
+    }
+
     pub fn validate_checksums(mut self, validate_checksums: bool) -> Self {
         self.validate_checksums = validate_checksums;
 
@@ -476,6 +492,37 @@ impl ParserSettings {
 
     pub(crate) fn get_mta(&self) -> Option<&MtaFile> {
         self.mta.as_deref()
+    }
+
+    /// Whether records get strings that only their tree can give, so the compiled renderer
+    /// can't render them.
+    ///
+    /// With a message catalog, that is every record, even one whose provider the catalog
+    /// doesn't have: telling them apart before the tree is built would need the provider's
+    /// GUID from the compiled program, as `mta::SystemFields` reads the provider's name.
+    pub(crate) fn needs_tree_for_strings(&self) -> bool {
+        #[cfg(feature = "wevt_templates")]
+        if self.messages.is_some() {
+            return true;
+        }
+        false
+    }
+
+    /// Adds the `RenderingInfo` element of the `.MTA` file, then of the message catalog, to a
+    /// record's tree.
+    pub(crate) fn add_rendering_info<'a>(
+        &'a self,
+        tree: &mut crate::model::ir::IrTree<'a>,
+        record_number: u64,
+        bump: &'a bumpalo::Bump,
+    ) {
+        if let Some(mta) = self.get_mta() {
+            crate::mta::add_rendering_info(tree, record_number, mta, bump);
+        }
+        #[cfg(feature = "wevt_templates")]
+        if let Some(messages) = &self.messages {
+            crate::wevt_templates::messages::add_rendering_info(tree, messages, bump);
+        }
     }
 
     pub(crate) fn should_separate_json_attributes(&self) -> bool {
