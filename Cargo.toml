@@ -19,6 +19,7 @@ exclude = [
     # Instructions for AI agents, not part of the crate.
     ".claude/**",
     ".cursor/**",
+    ".cursorignore",
     "AGENTS.md",
     "CLAUDE.md",
 ]

@@ -23,7 +23,7 @@ A deliberate blocker is different. Examples are a safety check that refuses a co
 Two kinds of action wait for Omer. Nothing else in this repository needs his approval.
 
 1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. Open a `chore(release): X.Y.Z` pull request only when Omer asks for a release. Merge it only when he tells you to, because that merge tags the commit and publishes it. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
-2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees.
+2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
 
 These steps need no approval, so take them without asking:
 
@@ -32,7 +32,7 @@ These steps need no approval, so take them without asking:
 - Merge `master` into the branch of your pull request.
 - Retry a build, a test run, a download, a fetch or a push that failed.
 - Reply to a review comment on your own pull request and resolve its thread. This includes the comments of Cursor Bugbot.
-- Merge your own pull request when it has passed every step in "How a change ships".
+- Merge your own pull request when it has passed every step in "How a change ships". A release pull request is the exception: see rule 1.
 - Edit these instructions.
 
 ## How a change ships
@@ -44,13 +44,15 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 3. **Review on Fable.** From the orchestrating session, run `/code-review` at medium effort or higher, then `/simplify`, and apply what they find. Both must run on Claude Fable: if the session is on another model, switch it to Fable first. Your own reading of the diff does not replace either review, and low effort is not enough for `/code-review`.
 4. **Bugbot.** If Cursor Bugbot commented on the pull request, fix every comment and resolve its thread. If Bugbot could not run, for example because of its usage limit, carry on: `/code-review` is the main review.
 5. **CI.** Every check is green. Fix the cause of a red check. Do not skip, disable or loosen a test to get there.
-6. **Merge.** Merge the pull request yourself. Do not wait for Omer.
+6. **Merge.** Merge the pull request yourself. Do not wait for Omer. The exception is a `chore(release)` pull request, which merges only when he tells you to.
 
 Omer set the models in steps 2 and 3: the reviews on Fable, the building on Opus. The two reviews stand in for his own reading of the diff, which is why neither one is optional.
 
 The pull request description is what Omer reads, and he reads it instead of the diff. List every change in behaviour, including the small ones and the ones that nobody asked for. Name the reviews that ran, with the effort level and the model, and say what each one found. If a review did not run, say so and leave the pull request open.
 
-Do not force-push. Cloud sessions refuse it, even `--force-with-lease` on your own branch. Correct a pushed commit with a new commit, and bring a branch up to date by merging `master` into it.
+A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job failed for a reason outside the change, such as a runner or a network fault, check whether `master` has moved since. If it has, merging it into the branch starts a new run. If it has not, tell Omer which job needs a re-run, and carry on with other work while you wait.
+
+Do not force-push unless a person in the session asks you to. Cloud sessions refuse it in any case, even `--force-with-lease` on your own branch. Correct a pushed commit with a new commit, and bring a branch up to date by merging `master` into it.
 
 When one change depends on another, stack the pull requests (`gh stack` does this where `gh` is available). GitHub does not move a stacked pull request to `master` when the one under it merges, because merged branches are kept. So after each merge, change the base of every pull request that was stacked on it to `master`. Then check that the merged commits reached `master`: `git merge-base --is-ancestor <head> origin/master`. A pull request that merged into a branch whose own pull request had already merged is stranded. Merge that branch into the next open pull request of the stack, or open a new pull request for it.
 
@@ -58,7 +60,7 @@ When one change depends on another, stack the pull requests (`gh stack` does thi
 
 A subagent starts with none of your context. It knows only what you put in its brief, and you see only the report that it sends back. Each one also spends tokens as a full session does, and every session on the account shares one usage limit. Start a subagent when the work repays that cost.
 
-- Use `builder` (`.claude/agents/builder.md`, Claude Opus) to implement a change: one builder for a pull request, or one for a stack of dependent pull requests. Run builders in parallel only when their changes do not touch the same files.
+- Use `builder` (`.claude/agents/builder.md`, Claude Opus) to implement a change: one builder for a pull request, or one for a stack of dependent pull requests. Run builders in parallel only for changes that do not depend on each other, and give each one its own git worktree (`isolation: worktree` on the Agent call). Two builders in one checkout switch branches under each other.
 - Make a change of a few lines yourself when you already know what it is.
 - Do not start a subagent to review a change. `/code-review` and `/simplify` do that from your own session.
 - Do not start a subagent for a lookup that takes you a few tool calls.
@@ -86,9 +88,12 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 - `cargo test --manifest-path utf16-simd/Cargo.toml`
 - `cargo build --bin evtx_dump --features fast-alloc`. The release builds `evtx_dump` with a different allocator on each platform, and the Windows link once failed only there.
 - When you change the parser: `python3 fuzz/seed_corpus.py`, then `cargo +nightly fuzz run <target> -- -runs=0` for each target that `cargo fuzz list` prints.
+- When you change `src/`: `cargo check --manifest-path evtx-wasm/Cargo.toml --target wasm32-unknown-unknown`. The `viewer` job builds this crate for WebAssembly without its default features on every pull request, so code that needs threads, files or an `evtx_dump` dependency outside its feature gate fails there.
 - When you change `evtx-wasm/`: `wasm-pack build evtx-wasm --target web --out-dir evtx-viewer/src/wasm --out-name evtx_wasm --release`, then `bun install --frozen-lockfile` and `bun run check` in `evtx-wasm/evtx-viewer`. In a cloud session, replace `--release` with `--no-opt`, because the optimizer cannot be downloaded there.
 
-CI does not run rustfmt or clippy here, and the tree is not rustfmt-clean. Format the lines that you change, and do not reformat other code in the same pull request.
+CI does not run rustfmt or clippy here. `cargo fmt -- --check` passes for the `evtx` crate, so keep it passing. One bench file in `utf16-simd/` is not formatted yet.
+
+Other commands: `cargo bench` runs the benchmarks, and `./build_pgo.sh` makes a profile-guided build (Linux only). The default features are `multithreading` and `evtx_dump`; `fast-alloc` is opt-in.
 
 ### Code rules
 
@@ -98,7 +103,8 @@ CI does not run rustfmt or clippy here, and the tree is not rustfmt-clean. Forma
 - The XML and JSON output is an API: users' pipelines compare it, and so do the `insta` snapshots in `tests/snapshots`. Review a changed snapshot with `cargo insta review`, accept only the changes that you intended, and list them in `CHANGELOG.md`.
 - Timestamps use `jiff`. Do not add `chrono`: Omer prefers `jiff`, and `chrono` is out of the dependency tree since #364.
 - Speed is a feature. When you change the parse or render path, compare before and after on `samples/security_big_sample.evtx` with a release build with `--features fast-alloc`. Use `hyperfine` for time, or `valgrind --tool=cachegrind` for instruction counts. Omer's bar so far is that a fix costs at most about 0.5% there.
-- Public API items have doc comments.
+- Public API items have doc comments, with an example where one helps.
+- Order imports as the standard library, then external crates, then this crate's modules. `lib.rs` exports the public API.
 - A pull request that changes behaviour adds an entry under `## [Unreleased]` in `CHANGELOG.md`, and puts a breaking change under `### Breaking changes`. Open pull requests therefore conflict in that file: merge `master` and keep both entries.
 
 ### Issues
@@ -108,10 +114,6 @@ First decide whether an issue is a bug or a feature request. A bug needs enough 
 ### Releases
 
 `RELEASING.md` has the steps. Before you open the release pull request, run `cargo test`, `cargo test --manifest-path utf16-simd/Cargo.toml` and `cargo publish --dry-run`. Do not run `cargo publish` or push the tag by hand: a manual publish makes the workflow's publish step fail. After the merge, check that the `release.yml` run passed, that the GitHub release `vX.Y.Z` exists, and that crates.io shows the new versions. Omer wants `evtx` and `pyevtx-rs` released together, and `pyevtx-rs` releases after the crate is on crates.io.
-
-### Cloud sessions
-
-A cloud session cannot re-run or dispatch a GitHub Actions job: the API answers 403. When a job needs a re-run and not a fix, say so to Omer.
 
 ## Editing these instructions
 
