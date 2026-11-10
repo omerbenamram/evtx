@@ -236,66 +236,64 @@ fn collect_template_instances<'a>(
     depth: usize,
     instances: &mut Vec<BinXmlTemplateValues<'a>>,
 ) -> Result<()> {
-    /// What a stream holds that can hold instances, in order.
-    enum Found<'a> {
-        Instance(BinXmlTemplateValues<'a>),
-        /// A BinXML-typed value outside an instance.
-        Embedded(&'a [u8]),
+    struct Sink<'a, 'o> {
+        chunk: &'a EvtxChunk<'a>,
+        depth: usize,
+        instances: &'o mut Vec<BinXmlTemplateValues<'a>>,
     }
-    struct Sink<'a>(Vec<Found<'a>>);
-    impl<'a> TokenSink<'a> for Sink<'a> {
-        fn template_instance(&mut self, template: BinXmlTemplateValues<'a>) -> Result<()> {
-            self.0.push(Found::Instance(template));
+
+    impl<'a> Sink<'a, '_> {
+        /// A BinXML-typed value: a stream of its own.
+        fn embedded(&mut self, bytes: &'a [u8]) -> Result<()> {
+            // An empty one is an optional value left out.
+            if bytes.is_empty() {
+                return Ok(());
+            }
+            let start = binxml_slice_offset_in(self.chunk.data, bytes)? as usize;
+            let depth = self.depth + 1;
+            collect_template_instances(self.chunk, start, bytes.len(), depth, self.instances)
+        }
+    }
+
+    impl<'a> TokenSink<'a> for Sink<'a, '_> {
+        fn template_instance(&mut self, mut instance: BinXmlTemplateValues<'a>) -> Result<()> {
+            // An instance carries the GUID itself only where the definition is inline.
+            if instance.template_guid.is_none() {
+                let offset = instance.template_def_offset;
+                let header = read_template_definition_header_at(self.chunk.data, offset);
+                instance.template_guid = header.ok().map(|h| Guid::from_bytes(h.guid));
+            }
+            let at = self.instances.len();
+            self.instances.push(instance);
+            for value in 0..self.instances[at].values.len() {
+                if let BinXmlValue::BinXmlType(bytes) = self.instances[at].values[value] {
+                    self.embedded(bytes)?;
+                }
+            }
             Ok(())
         }
 
         fn value(&mut self, value: BinXmlValue<'a>) -> Result<()> {
-            if let BinXmlValue::BinXmlType(bytes) = value {
-                self.0.push(Found::Embedded(bytes));
+            match value {
+                BinXmlValue::BinXmlType(bytes) => self.embedded(bytes),
+                _ => Ok(()),
             }
-            Ok(())
         }
     }
 
-    let mut sink = Sink(Vec::new());
-    let stream = Stream::chunk(chunk, &chunk.arena);
-    walk_tokens(stream, start, len, false, &mut sink)?;
-
-    let embedded = |bytes: &'a [u8], instances: &mut Vec<_>| {
-        // An empty one is an optional value left out.
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        // As for rendering the record.
-        if depth >= MAX_BINXML_NESTING {
-            return Err(EvtxError::FailedToCreateRecordModel(
-                "BinXML fragments nested too deeply",
-            ));
-        }
-        let start = binxml_slice_offset_in(chunk.data, bytes)? as usize;
-        collect_template_instances(chunk, start, bytes.len(), depth + 1, instances)
+    // As for rendering the record.
+    if depth > MAX_BINXML_NESTING {
+        return Err(EvtxError::FailedToCreateRecordModel(
+            "BinXML fragments nested too deeply",
+        ));
+    }
+    let mut sink = Sink {
+        chunk,
+        depth,
+        instances,
     };
-    for found in sink.0 {
-        match found {
-            Found::Embedded(bytes) => embedded(bytes, instances)?,
-            Found::Instance(mut instance) => {
-                // An instance carries the GUID itself only where the definition is inline.
-                if instance.template_guid.is_none() {
-                    let offset = instance.template_def_offset;
-                    let header = read_template_definition_header_at(chunk.data, offset);
-                    instance.template_guid = header.ok().map(|h| Guid::from_bytes(h.guid));
-                }
-                let at = instances.len();
-                instances.push(instance);
-                for value in 0..instances[at].values.len() {
-                    if let BinXmlValue::BinXmlType(bytes) = instances[at].values[value] {
-                        embedded(bytes, instances)?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
+    let stream = Stream::chunk(chunk, &chunk.arena);
+    walk_tokens(stream, start, len, false, &mut sink)
 }
 
 #[cfg(test)]
