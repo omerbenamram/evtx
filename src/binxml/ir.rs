@@ -1217,6 +1217,14 @@ fn clone_and_resolve<'a>(
                 budget,
                 &mut new_attr.value,
             )?;
+            // A BinXML value gives elements, which an attribute can't hold and no output
+            // can write there.
+            if new_attr.value[before..]
+                .iter()
+                .any(|n| matches!(n, Node::Element(_)))
+            {
+                return Err(element_in_attr());
+            }
             if !needs_array_expansion
                 && new_attr.value[before..]
                     .iter()
@@ -1258,6 +1266,11 @@ fn clone_and_resolve<'a>(
     }
 
     Ok((arena.new_node(resolved), needs_array_expansion))
+}
+
+/// The error for a tree with an element in an attribute's value, which no output can write.
+pub(crate) fn element_in_attr() -> EvtxError {
+    EvtxError::FailedToCreateRecordModel("element node inside attribute value")
 }
 
 /// Resolve one template [`Node`] and append the result into `out`.

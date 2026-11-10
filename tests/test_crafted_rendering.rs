@@ -778,3 +778,48 @@ fn a_binxml_value_that_builds_nothing_is_null() {
         }
     }
 }
+
+#[test]
+fn a_binxml_value_with_an_element_in_an_attribute_fails_the_record() {
+    // An attribute can't hold an element. XML output failed the record; JSON output took the
+    // value for nothing and wrote `"Outer":null`.
+    for nested_instance in [false, true] {
+        let evtx = synthetic_evtx(|record| {
+            record.fragment_header();
+            record.template_instance(
+                |root| {
+                    root.open("Event", true).close_start();
+                    root.open_with_attributes("Outer", true)
+                        .attribute("K")
+                        .substitution(0, 0x21)
+                        .close_start()
+                        .end_element();
+                    root.end_element();
+                },
+                vec![value(0x21, |fragment| {
+                    fragment.fragment_header();
+                    if nested_instance {
+                        fragment.template_instance(
+                            |inner| {
+                                inner.open("In", true).close_empty();
+                            },
+                            vec![],
+                        );
+                    } else {
+                        fragment.open("In", false).close_empty();
+                    }
+                    fragment.eof();
+                })],
+            );
+            record.eof();
+        });
+        for (renderer, rendered) in render_everywhere(&evtx).into_iter().enumerate() {
+            let at = format!("renderer {renderer}, nested instance: {nested_instance}");
+            let err = rendered.expect_err(&at);
+            assert!(
+                err.contains("element node inside attribute value"),
+                "{at}: {err}"
+            );
+        }
+    }
+}
