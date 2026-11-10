@@ -13,7 +13,8 @@ Run it with `pre` before the change and with `post` after it, with the same tag 
 
 Options:
   --file <path>     EVTX input file (default: samples/security_big_sample.evtx)
-  --cachegrind      Also count instructions with valgrind (for a difference within noise)
+  --cachegrind      Also count instructions with valgrind, for a difference within noise.
+                    The post stage counts both binaries, so it is enough to pass it there.
   --skip-samply     Do not record a profile
   -h, --help        Show this help
 
@@ -76,19 +77,25 @@ mkdir -p binaries benchmarks profile
 # `bench` builds `bench_evtx_dump_loop`, which the profile uses.
 cargo build --release --features "fast-alloc bench" --bin evtx_dump --bin bench_evtx_dump_loop
 cp target/release/evtx_dump "$BIN"
-cp target/release/bench_evtx_dump_loop "${BIN}_loop"
 
-# hyperfine discards the output of the command. The post stage compares both binaries.
-COMMANDS=("$PRE_BIN ${DUMP_ARGS[*]} $FILE")
+# The post stage measures both binaries.
+BINS=("$PRE_BIN")
 if [[ "$STAGE" == "post" ]]; then
-  COMMANDS+=("$BIN ${DUMP_ARGS[*]} $FILE")
+  BINS+=("$BIN")
 fi
+
+# hyperfine discards the output of the command.
+COMMANDS=()
+for bin in "${BINS[@]}"; do
+  COMMANDS+=("$bin ${DUMP_ARGS[*]} $FILE")
+done
 hyperfine -w 10 -r 20 "${COMMANDS[@]}" | tee "benchmarks/benchmark_${TAG}_${STAGE}.txt"
 
 if [[ $CACHEGRIND -eq 1 ]]; then
-  valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file=/dev/null \
-    "$BIN" "${DUMP_ARGS[@]}" "$FILE" 2>&1 >/dev/null \
-    | tee "benchmarks/cachegrind_${TAG}_${STAGE}.txt"
+  for bin in "${BINS[@]}"; do
+    valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file=/dev/null \
+      "$bin" "${DUMP_ARGS[@]}" "$FILE" 2>&1 >/dev/null
+  done | tee "benchmarks/cachegrind_${TAG}_${STAGE}.txt"
 fi
 
 if [[ $SKIP_SAMPLY -eq 0 ]]; then
@@ -96,7 +103,7 @@ if [[ $SKIP_SAMPLY -eq 0 ]]; then
   # samples. It always renders JSON without indentation, on the system allocator.
   PROFILE="profile/${TAG}_${STAGE}.json.gz"
   if samply record --save-only --unstable-presymbolicate -o "$PROFILE" -- \
-      "${BIN}_loop" --file "$FILE" --loops 20 --threads 1; then
+      target/release/bench_evtx_dump_loop --file "$FILE" --loops 20 --threads 1; then
     python3 scripts/samply_extract_tables.py \
       --profile "$PROFILE" \
       --syms "${PROFILE%.gz}.syms.json" \
