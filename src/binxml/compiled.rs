@@ -2245,6 +2245,13 @@ pub(crate) struct Preflight {
     array_items: Vec<(u32, u16)>,
 }
 
+/// Whether a BinXML value's stream opens neither a template nor an element first. Kept out
+/// of the scan's loop, which is the hot one.
+#[inline(never)]
+fn may_build_nothing(stream: &[u8]) -> bool {
+    !stream.is_empty() && single_instance_offset(stream).is_none() && !starts_with_element(stream)
+}
+
 /// How the pre-flight validates a descriptor of a given type.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TyClass {
@@ -2254,8 +2261,10 @@ enum TyClass {
     Fixed(u8),
     /// Even-length UTF-16LE payload.
     Utf16,
-    /// Any-length payload (NULL skips it, BINARY/BIN_XML slice it).
+    /// Any-length payload (NULL skips it, BINARY slices it).
     Sized,
+    /// A BinXML stream of any length.
+    BinXml,
     /// ANSI string: any length, pre-decoded at pre-flight.
     Ansi,
     /// Pointer-width integer: 4 (32-bit) or 8 (64-bit) bytes.
@@ -2294,7 +2303,7 @@ const TY_CLASS: [TyClass; 256] = {
     t[SID as usize] = Sid;
     t[HEX_INT32 as usize] = Fixed(4);
     t[HEX_INT64 as usize] = Fixed(8);
-    t[BIN_XML as usize] = Sized;
+    t[BIN_XML as usize] = BinXml;
     t[STR_ARRAY as usize] = StrArray;
     t
 };
@@ -2453,6 +2462,14 @@ impl Preflight {
                         return Err(PreflightBail);
                     }
                 }
+                TyClass::BinXml => {
+                    // A stream that doesn't open an element or a template first may build
+                    // nothing, which makes the value NULL and not an element: only
+                    // building it tells, which the slow lane does.
+                    if may_build_nothing(&data[off..end]) {
+                        return Err(PreflightBail);
+                    }
+                }
                 TyClass::Sized | TyClass::Ansi => {}
             }
             let mut slot = RawSlot {
@@ -2514,10 +2531,8 @@ impl Preflight {
             let frag = s.bytes(data);
             let Some(inst_off) = single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
-                // where the executor supports it; otherwise fall back. One that doesn't
-                // open an element first may build nothing, which makes the value NULL and
-                // not an element: only building it tells, which the slow lane does.
-                if P::ALLOW_GENERIC_FRAGS && starts_with_element(frag) {
+                // where the executor supports it; otherwise fall back.
+                if P::ALLOW_GENERIC_FRAGS {
                     continue;
                 }
                 return Err(PreflightBail);

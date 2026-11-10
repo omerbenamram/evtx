@@ -708,7 +708,7 @@ fn a_binxml_value_that_builds_nothing_is_null() {
         &[0x0f, 1, 1, 0, 0x0f, 1, 1, 0, 0x00],
     ];
     // One substitution to a template, so that the template is one the renderers compile.
-    let shapes: [(&dyn Fn(&mut BinXml), &str, &str); 3] = [
+    let shapes: [(&dyn Fn(&mut BinXml), &str, &str); 4] = [
         (
             &|outer| {
                 outer
@@ -736,6 +736,14 @@ fn a_binxml_value_that_builds_nothing_is_null() {
                     .open_depending("Outer", 0)
                     .close_start()
                     .substitution(0, 0x21);
+            },
+            "<Event></Event>",
+            r#"{"Event":null}"#,
+        ),
+        // So is one that only depends on it.
+        (
+            &|outer| {
+                outer.open_depending("Outer", 0).close_start().text("x");
             },
             "<Event></Event>",
             r#"{"Event":null}"#,
