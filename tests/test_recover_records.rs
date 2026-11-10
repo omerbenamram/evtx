@@ -147,6 +147,35 @@ fn recovers_records_from_a_chunk_without_its_header() {
     assert_eq!((recovered, failed), (86, 1));
 }
 
+#[test]
+fn a_chunk_without_its_header_fails_whatever_reads_it() {
+    let mut evtx = std::fs::read(regular_sample()).unwrap();
+    evtx[4096..4096 + 8].fill(0);
+    let mut parser = EvtxParser::from_buffer(evtx)
+        .unwrap()
+        .with_configuration(ParserSettings::new().recover_records(true));
+    let mut data = parser
+        .chunks()
+        .filter_map(Result::ok)
+        .find(|chunk| chunk.number == Some(0))
+        .unwrap();
+    assert!(!data.validate_checksum());
+    assert!(!data.validate_header_checksum());
+    assert!(!data.validate_data_checksum());
+
+    // Read with settings that don't recover records, it still says that it failed.
+    let mut chunk = data.parse(Arc::new(ParserSettings::new())).unwrap();
+    let records: Vec<_> = chunk.iter().collect();
+    assert!(
+        matches!(
+            &records[..],
+            [Err(EvtxError::FailedToParseChunk { chunk_id: 0, .. })]
+        ),
+        "{} records",
+        records.len()
+    );
+}
+
 /// security.evtx with its second record's header changed by `damage`, and where that record
 /// starts in the file.
 fn with_a_damaged_second_record(damage: impl FnOnce(&mut [u8])) -> (Vec<u8>, usize) {

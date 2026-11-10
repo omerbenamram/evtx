@@ -50,6 +50,9 @@ pub struct EvtxChunkHeader {
     //  ----------       ------------------
     strings_offsets: [u32; 64],
     template_offsets: [u32; 32],
+    /// The chunk's own header couldn't be read, and this one stands in for it (see
+    /// [`EvtxChunkHeader::lost`]).
+    lost: bool,
 }
 
 /// A struct which owns all the data associated with a chunk.
@@ -66,29 +69,36 @@ impl EvtxChunkData {
     /// Construct a new chunk from the given data.
     /// Note that even when validate_checksum is set to false, the header magic is still checked.
     pub fn new(data: Vec<u8>, validate_checksum: bool) -> EvtxChunkResult<Self> {
-        let header = EvtxChunkHeader::from_bytes(&data)?;
+        Self::read(data, validate_checksum, false)
+    }
 
+    /// [`EvtxChunkData::new`], which with `keep_headerless` also takes data whose header can't
+    /// be read, for `recover_records`. Such a chunk has no live records, and all that follows
+    /// the header's 512 bytes is carved. Its records iterator reports the header's error
+    /// first, and it fails every checksum check.
+    pub(crate) fn read(
+        data: Vec<u8>,
+        validate_checksum: bool,
+        keep_headerless: bool,
+    ) -> EvtxChunkResult<Self> {
+        let header = match EvtxChunkHeader::from_bytes(&data) {
+            Err(_) if keep_headerless => EvtxChunkHeader::lost(),
+            header => header?,
+        };
         let chunk = EvtxChunkData {
             header,
             data,
             number: None,
         };
-        if validate_checksum && let Some(err) = chunk.checksum_error() {
+        // A lost header has its own error, which the records iterator reports.
+        if validate_checksum
+            && !chunk.header.lost
+            && let Some(err) = chunk.checksum_error()
+        {
             return Err(err);
         }
 
         Ok(chunk)
-    }
-
-    /// A chunk over data whose header is lost (it fails [`EvtxChunkHeader::from_bytes`]), for
-    /// `recover_records`: it has no live records, and all that follows the header's 512 bytes
-    /// is carved. Its records iterator reports the header's error first.
-    pub(crate) fn headerless(data: Vec<u8>) -> Self {
-        EvtxChunkData {
-            header: EvtxChunkHeader::lost(),
-            data,
-            number: None,
-        }
     }
 
     /// Require that the settings live at least as long as &self.
@@ -109,6 +119,9 @@ impl EvtxChunkData {
     }
 
     pub fn validate_data_checksum(&self) -> bool {
+        if self.header.lost {
+            return false;
+        }
         self.header.flags.contains(ChunkFlags::NO_CRC32)
             || self
                 .data
@@ -117,6 +130,9 @@ impl EvtxChunkData {
     }
 
     pub fn validate_header_checksum(&self) -> bool {
+        if self.header.lost {
+            return false;
+        }
         self.header.flags.contains(ChunkFlags::NO_CRC32)
             || self.header.header_chunk_checksum == self.header_crc()
     }
@@ -127,6 +143,9 @@ impl EvtxChunkData {
 
     /// The first check `validate_checksum` fails: the header's CRC32, then the records'.
     fn checksum_error(&self) -> Option<ChunkError> {
+        if self.header.lost {
+            return lost_header_error(&self.data);
+        }
         if self.header.flags.contains(ChunkFlags::NO_CRC32) {
             return None;
         }
@@ -353,8 +372,11 @@ impl<'a> Iterator for IterRawRecords<'a> {
             let offset = self.walk?;
             if offset >= self.live_end() {
                 self.skip_to(offset, None);
-                if let Some(err) = self.lost_header() {
-                    return Some(Err(err));
+                if self.chunk.header.lost
+                    && let Some(err) = lost_header_error(self.chunk.data)
+                {
+                    let chunk = self.chunk.number.unwrap_or_default();
+                    return Some(Err(EvtxError::chunk(chunk, err)));
                 }
                 // The chunk's data ends where its header says more records are: the end of
                 // the file cut the chunk off between two records.
@@ -400,21 +422,6 @@ impl<'a> IterRawRecords<'a> {
             offset,
             source: Box::new(source),
         }
-    }
-
-    /// With `recover_records`, the error of a chunk that is read without its header (see
-    /// [`EvtxChunkData::headerless`]): its records are carved, and the chunk still counts as
-    /// one that failed.
-    #[cold]
-    fn lost_header(&self) -> Option<EvtxError> {
-        if !self.chunk.settings.should_recover_records() {
-            return None;
-        }
-        let err = EvtxChunkHeader::from_bytes(self.chunk.data).err()?;
-        Some(EvtxError::chunk(
-            self.chunk.number.unwrap_or_default(),
-            err.into(),
-        ))
     }
 
     /// Whether the chunk's data is shorter than a chunk: the end of its file cut it off.
@@ -573,9 +580,10 @@ impl EvtxChunkHeader {
             free_space_offset: EVTX_CHUNK_HEADER_SIZE as u32,
             events_checksum: 0,
             header_chunk_checksum: 0,
-            flags: ChunkFlags::NO_CRC32,
+            flags: ChunkFlags::EMPTY,
             strings_offsets: [0; 64],
             template_offsets: [0; 32],
+            lost: true,
         }
     }
 
@@ -632,8 +640,15 @@ impl EvtxChunkHeader {
             flags,
             template_offsets,
             strings_offsets,
+            lost: false,
         })
     }
+}
+
+/// Why the header of a chunk that is read without one (see [`EvtxChunkData::read`]) was lost.
+#[cold]
+fn lost_header_error(chunk: &[u8]) -> Option<ChunkError> {
+    EvtxChunkHeader::from_bytes(chunk).err().map(Into::into)
 }
 
 /// The CRC32 of a chunk's header, the one its `header_chunk_checksum` holds: bytes 0..120 and
@@ -674,6 +689,7 @@ mod tests {
             flags: ChunkFlags::EMPTY,
             strings_offsets: [0_u32; 64],
             template_offsets: [0_u32; 32],
+            lost: false,
         };
 
         assert_eq!(

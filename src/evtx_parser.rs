@@ -577,6 +577,8 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// shorter than a chunk, and the records that fit are read.
     /// If it is invalid (bad magic, bad checksum when `validate_checksum` is set to true), if
     /// it can't be read, or if the file ends before the end of its header, an `Err` is returned.
+    /// With `recover_headerless`, a whole chunk with a bad magic is `Ok` instead, to be carved
+    /// for records (see `EvtxChunkData::read`); its error then comes from its records iterator.
     /// If the chunk is empty, `Ok(None)` is returned.
     fn allocate_chunk(
         data: &mut T,
@@ -613,14 +615,10 @@ impl<T: ReadSeek> EvtxParser<T> {
             return Ok(None);
         }
 
-        // A chunk that lost its header can still hold records (`recover_records`).
-        let lost_header = recover_headerless && EvtxChunkHeader::from_bytes(&chunk_data).is_err();
-        let mut chunk = if lost_header {
-            EvtxChunkData::headerless(chunk_data)
-        } else {
-            EvtxChunkData::new(chunk_data, validate_checksum)
-                .map_err(|e| EvtxError::chunk(chunk_number, e))?
-        };
+        // Bytes that end before a chunk does aren't a chunk without a header to say so.
+        let keep_headerless = recover_headerless && amount_read == EVTX_CHUNK_SIZE;
+        let mut chunk = EvtxChunkData::read(chunk_data, validate_checksum, keep_headerless)
+            .map_err(|e| EvtxError::chunk(chunk_number, e))?;
         chunk.number = Some(chunk_number);
         if amount_read < EVTX_CHUNK_SIZE {
             warn!(
