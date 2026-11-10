@@ -41,6 +41,9 @@ and this project adheres to
   use `to_string()`.
 - `WevtManifestError::InvalidGuid` is removed: reading a GUID from 16 bytes
   can't fail, so it was never returned.
+- `BinXmlValue`'s `Display` gives the value's text as it is. It gave the text escaped for a
+  JSON string, so a quote came out as `\"` and a newline as `\n`. Code that built JSON from
+  `to_string()` must escape the text itself (or use `serde_json`).
 
 ### Fixed
 
