@@ -20,7 +20,7 @@ A deliberate blocker is different. Examples are a safety check that refuses a co
 
 Two kinds of action wait for Omer. Nothing else in this repository needs his approval.
 
-1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. A merge to `master` that changes `version` in `Cargo.toml` tags the commit and publishes it, whatever the pull request is called. So change `version` only in a `chore(release): X.Y.Z` pull request, open one only when Omer asks for a release, and merge it only when he tells you to. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
+1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. A merge to `master` that changes `version` in `Cargo.toml` tags the commit and publishes it, whatever the pull request is called. So change `version` only in a `chore(release): X.Y.Z` pull request, open one only when Omer asks for a release, and merge it only when he tells you to. When he has told you, that is the go-ahead: merge it without asking again. It also covers re-running a job of that release that failed, as `RELEASING.md` describes. Without it, do not re-run or start a run of the auto-tag workflow or of the workflow that it starts on the tag. `RELEASING.md` has the steps.
 2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. GitHub shows Omer's account as the author of your pull requests too; yours come from a `claude/` branch and say in their description that Claude made them. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
 
 Take every other step without asking. These are the common ones:
@@ -28,7 +28,7 @@ Take every other step without asking. These are the common ones:
 - Create a branch, and push commits to a branch that you created.
 - Open a pull request, edit its description, and change its base branch.
 - Merge `master` into the branch of your pull request.
-- Retry a build, a test run, a download, a fetch or a push that failed, and re-run a CI job that failed for a reason outside the change.
+- Retry a build, a test run, a download, a fetch or a push that failed, and re-run the failed jobs of a pull request's CI run.
 - Reply to a review comment on your own pull request and resolve its thread. This includes the comments of Cursor Bugbot.
 - Merge your own pull request when it has passed every step in "How a change ships". A release pull request is the exception: see rule 1.
 - Edit these instructions.
@@ -46,7 +46,9 @@ Each fix or feature gets its own pull request, so that it can be reviewed, descr
 
 Before you push, run the checks in "This repository" that match what you changed. A change to these instruction files alone needs none. Open the pull request as soon as the change is built, so that CI and Bugbot run while you review. If a review did not run, say so in the pull request and leave it open.
 
-When a CI job failed for a reason outside the change, such as a runner or a network fault, or was cancelled before it got a runner, re-run the failed jobs of that run once. A cloud session does this with the `rerun_failed_jobs` method of the GitHub tool `actions_run_trigger`, and a local session with `gh run rerun <run id> --failed`. If the job fails the same way again, tell Omer which job it is, and carry on with other work while you wait. Do not re-run a job that failed because of the change: fix the cause. A re-run of a release run publishes, so rule 1 covers it: re-run one only to finish a release that Omer told you to merge.
+A CI job of a pull request can fail for a reason outside the change, such as a runner or a network fault, or be cancelled because it never got a runner. First check whether `master` has moved since the run. If it has, merge it into the branch: that starts a new run on what will merge. If it has not, wait until the run has finished, then re-run its failed jobs, once for each run and only for the newest run of the branch, because a re-run of an older run tests an old commit and can cancel the newer run. A cloud session does this with the `rerun_failed_jobs` method of the GitHub tool `actions_run_trigger`, and a local session with `gh run rerun <run id> --failed`. Both re-run every failed job of the run, so when one of them failed because of the change, fix that cause and push instead: the push starts a new run. If a job fails the same way after the re-run, say in the pull request which job it is, leave the pull request open, tell Omer, and carry on with other work. The exception is a job that "This repository" says does not block a merge.
+
+That paragraph is for the runs of a pull request, which cannot publish. A run of the auto-tag workflow, or of the workflow that it starts on the tag, can publish, so rule 1 covers it.
 
 Do not force-push unless a person in the session asks you to. Cloud sessions refuse it in any case, even `--force-with-lease` on your own branch. Correct a pushed commit with a new commit, and bring a branch up to date by merging `master` into it.
 
