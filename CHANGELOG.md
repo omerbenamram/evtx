@@ -44,13 +44,16 @@ and this project adheres to
 - `BinXmlValue`'s `Display` gives the value's text as it is. It gave the text escaped for a
   JSON string, so a quote came out as `\"` and a newline as `\n`. Code that built JSON from
   `to_string()` must escape the text itself (or use `serde_json`).
+- `MtaError` has a new variant, `SharedRecord`, for an `.MTA` section whose records share
+  bytes (see Fixed).
 
 ### Fixed
 
-- `.MTA`: a crafted file of 200 KB could take 2 GB to refuse. Its page chain came back to a
-  page, or its slots all named one record, and every visit read the record and decoded its
-  text again. A page that comes up twice now ends the read (`PageLoop`), and records that
-  together are longer than their section are refused (`Corrupt`).
+- `.MTA`: a crafted file of 200 KB could take 2 GB to refuse or to load. A page chain that
+  came back to a page, or slots that all named one record, had the same bytes read and
+  decoded again and again; and a publisher's table kept a copy of its string for every
+  entry. The pages and records read may no longer be longer together than their section
+  (`PageLoop`, or the new `SharedRecord`), and table entries share their string.
 - JSON: a record whose template puts a BinXML value with an element in it in an attribute
   fails, as it does in XML (`element node inside attribute value`). JSON output wrote the
   element as `null` and dropped the value.

@@ -46,8 +46,9 @@
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use ahash::{AHashMap as HashMap, AHashSet as HashSet};
+use ahash::AHashMap as HashMap;
 use bumpalo::Bump;
 use thiserror::Error;
 
@@ -97,6 +98,9 @@ pub enum MtaError {
 
     #[error("MTA {section} section has a page chain that does not end")]
     PageLoop { section: &'static str },
+
+    #[error("MTA {section} section has records that share bytes (at offset {offset:#x})")]
+    SharedRecord { section: &'static str, offset: u64 },
 }
 
 /// The localized strings of one exported log, for one locale.
@@ -111,7 +115,7 @@ pub struct MtaFile {
     /// Message of the first `EVT` entry with each `EventRecordID`.
     first_message: HashMap<u64, Option<u32>>,
     /// `MSG` strings, sorted by entry index.
-    messages: Vec<(u32, Box<str>)>,
+    messages: Vec<(u32, Arc<str>)>,
     publishers: Vec<MtaPublisher>,
     /// Publisher index by exact name (the first publisher with a name wins).
     by_name: HashMap<String, usize>,
@@ -134,14 +138,14 @@ struct EventEntry {
 #[derive(Debug, Clone, Default)]
 pub struct MtaPublisher {
     name: String,
-    levels: HashMap<u32, Box<str>>,
+    levels: HashMap<u32, Arc<str>>,
     /// Keyed by the low 16 bits of the stored value: some Windows builds store `win:None` (0) as
     /// `0x10000`.
-    tasks: HashMap<u32, Box<str>>,
+    tasks: HashMap<u32, Arc<str>>,
     /// Keyed by `(opcode << 16) | task`, with task 0 for opcodes that are not tied to a task.
-    opcodes: HashMap<u32, Box<str>>,
+    opcodes: HashMap<u32, Arc<str>>,
     /// Keyed by bit number (0 for `0x1`).
-    keywords: HashMap<u32, Box<str>>,
+    keywords: HashMap<u32, Arc<str>>,
 }
 
 impl MtaPublisher {
@@ -277,7 +281,7 @@ impl MtaFile {
                 .get(4..)
                 .and_then(|text| text.get(..len))
                 .ok_or(corrupt("MSG entry", at))?;
-            messages.push((index, decode_utf16(text)));
+            messages.push((index, decode_utf16(text).into()));
             Ok(())
         })?;
         sort_by_index(&mut messages, |(index, _)| *index);
@@ -449,16 +453,16 @@ impl<'b> Section<'b> {
         }
         let at = |offset: usize| self.base.saturating_add(offset as u64);
         let mut page = 0;
-        let mut pages = HashSet::new();
-        // Records don't share bytes, so together they are no longer than the section. Without
-        // this, slots that all name one record have it read (and its text decoded) once each.
+        // Pages and records don't share bytes, so together they are no longer than the
+        // section. Without this a chain that comes back to a page, or slots that all name one
+        // record, have the same bytes read (and their text decoded) again and again.
         let mut unread = data.len();
-        // Every page has its own header, so a longer chain revisits a page.
-        for _ in 0..=data.len() / PAGE_HEADER_SIZE {
-            if !pages.insert(page) {
-                break;
-            }
+        loop {
             let header = page_header(data, page).ok_or(corrupt("page", at(page)))?;
+            let Some(rest) = unread.checked_sub(PAGE_HEADER_SIZE) else {
+                return Err(MtaError::PageLoop { section: self.name });
+            };
+            unread = rest;
             // An empty page has 0 here, and no records.
             if read_u32_le(header, 0) != Some(0) {
                 for slot in header[PAGE_RECORDS..].as_chunks::<8>().0 {
@@ -469,9 +473,13 @@ impl<'b> Section<'b> {
                     let offset = usize::try_from(offset).unwrap_or(usize::MAX);
                     let (index, payload) =
                         record(data, offset).ok_or(corrupt("record", at(offset)))?;
-                    unread = unread
-                        .checked_sub(RECORD_HEADER_SIZE + payload.len())
-                        .ok_or(corrupt("record", at(offset)))?;
+                    let Some(rest) = unread.checked_sub(RECORD_HEADER_SIZE + payload.len()) else {
+                        return Err(MtaError::SharedRecord {
+                            section: self.name,
+                            offset: at(offset),
+                        });
+                    };
+                    unread = rest;
                     f(index, payload, at(offset))?;
                 }
             }
@@ -481,7 +489,6 @@ impl<'b> Section<'b> {
             }
             page = usize::try_from(next).unwrap_or(usize::MAX);
         }
-        Err(MtaError::PageLoop { section: self.name })
     }
 }
 
@@ -501,7 +508,7 @@ fn record(data: &[u8], offset: usize) -> Option<(u32, &[u8])> {
 /// A `PUB` entry: level, task, opcode and keyword tables (a u32 count, then (value, `MSG`
 /// index) pairs of u32), then the name (u32 byte length, UTF-16LE). Table entries whose string
 /// is missing are dropped.
-fn parse_publisher(payload: &[u8], messages: &[(u32, Box<str>)]) -> Option<MtaPublisher> {
+fn parse_publisher(payload: &[u8], messages: &[(u32, Arc<str>)]) -> Option<MtaPublisher> {
     let mut offset = 0;
     // Keyed by the value masked with `key_mask`. The first entry with a key wins.
     let mut next_table = |key_mask: u32| {
@@ -515,7 +522,8 @@ fn parse_publisher(payload: &[u8], messages: &[(u32, Box<str>)]) -> Option<MtaPu
             if let Some((_, name)) = by_index(messages, message, |(index, _)| *index) {
                 table
                     .entry(value & key_mask)
-                    .or_insert_with(|| name.clone());
+                    // Shared: a table can name one long string many times.
+                    .or_insert_with(|| Arc::clone(name));
             }
         }
         Some(table)
@@ -1184,6 +1192,26 @@ mod tests {
     }
 
     #[test]
+    fn table_entries_share_their_string() {
+        // A crafted table can name one long string thousands of times: a copy for each would
+        // be many times the file's size.
+        let levels: Vec<_> = (0..1000).map(|level| (level, 0)).collect();
+        let mta = MtaFile::from_bytes(&file(&[
+            ("EVT", section(&[])),
+            ("MSG", section(&[(0, message("a long string"))])),
+            (
+                "PUB",
+                section(&[(0, publisher("P", [&levels, &[], &[], &[]]))]),
+            ),
+        ]))
+        .unwrap();
+        let publisher = mta.publisher("P").unwrap();
+        let (first, last) = (publisher.level(0).unwrap(), publisher.level(255).unwrap());
+        assert_eq!(first, "a long string");
+        assert!(std::ptr::eq(first, last));
+    }
+
+    #[test]
     fn rejects_malformed_files() {
         let sections = || {
             vec![
@@ -1231,16 +1259,26 @@ mod tests {
             Err(MtaError::PageLoop { section: "EVT" })
         ));
 
-        // Slots that all name one record: its bytes would be read once for each.
+        // A chain of two pages that comes back to the first.
+        let records: Vec<_> = (0..101).map(|index| (index, message("a"))).collect();
+        let mut looping = sections();
+        let msg = &mut looping[1].1;
+        *msg = section(&records);
+        let second = read_u64_le(msg, PAGE_NEXT).unwrap() as usize;
+        msg[second + PAGE_NEXT..][..8].copy_from_slice(&0u64.to_le_bytes());
+        assert!(matches!(
+            MtaFile::from_bytes(&file(&looping)),
+            Err(MtaError::PageLoop { section: "MSG" })
+        ));
+
+        // Two slots that name one record: its bytes would be read for each.
         let mut shared = sections();
         let msg = &mut shared[1].1;
         let first: [u8; 8] = msg[PAGE_RECORDS..][..8].try_into().unwrap();
-        for slot in 0..(PAGE_HEADER_SIZE - PAGE_RECORDS) / 8 {
-            msg[PAGE_RECORDS + slot * 8..][..8].copy_from_slice(&first);
-        }
+        msg[PAGE_RECORDS + 8..][..8].copy_from_slice(&first);
         assert!(matches!(
             MtaFile::from_bytes(&file(&shared)),
-            Err(MtaError::Corrupt { what: "record", .. })
+            Err(MtaError::SharedRecord { section: "MSG", .. })
         ));
 
         let mut outside = sections();
