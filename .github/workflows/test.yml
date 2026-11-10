@@ -34,6 +34,13 @@ jobs:
       # on Windows, whose link failed only there (0.15.0).
       - name: Build evtx_dump with fast-alloc
         run: cargo build --bin evtx_dump --features fast-alloc
+      # Only the paths in `include` in Cargo.toml are published. This builds the crate from
+      # them alone, so a file that the build needs and the list lacks fails here, not at release.
+      - name: Build the crate as published
+        if: matrix.os == 'ubuntu-latest'
+        # The patch builds against utf16-simd as it is here: its next version may not be on
+        # crates.io yet.
+        run: cargo package --config "patch.crates-io.utf16-simd.path=\"$PWD/utf16-simd\""
 
   fuzz:
     name: Check fuzz targets

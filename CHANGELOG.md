@@ -73,6 +73,14 @@ and this project adheres to
 - `wevt_templates::extract_resources` reads any PE resource type (as
   `PeResource`s), and `RT_MESSAGETABLE` names the message table type.
 
+### Changed
+
+- The crate on crates.io holds only `src/`, the Markdown files of `docs/`, the README, this
+  changelog and the licences, which makes it about 0.25 MB compressed where 0.15.1 was 4.1 MB.
+  Everything else stays in the repository alone: the integration tests (no test could run from
+  the crate, as the sample logs were never in it), the Windows DLLs under `samples/dlls`, the
+  scripts and build scripts, `MS-EVEN6.md`, `RELEASING.md`, the images and the CI workflows.
+
 ### Fixed
 
 - `evtx_dump --events 5-3`, a range that ends before it starts, is refused. It printed nothing
