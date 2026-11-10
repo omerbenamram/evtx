@@ -21,6 +21,8 @@ and this project adheres to
 
 ### Breaking changes
 
+- `ChunkError::FailedToBuildStringCache` is gone: a damaged string table no longer fails its
+  chunk (see Fixed).
 - evtx no longer depends on `winstructs` (and through it on `chrono`). GUIDs
   are now `evtx::Guid` instead of `winstructs::guid::Guid`: in
   `binxml::BinXmlTemplateValues::template_guid`, `DeserializationError::FailedToDeserializeTemplate`
@@ -33,6 +35,11 @@ and this project adheres to
 
 ### Fixed
 
+- A chunk whose string table is damaged (a bucket offset past the end of the chunk, a name
+  that can't be decoded) lost all of its records to `Failed to build string cache`, although
+  records name their strings by offset and already read the ones the table doesn't list. The
+  damaged chain is now left out and every record renders: one bad offset in the first chunk of
+  `security.evtx` used to cost its 91 records.
 - A `WEVT_TEMPLATE` manifest whose MAPS table points a map past the table's
   declared end no longer panics with an out-of-range slice (found by fuzzing).
 

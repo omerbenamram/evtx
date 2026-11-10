@@ -82,14 +82,14 @@ impl EvtxChunkData {
 
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new_with_arena(
+        Ok(EvtxChunk::new_with_arena(
             &self.data,
             &self.header,
             settings,
             Bump::new(),
             Default::default(),
             self.number,
-        )
+        ))
     }
 
     /// Computed CRC32 of the header (bytes 0..120 and 128..512).
@@ -157,23 +157,25 @@ pub struct EvtxChunk<'chunk> {
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
-    /// Will fail if the data starts with an invalid evtx chunk header.
+    /// A chunk over `data` and its already parsed `header`. It always succeeds, and returns a
+    /// `Result` only because it used to fail on a damaged string table. That now costs only
+    /// the cache of the table's names, which records then read where they are.
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
-        EvtxChunk::new_with_arena(
+        Ok(EvtxChunk::new_with_arena(
             data,
             header,
             settings,
             Bump::new(),
             Default::default(),
             None,
-        )
+        ))
     }
 
-    /// Will fail if the data starts with an invalid evtx chunk header.
+    /// See [`EvtxChunk::new`].
     ///
     /// The provided arena is reset before use, so any previously allocated chunk-scoped
     /// data is cleared while retaining the bump capacity.
@@ -184,14 +186,13 @@ impl<'chunk> EvtxChunk<'chunk> {
         mut arena: Bump,
         program_store: Arc<crate::binxml::compiled::ProgramStore>,
         number: Option<u64>,
-    ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
+    ) -> EvtxChunk<'chunk> {
         arena.reset();
 
         info!("Initializing string cache");
-        let string_cache = StringCache::populate(data, &header.strings_offsets)
-            .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
+        let string_cache = StringCache::populate(data, &header.strings_offsets);
 
-        Ok(EvtxChunk {
+        EvtxChunk {
             header,
             data,
             string_cache,
@@ -201,7 +202,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             render_budget: Default::default(),
             program_store,
             number,
-        })
+        }
     }
 
     /// Iterate raw record windows (header walk only, no content build).
@@ -739,6 +740,41 @@ mod tests {
         };
 
         assert_eq!(corrupted_count, baseline_count);
+    }
+
+    #[test]
+    fn records_render_the_same_with_a_damaged_string_table() {
+        let (original, _) = security_chunk();
+        let render = |data: &[u8]| -> Vec<String> {
+            let mut chunk_data = EvtxChunkData::new(data.to_vec(), false).unwrap();
+            let mut chunk = chunk_data.parse(Arc::new(ParserSettings::new())).unwrap();
+            chunk
+                .iter()
+                .map(|record| record.unwrap().into_xml().unwrap().data)
+                .collect()
+        };
+        let expected = render(&original);
+        assert_eq!(expected.len(), 91);
+
+        // Every bucket of the string table points past the end of the chunk, at a name cut off
+        // by it, or at the first record instead of a name. The records name their strings by
+        // offset, so they still resolve.
+        for bad_offset in [
+            u32::MAX,
+            EVTX_CHUNK_SIZE as u32 - 3,
+            EVTX_CHUNK_HEADER_SIZE as u32,
+        ] {
+            let mut data = original.clone();
+            let mut buckets = 0;
+            for bucket in data[128..384].as_chunks_mut::<4>().0 {
+                if *bucket != [0; 4] {
+                    bucket.copy_from_slice(&bad_offset.to_le_bytes());
+                    buckets += 1;
+                }
+            }
+            assert!(buckets > 0);
+            assert_eq!(render(&data), expected);
+        }
     }
 
     /// Chunk 0 of security.evtx (records 1 to 91), and the offset of each record by ID.

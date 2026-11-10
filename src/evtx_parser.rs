@@ -735,22 +735,17 @@ impl<T: ReadSeek> EvtxParser<T> {
                     };
                 }
             };
-            match EvtxChunk::new_with_arena(
+            let mut chunk = EvtxChunk::new_with_arena(
                 &chunk_data.data,
                 &chunk_data.header,
                 Arc::clone(&settings),
                 arena,
                 Arc::clone(&program_store),
                 Some(chunk_number),
-            ) {
-                Err(err) => ChunkBatch {
-                    payload: on_err(EvtxError::chunk(chunk_number, err)),
-                    arena: Bump::new(),
-                },
-                Ok(mut chunk) => ChunkBatch {
-                    payload: f(&mut chunk),
-                    arena: chunk.arena,
-                },
+            );
+            ChunkBatch {
+                payload: f(&mut chunk),
+                arena: chunk.arena,
             }
         };
 

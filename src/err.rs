@@ -172,9 +172,6 @@ pub enum ChunkError {
     /// past the end of the chunk, so the records' CRC32 can't be checked.
     #[error("chunk free space offset {offset} is outside the chunk's records area")]
     InvalidFreeSpaceOffset { offset: u32 },
-
-    #[error("Failed to build string cache")]
-    FailedToBuildStringCache { source: DeserializationError },
 }
 
 /// Public result API.
