@@ -657,7 +657,10 @@ fn run_cli() -> Result<()> {
                 .long("mta")
                 .value_name("MTA")
                 .value_parser(clap::value_parser!(PathBuf))
-                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element."),
+                // Carved chunks come from any number of logs, in the order found: neither a
+                // record's position nor its EventRecordID says which event of the file it is.
+                .conflicts_with("carve")
+                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element. It must be the file saved with this log: messages are matched by the record's position and EventRecordID alone, which another log's records can have too."),
         )
         .arg(
             Arg::new("stop-after-one-error")

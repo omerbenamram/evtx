@@ -22,6 +22,11 @@ requested with `EvtOpenPublisherMetadata(LogFilePath = <the .evtx>)`.
 evtx_dump --mta 'LocaleMetaData/Security_1033.MTA' Security.evtx
 ```
 
+The file must be the one saved with the log. An `EVT` entry holds an `EventRecordID` and a
+message and nothing else of its event, so a file from another log gives its messages to this
+log's records wherever the IDs meet (Windows does the same). For that reason `evtx_dump`
+refuses `--mta` with `--carve`: carved chunks come from any number of logs.
+
 ```rust
 let mta = evtx::mta::MtaFile::from_path("LocaleMetaData/Security_1033.MTA")?;
 let settings = evtx::ParserSettings::new().mta(Some(std::sync::Arc::new(mta)));
