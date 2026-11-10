@@ -562,3 +562,51 @@ fn a_numeric_array_of_one_item_is_a_number_as_the_items_of_longer_ones_are() {
     assert_eq!(record(0x94, 4, 1), one(r#""0x1""#));
     assert_eq!(record(0x94, 4, 2), two(r#""0x1""#));
 }
+
+/// `<Event><A>%0</A><B>%1</B></Event>` with two UInt32 values, the first of `first` bytes.
+fn two_uint32(first: &[u8]) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record.fragment_header().template_instance(
+            |root| {
+                root.open("Event", true).close_start();
+                for (id, name) in ["A", "B"].into_iter().enumerate() {
+                    root.open(name, true)
+                        .close_start()
+                        .substitution(id as u16, 0x08)
+                        .end_element();
+                }
+                root.end_element();
+            },
+            vec![
+                value(0x08, |v| {
+                    v.raw(first);
+                }),
+                value(0x08, |v| {
+                    v.raw(&7u32.to_le_bytes());
+                }),
+            ],
+        );
+        record.eof();
+    })
+}
+
+#[test]
+fn a_value_that_needs_more_bytes_than_it_has_fails_the_record() {
+    // A UInt32 of two bytes would take two of the next value's.
+    for rendered in render_everywhere(&two_uint32(&[1, 0])) {
+        let err = rendered.unwrap_err();
+        assert!(
+            err.contains("buffer too small for template value")
+                && err.contains("need 4 bytes, have 2"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_value_with_bytes_to_spare_leaves_the_next_where_it_is() {
+    let [_, json, _, chunk_json] =
+        render_everywhere(&two_uint32(&[1, 0, 0, 0, 9, 9])).map(Result::unwrap);
+    assert_eq!(json, r#"{"Event":{"A":1,"B":7}}"#);
+    assert_eq!(chunk_json.trim_end(), json);
+}

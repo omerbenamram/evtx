@@ -44,6 +44,11 @@ and this project adheres to
 
 ### Fixed
 
+- A template value that needs more bytes than its descriptor gives it (a UInt32 of two bytes)
+  now fails its record with `DeserializationError::Truncated`. It was read out of the next
+  values' bytes, and every value after it was read from the wrong place, so the record
+  rendered with data that was not its own. A value with bytes to spare is read as before, and
+  the next starts after them. No sample log has either.
 - JSON: an array value with one item, of an integer or Bool type, is a number or a bool, as
   each item of a longer array is. It was a string (`"5"`), so a field's JSON type depended on
   how many items its array had. An array of one item is now its item wherever an array of

@@ -9,7 +9,7 @@ use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType};
 use crate::evtx_chunk::EvtxChunk;
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
-use log::{error, trace, warn};
+use log::{trace, warn};
 
 use bumpalo::Bump;
 
@@ -306,21 +306,24 @@ pub(crate) fn read_template_values_cursor<'a>(
         let current_position = cursor.position();
         let expected_position = position_before_reading_value + u64::from(descriptor.size);
 
-        if expected_position != current_position {
-            let diff = expected_position as i128 - current_position as i128;
-            // This sometimes occurs with dirty samples, but it's usually still possible to recover the rest of the record.
-            // Sometimes however the log will contain a lot of zero fields.
+        if current_position > expected_position {
+            // The value took more bytes than are its own: the rest were the next values'. It
+            // isn't what its descriptor says, and nothing after it is where it should be.
+            return Err(DeserializationError::Truncated {
+                what: "template value",
+                offset: position_before_reading_value,
+                need: (current_position - position_before_reading_value) as usize,
+                have: usize::from(descriptor.size),
+            });
+        }
+        if current_position < expected_position {
+            // This sometimes occurs with dirty samples, but it's usually still possible to
+            // recover the rest of the record: the next value starts after this one's bytes.
             warn!(
                 "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
                 current_position, expected_position, &descriptor
             );
-
-            match u64::try_from(diff) {
-                Ok(u64_diff) => {
-                    cursor.set_pos_u64(current_position + u64_diff, "Broken record")?;
-                }
-                Err(_) => error!("Broken record"),
-            }
+            cursor.set_pos_u64(expected_position, "Broken record")?;
         }
         values.push(value);
     }
