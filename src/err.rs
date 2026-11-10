@@ -151,11 +151,16 @@ impl InputError {
 /// May also be raised if common chunk resources are not read succesfully.
 #[derive(Debug, Error)]
 pub enum ChunkError {
+    /// The file ends before the end of the chunk's header (or before the chunk).
     #[error("Reached EOF while trying to allocate chunk")]
     IncompleteChunk,
 
+    /// The reader failed while reading the chunk.
+    #[error("Failed to read chunk")]
+    FailedToReadChunk(#[source] io::Error),
+
     #[error("Failed to seek to start of chunk.")]
-    FailedToSeekToChunk(io::Error),
+    FailedToSeekToChunk(#[source] io::Error),
 
     #[error("Failed to parse chunk header")]
     FailedToParseChunkHeader(#[from] DeserializationError),

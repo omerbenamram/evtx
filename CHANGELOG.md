@@ -21,6 +21,9 @@ and this project adheres to
 
 ### Breaking changes
 
+- `ChunkError` has a new variant, `FailedToReadChunk`, which holds the reader's error. A read
+  that fails used to be reported as `IncompleteChunk` ("Reached EOF"), which now only means
+  that the file ends before the end of a chunk's header.
 - `ChunkError::FailedToBuildStringCache` is gone: a damaged string table no longer fails its
   chunk (see Fixed).
 - evtx no longer depends on `winstructs` (and through it on `chrono`). GUIDs
@@ -35,6 +38,17 @@ and this project adheres to
 
 ### Fixed
 
+- A log whose last chunk is cut off by the end of the file (an interrupted copy, a file
+  recovered in part) lost that chunk's records without an error or a warning: `security.evtx`
+  short of 1,000 bytes of its last chunk's free space gave 2,201 of its 2,261 records. The
+  records that fit are now read, the record that the end of the file cuts into is an error, and
+  a `warn!` names the chunk. A chunk whose header is cut off is still left out.
+- An error from the reader while a chunk is read (a disk that can't be read, an exception from
+  a Python file object) was reported as "Reached EOF while trying to allocate chunk", and its
+  cause was dropped. It is now `ChunkError::FailedToReadChunk`, with the reader's error as its
+  source.
+- Chunk offsets are computed in 64 bits, so on 32-bit targets a log larger than 4 GiB no longer
+  overflows (a panic with overflow checks, the wrong chunks read without).
 - A chunk whose string table is damaged (a bucket offset past the end of the chunk, a name
   that can't be decoded) lost all of its records to `Failed to build string cache`, although
   records name their strings by offset and already read the ones the table doesn't list. The
