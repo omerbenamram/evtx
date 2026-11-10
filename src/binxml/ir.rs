@@ -862,7 +862,7 @@ fn validate_tpl_instance<'a>(
         let BinXmlValue::BinXmlType(bytes) = *scalar else {
             continue;
         };
-        if bytes.is_empty() {
+        if crate::binxml::tokens::is_empty_stream(bytes) {
             *value = ValidatedValue::Scalar(BinXmlValue::NullType);
             continue;
         }

@@ -229,6 +229,17 @@ pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
     }
 }
 
+/// Whether a BinXML value's `stream` holds nothing: no bytes, or the end of the stream
+/// right away or right after a fragment header. Such a value is NULL, in every renderer.
+pub(crate) const fn is_empty_stream(stream: &[u8]) -> bool {
+    matches!(
+        stream,
+        [] | [token::EOF, ..]
+            | [token::FRAGMENT_HEADER, _, _, _]
+            | [token::FRAGMENT_HEADER, _, _, _, token::EOF, ..]
+    )
+}
+
 /// Whether a single-instance `stream` whose instance parsed `consumed` bytes
 /// ends there: the rest is empty or starts with EOF. `None` when the instance
 /// read past the end of `stream`.

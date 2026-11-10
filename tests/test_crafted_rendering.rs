@@ -693,3 +693,51 @@ fn a_processing_instruction_named_xml_fails_the_record_in_xml() {
         assert_eq!(chunk_json.unwrap().trim_end(), json.unwrap());
     }
 }
+
+#[test]
+fn a_binxml_value_with_nothing_in_it_is_null() {
+    // A value of type BinXML that is only the end of its stream, with a fragment header or
+    // without one, is nothing, as one with no bytes is. The compiled XML took it for an
+    // element and broke the line for it: `<Outer>\n  </Outer>`.
+    for stream in [&[][..], &[0x00], &[0x0f, 1, 1, 0], &[0x0f, 1, 1, 0, 0x00]] {
+        let evtx = synthetic_evtx(|record| {
+            record.fragment_header();
+            record.template_instance(
+                |root| {
+                    root.open("Event", true).close_start();
+                    root.open("Outer", true)
+                        .close_start()
+                        .substitution(0, 0x21)
+                        .end_element();
+                    root.open("Optional", true)
+                        .close_start()
+                        .optional_substitution(0, 0x21)
+                        .end_element();
+                    // An element that depends on a NULL value is left out.
+                    root.open_depending("Dependent", 0)
+                        .close_start()
+                        .substitution(0, 0x21)
+                        .end_element();
+                    root.end_element();
+                },
+                vec![value(0x21, |fragment| {
+                    fragment.raw(stream);
+                })],
+            );
+            record.eof();
+        });
+        let [xml, json, chunk_xml, chunk_json] = render_everywhere(&evtx).map(Result::unwrap);
+        let expected = "<Event>\n  <Outer></Outer>\n  <Optional></Optional>\n</Event>";
+        assert_eq!(
+            xml.split_once('\n').unwrap().1.trim_end(),
+            expected,
+            "{stream:?}"
+        );
+        assert_eq!(chunk_xml.trim_end(), xml.trim_end(), "{stream:?}");
+        assert_eq!(
+            json, r#"{"Event":{"Outer":null,"Optional":null}}"#,
+            "{stream:?}"
+        );
+        assert_eq!(chunk_json.trim_end(), json, "{stream:?}");
+    }
+}

@@ -22,7 +22,9 @@ use crate::binxml::ir::{
     read_template_definition_header_at, template_body_at,
 };
 use crate::binxml::name::read_name_link;
-use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
+use crate::binxml::tokens::{
+    Stream, TokenSink, ends_stream, is_empty_stream, single_instance_offset, walk_tokens,
+};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
@@ -2469,6 +2471,9 @@ impl Preflight {
                 let start = self.ansi.len() as u32;
                 self.ansi.push_str(&decoded);
                 self.ansi_spans.push((start, self.ansi.len() as u32));
+            } else if ty == value_ty::BIN_XML && is_empty_stream(&data[off..end]) {
+                // A stream with nothing in it is NULL, as one with no bytes is (see `null`).
+                slot.len = 0;
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
