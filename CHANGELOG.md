@@ -17,7 +17,11 @@ and this project adheres to
   as a virtual EVTX file that `EvtxParser::from_read_seek` takes. A chunk counts when its header
   fields are in range and its header CRC32 matches or a record starts right after it. Carving an
   image built from every sample log, with noise between them and half of their file headers
-  dropped, gives the same set of records as parsing each log.
+  dropped, gives the same set of records as parsing each log. Where the source can't be read
+  (a bad sector), the scan gives up that 4 KiB page and goes on: `evtx_dump` says how many
+  bytes it skipped, and `CarvedEvtx::unreadable_bytes()` gives the count. A chunk with such a
+  hole ends at it. A source of which nothing can be read (a directory, a device that is
+  gone) is an error, and so is one where `evtx_dump --carve` finds no chunks.
 
 ### Breaking changes
 

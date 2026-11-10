@@ -206,6 +206,17 @@ impl EvtxDump {
                 carved.chunk_offsets().len(),
                 self.input.display()
             );
+            if carved.unreadable_bytes() > 0 {
+                eprintln!(
+                    "{} bytes of {} could not be read and were skipped",
+                    carved.unreadable_bytes(),
+                    self.input.display()
+                );
+            }
+            // Not an empty log: nothing here to dump, which a script should hear about.
+            if carved.chunk_offsets().is_empty() {
+                bail!("No EVTX chunks were found in {}", self.input.display());
+            }
             for (number, offset) in carved.chunk_offsets().iter().enumerate() {
                 log::info!("chunk {number}: offset {offset} ({offset:#x})");
             }
