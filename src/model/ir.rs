@@ -10,6 +10,7 @@
 //!   is resolved during template instantiation (IR build), before rendering.
 //! - `Element::has_element_child` is maintained to optimize rendering decisions.
 
+use crate::binxml::name::{BinXmlName, is_xml_name};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::utils::Utf16LeSlice;
 use bumpalo::Bump;
@@ -18,7 +19,8 @@ use std::mem::ManuallyDrop;
 
 /// An XML name backed by a UTF-8 string slice.
 ///
-/// A name read from a BinXML stream is made with `Name::parse`, so it is an XML name.
+/// A name read from a BinXML stream is made with `Name::parse` or `Name::from_table`, so it
+/// is an XML name.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Name<'a> {
     value: &'a str,
@@ -26,7 +28,7 @@ pub struct Name<'a> {
 
 impl<'a> Name<'a> {
     /// Wrap a string slice as an IR name. For names the crate writes itself: one from a
-    /// stream goes through `parse`.
+    /// stream goes through `parse` or `from_table`.
     pub(crate) fn new(value: &'a str) -> Self {
         Name { value }
     }
@@ -36,34 +38,18 @@ impl<'a> Name<'a> {
         is_xml_name(value).then_some(Name { value })
     }
 
+    /// A name of a chunk's string table as a name, if it is an XML name: as `parse`, with the
+    /// check made when the table was read.
+    pub(crate) fn from_table(name: &'a BinXmlName) -> Option<Self> {
+        name.is_xml_name().then_some(Name {
+            value: name.as_str(),
+        })
+    }
+
     /// Returns the name as a UTF-8 string slice.
     pub(crate) fn as_str(&self) -> &str {
         self.value
     }
-}
-
-/// Whether `name` is an XML `Name`: what XML and JSON output need of an element or attribute
-/// name, an entity reference, a processing instruction target or a JSON key, since they write
-/// it as it is (XML has no way to escape a name). A name with a quote, a space or an angle
-/// bracket in it would end its tag or its key early and have the rest read as markup.
-/// Windows writes names that came from a manifest, which are XML names.
-fn is_xml_name(name: &str) -> bool {
-    // XML 1.0 (fifth edition), productions [4] NameStartChar and [4a] NameChar.
-    fn starts_name(c: char) -> bool {
-        matches!(c,
-            ':' | 'A'..='Z' | '_' | 'a'..='z'
-            | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
-            | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
-            | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
-            | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
-    }
-    fn continues_name(c: char) -> bool {
-        starts_name(c)
-            || matches!(c,
-                '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
-    }
-    let mut chars = name.chars();
-    chars.next().is_some_and(starts_name) && chars.all(continues_name)
 }
 
 /// Text content stored as UTF-16LE or UTF-8.

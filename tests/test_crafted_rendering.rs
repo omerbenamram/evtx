@@ -120,3 +120,50 @@ fn xml_names_render() {
         }
     }
 }
+
+/// `evtx` with the string-table name `from` of its first chunk replaced by `to`, of the same
+/// length.
+fn rename_in_string_table(mut evtx: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+    let entry = |name: &str| -> Vec<u8> {
+        let units: Vec<u16> = name.encode_utf16().collect();
+        std::iter::once(units.len() as u16)
+            .chain(units)
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    };
+    let (from, to) = (entry(from), entry(to));
+    assert_eq!(from.len(), to.len());
+    let chunk = EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE;
+    let at = evtx[chunk.clone()]
+        .windows(from.len())
+        .position(|window| window == from)
+        .expect("the name in the first chunk");
+    evtx[chunk.start + at..][..to.len()].copy_from_slice(&to);
+    evtx
+}
+
+#[test]
+fn a_string_table_name_that_is_not_an_xml_name_fails_the_records_that_use_it() {
+    // Every record of the sample has a `Correlation` element, named in its chunk's table.
+    let sample = std::fs::read(regular_sample()).unwrap();
+    let evtx = rename_in_string_table(sample, "Correlation", "Correla\"><x");
+    let mut parser = evtx::EvtxParser::from_buffer(evtx).unwrap();
+    let xml: Vec<_> = parser.records().collect();
+    let json: Vec<_> = parser.records_json().collect();
+    // The 91 records of the first chunk fail, and the others render: each chunk has its own
+    // table.
+    for records in [xml, json] {
+        let failed: Vec<String> = records
+            .iter()
+            .filter_map(|record| record.as_ref().err().map(|err| causes(err)))
+            .collect();
+        assert_eq!((failed.len(), records.len()), (91, 2261));
+        for err in failed {
+            assert!(
+                err.contains(r#""Correla\"><x", the name at offset"#) && err.ends_with("XML name"),
+                "{err}"
+            );
+        }
+    }
+}

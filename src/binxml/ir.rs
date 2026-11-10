@@ -529,15 +529,25 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     }
 
     fn name(&self, offset: ChunkOffset) -> Result<Name<'a>> {
-        // Chunk streams reference the string table; WEVT templates inline names.
-        let name = match self.src.chunk {
-            Some(chunk) => expand_string_ref(offset, chunk, self.src.bump),
-            None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
-        }?;
-        Name::parse(name).ok_or_else(|| EvtxError::NotAnXmlName {
+        let not_a_name = |name: &str| EvtxError::NotAnXmlName {
             name: name.to_string(),
             offset,
-        })
+        };
+        // Chunk streams reference the string table, whose names were checked as they were
+        // read.
+        let listed = self
+            .src
+            .chunk
+            .and_then(|chunk| chunk.string_cache.get_cached_string(offset));
+        if let Some(name) = listed {
+            return Name::from_table(name).ok_or_else(|| not_a_name(name.as_str()));
+        }
+        let name = match self.src.chunk {
+            Some(chunk) => read_string_at(offset, chunk, self.src.bump),
+            // WEVT templates inline names.
+            None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
+        }?;
+        Name::parse(name).ok_or_else(|| not_a_name(name))
     }
 
     fn push_node(&mut self, node: Node<'a>) -> Result<()> {
@@ -1384,29 +1394,24 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
     }
 }
 
-fn expand_string_ref<'a>(
+/// The name at `offset` of a chunk whose string table doesn't list it (a damaged table, or
+/// a name that only a record holds), decoded into `bump`.
+fn read_string_at<'a>(
     offset: ChunkOffset,
     chunk: &'a EvtxChunk<'a>,
     bump: &'a Bump,
 ) -> Result<&'a str> {
-    match chunk.string_cache.get_cached_string(offset) {
-        Some(s) => Ok(s.as_str()),
-        None => {
-            // Fail-soft fallback for corrupted chunks / missing string cache entries:
-            // decode the name into the caller-provided bump arena.
-            let name_off =
-                offset
-                    .checked_add(NAME_LINK_SIZE)
-                    .ok_or(EvtxError::FailedToCreateRecordModel(
-                        "string table offset overflow",
-                    ))?;
-            let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
-            let s = cursor
-                .len_prefixed_utf16_string_bump(true, "name", bump)?
-                .unwrap_or("");
-            Ok(s)
-        }
-    }
+    let name_off =
+        offset
+            .checked_add(NAME_LINK_SIZE)
+            .ok_or(EvtxError::FailedToCreateRecordModel(
+                "string table offset overflow",
+            ))?;
+    let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
+    let s = cursor
+        .len_prefixed_utf16_string_bump(true, "name", bump)?
+        .unwrap_or("");
+    Ok(s)
 }
 
 fn expand_wevt_inline_name_ref<'a>(
