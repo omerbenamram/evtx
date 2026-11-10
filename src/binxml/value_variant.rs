@@ -740,6 +740,24 @@ mod tests {
     use std::borrow::Cow;
 
     #[test]
+    fn display_is_the_text_with_no_escapes() {
+        use super::BinXmlValue;
+        use crate::utils::Utf16LeSlice;
+
+        let text = "a\"b\\c\n<&>\u{1}é";
+        let utf16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let utf16 = Utf16LeSlice::new(&utf16, utf16.len() / 2);
+        assert_eq!(BinXmlValue::StringType(utf16).to_string(), text);
+        assert_eq!(BinXmlValue::AnsiStringType(text).to_string(), text);
+        assert_eq!(
+            BinXmlValue::StringArrayType(&[utf16, utf16]).to_string(),
+            format!("{text},{text}")
+        );
+        assert_eq!(BinXmlValue::UInt32Type(7).to_string(), "7");
+        assert_eq!(BinXmlValue::NullType.to_string(), "");
+    }
+
+    #[test]
     fn ansi_value_drops_nuls_and_borrows_without_them() {
         let (codec, arena) = (encoding_rs::WINDOWS_1252, bumpalo::Bump::new());
         let plain = decode_ansi_value(codec, b"abc", &arena).unwrap();
@@ -829,16 +847,18 @@ mod tests {
     }
 }
 
+/// The value's text, as it is: no escapes for JSON or XML.
 impl<'a> Display for BinXmlValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut vr = crate::binxml::value_render::ValueRenderer::default();
         let mut writer = Vec::new();
         // Values with no text form (handles, nested BinXML, unsupported arrays)
         // display as empty; `fmt::Error` here would make `to_string()` panic.
-        if vr.write_json_value_text(&mut writer, self).is_err() {
+        let plain = crate::binxml::value_render::StringEscapeMode::Plain;
+        if vr.write_value_text(&mut writer, self, plain).is_err() {
             return Ok(());
         }
 
-        write!(f, "{}", String::from_utf8(writer).unwrap())
+        f.write_str(&String::from_utf8_lossy(&writer))
     }
 }

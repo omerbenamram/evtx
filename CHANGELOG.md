@@ -44,6 +44,8 @@ and this project adheres to
 
 ### Fixed
 
+- `BinXmlValue`'s `Display` gives the value's text as it is. It gave the text escaped for a
+  JSON string, so a quote came out as `\"` and a newline as `\n`.
 - XML: a crafted record could still give output that isn't well-formed:
   - A character XML doesn't allow (a C0 control other than tab, LF and CR, U+FFFE, U+FFFF) is
     now `_` in a CDATA section and in a processing instruction's data, as it already was in
