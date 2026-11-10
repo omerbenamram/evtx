@@ -144,6 +144,43 @@ pub fn render_record(evtx: &[u8], id: u64) -> (String, String) {
     (xml, json)
 }
 
+/// `err` and what caused it.
+pub fn causes(err: &dyn std::error::Error) -> String {
+    match err.source() {
+        Some(source) => format!("{err}: {}", causes(source)),
+        None => err.to_string(),
+    }
+}
+
+/// What each way of rendering makes of the one record of `evtx`: the records API in XML and
+/// in JSON, then the chunk renderer in XML and in JSON.
+pub fn render_everywhere(evtx: &[u8]) -> [Result<String, String>; 4] {
+    let parser = || {
+        EvtxParser::from_buffer(evtx.to_vec())
+            .unwrap()
+            .with_configuration(ParserSettings::new().num_threads(1))
+    };
+    let chunks = |chunks: &mut dyn Iterator<Item = evtx::RenderedChunk>| {
+        let chunk = chunks.next().unwrap();
+        match &chunk.items[..] {
+            [evtx::RenderedChunkItem::Record { end, .. }] => {
+                Ok(String::from_utf8(chunk.data[..*end].to_vec()).unwrap())
+            }
+            [evtx::RenderedChunkItem::Failed(err)] => Err(causes(err)),
+            items => panic!("{} items", items.len()),
+        }
+    };
+    let record = |record: Option<evtx::err::Result<evtx::SerializedEvtxRecord<String>>>| {
+        record.unwrap().map(|r| r.data).map_err(|e| causes(&e))
+    };
+    [
+        record(parser().records().next()),
+        record(parser().records_json().next()),
+        chunks(&mut parser().chunks_xml_bytes(false)),
+        chunks(&mut parser().chunks_json_bytes(false)),
+    ]
+}
+
 /// BinXML for synthetic records, written at a known chunk offset: inline names and inline
 /// template definitions point at their own offset.
 pub struct BinXml {

@@ -3,45 +3,7 @@
 
 mod fixtures;
 
-use evtx::{EvtxParser, ParserSettings};
 use fixtures::*;
-
-/// `err` and what caused it.
-fn causes(err: &dyn std::error::Error) -> String {
-    match err.source() {
-        Some(source) => format!("{err}: {}", causes(source)),
-        None => err.to_string(),
-    }
-}
-
-/// What each way of rendering makes of the one record of `evtx`: the records API and the
-/// chunk renderer, in XML and in JSON.
-fn render_everywhere(evtx: &[u8]) -> Vec<Result<String, String>> {
-    let parser = || {
-        EvtxParser::from_buffer(evtx.to_vec())
-            .unwrap()
-            .with_configuration(ParserSettings::new().num_threads(1))
-    };
-    let chunks = |chunks: &mut dyn Iterator<Item = evtx::RenderedChunk>| {
-        let chunk = chunks.next().unwrap();
-        match &chunk.items[..] {
-            [evtx::RenderedChunkItem::Record { end, .. }] => {
-                Ok(String::from_utf8(chunk.data[..*end].to_vec()).unwrap())
-            }
-            [evtx::RenderedChunkItem::Failed(err)] => Err(causes(err)),
-            items => panic!("{} items", items.len()),
-        }
-    };
-    let record = |record: Option<evtx::err::Result<evtx::SerializedEvtxRecord<String>>>| {
-        record.unwrap().map(|r| r.data).map_err(|e| causes(&e))
-    };
-    vec![
-        record(parser().records().next()),
-        record(parser().records_json().next()),
-        chunks(&mut parser().chunks_xml_bytes(false)),
-        chunks(&mut parser().chunks_json_bytes(false)),
-    ]
-}
 
 /// A record with one name in each place a name can be: `element`, `attribute`, `entity` and
 /// `target` in `<Event><element attribute="v">&entity;<?target data?></element></Event>`.
@@ -143,22 +105,18 @@ fn names_that_are_not_xml_names_fail_the_record() {
 fn xml_names_render() {
     for good in ["a", "_a", "a:b", "a-b.c_1", "é", "名前", "a·b", "𐐀"] {
         for place in PLACES {
-            let results = render_everywhere(&named([good; 4], place));
-            let xml = results[0].as_ref().unwrap();
+            let [xml, json, chunk_xml, chunk_json] =
+                render_everywhere(&named([good; 4], place)).map(Result::unwrap);
             let element = format!("<{good} {good}=\"v\">&{good};<?{good} data?></{good}>");
             assert!(xml.contains(&element), "{xml}");
-            assert_eq!(results[2].as_ref().unwrap().trim_end(), xml.trim_end());
-            let json: serde_json::Value =
-                serde_json::from_str(results[1].as_ref().unwrap()).unwrap();
+            assert_eq!(chunk_xml.trim_end(), xml.trim_end());
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
             let event = match place {
-                Place::Value => &json["Outer"]["Event"],
-                _ => &json["Event"],
+                Place::Value => &parsed["Outer"]["Event"],
+                _ => &parsed["Event"],
             };
             assert_eq!(event[good]["#attributes"][good], "v", "{json}");
-            assert_eq!(
-                results[3].as_ref().unwrap().trim_end(),
-                results[1].as_ref().unwrap().trim_end()
-            );
+            assert_eq!(chunk_json.trim_end(), json.trim_end());
         }
     }
 }

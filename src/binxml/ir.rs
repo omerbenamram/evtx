@@ -534,13 +534,10 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             Some(chunk) => expand_string_ref(offset, chunk, self.src.bump),
             None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
         }?;
-        if !is_xml_name(name) {
-            return Err(EvtxError::NotAnXmlName {
-                name: name.to_string(),
-                offset,
-            });
-        }
-        Ok(Name::new(name))
+        Name::parse(name).ok_or_else(|| EvtxError::NotAnXmlName {
+            name: name.to_string(),
+            offset,
+        })
     }
 
     fn push_node(&mut self, node: Node<'a>) -> Result<()> {
@@ -1385,30 +1382,6 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
         ),
         other => Ok(Node::Value(other)),
     }
-}
-
-/// Whether `name` is an XML `Name`: what XML and JSON output need of an element or attribute
-/// name, an entity reference, a processing instruction target or a JSON key, since they write
-/// it as it is (XML has no way to escape a name). A name with a quote, a space or an angle
-/// bracket in it would end its tag or its key early and have the rest read as markup.
-/// Windows writes names that came from a manifest, which are XML names.
-fn is_xml_name(name: &str) -> bool {
-    // XML 1.0 (fifth edition), productions [4] NameStartChar and [4a] NameChar.
-    fn starts_name(c: char) -> bool {
-        matches!(c,
-            ':' | 'A'..='Z' | '_' | 'a'..='z'
-            | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
-            | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
-            | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
-            | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
-    }
-    fn continues_name(c: char) -> bool {
-        starts_name(c)
-            || matches!(c,
-                '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
-    }
-    let mut chars = name.chars();
-    chars.next().is_some_and(starts_name) && chars.all(continues_name)
 }
 
 fn expand_string_ref<'a>(
