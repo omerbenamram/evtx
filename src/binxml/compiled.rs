@@ -1405,6 +1405,18 @@ fn chunk_spent() -> EvtxError {
     model_err("earlier records of the chunk spent its render budget")
 }
 
+/// What a reference to one of the five entities XML defines stands for.
+fn predefined_entity(name: &str) -> Option<&'static str> {
+    match name {
+        "quot" => Some("\""),
+        "apos" => Some("'"),
+        "amp" => Some("&"),
+        "lt" => Some("<"),
+        "gt" => Some(">"),
+        _ => None,
+    }
+}
+
 fn model_err(msg: &'static str) -> EvtxError {
     EvtxError::FailedToCreateRecordModel(msg)
 }
@@ -1689,7 +1701,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                                 let start = self.lits.len();
                                 self.compile_raw_text(data);
                                 // A `?>` in the data would end the instruction early.
-                                let ends = |data: &[u8]| data.windows(2).position(|w| w == b"?>");
+                                let ends = |bytes: &[u8]| bytes.windows(2).position(|w| w == b"?>");
                                 if ends(&self.lits[start..]).is_some() {
                                     let body = self.lits.split_off(start);
                                     let mut rest = &body[..];
@@ -1970,7 +1982,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 // XML defines five entities, and a record can't declare another: a reference
                 // to one is its text, `&name;`, as in JSON.
                 let name = name.as_str();
-                let defined = matches!(name, "quot" | "apos" | "amp" | "lt" | "gt");
+                let defined = predefined_entity(name).is_some();
                 self.lits
                     .extend_from_slice(if defined { b"&" } else { b"&amp;" });
                 self.lits.extend_from_slice(name.as_bytes());
@@ -4623,24 +4635,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     let s = ch.encode_utf8(&mut buf);
                     self.json_escaped_str_plain(s)?;
                 }
-                Node::EntityRef(name) => {
-                    let resolved = match name.as_str() {
-                        "quot" => Some("\""),
-                        "apos" => Some("'"),
-                        "amp" => Some("&"),
-                        "lt" => Some("<"),
-                        "gt" => Some(">"),
-                        _ => None,
-                    };
-                    match resolved {
-                        Some(s) => self.json_escaped_str_plain(s)?,
-                        None => {
-                            self.lits.push(b'&');
-                            self.lits.extend_from_slice(name.as_str().as_bytes());
-                            self.lits.push(b';');
-                        }
+                Node::EntityRef(name) => match predefined_entity(name.as_str()) {
+                    Some(s) => self.json_escaped_str_plain(s)?,
+                    None => {
+                        self.lits.push(b'&');
+                        self.lits.extend_from_slice(name.as_str().as_bytes());
+                        self.lits.push(b';');
                     }
-                }
+                },
                 Node::PITarget(_) | Node::PIData(_) => {}
                 Node::Placeholder(_) => return Err(unresolved_placeholder()),
                 Node::Element(_) => {
