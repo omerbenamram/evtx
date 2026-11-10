@@ -23,7 +23,7 @@ use crate::binxml::ir::{
 };
 use crate::binxml::name::read_name_link;
 use crate::binxml::tokens::{
-    Stream, TokenSink, ends_stream, is_empty_stream, single_instance_offset, walk_tokens,
+    Stream, TokenSink, ends_stream, single_instance_offset, starts_with_element, walk_tokens,
 };
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType, decode_ansi_value, value_ty};
@@ -2471,9 +2471,6 @@ impl Preflight {
                 let start = self.ansi.len() as u32;
                 self.ansi.push_str(&decoded);
                 self.ansi_spans.push((start, self.ansi.len() as u32));
-            } else if ty == value_ty::BIN_XML && is_empty_stream(&data[off..end]) {
-                // A stream with nothing in it is NULL, as one with no bytes is (see `null`).
-                slot.len = 0;
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
@@ -2517,8 +2514,10 @@ impl Preflight {
             let frag = s.bytes(data);
             let Some(inst_off) = single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
-                // where the executor supports it; otherwise fall back.
-                if P::ALLOW_GENERIC_FRAGS {
+                // where the executor supports it; otherwise fall back. One that doesn't
+                // open an element first may build nothing, which makes the value NULL and
+                // not an element: only building it tells, which the slow lane does.
+                if P::ALLOW_GENERIC_FRAGS && starts_with_element(frag) {
                     continue;
                 }
                 return Err(PreflightBail);

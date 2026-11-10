@@ -44,10 +44,10 @@ and this project adheres to
 
 ### Fixed
 
-- XML: a value of type BinXML that holds only the end of its stream (with a fragment header
-  or without one) is NULL, as one with no bytes is. A compiled template took it for an
+- A value of type BinXML whose stream builds nothing (only its end, or only fragment
+  headers) is NULL, as one with no bytes is. In XML a compiled template took it for an
   element and broke the line for it (`<X>`, newline, `</X>`), where the tree walker wrote
-  `<X></X>`; and an element that depends on it is now left out in both.
+  `<X></X>`. In XML and JSON an element that depends on such a value is now left out.
 - XML: a crafted record could still give output that isn't well-formed:
   - A character XML doesn't allow (a C0 control other than tab, LF and CR, U+FFFE, U+FFFF) is
     now `_` in a CDATA section and in a processing instruction's data, as it already was in
