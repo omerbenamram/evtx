@@ -448,6 +448,9 @@ impl ParserSettings {
     /// Such records have `recovered` set; the record iterators skip ones that fail to parse
     /// or render. `evtx_dump --recover-records` marks them in its output.
     ///
+    /// A chunk whose header can't be read is carved too, after its error. Its records come
+    /// out when the templates they use are still in the chunk.
+    ///
     /// ```rust
     /// # use evtx::{EvtxParser, ParserSettings};
     /// # let fp = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/security.evtx");
@@ -579,6 +582,7 @@ impl<T: ReadSeek> EvtxParser<T> {
         data: &mut T,
         chunk_number: u64,
         validate_checksum: bool,
+        recover_headerless: bool,
     ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         // No file reaches an offset that doesn't fit.
@@ -609,8 +613,14 @@ impl<T: ReadSeek> EvtxParser<T> {
             return Ok(None);
         }
 
-        let mut chunk = EvtxChunkData::new(chunk_data, validate_checksum)
-            .map_err(|e| EvtxError::chunk(chunk_number, e))?;
+        // A chunk that lost its header can still hold records (`recover_records`).
+        let lost_header = recover_headerless && EvtxChunkHeader::from_bytes(&chunk_data).is_err();
+        let mut chunk = if lost_header {
+            EvtxChunkData::headerless(chunk_data)
+        } else {
+            EvtxChunkData::new(chunk_data, validate_checksum)
+                .map_err(|e| EvtxError::chunk(chunk_number, e))?
+        };
         chunk.number = Some(chunk_number);
         if amount_read < EVTX_CHUNK_SIZE {
             warn!(
@@ -637,6 +647,8 @@ impl<T: ReadSeek> EvtxParser<T> {
                 &mut self.data,
                 chunk_number,
                 self.config.validate_checksums,
+                // Past the last whole chunk, bytes without a chunk header aren't a chunk.
+                self.config.should_recover_records() && chunk_number < self.calculated_chunk_count,
             ) {
                 Err(err) => {
                     // Past the last whole chunk there is a cut-off chunk, which is read like

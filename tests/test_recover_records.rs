@@ -79,9 +79,72 @@ fn resyncs_on_records_the_chunk_header_describes() {
 fn resyncs_past_zeroed_records() {
     // A zeroed 16 KiB block inside chunk 7's live area took records 47641 to 47674; the walk
     // picks up again at 47675.
+    //
+    // Chunks 6 and 10 lost their headers to such blocks, and hold 15 and 67 whole records
+    // after them. Those can't be read: the block also took each chunk's first record, which
+    // held the template that they all use.
     let path = sample_with_a_bad_chunk_magic();
     assert_eq!(counts(&path, false), [(301, 0); 2]);
     assert_eq!(counts(&path, true), [(301, 50); 2]);
+}
+
+#[test]
+fn recovers_records_from_a_chunk_without_its_header() {
+    // Chunk 1 holds records 92 to 177. Its header is overwritten, its records are whole.
+    let mut evtx = std::fs::read(regular_sample()).unwrap();
+    let chunk = 4096 + 65536;
+    evtx[chunk..chunk + 512].fill(0xff);
+    // Bytes that aren't a chunk after the last one are still the end of the log.
+    evtx.extend([0xff; 1000]);
+
+    for (recover, threads) in [(false, 1), (true, 1), (true, 4)] {
+        let settings = ParserSettings::new()
+            .recover_records(recover)
+            .num_threads(threads);
+        let mut parser = EvtxParser::from_buffer(evtx.clone())
+            .unwrap()
+            .with_configuration(settings);
+        let (mut live, mut recovered, mut errors) = (vec![], vec![], vec![]);
+        for record in parser.records_json() {
+            match record {
+                Ok(record) if record.recovered => recovered.push(record.event_record_id),
+                Ok(record) => live.push(record.event_record_id),
+                Err(error) => errors.push(error),
+            }
+        }
+
+        let others: Vec<u64> = (1..=91).chain(178..=2261).collect();
+        assert_eq!(live, others);
+        let in_chunk: Vec<u64> = (92..=177).collect();
+        assert_eq!(recovered, if recover { in_chunk } else { vec![] });
+        // The chunk is reported either way: its records come without the header's word on
+        // which of them are live.
+        assert!(
+            matches!(
+                &errors[..],
+                [EvtxError::FailedToParseChunk { chunk_id: 1, source }]
+                    if source.to_string() == "Failed to parse chunk header"
+            ),
+            "{errors:?}"
+        );
+    }
+
+    // The chunk renderer, which `evtx_dump` uses, does the same.
+    let settings = ParserSettings::new().recover_records(true);
+    let mut parser = EvtxParser::from_buffer(evtx)
+        .unwrap()
+        .with_configuration(settings);
+    let (mut recovered, mut failed) = (0, 0);
+    for chunk in parser.chunks_json_bytes(true) {
+        let text = String::from_utf8(chunk.data).unwrap();
+        recovered += text.lines().filter(|l| l.ends_with("(recovered)")).count();
+        failed += chunk
+            .items
+            .iter()
+            .filter(|i| matches!(i, RenderedChunkItem::Failed(_)))
+            .count();
+    }
+    assert_eq!((recovered, failed), (86, 1));
 }
 
 /// security.evtx with its second record's header changed by `damage`, and where that record

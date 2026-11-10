@@ -80,6 +80,17 @@ impl EvtxChunkData {
         Ok(chunk)
     }
 
+    /// A chunk over data whose header is lost (it fails [`EvtxChunkHeader::from_bytes`]), for
+    /// `recover_records`: it has no live records, and all that follows the header's 512 bytes
+    /// is carved. Its records iterator reports the header's error first.
+    pub(crate) fn headerless(data: Vec<u8>) -> Self {
+        EvtxChunkData {
+            header: EvtxChunkHeader::lost(),
+            data,
+            number: None,
+        }
+    }
+
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
         Ok(EvtxChunk::new_with_arena(
@@ -342,6 +353,9 @@ impl<'a> Iterator for IterRawRecords<'a> {
             let offset = self.walk?;
             if offset >= self.live_end() {
                 self.skip_to(offset, None);
+                if let Some(err) = self.lost_header() {
+                    return Some(Err(err));
+                }
                 // The chunk's data ends where its header says more records are: the end of
                 // the file cut the chunk off between two records.
                 if self.cut_off()
@@ -386,6 +400,21 @@ impl<'a> IterRawRecords<'a> {
             offset,
             source: Box::new(source),
         }
+    }
+
+    /// With `recover_records`, the error of a chunk that is read without its header (see
+    /// [`EvtxChunkData::headerless`]): its records are carved, and the chunk still counts as
+    /// one that failed.
+    #[cold]
+    fn lost_header(&self) -> Option<EvtxError> {
+        if !self.chunk.settings.should_recover_records() {
+            return None;
+        }
+        let err = EvtxChunkHeader::from_bytes(self.chunk.data).err()?;
+        Some(EvtxError::chunk(
+            self.chunk.number.unwrap_or_default(),
+            err.into(),
+        ))
     }
 
     /// Whether the chunk's data is shorter than a chunk: the end of its file cut it off.
@@ -531,6 +560,25 @@ impl<'a> IterRawRecords<'a> {
 }
 
 impl EvtxChunkHeader {
+    /// The header of a chunk that lost its own: no live records (the free space starts right
+    /// after the header) and empty string and template tables.
+    fn lost() -> EvtxChunkHeader {
+        EvtxChunkHeader {
+            first_event_record_number: 0,
+            last_event_record_number: 0,
+            first_event_record_id: 0,
+            last_event_record_id: 0,
+            header_size: 0,
+            last_event_record_data_offset: 0,
+            free_space_offset: EVTX_CHUNK_HEADER_SIZE as u32,
+            events_checksum: 0,
+            header_chunk_checksum: 0,
+            flags: ChunkFlags::NO_CRC32,
+            strings_offsets: [0; 64],
+            template_offsets: [0; 32],
+        }
+    }
+
     pub fn from_bytes(data: &[u8]) -> DeserializationResult<EvtxChunkHeader> {
         // We only parse the fixed header prefix; the rest of the chunk may be shorter in some
         // corrupted cases, but the header itself must be present.
