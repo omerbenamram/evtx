@@ -813,9 +813,13 @@ fn a_binxml_value_with_an_element_in_an_attribute_fails_the_record() {
             );
             record.eof();
         });
-        for rendered in render_everywhere(&evtx) {
-            let err = rendered.unwrap_err();
-            assert!(err.contains("element node inside attribute value"), "{err}");
+        for (renderer, rendered) in render_everywhere(&evtx).into_iter().enumerate() {
+            let at = format!("renderer {renderer}, nested instance: {nested_instance}");
+            let err = rendered.expect_err(&at);
+            assert!(
+                err.contains("element node inside attribute value"),
+                "{at}: {err}"
+            );
         }
     }
 }

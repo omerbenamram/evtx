@@ -18,7 +18,7 @@ use crate::ChunkOffset;
 use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, MAX_ELEMENT_DEPTH, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent,
-    ValidatedValue, binxml_slice_offset_in, build_fragment_from_binxml_bytes,
+    ValidatedValue, binxml_slice_offset_in, build_fragment_from_binxml_bytes, element_in_attr,
     read_template_definition_header_at, template_body_at,
 };
 use crate::binxml::name::read_name_link;
@@ -1371,10 +1371,6 @@ fn bail_err() -> EvtxError {
 
 fn unresolved_placeholder() -> EvtxError {
     model_err("unresolved placeholder in tree")
-}
-
-fn element_in_attr() -> EvtxError {
-    model_err("element node inside attribute value")
 }
 
 fn element_in_text() -> EvtxError {
