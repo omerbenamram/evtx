@@ -49,7 +49,11 @@ DUMP_ARGS=(-t 1 -o json)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --file) FILE="$2"; shift 2;;
+    --file)
+      [[ $# -ge 2 ]] || { echo "--file needs a path." >&2; exit 1; }
+      # Relative to where the script was called from, not to the repository.
+      FILE="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+      shift 2;;
     --cachegrind) CACHEGRIND=1; shift;;
     --skip-samply) SKIP_SAMPLY=1; shift;;
     -h|--help) usage; exit 0;;
@@ -72,10 +76,19 @@ if [[ "$STAGE" == "post" && ! -x "$PRE_BIN" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$FILE" ]]; then
+  echo "$FILE is not a file." >&2
+  exit 1
+fi
+if ! command -v hyperfine >/dev/null; then
+  echo "hyperfine is not installed." >&2
+  exit 1
+fi
+
 mkdir -p binaries benchmarks profile
 
-# `bench` builds `bench_evtx_dump_loop`, which the profile uses.
-cargo build --release --features "fast-alloc bench" --bin evtx_dump --bin bench_evtx_dump_loop
+# The same build as the release: `fast-alloc` and nothing else.
+cargo build --release --features fast-alloc --bin evtx_dump
 cp target/release/evtx_dump "$BIN"
 
 # The post stage measures both binaries.
@@ -84,23 +97,26 @@ if [[ "$STAGE" == "post" ]]; then
   BINS+=("$BIN")
 fi
 
-# hyperfine discards the output of the command.
+# hyperfine takes each command as one string and discards its output.
 COMMANDS=()
 for bin in "${BINS[@]}"; do
-  COMMANDS+=("$bin ${DUMP_ARGS[*]} $FILE")
+  printf -v command '%q ' "$bin" ${DUMP_ARGS[@]+"${DUMP_ARGS[@]}"} "$FILE"
+  COMMANDS+=("$command")
 done
 hyperfine -w 10 -r 20 "${COMMANDS[@]}" | tee "benchmarks/benchmark_${TAG}_${STAGE}.txt"
 
 if [[ $CACHEGRIND -eq 1 ]]; then
   for bin in "${BINS[@]}"; do
     valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file=/dev/null \
-      "$bin" "${DUMP_ARGS[@]}" "$FILE" 2>&1 >/dev/null
+      "$bin" ${DUMP_ARGS[@]+"${DUMP_ARGS[@]}"} "$FILE" 2>&1 >/dev/null
   done | tee "benchmarks/cachegrind_${TAG}_${STAGE}.txt"
 fi
 
 if [[ $SKIP_SAMPLY -eq 0 ]]; then
   # The loop binary parses the file many times in one process, which gives samply enough
-  # samples. It always renders JSON without indentation, on the system allocator.
+  # samples. It always renders JSON with its default settings, without indentation, on the
+  # system allocator: the profile follows `--file`, and not the evtx_dump arguments.
+  cargo build --release --features "fast-alloc bench" --bin bench_evtx_dump_loop
   PROFILE="profile/${TAG}_${STAGE}.json.gz"
   if samply record --save-only --unstable-presymbolicate -o "$PROFILE" -- \
       target/release/bench_evtx_dump_loop --file "$FILE" --loops 20 --threads 1; then
@@ -109,6 +125,6 @@ if [[ $SKIP_SAMPLY -eq 0 ]]; then
       --syms "${PROFILE%.gz}.syms.json" \
       --out-dir profile --label "${TAG}_${STAGE}"
   else
-    echo "samply could not record a profile here (it needs perf events); the benchmark above stands." >&2
+    echo "samply did not record a profile: see its message above (on Linux it needs perf events). The benchmark stands." >&2
   fi
 fi

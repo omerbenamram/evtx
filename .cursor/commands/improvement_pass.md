@@ -26,9 +26,9 @@ scripts/perf_pass.sh <TAG> pre    # before you change any code
 scripts/perf_pass.sh <TAG> post   # after the change: benchmarks the pre binary against the new one
 ```
 
-- The benchmark is `evtx_dump -t 1 -o json` on `samples/security_big_sample.evtx`. For another scenario, pass `--file <path>` and the `evtx_dump` arguments after `--`, the same for both stages: `scripts/perf_pass.sh <TAG> pre --file <path> -- -t 1 -o jsonl --separate-json-attributes`. Use one tag for each scenario that "Speed is a feature" asks for, and add `--skip-samply` to all but the first: the profile does not depend on the `evtx_dump` arguments.
+- The benchmark is `evtx_dump -t 1 -o json` on `samples/security_big_sample.evtx`. For another scenario, pass `--file <path>` and the `evtx_dump` arguments after `--`, the same for both stages: `scripts/perf_pass.sh <TAG> pre --file <path> -- -t 1 -o jsonl --separate-json-attributes`. Use one tag for each scenario that "Speed is a feature" asks for, and add `--skip-samply` to a further scenario on the same file: the profile depends on the file, and not on the `evtx_dump` arguments.
 - When the difference is within the noise of `hyperfine`, add `--cachegrind` to the post stage. It counts the instructions of both binaries.
-- The profile comes from `bench_evtx_dump_loop`, which always renders JSON without indentation and uses the system allocator. Use it to find hotspots in parsing and rendering. The benchmark, not the profile, is the measure of the pass.
+- The profile comes from `bench_evtx_dump_loop`, which always renders JSON with its default settings, without indentation, on the system allocator. Use it to find hotspots in parsing and rendering. The benchmark, not the profile, is the measure of the pass.
 - Where `samply` cannot run, such as a cloud container, the script says so and keeps the benchmark. `--skip-samply` leaves the profile out.
 - `scripts/perf_pass.sh --help` lists the files that it writes.
 
