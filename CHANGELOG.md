@@ -47,9 +47,11 @@ and this project adheres to
 
 ### Fixed
 
-- `evtx_dump` refuses `--mta` with `--carve`. Carved chunks come from any number of logs, and
-  an `.MTA` file's messages were given to whichever of their records had a matching
-  `EventRecordID`. The help and `docs/mta.md` now say that the file must be the log's own.
+- `evtx_dump` warns when `--mta` is given with `--carve` or `--recover-records`. An `.MTA`
+  file finds an event's message by its record's position and `EventRecordID`, so a carved or
+  recovered record that is not an event of the file's log can get another event's message.
+  The `--mta` help, `ParserSettings::mta` and `docs/mta.md` now say that the file must be the
+  log's own.
 - A record with a BinXML value that can't be read fails in `evtx_dump` and the chunk
   renderers (`chunks_xml_bytes`, `chunks_json_bytes`) too when its template doesn't use the
   value. They rendered such a record, where `records()` and `records_json()` failed it, so

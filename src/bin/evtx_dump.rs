@@ -167,6 +167,15 @@ impl EvtxDump {
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
 
+        if mta.is_some() && (matches.get_flag("carve") || matches.get_flag("recover-records")) {
+            eprintln!(
+                "warning: --mta with --carve or --recover-records: an event's message is found by \
+                 its record's position and EventRecordID. A carved or recovered record that is \
+                 not an event of the log the .MTA file was saved with can get another event's \
+                 message."
+            );
+        }
+
         let parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
             .validate_checksums(validate_checksums)
@@ -657,10 +666,7 @@ fn run_cli() -> Result<()> {
                 .long("mta")
                 .value_name("MTA")
                 .value_parser(clap::value_parser!(PathBuf))
-                // Carved chunks come from any number of logs, in the order found: neither a
-                // record's position nor its EventRecordID says which event of the file it is.
-                .conflicts_with("carve")
-                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element. It must be the file saved with this log: messages are matched by the record's position and EventRecordID alone, which another log's records can have too."),
+                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element. It must be the file saved with this log: an event's message is found by the record's position and EventRecordID, which a record of another log (or one found by --carve or --recover-records) can have too."),
         )
         .arg(
             Arg::new("stop-after-one-error")

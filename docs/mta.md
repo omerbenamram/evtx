@@ -22,15 +22,18 @@ requested with `EvtOpenPublisherMetadata(LogFilePath = <the .evtx>)`.
 evtx_dump --mta 'LocaleMetaData/Security_1033.MTA' Security.evtx
 ```
 
-The file must be the one saved with the log. An `EVT` entry holds an `EventRecordID` and a
-message and nothing else of its event, so a file from another log gives its messages to this
-log's records wherever the IDs meet (Windows does the same). For that reason `evtx_dump`
-refuses `--mta` with `--carve`: carved chunks come from any number of logs.
-
 ```rust
 let mta = evtx::mta::MtaFile::from_path("LocaleMetaData/Security_1033.MTA")?;
 let settings = evtx::ParserSettings::new().mta(Some(std::sync::Arc::new(mta)));
 ```
+
+The file must be the one saved with the log, in `evtx_dump` and in the library alike. An `EVT`
+entry holds an `EventRecordID` and a message and nothing else of its event, so a record that
+is not an event of that log gets a message wherever its position or its ID meets an entry's
+(Windows matches the same way). That goes for another log's records, and for records found by
+carving (`--carve`, `CarvedEvtx`) or recovered from slack (`--recover-records`): `evtx_dump`
+warns when `--mta` is given with either. Level, task, opcode and keyword names are found by
+publisher and value, and are right for any record of a publisher the file has.
 
 Every record whose publisher is in the file gets a `RenderingInfo` element as the last child of
 `Event`, shaped like the one Windows adds to forwarded events. Strings the file does not have are

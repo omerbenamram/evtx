@@ -401,16 +401,23 @@ fn cli_mta_flag() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("not an MTA file"), "{stderr}");
 
-    // Carved chunks can be of any log, so no one file's messages are theirs.
-    let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
-        .arg("--carve")
-        .arg("--mta")
-        .arg(mta_path("classic", 1033))
-        .arg(mta_dir().join("classic.evtx"))
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("cannot be used with"), "{stderr}");
-    assert!(output.stdout.is_empty());
+    // Carved or recovered records need not be events of the file's log: it says so, and
+    // still renders (a damaged log carved with its own file is a fair use).
+    for flag in ["--carve", "--recover-records"] {
+        let output = Command::new(assert_cmd::cargo_bin!("evtx_dump"))
+            .args(["-o", "jsonl", flag, "--mta"])
+            .arg(mta_path("classic", 1033))
+            .arg(mta_dir().join("classic.evtx"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("warning: --mta with"), "{flag}: {stderr}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let first: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            first["Event"]["RenderingInfo"]["Message"],
+            "Classic information message."
+        );
+    }
 }
