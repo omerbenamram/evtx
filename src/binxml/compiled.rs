@@ -2393,8 +2393,9 @@ impl Preflight {
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
-                // NUL ends an item; the payload must end exactly on one (an
-                // unterminated tail keeps the legacy lane's read-past quirk).
+                // NUL ends an item; the payload must end exactly on one (the
+                // deserializer makes an item of an unterminated tail too, and
+                // its lane renders such a value).
                 let items_start = self.array_items.len() as u32;
                 let mut item_off = off;
                 for (pi, pair) in data[off..end].chunks_exact(2).enumerate() {

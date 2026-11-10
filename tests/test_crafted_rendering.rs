@@ -562,3 +562,77 @@ fn a_numeric_array_of_one_item_is_a_number_as_the_items_of_longer_ones_are() {
     assert_eq!(record(0x94, 4, 1), one(r#""0x1""#));
     assert_eq!(record(0x94, 4, 2), two(r#""0x1""#));
 }
+
+/// `<Event><A>%0</A><B>%1</B></Event>` with a value of type `first_type` and bytes `first`,
+/// then the UInt32 7.
+fn value_then_uint32(first_type: u8, first: &[u8]) -> Vec<u8> {
+    synthetic_evtx(|record| {
+        record.fragment_header().template_instance(
+            |root| {
+                root.open("Event", true).close_start();
+                for (id, (name, value_type)) in
+                    [("A", first_type), ("B", 0x08)].into_iter().enumerate()
+                {
+                    root.open(name, true)
+                        .close_start()
+                        .substitution(id as u16, value_type)
+                        .end_element();
+                }
+                root.end_element();
+            },
+            vec![
+                value(first_type, |v| {
+                    v.raw(first);
+                }),
+                value(0x08, |v| {
+                    v.raw(&7u32.to_le_bytes());
+                }),
+            ],
+        );
+        record.eof();
+    })
+}
+
+/// The record's XML and JSON, which the records API and the chunk renderer agree on.
+fn xml_and_json(evtx: &[u8]) -> (String, String) {
+    let [xml, json, chunk_xml, chunk_json] = render_everywhere(evtx).map(Result::unwrap);
+    assert_eq!(chunk_xml.trim_end(), xml.trim_end());
+    assert_eq!(chunk_json.trim_end(), json);
+    let xml = xml.split_once('\n').unwrap().1;
+    (xml.split_whitespace().collect(), json)
+}
+
+#[test]
+fn a_value_that_needs_more_bytes_than_it_has_fails_the_record() {
+    // A UInt32 of two bytes would take two of the next value's.
+    for rendered in render_everywhere(&value_then_uint32(0x08, &[1, 0])) {
+        let err = rendered.unwrap_err();
+        assert!(
+            err.contains("buffer too small for template value")
+                && err.contains("need 4 bytes, have 2"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn a_value_with_bytes_to_spare_leaves_the_next_where_it_is() {
+    let (xml, json) = xml_and_json(&value_then_uint32(0x08, &[1, 0, 0, 0, 9, 9]));
+    assert_eq!(xml, "<Event><A>1</A><B>7</B></Event>");
+    assert_eq!(json, r#"{"Event":{"A":1,"B":7}}"#);
+}
+
+#[test]
+fn a_value_with_no_bytes_is_no_value() {
+    let (xml, json) = xml_and_json(&value_then_uint32(0x08, &[]));
+    assert_eq!(xml, "<Event><A></A><B>7</B></Event>");
+    assert_eq!(json, r#"{"Event":{"A":null,"B":7}}"#);
+}
+
+#[test]
+fn a_string_array_ends_with_its_own_bytes() {
+    // `a`, NUL, `b` and no NUL: the last string doesn't run on into the next value.
+    let (xml, json) = xml_and_json(&value_then_uint32(0x81, &[b'a', 0, 0, 0, b'b', 0]));
+    assert_eq!(xml, "<Event><A>a</A><A>b</A><B>7</B></Event>");
+    assert_eq!(json, r#"{"Event":{"A":"a","A_1":"b","B":7}}"#);
+}

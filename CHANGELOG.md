@@ -44,6 +44,17 @@ and this project adheres to
 
 ### Fixed
 
+- A template value is read from its own bytes only, the count its descriptor gives. One that
+  needs more (a UInt32 of two bytes, a SID whose sub-authority count runs past its size) was
+  read out of the next values' bytes, and every value after it from the wrong place, so the
+  record rendered with data that was not its own. Now:
+  - such a value fails its record with `DeserializationError::Truncated`;
+  - a string array whose last string has no NUL ends with its bytes (it read on to the next
+    NUL, wherever that was), as an ANSI string array already did;
+  - a value with no bytes at all, of a type that has a width, is no value (NULL).
+
+  A value with bytes to spare is read as before, and the next starts after them. No sample
+  log has any of these.
 - JSON: an array value with one item, of an integer or Bool type, is a number or a bool, as
   each item of a longer array is. It was a string (`"5"`), so a field's JSON type depended on
   how many items its array had. An array of one item is now its item wherever an array of
