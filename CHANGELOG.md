@@ -51,6 +51,13 @@ and this project adheres to
   missing. It exited with 0, as for a log it read all of, so a script could not tell. Status 1
   is still a failure that stops the run, and 2 arguments that are refused.
 
+### Changed
+
+- The crate on crates.io holds only the source, the README, this changelog and the licences:
+  0.24 MB compressed, down from 4.1 MB. It no longer carries the integration tests, which could
+  not run without the sample logs, nor the Windows DLLs under `samples/dlls`, the scripts, the
+  docs and the CI workflows. All of these stay in the repository.
+
 ### Fixed
 
 - `evtx_dump --events 5-3`, a range that ends before it starts, is refused. It printed nothing
