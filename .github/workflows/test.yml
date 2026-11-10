@@ -13,6 +13,22 @@ jobs:
           VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
           scripts/release-notes.sh "$VERSION" > /dev/null
 
+  format:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # Each tracked Cargo.toml is a package of its own, so a new one is checked without a
+      # change here.
+      - name: Check every package
+        run: |
+          for manifest in $(git ls-files '*Cargo.toml'); do
+            cargo fmt --manifest-path "$manifest" -- --check
+          done
+
   build_and_test:
     name: Test EVTX Library
     runs-on: ${{ matrix.os }}
