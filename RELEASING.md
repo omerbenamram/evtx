@@ -16,12 +16,16 @@ binaries attached to a GitHub release.
    That section becomes the GitHub release's notes, followed by GitHub's list of merged PRs,
    and CI fails the PR without it.
    If `utf16-simd` changed since its last release, bump its version too.
+   Run `cargo publish --dry-run` before you open it; CI runs the tests.
 3. Merge it.
 
 The merge runs `.github/workflows/auto-tag.yml`. It sees a `Cargo.toml` version with no tag,
 pushes the `vX.Y.Z` tag on the merge commit, and runs `.github/workflows/release.yml` on the
 tag: GitHub release, binaries, then `cargo publish` last. If the version has no notes in
 `CHANGELOG.md`, auto-tag fails without tagging it; merging a PR that adds them runs it again.
+
+After the merge, check that the `release.yml` run passed, that the GitHub release `vX.Y.Z`
+exists, and that crates.io shows the new versions.
 
 Pushing a `vX.Y.Z` tag by hand, or running `release.yml` from the Actions tab, still works if
 the version has notes; auto-tag skips a version whose tag exists. If auto-tag pushed the tag but
