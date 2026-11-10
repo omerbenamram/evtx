@@ -704,6 +704,8 @@ pub(crate) struct XmlProgram {
     elem_slots: Vec<(u16, u16)>,
     /// Slots compiled as `XOp::Expand` (string arrays allowed).
     expand_slots: Vec<u16>,
+    /// Slots whose ops a guard op skips when it leaves their element out, sorted.
+    guarded_slots: Vec<u16>,
     root_name: Vec<u8>,
     system_fields: Option<SystemFields>,
 }
@@ -1091,6 +1093,11 @@ pub(crate) trait TemplateProgram: Sized {
     fn expand_slots(&self) -> &[u16] {
         &[]
     }
+    /// Whether the executor may pass over `slot` without rendering it, because its element
+    /// is left out. Only asked where `ALLOW_GENERIC_FRAGS`.
+    fn may_skip(&self, _slot: u16) -> bool {
+        false
+    }
     /// The template's root element name.
     fn root_name(&self) -> &[u8];
     /// Where the program's records keep their `System` fields, when an `.MTA` file is set.
@@ -1135,6 +1142,9 @@ impl TemplateProgram for XmlProgram {
     fn expand_slots(&self) -> &[u16] {
         &self.expand_slots
     }
+    fn may_skip(&self, slot: u16) -> bool {
+        self.guarded_slots.binary_search(&slot).is_ok()
+    }
     fn root_name(&self) -> &[u8] {
         &self.root_name
     }
@@ -1165,6 +1175,7 @@ impl TemplateProgram for XmlProgram {
             + heap_size(&self.deps)
             + heap_size(&self.elem_slots)
             + heap_size(&self.expand_slots)
+            + heap_size(&self.guarded_slots)
             + heap_size(&self.root_name)
             + (self.system_fields.as_ref()).map_or(0, SystemFields::heap_size)
     }
@@ -1457,6 +1468,16 @@ fn compile_xml_template(
             c.deps.shrink_to_fit();
             c.elem_slots.shrink_to_fit();
             c.expand_slots.shrink_to_fit();
+            let mut guarded_slots = Vec::new();
+            for (at, op) in c.ops.iter().enumerate() {
+                if let XOp::Depends { len, .. } | XOp::LeftOut { len, .. } = op {
+                    let skipped = &c.ops[at + 1..][..*len as usize];
+                    guarded_slots.extend(skipped.iter().filter_map(XOp::slot));
+                }
+            }
+            guarded_slots.sort_unstable();
+            guarded_slots.dedup();
+            guarded_slots.shrink_to_fit();
             Some(XmlProgram {
                 lits: c.lits,
                 ops: c.ops,
@@ -1464,6 +1485,7 @@ fn compile_xml_template(
                 indent_on: c.indent_on,
                 elem_slots: c.elem_slots,
                 expand_slots: c.expand_slots,
+                guarded_slots,
                 root_name: tree.root_element().name.as_str().as_bytes().to_vec(),
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
@@ -2241,11 +2263,23 @@ pub(crate) struct Preflight {
     array_items: Vec<(u32, u16)>,
 }
 
-/// Whether a BinXML value's stream opens neither a template nor an element first. Kept out
-/// of the scan's loop, which is the hot one.
+/// Whether the fast lane can't take a record for the stream of its BinXML value `slot`.
+/// Kept out of the scan's loop, which is the hot one.
 #[inline(never)]
-fn may_build_nothing(stream: &[u8]) -> bool {
-    !stream.is_empty() && single_instance_offset(stream).is_none() && !starts_with_element(stream)
+fn needs_the_slow_lane(stream: &[u8], slot: usize, elem_slots: &[(u16, u16)]) -> bool {
+    if stream.is_empty() {
+        return false;
+    }
+    // A stream that opens neither a template nor an element first may build nothing, which
+    // makes the value NULL and not an element: only building it tells.
+    let may_build_nothing =
+        single_instance_offset(stream).is_none() && !starts_with_element(stream);
+    // A stream the program doesn't render as an element is one the fast lane never reads,
+    // and a record with a stream that can't be read fails.
+    may_build_nothing
+        || !elem_slots
+            .iter()
+            .any(|&(rendered, _)| usize::from(rendered) == slot)
 }
 
 /// How the pre-flight validates a descriptor of a given type.
@@ -2459,10 +2493,8 @@ impl Preflight {
                     }
                 }
                 TyClass::BinXml => {
-                    // A stream that doesn't open an element or a template first may build
-                    // nothing, which makes the value NULL and not an element: only
-                    // building it tells, which the slow lane does.
-                    if may_build_nothing(&data[off..end]) {
+                    let elem_slots = progs.programs[prog].elem_slots();
+                    if needs_the_slow_lane(&data[off..end], i, elem_slots) {
                         return Err(PreflightBail);
                     }
                 }
@@ -2528,7 +2560,9 @@ impl Preflight {
             let Some(inst_off) = single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
                 // where the executor supports it; otherwise fall back.
-                if P::ALLOW_GENERIC_FRAGS {
+                // Not one the executor may pass over: the stream would go unread, and a
+                // record with a stream that can't be read fails.
+                if P::ALLOW_GENERIC_FRAGS && !progs.programs[prog].may_skip(slot_id) {
                     continue;
                 }
                 return Err(PreflightBail);
