@@ -241,6 +241,19 @@ impl BinXml {
         self.u8(0x06).name(name)
     }
 
+    /// An entity reference, `&name;`.
+    pub fn entity_ref(&mut self, name: &str) -> &mut Self {
+        self.u8(0x09).name(name)
+    }
+
+    /// A processing instruction, `<?target data?>`.
+    pub fn processing_instruction(&mut self, target: &str, data: &str) -> &mut Self {
+        self.u8(0x0a).name(target);
+        self.u8(0x0b)
+            .u16(data.encode_utf16().count() as u16)
+            .utf16(data)
+    }
+
     /// An attribute sharing the name `open` or `attribute` wrote last.
     pub fn reattribute(&mut self) -> &mut Self {
         let name = self.name.expect("a name first");

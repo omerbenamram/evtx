@@ -220,6 +220,12 @@ pub enum EvtxError {
     #[error("An IO error occured.")]
     IoError(#[from] std::io::Error),
 
+    /// An element, attribute, entity or processing instruction is named `name`, which XML and
+    /// JSON output can't write: names aren't escaped. `offset` is where the chunk (or, for a
+    /// `WEVT_TEMPLATE`, the template) holds the name.
+    #[error("{name:?}, the name at offset {offset}, is not an XML name")]
+    NotAnXmlName { name: String, offset: u32 },
+
     // TODO: move this error.
     #[error("Failed to create record model, reason: {}", .0)]
     FailedToCreateRecordModel(&'static str),

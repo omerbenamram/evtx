@@ -535,9 +535,10 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
         }?;
         if !is_xml_name(name) {
-            return Err(EvtxError::FailedToCreateRecordModel(
-                "a name that is not an XML name",
-            ));
+            return Err(EvtxError::NotAnXmlName {
+                name: name.to_string(),
+                offset,
+            });
         }
         Ok(Name::new(name))
     }
@@ -1386,28 +1387,28 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
     }
 }
 
-/// Whether `name` can be written as it is where XML and JSON output put a name: as an element
-/// or attribute name, an entity reference, a processing instruction target, or a JSON key.
-///
-/// Names are written without escaping (XML has no way to escape one), so a name with a quote,
-/// a space or an angle bracket in it would end its tag or its key early and have the rest read
-/// as markup. Windows writes names that came from a manifest, which are XML names; these are
-/// the ASCII rules of an XML `Name`, with every other character allowed unless it is a control
-/// or white space.
+/// Whether `name` is an XML `Name`: what XML and JSON output need of an element or attribute
+/// name, an entity reference, a processing instruction target or a JSON key, since they write
+/// it as it is (XML has no way to escape a name). A name with a quote, a space or an angle
+/// bracket in it would end its tag or its key early and have the rest read as markup.
+/// Windows writes names that came from a manifest, which are XML names.
 fn is_xml_name(name: &str) -> bool {
-    let ascii_start = |b: u8| b.is_ascii_alphabetic() || b == b'_' || b == b':';
-    let ascii_rest = |b: u8| ascii_start(b) || b.is_ascii_digit() || b == b'-' || b == b'.';
-    let Some(&first) = name.as_bytes().first() else {
-        return false;
-    };
-    if name.is_ascii() {
-        return ascii_start(first) && name.bytes().all(ascii_rest);
+    // XML 1.0 (fifth edition), productions [4] NameStartChar and [4a] NameChar.
+    fn starts_name(c: char) -> bool {
+        matches!(c,
+            ':' | 'A'..='Z' | '_' | 'a'..='z'
+            | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+            | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
+            | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+            | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
     }
-    (!first.is_ascii() || ascii_start(first))
-        && name.chars().all(|c| match u8::try_from(c) {
-            Ok(b) if b.is_ascii() => ascii_rest(b),
-            _ => !c.is_control() && !c.is_whitespace(),
-        })
+    fn continues_name(c: char) -> bool {
+        starts_name(c)
+            || matches!(c,
+                '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
+    }
+    let mut chars = name.chars();
+    chars.next().is_some_and(starts_name) && chars.all(continues_name)
 }
 
 fn expand_string_ref<'a>(

@@ -43,29 +43,56 @@ fn render_everywhere(evtx: &[u8]) -> Vec<Result<String, String>> {
     ]
 }
 
-/// A record `<Event><name attribute="v">text</name></Event>`, from a template or as plain
-/// tokens.
-fn named(element: &str, attribute: &str, in_template: bool) -> Vec<u8> {
-    let event = |root: &mut BinXml| {
+/// A record with one name in each place a name can be: `element`, `attribute`, `entity` and
+/// `target` in `<Event><element attribute="v">&entity;<?target data?></element></Event>`.
+/// From a template, as plain tokens, or as plain tokens in a value of a template.
+#[derive(Clone, Copy, Debug)]
+enum Place {
+    Template,
+    Record,
+    Value,
+}
+
+fn named([element, attribute, entity, target]: [&str; 4], place: Place) -> Vec<u8> {
+    let event = |root: &mut BinXml, in_template: bool| {
         root.open("Event", in_template).close_start();
         root.open_with_attributes(element, in_template)
             .attribute(attribute)
             .text("v")
             .close_start()
-            .text("text")
+            .entity_ref(entity)
+            .processing_instruction(target, "data")
             .end_element();
         root.end_element();
     };
     synthetic_evtx(|record| {
         record.fragment_header();
-        if in_template {
-            record.template_instance(event, vec![]);
-        } else {
-            event(record);
+        match place {
+            Place::Template => {
+                record.template_instance(|root| event(root, true), vec![]);
+            }
+            Place::Record => event(record, false),
+            Place::Value => {
+                record.template_instance(
+                    |root| {
+                        root.open("Outer", true)
+                            .close_start()
+                            .substitution(0, 0x21)
+                            .end_element();
+                    },
+                    vec![value(0x21, |fragment| {
+                        fragment.fragment_header();
+                        event(fragment, false);
+                        fragment.eof();
+                    })],
+                );
+            }
         }
         record.eof();
     })
 }
+
+const PLACES: [Place; 3] = [Place::Template, Place::Record, Place::Value];
 
 #[test]
 fn names_that_are_not_xml_names_fail_the_record() {
@@ -81,20 +108,31 @@ fn names_that_are_not_xml_names_fail_the_record() {
         "a=",
         "a/",
         "a&",
+        "a;",
+        "a?",
         "a\\",
         "a\n",
         "a\u{85}",
         "a\u{a0}b",
+        "a\u{d7}",
+        "a\u{ffff}",
+        "\u{b7}a",
         "1a",
         "-a",
         r#"x":1,"y"#,
         r#"x y="1""#,
     ] {
-        for in_template in [true, false] {
-            for evtx in [named(bad, "A", in_template), named("E", bad, in_template)] {
-                for result in render_everywhere(&evtx) {
+        for place in PLACES {
+            for position in 0..4 {
+                let mut names = ["E", "A", "amp", "T"];
+                names[position] = bad;
+                for result in render_everywhere(&named(names, place)) {
                     let err = result.expect_err(bad);
-                    assert!(err.contains("not an XML name"), "{bad:?}: {err}");
+                    assert!(
+                        err.contains(&format!("{bad:?}, the name at offset"))
+                            && err.ends_with("is not an XML name"),
+                        "{bad:?} in {place:?}: {err}"
+                    );
                 }
             }
         }
@@ -103,15 +141,24 @@ fn names_that_are_not_xml_names_fail_the_record() {
 
 #[test]
 fn xml_names_render() {
-    for good in ["a", "_a", "a:b", "a-b.c_1", "é", "名前", "a·b"] {
-        for in_template in [true, false] {
-            let results = render_everywhere(&named(good, good, in_template));
+    for good in ["a", "_a", "a:b", "a-b.c_1", "é", "名前", "a·b", "𐐀"] {
+        for place in PLACES {
+            let results = render_everywhere(&named([good; 4], place));
             let xml = results[0].as_ref().unwrap();
-            assert!(xml.contains(&format!("<{good} {good}=\"v\">")), "{xml}");
+            let element = format!("<{good} {good}=\"v\">&{good};<?{good} data?></{good}>");
+            assert!(xml.contains(&element), "{xml}");
+            assert_eq!(results[2].as_ref().unwrap().trim_end(), xml.trim_end());
             let json: serde_json::Value =
                 serde_json::from_str(results[1].as_ref().unwrap()).unwrap();
-            assert_eq!(json["Event"][good]["#text"], "text");
-            assert_eq!(json["Event"][good]["#attributes"][good], "v");
+            let event = match place {
+                Place::Value => &json["Outer"]["Event"],
+                _ => &json["Event"],
+            };
+            assert_eq!(event[good]["#attributes"][good], "v", "{json}");
+            assert_eq!(
+                results[3].as_ref().unwrap().trim_end(),
+                results[1].as_ref().unwrap().trim_end()
+            );
         }
     }
 }
