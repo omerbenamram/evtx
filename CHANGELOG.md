@@ -44,6 +44,9 @@ and this project adheres to
 
 ### Fixed
 
+- JSON: a record whose template puts a BinXML value with an element in it in an attribute
+  fails, as it does in XML (`element node inside attribute value`). JSON output wrote the
+  element as `null` and dropped the value.
 - A value of type BinXML whose stream builds nothing (only its end, or only fragment
   headers) is NULL, as one with no bytes is. In XML a compiled template took it for an
   element and broke the line for it (`<X>`, newline, `</X>`), where the tree walker wrote

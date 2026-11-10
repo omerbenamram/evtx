@@ -1217,6 +1217,15 @@ fn clone_and_resolve<'a>(
                 budget,
                 &mut new_attr.value,
             )?;
+            // A BinXML value gives elements, which an attribute can't hold. XML output can't
+            // write one there; JSON output took it for nothing.
+            if matches!(node, Node::Placeholder(_))
+                && matches!(new_attr.value[before..], [Node::Element(_), ..])
+            {
+                return Err(EvtxError::FailedToCreateRecordModel(
+                    "element node inside attribute value",
+                ));
+            }
             if !needs_array_expansion
                 && new_attr.value[before..]
                     .iter()
