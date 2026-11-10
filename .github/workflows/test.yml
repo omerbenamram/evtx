@@ -13,6 +13,23 @@ jobs:
           VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
           scripts/release-notes.sh "$VERSION" > /dev/null
 
+  format:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      # `--all` also formats `utf16-simd`, which `evtx` uses by path. `evtx-wasm` and `fuzz`
+      # are packages of their own.
+      - name: Check evtx and utf16-simd
+        run: cargo fmt --all -- --check
+      - name: Check evtx-wasm
+        run: cargo fmt --manifest-path evtx-wasm/Cargo.toml -- --check
+      - name: Check the fuzz targets
+        run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+
   build_and_test:
     name: Test EVTX Library
     runs-on: ${{ matrix.os }}
