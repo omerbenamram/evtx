@@ -860,8 +860,8 @@ fn a_binxml_value_the_template_does_not_use_is_still_read() {
         ],
         // A template instance that is cut off.
         &[0x0f, 1, 1, 0, 0x0c, 0x01],
-        // Not a token.
-        &[0xff, 0xff],
+        // An element that is cut off.
+        &[0x01, 0xff],
     ];
     for stream in bad {
         let evtx = unused_binxml_value(|fragment| {
@@ -871,6 +871,32 @@ fn a_binxml_value_the_template_does_not_use_is_still_read() {
         for err in rest {
             assert_eq!(err, first, "{stream:?}");
         }
+    }
+
+    // Nor did it read one in an element it left out, here for the NULL the element depends on.
+    let evtx = synthetic_evtx(|record| {
+        record.fragment_header();
+        record.template_instance(
+            |root| {
+                root.open("Event", true).close_start();
+                root.open_depending("Outer", 0)
+                    .close_start()
+                    .substitution(1, 0x21)
+                    .end_element();
+                root.end_element();
+            },
+            vec![
+                value(0x00, |_| {}),
+                value(0x21, |fragment| {
+                    fragment.raw(bad[0]);
+                }),
+            ],
+        );
+        record.eof();
+    });
+    let [first, rest @ ..] = render_everywhere(&evtx).map(Result::unwrap_err);
+    for err in rest {
+        assert_eq!(err, first);
     }
 
     // One that can be read changes nothing.
