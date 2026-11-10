@@ -20,8 +20,8 @@ A deliberate blocker is different. Examples are a safety check that refuses a co
 
 Two kinds of action wait for Omer. Nothing else in this repository needs his approval.
 
-1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. Open a `chore(release): X.Y.Z` pull request only when Omer asks for a release. Merge it only when he tells you to, because that merge tags the commit and publishes it. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
-2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
+1. **Publishing a release.** A version published to crates.io or PyPI cannot be replaced or removed, only yanked. A merge to `master` that changes `version` in `Cargo.toml` tags the commit and publishes it, whatever the pull request is called. So change `version` only in a `chore(release): X.Y.Z` pull request, open one only when Omer asks for a release, and merge it only when he tells you to. When he has told you, that is the go-ahead: merge it without asking again. `RELEASING.md` has the steps.
+2. **Speaking to other people on GitHub.** This covers closing an issue, commenting on an issue, and commenting on, merging or closing a pull request that you did not open. These speak to Omer's users in his name. GitHub shows Omer's account as the author of your pull requests too; yours come from a `claude/` branch and say in their description that Claude made them. Write the draft, show it to Omer, and post it when he agrees. A closing keyword in a pull request, such as `Fixes #12`, closes the issue at merge. For an issue that someone else opened, write `Refs #12` and draft the closing comment for Omer.
 
 Take every other step without asking. These are the common ones:
 
@@ -78,12 +78,13 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 ### Checks
 
-`.github/workflows/test.yml` runs all of these on every pull request. It does not run on `master`, so the last run of a pull request is the check of what merges. Before you push, run the ones that match what you changed. A change to documentation alone needs none.
+`.github/workflows/test.yml` runs all of these on every pull request. It does not run on `master`, so the last run of a pull request is the check of what merges. Before you push, run the ones that match what you changed. A change to these instruction files alone needs none.
 
 - `git lfs pull`, once in each checkout. Without it the WEVT template tests fail on LFS pointer files. In a cloud session `.claude/hooks/cloud-setup.sh` does this at startup.
 - When you change Rust code, tests, samples or dependencies: `cargo test`. Run one test with `cargo test <name>`, and add `RUST_LOG=debug` for logs.
 - When you change `utf16-simd/`: `cargo test --manifest-path utf16-simd/Cargo.toml`
 - When you change dependencies or `src/bin/`: `cargo build --bin evtx_dump --features fast-alloc`. The release builds `evtx_dump` with a different allocator on each platform. The Windows link once failed only there, and only CI can show that.
+- When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
 - When you change the parser: `python3 fuzz/seed_corpus.py`, then `cargo +nightly fuzz run <target> -- -runs=0` for each target that `cargo fuzz list` prints.
 - When you change `src/`: `cargo check --manifest-path evtx-wasm/Cargo.toml --target wasm32-unknown-unknown`. The `viewer` job builds this crate for WebAssembly without its default features on every pull request, so code that needs threads, files or an `evtx_dump` dependency outside its feature gate fails there.
 - When you change `evtx-wasm/`: `wasm-pack build evtx-wasm --target web --out-dir evtx-viewer/src/wasm --out-name evtx_wasm --release`, then `bun install --frozen-lockfile` and `bun run check` in `evtx-wasm/evtx-viewer`. In a cloud session, replace `--release` with `--no-opt`, because the optimizer cannot be downloaded there.
