@@ -44,6 +44,12 @@ and this project adheres to
 
 ### Fixed
 
+- JSON: in an `EventData` or `UserData` where a `Data` has a name, each `Data` is written
+  under its name with its text for a value, and a `Data` that didn't fit that was dropped: one
+  with text and no name (or an empty one), and the attributes of one with more than `Name`.
+  Such a `Data` is now a member as any other element is: `"Data":"text"`, or
+  `"Data":{"#attributes":{"Name":"B","Type":"t"},"#text":"text"}`. A `Data` with nothing to
+  write is still left out. No sample log has such a `Data`.
 - JSON: no two members of one object share a key any more. A repeated element name is
   numbered (`D`, `D_1`), and that number could be another member's name: `D`, `D` and `D_1`
   gave the key `D_1` twice, and so did a `Data` named as a sibling element, or as the

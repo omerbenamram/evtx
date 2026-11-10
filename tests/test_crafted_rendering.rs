@@ -446,3 +446,65 @@ fn a_name_takes_its_next_number_that_is_free() {
     let keys: Vec<_> = members.keys().collect();
     assert_eq!(keys, ["A", "A_1", "A_2", "A_1_1"]);
 }
+
+#[test]
+fn the_named_form_keeps_data_it_has_no_name_for() {
+    for in_template in [true, false] {
+        // Beside a named `Data`: one with text and no name, one with an empty name, one with
+        // another attribute, and one with nothing to write.
+        let evtx = event_data(in_template, |parent, in_template| {
+            named_data(parent, in_template, "A", "1");
+            el(parent, in_template, "Data", "2");
+            named_data(parent, in_template, "", "3");
+            parent
+                .open_with_attributes("Data", in_template)
+                .attribute("Name")
+                .text("B")
+                .attribute("Type")
+                .text("t")
+                .close_start()
+                .text("4")
+                .end_element();
+            parent.open("Data", in_template).close_empty();
+            named_data(parent, in_template, "Data", "5");
+        });
+        let [json, separate] = json_and_separate(&evtx);
+        assert_eq!(
+            json,
+            concat!(
+                r##"{"Event":{"EventData":{"A":"1","Data":"2","Data_1":"3","##,
+                r##""Data_2":{"#attributes":{"Name":"B","Type":"t"},"#text":"4"},"Data_3":"5"}}}"##
+            )
+        );
+        assert_eq!(
+            separate,
+            concat!(
+                r##"{"Event":{"EventData":{"A":"1","Data":"2","Data_1":"3","##,
+                r##""Data_2_attributes":{"Name":"B","Type":"t"},"Data_2":"4","Data_3":"5"}}}"##
+            )
+        );
+    }
+}
+
+#[test]
+fn a_named_data_with_an_empty_attribute_has_a_key_of_its_own() {
+    // An attribute with no text isn't written, so the `Data` is one of the named form, whose
+    // key an element can have too.
+    for in_template in [true, false] {
+        let evtx = event_data(in_template, |parent, in_template| {
+            parent
+                .open_with_attributes("Data", in_template)
+                .attribute("Name")
+                .text("A")
+                .attribute("Type")
+                .text("")
+                .close_start()
+                .text("1")
+                .end_element();
+            el(parent, in_template, "A", "2");
+        });
+        for json in json_and_separate(&evtx) {
+            assert_eq!(json, r#"{"Event":{"EventData":{"A":"1","A_1":"2"}}}"#);
+        }
+    }
+}
