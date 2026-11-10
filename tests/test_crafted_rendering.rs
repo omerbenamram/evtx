@@ -334,30 +334,37 @@ fn a_data_named_as_the_attributes_key_keeps_the_attributes() {
     }
 }
 
+/// The record's JSON from the records API and the chunk renderer, which agree, and with
+/// attributes apart, which no template is compiled for.
+fn json_and_separate(evtx: &[u8]) -> [String; 2] {
+    let [_, json, _, chunk_json] = render_everywhere(evtx).map(Result::unwrap);
+    assert_eq!(chunk_json.trim_end(), json);
+    let settings = evtx::ParserSettings::new()
+        .num_threads(1)
+        .separate_json_attributes(true);
+    let mut parser = evtx::EvtxParser::from_buffer(evtx.to_vec())
+        .unwrap()
+        .with_configuration(settings);
+    [json, parser.records_json().next().unwrap().unwrap().data]
+}
+
 #[test]
 fn separate_attributes_keys_never_repeat() {
     for in_template in [true, false] {
         // The second `A` is `A_1`, so the element `A_1` is `A_1_1`, and the element
         // `A_1_attributes`, which is the key of the second `A`'s attributes, takes a number.
-        let evtx = event(in_template, |root, in_template| {
-            root.open("EventData", in_template).close_start();
+        let evtx = event_data(in_template, |parent, in_template| {
             for name in ["A", "A", "A_1", "A_1_attributes"] {
-                root.open_with_attributes(name, in_template)
+                parent
+                    .open_with_attributes(name, in_template)
                     .attribute("k")
                     .text("a")
                     .close_start()
                     .text("v")
                     .end_element();
             }
-            root.end_element();
         });
-        let settings = evtx::ParserSettings::new()
-            .num_threads(1)
-            .separate_json_attributes(true);
-        let mut parser = evtx::EvtxParser::from_buffer(evtx)
-            .unwrap()
-            .with_configuration(settings);
-        let json = parser.records_json().next().unwrap().unwrap().data;
+        let [_, json] = json_and_separate(&evtx);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         let keys: Vec<_> = parsed["Event"]["EventData"]
             .as_object()
@@ -378,20 +385,6 @@ fn separate_attributes_keys_never_repeat() {
             ]
         );
     }
-}
-
-/// The record's JSON from the records API and the chunk renderer, which agree, and with
-/// attributes apart, which no template is compiled for.
-fn json_and_separate(evtx: &[u8]) -> [String; 2] {
-    let [_, json, _, chunk_json] = render_everywhere(evtx).map(Result::unwrap);
-    assert_eq!(chunk_json.trim_end(), json);
-    let settings = evtx::ParserSettings::new()
-        .num_threads(1)
-        .separate_json_attributes(true);
-    let mut parser = evtx::EvtxParser::from_buffer(evtx.to_vec())
-        .unwrap()
-        .with_configuration(settings);
-    [json, parser.records_json().next().unwrap().unwrap().data]
 }
 
 #[test]
