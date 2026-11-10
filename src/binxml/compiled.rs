@@ -2415,6 +2415,8 @@ impl Preflight {
         let descriptors = cur.take_bytes(n * 4, "descriptor table")?;
         let mut off = cur.pos();
         let slot_start = self.slots.len() as u32;
+        // BinXML values with a stream to build.
+        let mut streams = 0u32;
         for (i, desc) in descriptors.chunks_exact(4).enumerate() {
             let &[len_lo, len_hi, ty, _pad] = desc else {
                 unreachable!("chunks_exact(4)");
@@ -2465,6 +2467,7 @@ impl Preflight {
                     if may_build_nothing(&data[off..end]) {
                         return Err(PreflightBail);
                     }
+                    streams += u32::from(len > 0);
                 }
                 TyClass::Sized | TyClass::Ansi => {}
             }
@@ -2514,6 +2517,7 @@ impl Preflight {
 
         // Resolve nested instances for slots this program renders as elements.
         // Recursive scans may append programs; keep indices, not a borrow of the cache.
+        let mut streams_rendered = 0u32;
         for element in 0..progs.programs[prog].elem_slots().len() {
             let (slot_id, child_indent) = progs.programs[prog].elem_slots()[element];
             if u32::from(slot_id) >= slot_range.1 - slot_range.0 {
@@ -2524,6 +2528,7 @@ impl Preflight {
             if !s.is_binxml_payload() {
                 continue;
             }
+            streams_rendered += 1;
             let frag = s.bytes(data);
             let Some(inst_off) = single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
@@ -2552,6 +2557,12 @@ impl Preflight {
             }
             self.slots[idx].nested = self.nested.len() as u16;
             self.nested.push(instance);
+        }
+
+        // A stream the program doesn't render as an element is one this lane never reads,
+        // and a record with a stream that can't be read fails: the slow lane reads them all.
+        if streams != streams_rendered {
+            return Err(PreflightBail);
         }
 
         // Per-slot constraints (kept rare; violations route to the fallback).

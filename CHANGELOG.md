@@ -47,6 +47,10 @@ and this project adheres to
 
 ### Fixed
 
+- A record with a BinXML value that can't be read fails in `evtx_dump` and the chunk
+  renderers (`chunks_xml_bytes`, `chunks_json_bytes`) too when its template doesn't use the
+  value. They rendered such a record, where `records()` and `records_json()` failed it, so
+  the two gave different record sets for the same file.
 - JSON: a record whose template puts a BinXML value with an element in it in an attribute
   fails, as it does in XML (`element node inside attribute value`). JSON output wrote the
   element as `null` and dropped the value.
