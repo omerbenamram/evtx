@@ -1188,13 +1188,7 @@ fn clone_and_resolve<'a>(
     // template can nest elements `MAX_ELEMENT_DEPTH` deep and a debug build's frames are large.
     // Event templates are rarely more than a few elements deep.
     let mut stack = Vec::with_capacity(8);
-    stack.push(CloneFrame::open(
-        template_arena,
-        element_id,
-        values,
-        bump,
-        budget,
-    )?);
+    CloneFrame::push(&mut stack, template_arena, element_id, values, bump, budget)?;
     loop {
         let frame = stack
             .last_mut()
@@ -1204,8 +1198,7 @@ fn clone_and_resolve<'a>(
             match node {
                 Node::Element(child) => {
                     if !is_left_out(template_arena, *child, values) {
-                        let child = CloneFrame::open(template_arena, *child, values, bump, budget)?;
-                        stack.push(child);
+                        CloneFrame::push(&mut stack, template_arena, *child, values, bump, budget)?;
                     }
                 }
                 _ => {
@@ -1258,26 +1251,41 @@ struct CloneFrame<'t, 'a> {
 }
 
 impl<'t, 'a> CloneFrame<'t, 'a> {
-    /// Starts cloning `element_id`, resolving its attributes, which hold no elements.
-    fn open(
+    /// Starts cloning `element_id` on top of `stack`, resolving its attributes, which hold no
+    /// elements.
+    ///
+    /// Inlined, and filling the frame in place on `stack`: on the CAPI2 sample, an outlined call
+    /// cost 0.5% more instructions, and returning the frame in a `Result` copied it once more per
+    /// element (+0.9%). Plain `#[inline]` left it outlined (+0.7%).
+    ///
+    /// On `Err` the half-built frame stays on `stack`; callers return the error and drop the
+    /// stack, so nothing attaches it.
+    #[inline(always)]
+    fn push(
+        stack: &mut Vec<Self>,
         template_arena: &'t IrArena<'a>,
         element_id: ElementId,
         values: &[ValidatedValue<'a>],
         bump: &'a Bump,
         budget: &Budget,
-    ) -> Result<Self> {
+    ) -> Result<()> {
         let source = template_arena
             .get(element_id)
             .ok_or_else(|| EvtxError::FailedToCreateRecordModel("invalid template element id"))?;
-        let mut resolved = Element {
-            name: source.name,
-            attrs: IrVec::with_capacity_in(source.attrs.len(), bump),
-            children: IrVec::with_capacity_in(source.children.len(), bump),
-            has_element_child: false,
-            self_closing: source.self_closing,
-            dependency: None,
-        };
-        let mut needs_array_expansion = false;
+        stack.push(CloneFrame {
+            source,
+            resolved: Element {
+                name: source.name,
+                attrs: IrVec::with_capacity_in(source.attrs.len(), bump),
+                children: IrVec::with_capacity_in(source.children.len(), bump),
+                has_element_child: false,
+                self_closing: source.self_closing,
+                dependency: None,
+            },
+            needs_array_expansion: false,
+            next_child: 0,
+        });
+        let frame = stack.last_mut().expect("just pushed");
         for attr in &source.attrs {
             let mut new_attr = Attr {
                 name: attr.name,
@@ -1294,21 +1302,16 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
                 {
                     return Err(element_in_attr());
                 }
-                needs_array_expansion = needs_array_expansion
+                frame.needs_array_expansion = frame.needs_array_expansion
                     || new_attr.value[before..]
                         .iter()
                         .any(node_needs_array_expansion);
             }
             if !new_attr.value.is_empty() {
-                resolved.attrs.push(new_attr);
+                frame.resolved.attrs.push(new_attr);
             }
         }
-        Ok(CloneFrame {
-            source,
-            resolved,
-            needs_array_expansion,
-            next_child: 0,
-        })
+        Ok(())
     }
 
     /// Updates the element's hints for the children appended from `before` on.
