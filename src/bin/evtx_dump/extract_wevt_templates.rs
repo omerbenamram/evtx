@@ -113,11 +113,19 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
 
     // Expand directories (optionally recursively) and filter by extension.
     let mut files = vec![];
+    // By real path: a file or a directory reached twice, under a link or another spelling, is
+    // read once.
     let mut seen = HashSet::<PathBuf>::new();
     for input in inputs {
         collect_input_paths(&input, recursive, &allowed_exts, &mut seen, &mut files)?;
     }
     files.sort();
+    // Before the output is created: nothing to read is no reason to empty a cache.
+    if files.is_empty() {
+        bail!(
+            "No files to read: the inputs match no file (directories need --recursive, and their files one of the --extensions)"
+        );
+    }
 
     let mut writer = evtx::wevt_templates::wevtcache::WevtCacheWriter::create(&output, overwrite)?;
 
@@ -180,9 +188,8 @@ fn collect_input_paths(
 
     if input.is_file() {
         // For explicit files (or glob matches that are files), do not apply extension filtering.
-        let p = input.to_path_buf();
-        if seen.insert(p.clone()) {
-            out_files.push(p);
+        if first_visit(seen, input) {
+            out_files.push(input.to_path_buf());
         }
         return Ok(());
     }
@@ -195,13 +202,10 @@ fn collect_input_paths(
 
         let mut queue = VecDeque::new();
         queue.push_back(input.to_path_buf());
-        // A link to a directory above it would have the walk go round for ever.
-        let mut walked = HashSet::new();
 
         while let Some(dir) = queue.pop_front() {
-            let real = fs::canonicalize(&dir)
-                .with_context(|| format!("failed to read directory `{}`", dir.display()))?;
-            if !walked.insert(real) {
+            // A link to a directory above it would have the walk go round for ever.
+            if !first_visit(seen, &dir) {
                 continue;
             }
             let entries = fs::read_dir(&dir)
@@ -211,9 +215,7 @@ fn collect_input_paths(
                 let p = entry.path();
                 if p.is_dir() {
                     queue.push_back(p);
-                } else if p.is_file()
-                    && should_keep_file(&p, allowed_exts)
-                    && seen.insert(p.clone())
+                } else if p.is_file() && should_keep_file(&p, allowed_exts) && first_visit(seen, &p)
                 {
                     out_files.push(p);
                 }
@@ -222,6 +224,11 @@ fn collect_input_paths(
     }
 
     Ok(())
+}
+
+/// Whether this is the first time `path` comes up, under any of its names.
+fn first_visit(seen: &mut HashSet<PathBuf>, path: &Path) -> bool {
+    seen.insert(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
 fn should_keep_file(path: &Path, allowed_exts: &HashSet<String>) -> bool {

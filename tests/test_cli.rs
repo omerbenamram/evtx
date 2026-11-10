@@ -493,9 +493,9 @@ fn a_run_that_could_not_read_everything_says_so_in_its_exit_status() {
     // with 0, as it does for a log it read all of.
     let sample = samples_dir().join("sysmon.evtx");
     let (status, stdout, stderr) = dump_jsonl(&[sample.as_os_str()]);
-    assert_eq!(status, Some(2), "{stderr}");
+    assert_eq!(status, Some(3), "{stderr}");
     assert!(
-        stderr.contains("Error: 8 records or chunks could not be read"),
+        stderr.contains("Error: could not read 0 record(s), 8 chunk(s)"),
         "{stderr}"
     );
     // What could be read was all written.
@@ -521,7 +521,11 @@ fn events_leaves_out_the_errors_of_the_records_it_leaves_out() {
         |ranges: &str| dump_jsonl(&["--events".as_ref(), ranges.as_ref(), path.as_os_str()]);
 
     let (status, stdout, stderr) = events("1-3");
-    assert_eq!(status, Some(2), "{stderr}");
+    assert_eq!(status, Some(3), "{stderr}");
+    assert!(
+        stderr.contains("could not read 1 record(s), 0 chunk(s)"),
+        "{stderr}"
+    );
     assert_eq!(stdout.lines().count(), 2);
     assert!(
         stderr.contains("Failed to parse record number 2"),
@@ -534,6 +538,7 @@ fn events_leaves_out_the_errors_of_the_records_it_leaves_out() {
     assert!(!stderr.contains("record number 2"), "{stderr}");
 
     // A range that ends before it starts holds nothing: it used to print nothing and succeed.
+    // (2 is clap's status for arguments it refuses.)
     let (status, stdout, stderr) = events("3-1");
     assert_eq!(status, Some(2), "{stderr}");
     assert!(stdout.is_empty());
@@ -564,6 +569,10 @@ fn extract_wevt_templates_refuses_inputs_it_would_read_nothing_from() {
     let dlls = samples_dir().join("dlls");
     let (ok, stderr) = extract(&["--input".as_ref(), dlls.as_os_str()]);
     assert!(!ok && stderr.contains("pass --recursive"), "{stderr}");
+    // A glob may match a directory, which is passed over: with nothing else, nothing is read.
+    let (ok, stderr) = extract(&["--glob".as_ref(), dlls.as_os_str()]);
+    assert!(!ok && stderr.contains("No files to read"), "{stderr}");
+    assert!(!cache.exists());
 
     // A link back up the tree used to keep the walk going until paths got too long.
     #[cfg(unix)]
@@ -572,9 +581,19 @@ fn extract_wevt_templates_refuses_inputs_it_would_read_nothing_from() {
         std::fs::create_dir(&tree).unwrap();
         std::fs::copy(dlls.join("adtschema.dll"), tree.join("adtschema.dll")).unwrap();
         std::os::unix::fs::symlink(&tree, tree.join("again")).unwrap();
-        let (ok, stderr) = extract(&["--recursive".as_ref(), "--input".as_ref(), tree.as_os_str()]);
-        assert!(ok, "{stderr}");
-        assert!(stderr.contains("resource blob(s)"), "{stderr}");
-        assert!(!stderr.contains("wrote 0 "), "{stderr}");
+        let (ok, once) = extract(&["--recursive".as_ref(), "--input".as_ref(), tree.as_os_str()]);
+        assert!(ok, "{once}");
+        assert!(once.contains("resource blob(s)"), "{once}");
+        assert!(!once.contains("wrote 0 "), "{once}");
+        // Nor is the directory read again for being named again, through the link.
+        let (ok, twice) = extract(&[
+            "--recursive".as_ref(),
+            "--input".as_ref(),
+            tree.as_os_str(),
+            "--input".as_ref(),
+            tree.join("again").as_os_str(),
+        ]);
+        assert!(ok, "{twice}");
+        assert_eq!(twice, once);
     }
 }
