@@ -44,6 +44,13 @@ and this project adheres to
 
 ### Fixed
 
+- JSON: no two members of one object share a key any more. A repeated element name is
+  numbered (`D`, `D_1`), and that number could be another member's name: `D`, `D` and `D_1`
+  gave the key `D_1` twice, and so did a `Data` named as a sibling element, or as the
+  `#attributes` key, and in `--separate-json-attributes` mode an element named `A_attributes`
+  beside an `A` with attributes. A reader keeps one of two such members and loses the other.
+  A name is now numbered on until its key is new (`D`, `D_1`, `D_1_1`). Only crafted records
+  have such names: the output for all sample logs is unchanged.
 - An element, attribute, entity or processing-instruction name that isn't an XML name (one
   with a quote, a space, `<`, `>`, `=` or a control character in it, or an empty one) now fails
   its record with the new `EvtxError::NotAnXmlName`. Names are written as they are, so a crafted
