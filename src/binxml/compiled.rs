@@ -510,24 +510,25 @@ pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) 
             other_elements = true;
             continue;
         }
-        // A `Data` the named form can't hold is written as an element (see
-        // `JsonCompiler::named_data_plain`).
-        let name = data_name(child).filter(|name| {
-            child.attrs.len() == 1
-                && name
-                    .iter()
-                    .any(|node| !matches!(node, Node::Text(text) if text.is_empty()))
-        });
-        let Some(name) = name else {
-            other_elements = true;
-            continue;
+        // What the walk makes of a `Data` (see `JsonCompiler::named_data_plain`) depends on
+        // which of its attributes have text. Only the plain shapes are told apart here: a
+        // `Data` with no attributes, which is left out or written as an element, and one
+        // whose only attribute is its name. For any other, keys are kept.
+        let name = match &child.attrs[..] {
+            [] => {
+                other_elements = true;
+                continue;
+            }
+            [name] if name.name.as_str() == "Name" => &name.value[..],
+            _ => return true,
         };
         named = true;
         let plain = match name {
             // Unpaired surrogates all render as U+FFFD: two names can then be one key.
             [Node::Text(Text::Utf16(text))] => {
                 let text = text.as_bytes();
-                !text.starts_with(b"#\0")
+                !text.is_empty()
+                    && !text.starts_with(b"#\0")
                     && !text
                         .chunks_exact(2)
                         .any(|unit| (0xd8..=0xdf).contains(&unit[1]))
@@ -4414,10 +4415,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let name = data_name(data).filter(|name| self.has_text_content_plain(name));
         match name {
             Some(name) if !Self::has_attributes_beside_name(data) => NamedData::Named(name),
-            None if data
-                .attrs
-                .iter()
-                .all(|a| !self.has_text_content_plain(&a.value))
+            None if !Self::has_attribute_text(data, |_| true)
                 && Self::content_layout_plain(data) == (false, false) =>
             {
                 NamedData::Nothing
@@ -4428,10 +4426,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
     /// Whether a `Data` has an attribute to write that isn't its `Name`.
     fn has_attributes_beside_name(data: &Element<'_>) -> bool {
-        data.attrs.len() > 1
-            && data.attrs.iter().any(|a| {
-                a.name.as_str() != "Name" && a.value.iter().any(Self::node_is_content_plain)
-            })
+        data.attrs.len() > 1 && Self::has_attribute_text(data, |name| name != "Name")
+    }
+
+    /// Whether one of the attributes of `data` that `which` picks by name has text.
+    fn has_attribute_text(data: &Element<'_>, which: impl Fn(&str) -> bool) -> bool {
+        data.attrs
+            .iter()
+            .any(|a| which(a.name.as_str()) && a.value.iter().any(Self::node_is_content_plain))
     }
 
     /// How many `Data` elements in a row, one named `name` and those of `following` right after

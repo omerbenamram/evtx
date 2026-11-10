@@ -485,3 +485,26 @@ fn the_named_form_keeps_data_it_has_no_name_for() {
         );
     }
 }
+
+#[test]
+fn a_named_data_with_an_empty_attribute_has_a_key_of_its_own() {
+    // An attribute with no text isn't written, so the `Data` is one of the named form, whose
+    // key an element can have too.
+    for in_template in [true, false] {
+        let evtx = event_data(in_template, |parent, in_template| {
+            parent
+                .open_with_attributes("Data", in_template)
+                .attribute("Name")
+                .text("A")
+                .attribute("Type")
+                .text("")
+                .close_start()
+                .text("1")
+                .end_element();
+            el(parent, in_template, "A", "2");
+        });
+        for json in json_and_separate(&evtx) {
+            assert_eq!(json, r#"{"Event":{"EventData":{"A":"1","A_1":"2"}}}"#);
+        }
+    }
+}
