@@ -2,6 +2,7 @@ use crate::err::DeserializationError;
 use crate::err::DeserializationResult as Result;
 
 use crate::ChunkOffset;
+use crate::model::ir::is_xml_name;
 use crate::utils::ByteCursor;
 
 use std::fmt::Formatter;
@@ -16,6 +17,9 @@ pub(crate) const NAME_LINK_SIZE: u32 = 6;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Hash)]
 pub struct BinXmlName {
     str: String,
+    /// Whether `str` is an XML name, checked once here: a chunk's records use each of its
+    /// names many times over.
+    is_xml_name: bool,
 }
 
 impl fmt::Display for BinXmlName {
@@ -102,7 +106,16 @@ impl BinXmlName {
         let name = cursor
             .len_prefixed_utf16_string_utf8(true, "name")?
             .unwrap_or_default();
-        Ok(BinXmlName { str: name })
+        let is_xml_name = is_xml_name(&name);
+        Ok(BinXmlName {
+            str: name,
+            is_xml_name,
+        })
+    }
+
+    /// Whether the name is an XML name, which is what the renderers can write.
+    pub(crate) fn is_xml_name(&self) -> bool {
+        self.is_xml_name
     }
 
     pub fn as_str(&self) -> &str {

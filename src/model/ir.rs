@@ -47,7 +47,7 @@ impl<'a> Name<'a> {
 /// it as it is (XML has no way to escape a name). A name with a quote, a space or an angle
 /// bracket in it would end its tag or its key early and have the rest read as markup.
 /// Windows writes names that came from a manifest, which are XML names.
-fn is_xml_name(name: &str) -> bool {
+pub(crate) fn is_xml_name(name: &str) -> bool {
     // XML 1.0 (fifth edition), productions [4] NameStartChar and [4a] NameChar.
     fn starts_name(c: char) -> bool {
         matches!(c,
@@ -61,6 +61,15 @@ fn is_xml_name(name: &str) -> bool {
         starts_name(c)
             || matches!(c,
                 '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
+    }
+    // Nearly every name is ASCII, which a walk over its bytes settles.
+    if name.is_ascii() {
+        let starts = |b: u8| b.is_ascii_alphabetic() || b == b'_' || b == b':';
+        let continues = |b: u8| starts(b) || b.is_ascii_digit() || b == b'-' || b == b'.';
+        return match name.as_bytes() {
+            [first, rest @ ..] => starts(*first) && rest.iter().all(|b| continues(*b)),
+            [] => false,
+        };
     }
     let mut chars = name.chars();
     chars.next().is_some_and(starts_name) && chars.all(continues_name)
@@ -387,5 +396,33 @@ mod drop_free_tests {
         assert!(!std::mem::needs_drop::<BinXmlValue<'static>>());
         assert!(!std::mem::needs_drop::<Node<'static>>());
         assert!(!std::mem::needs_drop::<IrTree<'static>>());
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::is_xml_name;
+
+    #[test]
+    fn ascii_names_are_judged_as_any_other() {
+        // The ASCII walk and the walk over characters, which a non-ASCII character after the
+        // name under test selects, agree on every ASCII character first and second.
+        for first in 0..128u8 {
+            for second in 0..128u8 {
+                let name = String::from_utf8(vec![first, second]).unwrap();
+                assert_eq!(
+                    is_xml_name(&name),
+                    is_xml_name(&format!("{name}é")),
+                    "{name:?}"
+                );
+            }
+            let name = char::from(first).to_string();
+            assert_eq!(
+                is_xml_name(&name),
+                is_xml_name(&format!("{name}é")),
+                "{name:?}"
+            );
+        }
+        assert!(!is_xml_name(""));
     }
 }
