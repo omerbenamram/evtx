@@ -21,14 +21,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      # Each Cargo.toml is a package of its own (evtx, utf16-simd, evtx-wasm and two fuzz crates),
-      # so a new one is checked without a change here.
+      # Each tracked Cargo.toml is a package of its own, so a new one is checked without a
+      # change here.
       - name: Check every package
         run: |
           for manifest in $(git ls-files '*Cargo.toml'); do
-            echo "::group::$manifest"
             cargo fmt --manifest-path "$manifest" -- --check
-            echo "::endgroup::"
           done
 
   build_and_test:
