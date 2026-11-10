@@ -487,8 +487,9 @@ impl std::hash::Hash for DataName<'_, '_> {
 
 /// Whether `element` is a data container whose named `Data` children may need a number to
 /// have a key of their own: its template repeats a name, a substitution names one, a
-/// substitution is a child, which can be `Data`, another element is a member beside them, or a
-/// name isn't plain text, or starts as the keys `#attributes` and `#text` do. Records whose
+/// substitution is a child, which can be `Data`, another element is a member beside them (a
+/// `Data` without a name or with other attributes is one), or a name isn't plain text, or
+/// starts as the keys `#attributes` and `#text` do. Records whose
 /// arena doesn't say so render without keeping their keys (see [`IrArena::repeated_names`]),
 /// since most never repeat one.
 pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) -> bool {
@@ -509,7 +510,16 @@ pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) 
             other_elements = true;
             continue;
         }
-        let Some(name) = data_name(child) else {
+        // A `Data` the named form can't hold is written as an element (see
+        // `JsonCompiler::named_data_plain`).
+        let name = data_name(child).filter(|name| {
+            child.attrs.len() == 1
+                && name
+                    .iter()
+                    .any(|node| !matches!(node, Node::Text(text) if text.is_empty()))
+        });
+        let Some(name) = name else {
+            other_elements = true;
             continue;
         };
         named = true;
@@ -522,7 +532,6 @@ pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) 
                         .chunks_exact(2)
                         .any(|unit| (0xd8..=0xdf).contains(&unit[1]))
             }
-            [] => true,
             _ => false,
         };
         if !plain || names.next_suffix(DataName::new(name)) > 0 {
@@ -539,6 +548,18 @@ fn data_name<'t, 'a>(element: &'t Element<'a>) -> Option<&'t [Node<'a>]> {
         .iter()
         .find(|a| a.name.as_str() == "Name")
         .map(|a| &a.value[..])
+}
+
+/// What a `Data` child is in a container's named form, where a `Data` with a name is a member
+/// under that name, with its text for a value.
+enum NamedData<'t, 'a> {
+    /// The member `name: text`.
+    Named(&'t [Node<'a>]),
+    /// Left out: it has no name, no text and no attributes.
+    Nothing,
+    /// A `Data` the form would lose part of, one with text and no name or with attributes
+    /// beside its name: a member as any other element is, `Data: …`.
+    Element,
 }
 
 /// The object `JsonCompiler::element_body_plain` is writing.
@@ -3522,11 +3543,16 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     let dependency = child.dependency;
                     if container && is_data_element_name(cname) {
                         if flatten_named {
-                            let Some(name) = data_name(child) else {
-                                continue; // unnamed Data skipped in named form
+                            let name =
+                                data_name(child).filter(|name| name.iter().any(literal_nonempty));
+                            let Some(name) = name else {
+                                if child.attrs.is_empty() && child.children.is_empty() {
+                                    continue; // nothing to write
+                                }
+                                return Err(Bail); // an element member: the tree's walk
                             };
-                            if !name.iter().any(literal_nonempty) {
-                                continue; // empty literal name: skipped
+                            if child.attrs.len() > 1 {
+                                return Err(Bail);
                             }
                             // Data of one name in a row are an array: the tree's walk writes it.
                             if self.data_run(name, &element.children[index + 1..]) > 1 {
@@ -4383,6 +4409,31 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         Ok(suffix)
     }
 
+    /// What a `Data` child is in a container's named form.
+    fn named_data_plain(&mut self, data: &'t Element<'a>) -> NamedData<'t, 'a> {
+        let name = data_name(data).filter(|name| self.has_text_content_plain(name));
+        match name {
+            Some(name) if !Self::has_attributes_beside_name(data) => NamedData::Named(name),
+            None if data
+                .attrs
+                .iter()
+                .all(|a| !self.has_text_content_plain(&a.value))
+                && Self::content_layout_plain(data) == (false, false) =>
+            {
+                NamedData::Nothing
+            }
+            _ => NamedData::Element,
+        }
+    }
+
+    /// Whether a `Data` has an attribute to write that isn't its `Name`.
+    fn has_attributes_beside_name(data: &Element<'_>) -> bool {
+        data.attrs.len() > 1
+            && data.attrs.iter().any(|a| {
+                a.name.as_str() != "Name" && a.value.iter().any(Self::node_is_content_plain)
+            })
+    }
+
     /// How many `Data` elements in a row, one named `name` and those of `following` right after
     /// it, have that name. An array substitution makes one per value.
     fn data_run(&self, name: &[Node<'a>], following: &[Node<'a>]) -> usize {
@@ -4392,7 +4443,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 Node::Element(id) => Some(self.element_ref(*id)),
                 _ => None,
             })
-            .take_while(|e| is_data_element_name(e.name.as_str()) && data_name(e) == Some(name))
+            .take_while(|e| {
+                is_data_element_name(e.name.as_str())
+                    && data_name(e) == Some(name)
+                    && !Self::has_attributes_beside_name(e)
+            })
             .count();
         1 + same
     }
@@ -4909,13 +4964,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
 
         if body.in_data_container && is_data_element_name(child.name.as_str()) {
-            if body.should_flatten_named_data {
-                let Some(name) = data_name(child) else {
-                    return Ok(MemberPlain::None);
-                };
-                if !self.has_text_content_plain(name) {
-                    return Ok(MemberPlain::None);
-                }
+            let named = match body.should_flatten_named_data {
+                true => Some(self.named_data_plain(child)),
+                false => None,
+            };
+            if let Some(NamedData::Nothing) = named {
+                return Ok(MemberPlain::None);
+            }
+            if let Some(NamedData::Named(name)) = named {
                 if body.wrote_any {
                     self.lits.push(b',');
                 }
@@ -4930,16 +4986,19 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 self.data_key_plain(name, keys)?;
                 return Ok(MemberPlain::Data { run });
             }
-            if body.positional_data_emitted || body.positional_data_count == 0 {
-                return Ok(MemberPlain::None);
+            if named.is_none() {
+                if body.positional_data_emitted || body.positional_data_count == 0 {
+                    return Ok(MemberPlain::None);
+                }
+                if body.wrote_any {
+                    self.lits.push(b',');
+                }
+                body.wrote_any = true;
+                body.positional_data_emitted = true;
+                self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                return Ok(MemberPlain::PositionalData(body.positional_data_count));
             }
-            if body.wrote_any {
-                self.lits.push(b',');
-            }
-            body.wrote_any = true;
-            body.positional_data_emitted = true;
-            self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
-            return Ok(MemberPlain::PositionalData(body.positional_data_count));
+            // `NamedData::Element`: a member as any other element is.
         }
 
         // Normal child member with `_N` suffixing.
