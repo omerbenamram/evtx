@@ -5,8 +5,10 @@
 //!
 //! This module implements that expansion on the IR tree produced by `clone_and_resolve`:
 //! - We scan a resolved element for the first `Node::Value(<ArrayType>)` in its children/attrs.
-//! - If found and the array has length > 1, we clone the element N times, replacing the array
-//!   value with the Nth scalar item (or omitting it for empty strings).
+//! - If found and the array has N items, we clone the element N times, replacing the array
+//!   value with the Nth scalar item (or omitting it for empty strings). An array of one item
+//!   gives one element with that item, so a value is the same kind of value (a number, in
+//!   JSON) whether its array has one item or several.
 //! - We recurse so multiple array substitutions in the same element expand deterministically.
 //!
 //! This keeps renderers dumb: XML/JSON just render the expanded structure, matching common tools
@@ -22,7 +24,7 @@ pub(crate) fn node_needs_array_expansion(node: &Node<'_>) -> bool {
     let Node::Value(value) = node else {
         return false;
     };
-    value.expandable_array_len().is_some_and(|len| len > 1)
+    value.expandable_array_len().is_some_and(|len| len > 0)
 }
 
 /// Expand array substitutions inside a cloned element by repeating the element.
@@ -84,15 +86,14 @@ fn expand_first_array_in_element<'a>(
         )
     };
 
-    if len <= 1 {
-        return Ok(None);
-    }
-    // The copies share their names, `Data`'s included.
-    arena.mark_repeated_names();
-    // Each copy is a new element, and its element children are those of every other copy.
+    // Each copy is a new element.
     budget.build(len.saturating_mul(nodes))?;
-    if has_element_child {
-        arena.mark_shared();
+    if len > 1 {
+        // The copies share their names, `Data`'s included, and their element children.
+        arena.mark_repeated_names();
+        if has_element_child {
+            arena.mark_shared();
+        }
     }
 
     let mut out = Vec::with_capacity(len);
@@ -181,12 +182,11 @@ fn clone_element_with_replacement<'a>(
 fn find_first_array_value<'a>(
     element: &Element<'a>,
 ) -> Option<(ArrayLocation, BinXmlValue<'a>, usize)> {
-    // Single-item arrays don't require element repetition and must not block scanning for
-    // later expandable arrays within the same element.
+    // An empty array has no item to put in a copy, and is left as it is.
     let expandable = |node: &Node<'a>| match node {
         Node::Value(value) => value
             .expandable_array_len()
-            .filter(|&len| len > 1)
+            .filter(|&len| len > 0)
             .map(|len| (value.clone(), len)),
         _ => None,
     };
@@ -486,17 +486,17 @@ mod tests {
     }
 
     #[test]
-    fn ignores_single_item_arrays_and_still_expands_later_arrays() {
-        // Regression: if a single-item array appears before a multi-item array in the same
-        // element, we must ignore the first and still expand the later one.
+    fn a_single_item_array_is_its_item_and_later_arrays_still_expand() {
+        // A single-item array before a multi-item array in the same element is replaced by
+        // its item, and the later one still expands.
         //
         // Conceptual template fragment (after placeholder resolution, before array expansion):
         //
         //   <Data>%{0}:%{1}</Data>
         //
         // With substitution values:
-        // - %{0} = UInt8ArrayType([7])            // len = 1 (does NOT trigger repetition)
-        // - %{1} = UInt8ArrayType([10, 20, 30])   // len = 3 (DOES trigger repetition)
+        // - %{0} = UInt8ArrayType([7])            // len = 1 (one copy, with its item)
+        // - %{1} = UInt8ArrayType([10, 20, 30])   // len = 3 (a copy for each item)
         //
         // Expected expanded tree (array substitution repeats the *containing element*):
         //
@@ -529,10 +529,10 @@ mod tests {
             let e = arena.get(id).unwrap();
             assert_eq!(e.children.len(), 3);
 
-            // The first array (len=1) is ignored (left as-is).
+            // The first array (len=1) is its one item, in each copy.
             assert!(matches!(
                 e.children[0],
-                Node::Value(BinXmlValue::UInt8ArrayType(v)) if v.len() == 1 && v[0] == 7
+                Node::Value(BinXmlValue::UInt8Type(7))
             ));
 
             assert!(matches!(e.children[1], Node::Text(Text::Utf8(":"))));
