@@ -6,6 +6,9 @@ pub enum ResourceIdentifier {
     Name(String),
 }
 
+/// A resource of a PE file, of any type (see [`super::extract_resources`]).
+pub type PeResource = WevtTemplateResource;
+
 #[derive(Debug, Clone)]
 pub struct WevtTemplateResource {
     /// The second-level entry under the `WEVT_TEMPLATE` resource type (often `1`).

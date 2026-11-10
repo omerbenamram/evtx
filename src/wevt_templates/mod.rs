@@ -39,6 +39,7 @@ pub use render::{
 };
 pub use temp::extract_temp_templates_from_wevt_blob;
 pub use types::{
-    ResourceIdentifier, WevtTempTemplateHeader, WevtTempTemplateRef, WevtTemplateResource,
+    PeResource, ResourceIdentifier, WevtTempTemplateHeader, WevtTempTemplateRef,
+    WevtTemplateResource,
 };
 pub use wevtcache::{WevtCacheFileError, WevtCacheReader, WevtCacheWriter, for_each_crim_blob};

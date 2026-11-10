@@ -34,6 +34,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -42,18 +43,99 @@ use thiserror::Error;
 
 use super::WevtTemplateExtractError;
 use super::extract::{RT_MESSAGETABLE, extract_resources, extract_wevt_template_resources};
-use super::manifest::{CrimManifest, EventDefinition, WevtManifestError};
+use super::manifest::{CrimManifest, Provider, WevtManifestError};
 use super::normalize_guid;
-use super::types::ResourceIdentifier;
+use super::types::{PeResource, ResourceIdentifier};
 use crate::binxml::compiled::MAX_RECORD_OUTPUT;
 use crate::binxml::value_variant::BinXmlValue;
-use crate::model::ir::{Element, ElementId, IrTree, Node, Text};
+use crate::model::ir::{Element, ElementId, IrTree, Node};
 use crate::mta::RenderingInfo;
-use crate::mta::{decode_utf16, narrow, number_value, value_number};
+use crate::mta::{attribute, decode_utf16, narrow, number_value, text, value_number};
 use crate::utils::bytes::{read_u16_le, read_u32_le};
 
-/// The language id of `en-US`, preferred when a binary has message tables in several languages.
+/// The language id of `en-US`, preferred when a binary has message tables in several languages
+/// and none in the one asked for.
 const EN_US: u32 = 1033;
+
+/// The language ids (`LANGID`) of common locale names.
+const LOCALES: &[(&str, u32)] = &[
+    ("ar-SA", 0x0401),
+    ("bg-BG", 0x0402),
+    ("zh-TW", 0x0404),
+    ("cs-CZ", 0x0405),
+    ("da-DK", 0x0406),
+    ("de-DE", 0x0407),
+    ("el-GR", 0x0408),
+    ("en-US", 0x0409),
+    ("fi-FI", 0x040B),
+    ("fr-FR", 0x040C),
+    ("he-IL", 0x040D),
+    ("hu-HU", 0x040E),
+    ("it-IT", 0x0410),
+    ("ja-JP", 0x0411),
+    ("ko-KR", 0x0412),
+    ("nl-NL", 0x0413),
+    ("nb-NO", 0x0414),
+    ("pl-PL", 0x0415),
+    ("pt-BR", 0x0416),
+    ("ro-RO", 0x0418),
+    ("ru-RU", 0x0419),
+    ("hr-HR", 0x041A),
+    ("sk-SK", 0x041B),
+    ("sv-SE", 0x041D),
+    ("th-TH", 0x041E),
+    ("tr-TR", 0x041F),
+    ("uk-UA", 0x0422),
+    ("sl-SI", 0x0424),
+    ("et-EE", 0x0425),
+    ("lv-LV", 0x0426),
+    ("lt-LT", 0x0427),
+    ("zh-CN", 0x0804),
+    ("en-GB", 0x0809),
+    ("es-MX", 0x080A),
+    ("pt-PT", 0x0816),
+    ("sr-Latn-RS", 0x241A),
+    ("zh-HK", 0x0C04),
+    ("es-ES", 0x0C0A),
+    ("fr-CA", 0x0C0C),
+];
+
+/// The language whose message tables a binary's are read in.
+#[derive(Debug, Clone, Copy, Default)]
+struct Language {
+    /// The locale's `LANGID`, when [`LOCALES`] has it.
+    lang_id: Option<u32>,
+    /// Its primary language (the low 10 bits of a `LANGID`), also for a locale [`LOCALES`]
+    /// only has another country of.
+    primary: Option<u32>,
+}
+
+impl Language {
+    fn of(locale: &str) -> Self {
+        let lang_id = LOCALES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(locale))
+            .map(|&(_, id)| id);
+        let primary = lang_id
+            .or_else(|| {
+                LOCALES
+                    .iter()
+                    .find(|(name, _)| language_of(name).eq_ignore_ascii_case(language_of(locale)))
+                    .map(|&(_, id)| id)
+            })
+            .map(primary_language);
+        Language { lang_id, primary }
+    }
+}
+
+/// The language part of a locale name, such as `de` of `de-DE`.
+fn language_of(locale: &str) -> &str {
+    locale.split(['-', '_']).next().unwrap_or_default()
+}
+
+fn primary_language(lang_id: u32) -> u32 {
+    lang_id & 0x3FF
+}
 
 /// An error while building a [`MessageCatalog`].
 #[derive(Debug, Error)]
@@ -137,18 +219,49 @@ impl MessageTable {
         Ok(MessageTable { messages })
     }
 
-    /// Reads the message table of a PE binary (`.dll`, `.exe` or `.mui`), preferring `en-US`
+    /// Reads the message tables of a PE binary (`.dll`, `.exe` or `.mui`), preferring `en-US`
     /// when it has several languages. Empty when the binary has no message table.
     pub fn from_pe_bytes(pe_bytes: &[u8]) -> Result<Self, MessageCatalogError> {
+        Self::read(pe_bytes, Language::default())
+    }
+
+    /// [`MessageTable::from_pe_bytes`], preferring the language of `locale` (such as `de-DE`),
+    /// then `en-US`.
+    pub fn from_pe_bytes_in(pe_bytes: &[u8], locale: &str) -> Result<Self, MessageCatalogError> {
+        Self::read(pe_bytes, Language::of(locale))
+    }
+
+    fn read(pe_bytes: &[u8], language: Language) -> Result<Self, MessageCatalogError> {
         let resources = extract_resources(pe_bytes, &ResourceIdentifier::Id(RT_MESSAGETABLE))?;
-        let chosen = resources
-            .iter()
-            .find(|r| r.lang_id == EN_US)
+        Self::from_resources(&resources, language)
+    }
+
+    /// Joins the `RT_MESSAGETABLE` resources in one language: `language`'s, or one of the same
+    /// primary language, then `en-US`, then the first one's. A binary can have several.
+    fn from_resources(
+        resources: &[PeResource],
+        language: Language,
+    ) -> Result<Self, MessageCatalogError> {
+        let find = |matches: &dyn Fn(u32) -> bool| resources.iter().find(|r| matches(r.lang_id));
+        let chosen = language
+            .lang_id
+            .and_then(|id| find(&|lang_id| lang_id == id))
+            .or_else(|| {
+                let primary = language.primary?;
+                find(&|lang_id| primary_language(lang_id) == primary)
+            })
+            .or_else(|| find(&|lang_id| lang_id == EN_US))
             .or_else(|| resources.first());
-        match chosen {
-            Some(resource) => Self::parse(&resource.data),
-            None => Ok(MessageTable::default()),
+        let Some(chosen) = chosen else {
+            return Ok(MessageTable::default());
+        };
+        let mut table = MessageTable::default();
+        for resource in resources.iter().filter(|r| r.lang_id == chosen.lang_id) {
+            for (id, message) in Self::parse(&resource.data)?.messages {
+                table.messages.entry(id).or_insert(message);
+            }
         }
+        Ok(table)
     }
 
     /// The message with id `id`, as stored (with its inserts and the line break it ends with).
@@ -171,20 +284,103 @@ impl MessageTable {
 /// that use the template.
 type ItemTypes = Arc<[(u8, u8)]>;
 
+/// What a manifest says about one event's message.
+#[derive(Debug, Clone)]
+struct EventMessage {
+    level: u8,
+    opcode: u8,
+    task: u16,
+    keywords: u64,
+    message_identifier: u32,
+    item_types: ItemTypes,
+}
+
 /// The messages of one provider.
 #[derive(Debug, Clone, Default)]
 struct ProviderMessages {
     /// The tables to look message ids up in: the provider's `.mui` files, then its resource file.
     tables: Vec<usize>,
-    /// Event message ids by `(event id, version)`, with the rest of each event's descriptor to
-    /// pick between events that share both.
-    events: HashMap<(u16, u8), Vec<(EventDefinition, ItemTypes)>>,
+    /// Events by `(event id, version)`, with the rest of each event's descriptor to pick
+    /// between events that share both.
+    events: HashMap<(u16, u8), Vec<EventMessage>>,
     levels: HashMap<u32, u32>,
     tasks: HashMap<u32, u32>,
     /// By `(opcode << 16) | task`, with task 0 for opcodes not tied to a task.
     opcodes: HashMap<u32, u32>,
     /// By keyword mask.
     keywords: HashMap<u64, u32>,
+}
+
+impl ProviderMessages {
+    /// A manifest provider's message ids, without tables yet.
+    fn of(provider: &Provider<'_>) -> Self {
+        let elements = &provider.wevt.elements;
+        // Each template's item input and output types, by the template's offset.
+        let item_types: HashMap<u32, ItemTypes> = elements
+            .templates
+            .iter()
+            .flat_map(|t| &t.templates)
+            .map(|t| {
+                let types = t.items.iter().map(|i| (i.input_type, i.output_type));
+                (t.offset, types.collect())
+            })
+            .collect();
+        let mut messages = ProviderMessages::default();
+        for event in elements.events.iter().flat_map(|e| &e.events) {
+            let item_types = event
+                .template_offset
+                .and_then(|offset| item_types.get(&offset).cloned())
+                .unwrap_or_default();
+            messages
+                .events
+                .entry((event.identifier, event.version))
+                .or_default()
+                .push(EventMessage {
+                    level: event.level,
+                    opcode: event.opcode,
+                    task: event.task,
+                    keywords: event.keywords,
+                    message_identifier: event.message_identifier,
+                    item_types,
+                });
+        }
+        for level in elements.levels.iter().flat_map(|l| &l.levels) {
+            if let Some(id) = level.message_identifier {
+                messages.levels.insert(level.identifier, id);
+            }
+        }
+        for task in elements.tasks.iter().flat_map(|t| &t.tasks) {
+            if let Some(id) = task.message_identifier {
+                messages.tasks.insert(task.identifier & 0xFFFF, id);
+            }
+        }
+        for opcode in elements.opcodes.iter().flat_map(|o| &o.opcodes) {
+            if let Some(id) = opcode.message_identifier {
+                // Stored as `(opcode << 16) | task`.
+                messages.opcodes.insert(opcode.identifier, id);
+            }
+        }
+        for keyword in elements.keywords.iter().flat_map(|k| &k.keywords) {
+            if let Some(id) = keyword.message_identifier {
+                messages.keywords.insert(keyword.identifier, id);
+            }
+        }
+        messages
+    }
+
+    /// The event a record is, by its whole descriptor, or the first with its id and version.
+    fn event(&self, event: &EventFields<'_>) -> Option<&EventMessage> {
+        let candidates = self.events.get(&(event.event_id, event.version))?;
+        candidates
+            .iter()
+            .find(|m| {
+                m.level == event.level
+                    && m.opcode == event.opcode
+                    && m.task == event.task
+                    && m.keywords == event.keywords
+            })
+            .or_else(|| candidates.first())
+    }
 }
 
 /// Event messages from provider binaries. See [the module docs](self).
@@ -195,8 +391,8 @@ pub struct MessageCatalog {
     providers: HashMap<String, ProviderMessages>,
     /// Classic event sources, by ASCII-lowercased name.
     sources: HashMap<String, Vec<usize>>,
-    /// Tables that `%%<id>` values in event data are looked up in after the provider's own,
-    /// such as `msobjs.dll`'s for the Security log.
+    /// The tables that `%%<id>` parameters are looked up in, such as `msobjs.dll`'s for the
+    /// Security log (Windows' `ParameterMessageFile`).
     parameter_tables: Vec<usize>,
 }
 
@@ -219,150 +415,116 @@ impl MessageCatalog {
         Some(self.tables.len() - 1)
     }
 
-    /// Adds the message tables of `files`, in order, and returns their indexes. Adds none
-    /// when one of them fails to parse, so that its error doesn't leave the others unused.
+    /// Adds the message tables of `files`, in order, and returns their indexes. A file whose
+    /// tables don't parse is skipped, with a warning.
     fn add_tables<'f>(
         &mut self,
         files: impl IntoIterator<Item = &'f [u8]>,
-    ) -> Result<Vec<usize>, MessageCatalogError> {
-        let tables = files
+        language: Language,
+    ) -> Vec<usize> {
+        files
             .into_iter()
-            .map(MessageTable::from_pe_bytes)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(tables
-            .into_iter()
-            .filter_map(|table| self.add_table(table))
-            .collect())
+            .filter_map(|file| match MessageTable::read(file, language) {
+                Ok(table) => self.add_table(table),
+                Err(e) => {
+                    log::warn!("skipping a message table: {e}");
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Whether the catalog takes the provider `guid` (normalized): it doesn't have it, or has
+    /// it with no strings, which a later copy then gives.
+    fn takes(&self, guid: &str) -> bool {
+        self.providers
+            .get(guid)
+            .is_none_or(|provider| provider.tables.is_empty())
+    }
+
+    /// The providers of `resource_file`'s manifests that the catalog takes, by normalized GUID.
+    fn new_providers(
+        &self,
+        resource_file: &[u8],
+    ) -> Result<Vec<(String, ProviderMessages)>, MessageCatalogError> {
+        let mut providers = Vec::new();
+        for resource in extract_wevt_template_resources(resource_file)? {
+            for provider in &CrimManifest::parse(&resource.data)?.providers {
+                let guid = normalize_guid(&provider.guid.to_string());
+                if self.takes(&guid) {
+                    providers.push((guid, ProviderMessages::of(provider)));
+                }
+            }
+        }
+        Ok(providers)
+    }
+
+    /// Adds `providers` (from [`MessageCatalog::new_providers`]) with strings from `tables`, and
+    /// returns how many it added.
+    fn insert_providers(
+        &mut self,
+        providers: Vec<(String, ProviderMessages)>,
+        tables: Vec<usize>,
+    ) -> usize {
+        let mut added = 0;
+        for (guid, mut messages) in providers {
+            // A manifest can repeat a provider.
+            if self.takes(&guid) {
+                messages.tables = tables.clone();
+                self.providers.insert(guid, messages);
+                added += 1;
+            }
+        }
+        added
     }
 
     /// Adds the manifest providers of `resource_file` (a binary with a `WEVT_TEMPLATE`), with
     /// strings from its own message table and from `message_files` (its `.mui` files). Returns
     /// how many providers it added; a provider already in the catalog keeps its first strings,
     /// unless it has none. The `.mui` files' strings win over the resource file's, as they do
-    /// for Windows' resource loader.
+    /// for Windows' resource loader. A message file whose table doesn't parse is skipped, with a
+    /// warning.
     pub fn add_provider_files(
         &mut self,
         resource_file: &[u8],
         message_files: &[&[u8]],
     ) -> Result<usize, MessageCatalogError> {
-        self.add_providers(resource_file, || Ok(message_files.to_vec()))
-    }
-
-    /// [`MessageCatalog::add_provider_files`], reading the message files only when the resource
-    /// file has providers that the catalog takes.
-    fn add_providers<M: AsRef<[u8]>>(
-        &mut self,
-        resource_file: &[u8],
-        message_files: impl FnOnce() -> Result<Vec<M>, MessageCatalogError>,
-    ) -> Result<usize, MessageCatalogError> {
-        let resources = extract_wevt_template_resources(resource_file)?;
-        let manifests = resources
-            .iter()
-            .map(|manifest| CrimManifest::parse(&manifest.data))
-            .collect::<Result<Vec<_>, _>>()?;
-        // A provider already in the catalog with no strings takes them from a later copy.
-        let is_new = |catalog: &Self, guid: &str| {
-            catalog
-                .providers
-                .get(guid)
-                .is_none_or(|provider| provider.tables.is_empty())
-        };
-        let any_new = manifests
-            .iter()
-            .flat_map(|m| &m.providers)
-            .any(|provider| is_new(self, &normalize_guid(&provider.guid.to_string())));
-        if !any_new {
+        let providers = self.new_providers(resource_file)?;
+        if providers.is_empty() {
             return Ok(0);
         }
-        let message_files = message_files()?;
-        let files = message_files
-            .iter()
-            .map(AsRef::as_ref)
-            .chain(std::iter::once(resource_file));
-        let tables = self.add_tables(files)?;
-        let mut added = 0;
-        for manifest in &manifests {
-            for provider in &manifest.providers {
-                let guid = normalize_guid(&provider.guid.to_string());
-                if !is_new(self, &guid) {
-                    continue;
-                }
-                let elements = &provider.wevt.elements;
-                // Each template's item input and output types, by the template's offset.
-                let input_types: HashMap<u32, ItemTypes> = elements
-                    .templates
-                    .iter()
-                    .flat_map(|t| &t.templates)
-                    .map(|t| {
-                        let types = t.items.iter().map(|i| (i.input_type, i.output_type));
-                        (t.offset, types.collect())
-                    })
-                    .collect();
-                let mut messages = ProviderMessages {
-                    tables: tables.clone(),
-                    ..Default::default()
-                };
-                for event in elements.events.iter().flat_map(|e| &e.events) {
-                    messages
-                        .events
-                        .entry((event.identifier, event.version))
-                        .or_default()
-                        .push((
-                            event.clone(),
-                            event
-                                .template_offset
-                                .and_then(|offset| input_types.get(&offset).cloned())
-                                .unwrap_or_default(),
-                        ));
-                }
-                for level in elements.levels.iter().flat_map(|l| &l.levels) {
-                    if let Some(id) = level.message_identifier {
-                        messages.levels.insert(level.identifier, id);
-                    }
-                }
-                for task in elements.tasks.iter().flat_map(|t| &t.tasks) {
-                    if let Some(id) = task.message_identifier {
-                        messages.tasks.insert(task.identifier & 0xFFFF, id);
-                    }
-                }
-                for opcode in elements.opcodes.iter().flat_map(|o| &o.opcodes) {
-                    if let Some(id) = opcode.message_identifier {
-                        // Stored as `(opcode << 16) | task`.
-                        messages.opcodes.insert(opcode.identifier, id);
-                    }
-                }
-                for keyword in elements.keywords.iter().flat_map(|k| &k.keywords) {
-                    if let Some(id) = keyword.message_identifier {
-                        messages.keywords.insert(keyword.identifier, id);
-                    }
-                }
-                self.providers.insert(guid, messages);
-                added += 1;
-            }
-        }
-        Ok(added)
+        let files = message_files.iter().copied();
+        let tables = self.add_tables(
+            files.chain(std::iter::once(resource_file)),
+            Language::default(),
+        );
+        Ok(self.insert_providers(providers, tables))
     }
 
     /// Adds a classic event source (an event log provider without a manifest, matched by its
     /// `Provider/@Name`), with strings from its message files. Its events' message ids are
-    /// `(Qualifiers << 16) | EventID`.
-    pub fn add_classic_source(
-        &mut self,
-        name: &str,
-        message_files: &[&[u8]],
-    ) -> Result<(), MessageCatalogError> {
-        let tables = self.add_tables(message_files.iter().copied())?;
+    /// `(Qualifiers << 16) | EventID`. A message file whose table doesn't parse is skipped, with
+    /// a warning.
+    pub fn add_classic_source(&mut self, name: &str, message_files: &[&[u8]]) {
+        let tables = self.add_tables(message_files.iter().copied(), Language::default());
         self.sources
             .entry(name.to_ascii_lowercase())
             .or_default()
             .extend(tables);
-        Ok(())
     }
 
-    /// Adds a parameter message file, whose strings replace `%%<id>` in event data when the
-    /// provider's own tables don't have the id, as `msobjs.dll` does for the Security log.
+    /// Adds a parameter message file, whose strings replace `%%<id>` in messages and event data,
+    /// as `msobjs.dll` does for the Security log.
     pub fn add_parameter_file(&mut self, pe_bytes: &[u8]) -> Result<(), MessageCatalogError> {
-        if let Some(index) = self.add_table(MessageTable::from_pe_bytes(pe_bytes)?) {
+        self.add_parameter_table(pe_bytes, Language::default())
+    }
+
+    fn add_parameter_table(
+        &mut self,
+        pe_bytes: &[u8],
+        language: Language,
+    ) -> Result<(), MessageCatalogError> {
+        if let Some(index) = self.add_table(MessageTable::read(pe_bytes, language)?) {
             self.parameter_tables.push(index);
         }
         Ok(())
@@ -371,7 +533,8 @@ impl MessageCatalog {
     /// Builds a catalog from a copy of a Windows binaries folder, such as `C:\Windows\System32`.
     /// Every `.dll`, `.exe` and `.sys` under `dir` with a manifest adds its providers, with
     /// strings from the `.mui` file of the same name in the `locale` subfolder of its folder
-    /// (`en-US` when `None`). `msobjs.dll` (or its `.mui`) is added as a parameter file.
+    /// (`en-US` when `None`), and from its own message tables in that locale's language when it
+    /// has them. `msobjs.dll` (or its `.mui`) is added as a parameter file.
     ///
     /// Files that aren't PE binaries, or whose resources don't parse, are skipped.
     pub fn from_directory(
@@ -391,9 +554,13 @@ impl MessageCatalog {
         locale: Option<&str>,
     ) -> Result<(), MessageCatalogError> {
         let locale = locale.unwrap_or("en-US");
+        let language = Language::of(locale);
         let path = path.as_ref();
         if path.is_file() {
-            return self.add_binary(path, locale, true);
+            let locale_folder = path
+                .parent()
+                .and_then(|parent| locale_folder(parent, locale));
+            return self.add_binary(path, locale_folder.as_deref(), language, true);
         }
         let mut pending = vec![path.to_path_buf()];
         while let Some(dir) = pending.pop() {
@@ -413,31 +580,29 @@ impl MessageCatalog {
                 .map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir())))
                 .collect();
             paths.sort();
+            let locale_folder = locale_folder(&dir, locale);
             for (path, is_dir) in paths {
                 if is_dir {
                     pending.push(path);
                     continue;
                 }
-                self.add_binary(&path, locale, false)?;
+                self.add_binary(&path, locale_folder.as_deref(), language, false)?;
             }
         }
         Ok(())
     }
 
     /// Adds one binary found in a folder, or given on its own (`strict`), whose errors are then
-    /// returned instead of skipped.
+    /// returned instead of skipped. Its `.mui` is looked for in `locale_folder`.
+    ///
+    /// Each binary is read whole, though only its resources are used.
     fn add_binary(
         &mut self,
         path: &Path,
-        locale: &str,
+        locale_folder: Option<&Path>,
+        language: Language,
         strict: bool,
     ) -> Result<(), MessageCatalogError> {
-        let read = |path: &Path| {
-            std::fs::read(path).map_err(|source| MessageCatalogError::Io {
-                path: path.to_path_buf(),
-                source,
-            })
-        };
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             return Ok(());
         };
@@ -447,22 +612,33 @@ impl MessageCatalog {
         {
             return Ok(());
         }
+        // A `.mui` that can't be read is skipped, as one that doesn't parse is.
         let read_mui = || {
-            path.parent()
-                .and_then(|parent| find_mui(parent, locale, name))
-                .map(|mui| read(&mui))
-                .transpose()
+            let mui = find_mui(locale_folder?, name)?;
+            std::fs::read(&mui)
+                .inspect_err(|e| log::warn!("skipping `{}`: {e}", mui.display()))
+                .ok()
         };
-        let result = read(path).and_then(|bytes| {
-            if lower == "msobjs.dll" {
-                let mui = read_mui()?;
-                self.add_parameter_file(mui.as_deref().unwrap_or(&bytes))
-            } else {
+        let result = std::fs::read(path)
+            .map_err(|source| MessageCatalogError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+            .and_then(|bytes| {
+                if lower == "msobjs.dll" {
+                    let mui = read_mui();
+                    return self.add_parameter_table(mui.as_deref().unwrap_or(&bytes), language);
+                }
+                let providers = self.new_providers(&bytes)?;
                 // Only binaries with providers the catalog takes read their `.mui`.
-                let message_files = || Ok(read_mui()?.into_iter().collect::<Vec<_>>());
-                self.add_providers(&bytes, message_files).map(drop)
-            }
-        });
+                if !providers.is_empty() {
+                    let mui = read_mui();
+                    let files = mui.as_deref().into_iter().chain([&bytes[..]]);
+                    let tables = self.add_tables(files, language);
+                    self.insert_providers(providers, tables);
+                }
+                Ok(())
+            });
         match result {
             Err(e) if !strict => {
                 log::debug!("skipping `{}`: {e}", path.display());
@@ -477,6 +653,29 @@ impl MessageCatalog {
         tables.iter().find_map(|&t| self.tables[t].get(id))
     }
 
+    /// The parameter string of a `%%<id>` (given its digits), from the parameter files.
+    fn parameter(&self, digits: &str) -> Option<&str> {
+        let id = digits.parse().ok()?;
+        self.lookup(&self.parameter_tables, id).map(trim_message)
+    }
+
+    /// The manifest provider with GUID `guid` (in any case, with or without braces), without
+    /// allocating for a GUID in the usual form.
+    fn provider(&self, guid: &str) -> Option<&ProviderMessages> {
+        if self.providers.is_empty() {
+            return None;
+        }
+        let guid = guid.trim().trim_start_matches('{').trim_end_matches('}');
+        let mut key = [0u8; 36];
+        if guid.len() != key.len() {
+            return self.providers.get(&normalize_guid(guid));
+        }
+        key.copy_from_slice(guid.as_bytes());
+        key.make_ascii_lowercase();
+        // Lowercasing ASCII bytes keeps UTF-8 valid.
+        self.providers.get(std::str::from_utf8(&key).ok()?)
+    }
+
     /// The strings of an event, or `None` when its provider isn't in the catalog. Allocates the
     /// formatted message in `bump`.
     fn rendering_info<'b>(
@@ -485,94 +684,77 @@ impl MessageCatalog {
         tree: &IrTree<'_>,
         bump: &'b Bump,
     ) -> Option<RenderingInfo<'b>> {
-        if let Some(provider) = event
-            .provider_guid
-            .as_deref()
-            .and_then(|guid| self.providers.get(&normalize_guid(guid)))
-        {
-            let definition = provider
-                .events
-                .get(&(event.event_id, event.version))
-                .and_then(|candidates| {
-                    candidates
-                        .iter()
-                        .find(|(d, _)| {
-                            d.level == event.level
-                                && d.opcode == event.opcode
-                                && d.task == event.task
-                                && d.keywords == event.keywords
-                        })
-                        .or_else(|| candidates.first())
-                });
-            let message = definition.and_then(|(d, input_types)| {
-                let template = self.lookup(&provider.tables, d.message_identifier)?;
-                Some(self.format(
-                    template,
-                    &event.inserts(tree),
-                    input_types,
-                    &provider.tables,
-                    bump,
-                ))
-            });
-            let name = |id: Option<&u32>| {
-                id.and_then(|&id| self.lookup(&provider.tables, id))
-                    .map(trim_message)
-            };
-            let level = name(provider.levels.get(&u32::from(event.level)))
-                .or_else(|| winmeta_level(event.level));
-            let task = name(provider.tasks.get(&u32::from(event.task)))
-                .or_else(|| winmeta_task(event.task));
-            // As `MtaFile::rendering_info`: no opcode for events from classic event sources.
-            let opcode = if event.qualifiers == 0 {
-                name(
-                    provider
-                        .opcodes
-                        .get(&((u32::from(event.opcode) << 16) | u32::from(event.task)))
-                        .or_else(|| provider.opcodes.get(&(u32::from(event.opcode) << 16))),
+        let provider = self.provider(&event.provider_guid);
+        // The tables, the event's message id, and its template's item types.
+        let (tables, message_id, item_types) = match provider {
+            Some(provider) => {
+                let message = provider.event(event);
+                (
+                    &provider.tables[..],
+                    message.map(|m| m.message_identifier),
+                    message.map_or(&[][..], |m| &m.item_types[..]),
                 )
-                .or_else(|| winmeta_opcode(event.opcode))
-            } else {
-                None
-            };
-            let keywords = (0..64)
-                .filter(|bit| event.keywords & (1 << bit) != 0)
-                .filter_map(|bit| {
-                    name(provider.keywords.get(&(1u64 << bit))).or_else(|| winmeta_keyword(bit))
-                })
-                .collect();
-            return Some(RenderingInfo {
-                message,
-                level,
-                task,
-                opcode,
-                keywords,
+            }
+            None => {
+                if self.sources.is_empty() {
+                    return None;
+                }
+                let tables = self
+                    .sources
+                    .get(&event.provider_name.to_ascii_lowercase())?;
+                let id = (u32::from(event.qualifiers) << 16) | u32::from(event.event_id);
+                (&tables[..], Some(id), &[][..])
+            }
+        };
+        let message = message_id
+            .and_then(|id| self.lookup(tables, id))
+            .map(|template| {
+                let (inserts, flat) = event.inserts(tree);
+                // Item types are by the template's item, which the inserts are only when they
+                // are the `Data` elements of one `EventData`, one for each item.
+                let item_types = if flat && inserts.len() == item_types.len() {
+                    item_types
+                } else {
+                    &[]
+                };
+                self.format(template, &inserts, item_types, bump)
             });
-        }
-
-        let tables = self
-            .sources
-            .get(&event.provider_name.to_ascii_lowercase())?;
-        let id = (u32::from(event.qualifiers) << 16) | u32::from(event.event_id);
-        let message = self
-            .lookup(tables, id)
-            .map(|template| self.format(template, &event.inserts(tree), &[], tables, bump));
-        // The standard names, as for a manifest provider that names none of its own.
+        // A name the provider gives, or else the standard one; a classic source gives none.
+        let name = |id: Option<&u32>| id.and_then(|&id| self.lookup(tables, id)).map(trim_message);
+        let level = name(provider.and_then(|p| p.levels.get(&u32::from(event.level))))
+            .or_else(|| winmeta_level(event.level));
+        let task = name(provider.and_then(|p| p.tasks.get(&u32::from(event.task))))
+            .or_else(|| winmeta_task(event.task));
+        // As `MtaFile::rendering_info`: no opcode for events from classic event sources.
+        let opcode = (event.qualifiers == 0)
+            .then(|| {
+                let opcode = u32::from(event.opcode) << 16;
+                let id = provider.and_then(|p| {
+                    p.opcodes
+                        .get(&(opcode | u32::from(event.task)))
+                        .or_else(|| p.opcodes.get(&opcode))
+                });
+                name(id).or_else(|| winmeta_opcode(event.opcode))
+            })
+            .flatten();
+        let keywords = (0..64)
+            .filter(|bit| event.keywords & (1 << bit) != 0)
+            .filter_map(|bit| {
+                name(provider.and_then(|p| p.keywords.get(&(1u64 << bit))))
+                    .or_else(|| winmeta_keyword(bit))
+            })
+            .collect();
         Some(RenderingInfo {
             message,
-            level: winmeta_level(event.level),
-            task: winmeta_task(event.task),
-            opcode: (event.qualifiers == 0)
-                .then(|| winmeta_opcode(event.opcode))
-                .flatten(),
-            keywords: (0..64)
-                .filter(|bit| event.keywords & (1 << bit) != 0)
-                .filter_map(winmeta_keyword)
-                .collect(),
+            level,
+            task,
+            opcode,
+            keywords,
         })
     }
 
     /// Fills the inserts of `template` with `inserts`, as `FormatMessage` does, and replaces the
-    /// `%%<id>` parameters in them.
+    /// `%%<id>` parameters in the template and in the inserts.
     ///
     /// Stops once the message is longer than a record may render ([`MAX_RECORD_OUTPUT`]),
     /// which then fails its record: a crafted record can fill an insert with parameters that
@@ -580,47 +762,40 @@ impl MessageCatalog {
     fn format<'b>(
         &self,
         template: &str,
-        inserts: &[Insert],
+        inserts: &[Insert<'_>],
         item_types: &[(u8, u8)],
-        tables: &[usize],
         bump: &'b Bump,
     ) -> &'b str {
-        let mut out = String::with_capacity(template.len());
-        let mut chars = template.chars().peekable();
-        while out.len() <= MAX_RECORD_OUTPUT
-            && let Some(c) = chars.next()
-        {
-            if c != '%' {
-                out.push(c);
-                continue;
-            }
-            match chars.next() {
-                Some(d @ '1'..='9') => {
-                    let mut number = d.to_digit(10).expect("digit");
-                    let mut written = format!("%{d}");
-                    while let Some(&next) = chars.peek() {
-                        match next.to_digit(10) {
-                            Some(digit) if number < 10 => {
-                                number = number * 10 + digit;
-                                written.push(next);
-                                chars.next();
-                            }
-                            _ => break,
-                        }
-                    }
+        let mut out = bumpalo::collections::String::with_capacity_in(template.len(), bump);
+        let mut rest = template;
+        while out.len() <= MAX_RECORD_OUTPUT {
+            let Some(at) = rest.find('%') else {
+                out.push_str(rest);
+                break;
+            };
+            out.push_str(&rest[..at]);
+            let escape = &rest[at + 1..];
+            let Some(c) = escape.chars().next() else {
+                out.push('%');
+                break;
+            };
+            // The bytes of `escape` that this escape uses.
+            let mut used = c.len_utf8();
+            match c {
+                '1'..='9' => {
+                    // `%1` to `%99`.
+                    used = escape
+                        .bytes()
+                        .take(2)
+                        .take_while(u8::is_ascii_digit)
+                        .count();
+                    let index = escape[..used].parse::<usize>().expect("digits") - 1;
                     // A printf-style format, such as `!x!`.
-                    if chars.peek() == Some(&'!') {
-                        let mut spec = String::from("!");
-                        chars.next();
-                        for c in chars.by_ref() {
-                            spec.push(c);
-                            if c == '!' {
-                                break;
-                            }
-                        }
-                        written.push_str(&spec);
+                    if escape[used..].starts_with('!') {
+                        used = escape[used + 1..]
+                            .find('!')
+                            .map_or(escape.len(), |end| used + end + 2);
                     }
-                    let index = number as usize - 1;
                     match inserts.get(index) {
                         // Windows formats a number by its output type, in upper case hex for
                         // the hex types (pointers keep the XML's lower case).
@@ -631,31 +806,46 @@ impl MessageCatalog {
                             input != INTYPE_POINTER && OUTTYPE_HEX.contains(&output)
                         }) =>
                         {
-                            out.push_str(&format!("0x{number:X}"))
+                            let _ = write!(out, "0x{number:X}");
                         }
                         Some(insert) => {
                             let room = MAX_RECORD_OUTPUT.saturating_sub(out.len());
-                            out.push_str(&self.parameters(&insert.text, tables, room));
+                            out.push_str(&self.parameters(&insert.text, room));
                         }
-                        None => out.push_str(&written),
+                        None => out.push_str(&rest[at..at + 1 + used]),
                     }
                 }
-                Some('0') => break,
-                Some('n') => out.push_str("\r\n"),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('b') => out.push(' '),
-                Some(other) => out.push(other),
-                None => out.push('%'),
+                // `%%`, or a parameter `%%<id>`, which stays as written when it isn't found.
+                '%' => {
+                    let digits = escape[1..].bytes().take_while(u8::is_ascii_digit).count();
+                    if digits == 0 {
+                        out.push('%');
+                    } else {
+                        used += digits;
+                        match self.parameter(&escape[1..used]) {
+                            Some(parameter) => out.push_str(parameter),
+                            None => out.push_str(&rest[at..at + 1 + used]),
+                        }
+                    }
+                }
+                '0' => break,
+                'n' => out.push_str("\r\n"),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' => out.push(' '),
+                other => out.push(other),
             }
+            rest = &escape[used..];
         }
-        bump.alloc_str(trim_message(&out))
+        let length = trim_message(&out).len();
+        out.truncate(length);
+        out.into_bump_str()
     }
 
     /// Replaces each `%%<id>` in an event data value with the parameter string `id`, until the
     /// value is longer than `limit` (the rest is then left as it is).
-    fn parameters<'v>(&self, value: &'v str, tables: &[usize], limit: usize) -> Cow<'v, str> {
-        if !value.contains("%%") {
+    fn parameters<'v>(&self, value: &'v str, limit: usize) -> Cow<'v, str> {
+        if self.parameter_tables.is_empty() || !value.contains("%%") {
             return Cow::Borrowed(value);
         }
         let mut out = String::with_capacity(value.len());
@@ -665,17 +855,11 @@ impl MessageCatalog {
         {
             out.push_str(&rest[..at]);
             let digits = rest[at + 2..]
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(rest.len() - at - 2);
-            let id = rest[at + 2..at + 2 + digits].parse::<u32>().ok();
-            let parameter = id.and_then(|id| {
-                self.lookup(tables, id)
-                    .or_else(|| self.lookup(&self.parameter_tables, id))
-            });
-            match parameter {
-                Some(parameter) => out.push_str(trim_message(parameter)),
-                None => out.push_str(&rest[at..at + 2 + digits]),
-            }
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            let written = &rest[at..at + 2 + digits];
+            out.push_str(self.parameter(&written[2..]).unwrap_or(written));
             rest = &rest[at + 2 + digits..];
         }
         out.push_str(rest);
@@ -683,24 +867,39 @@ impl MessageCatalog {
     }
 }
 
-/// The `.mui` of the binary `name` in the `locale` folder of `folder`. Windows names them in any
-/// case, so on a case-sensitive filesystem (a copy of `System32` on Linux) the folder and the
-/// file are matched ignoring ASCII case when the exact names aren't there.
-fn find_mui(folder: &Path, locale: &str, name: &str) -> Option<PathBuf> {
+/// The `locale` folder in `folder`. Windows names them in any case, so on a case-sensitive
+/// filesystem (a copy of `System32` on Linux) it is matched ignoring ASCII case when the exact
+/// name isn't there.
+fn locale_folder(folder: &Path, locale: &str) -> Option<PathBuf> {
+    // A bare file name's folder is the current one.
+    let folder = if folder.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        folder
+    };
+    let exact = folder.join(locale);
+    if exact.is_dir() {
+        return Some(exact);
+    }
+    find_ignoring_case(folder, locale, true)
+}
+
+/// The `.mui` of the binary `name` in `locale_folder`, matched as [`locale_folder`] is.
+fn find_mui(locale_folder: &Path, name: &str) -> Option<PathBuf> {
     let file_name = format!("{name}.mui");
-    let exact = folder.join(locale).join(&file_name);
+    let exact = locale_folder.join(&file_name);
     if exact.is_file() {
         return Some(exact);
     }
-    let find = |folder: &Path, wanted: &str, want_dir: bool| {
-        std::fs::read_dir(folder).ok()?.flatten().find_map(|entry| {
-            let matches = entry.file_name().to_str()?.eq_ignore_ascii_case(wanted)
-                && entry.file_type().ok()?.is_dir() == want_dir;
-            matches.then(|| entry.path())
-        })
-    };
-    let locale_folder = find(folder, locale, true)?;
-    find(&locale_folder, &file_name, false)
+    find_ignoring_case(locale_folder, &file_name, false)
+}
+
+fn find_ignoring_case(folder: &Path, wanted: &str, want_dir: bool) -> Option<PathBuf> {
+    std::fs::read_dir(folder).ok()?.flatten().find_map(|entry| {
+        let matches = entry.file_name().to_str()?.eq_ignore_ascii_case(wanted)
+            && entry.file_type().ok()?.is_dir() == want_dir;
+        matches.then(|| entry.path())
+    })
 }
 
 /// Drops the line break (and padding) a message table entry ends with.
@@ -745,6 +944,7 @@ fn winmeta_opcode(opcode: u8) -> Option<&'static str> {
 fn winmeta_keyword(bit: u32) -> Option<&'static str> {
     Some(match bit {
         48 => "Response Time",
+        49 => "WDI Context",
         50 => "WDI Diag",
         51 => "SQM",
         52 => "Audit Failure",
@@ -762,8 +962,8 @@ const OUTTYPE_HEX: std::ops::RangeInclusive<u8> = 16..=19;
 
 /// An event data value, as its XML shows it.
 #[derive(Debug, Default)]
-struct Insert {
-    text: String,
+struct Insert<'t> {
+    text: Cow<'t, str>,
     /// The value, when it is a non-negative integer.
     number: Option<u64>,
 }
@@ -772,7 +972,8 @@ struct Insert {
 #[derive(Debug, Default)]
 struct EventFields<'t> {
     provider_name: Cow<'t, str>,
-    provider_guid: Option<Cow<'t, str>>,
+    /// Empty when the provider has none.
+    provider_guid: Cow<'t, str>,
     event_id: u16,
     qualifiers: u16,
     version: u8,
@@ -785,73 +986,72 @@ struct EventFields<'t> {
 }
 
 impl<'t> EventFields<'t> {
-    fn of(tree: &'t IrTree<'_>) -> Option<(Self, bool)> {
+    /// `None` when the record gets no `RenderingInfo`: its root isn't `Event`, or it has a
+    /// `RenderingInfo` already. As for an `.MTA` file, the first `System` holds the fields.
+    fn of(tree: &'t IrTree<'_>) -> Option<Self> {
         let root = tree.root_element();
         if root.name.as_str() != "Event" {
             return None;
         }
         let mut fields = EventFields::default();
-        let mut has_rendering_info = false;
-        let mut guid_text = None;
+        let mut system = None;
         for node in &root.children {
             let Node::Element(id) = node else { continue };
-            let element = tree.element(*id);
-            match element.name.as_str() {
-                "System" => {
-                    for child in element_children(tree, element) {
-                        let number = || number_value(&child.children);
-                        match child.name.as_str() {
-                            "Provider" => {
-                                for attr in child.attrs.iter() {
-                                    match attr.name.as_str() {
-                                        "Name" => fields.provider_name = node_text(&attr.value),
-                                        "Guid" => guid_text = Some(node_text(&attr.value)),
-                                        _ => {}
-                                    }
-                                }
-                            }
-                            "EventID" => {
-                                fields.event_id = narrow(number());
-                                if let Some(q) =
-                                    child.attrs.iter().find(|a| a.name.as_str() == "Qualifiers")
-                                {
-                                    fields.qualifiers = narrow(number_value(&q.value));
-                                }
-                            }
-                            "Version" => fields.version = narrow(number()),
-                            "Level" => fields.level = narrow(number()),
-                            "Task" => fields.task = narrow(number()),
-                            "Opcode" => fields.opcode = narrow(number()),
-                            "Keywords" => fields.keywords = number().unwrap_or_default(),
-                            _ => {}
-                        }
-                    }
-                }
+            match tree.element(*id).name.as_str() {
+                "System" => system = system.or(Some(*id)),
                 "EventData" | "UserData" => fields.data.push(*id),
-                "RenderingInfo" => has_rendering_info = true,
+                "RenderingInfo" => return None,
                 _ => {}
             }
         }
-        fields.provider_guid = guid_text;
-        Some((fields, has_rendering_info))
+        let Some(system) = system else {
+            return Some(fields);
+        };
+        // A record's tree has no substitutions, so `attribute` gives the first one's value.
+        let attribute = |element, name| attribute(element, name).unwrap_or_default();
+        for child in element_children(tree, tree.element(system)) {
+            let number = || number_value(&child.children);
+            match child.name.as_str() {
+                "Provider" => {
+                    fields.provider_name = text(attribute(child, "Name"));
+                    fields.provider_guid = text(attribute(child, "Guid"));
+                }
+                "EventID" => {
+                    fields.event_id = narrow(number());
+                    fields.qualifiers = narrow(number_value(attribute(child, "Qualifiers")));
+                }
+                "Version" => fields.version = narrow(number()),
+                "Level" => fields.level = narrow(number()),
+                "Task" => fields.task = narrow(number()),
+                "Opcode" => fields.opcode = narrow(number()),
+                "Keywords" => fields.keywords = number().unwrap_or_default(),
+                _ => {}
+            }
+        }
+        Some(fields)
     }
 
     /// The event's data values, in order: the `Data` elements of `EventData`, or the leaf
     /// elements under `UserData`, up to the [`MAX_INSERTS`] a message can use. Read only for a
-    /// message the catalog has.
-    fn inserts(&self, tree: &IrTree<'_>) -> Vec<Insert> {
+    /// message the catalog has. With whether they are the children of one `EventData`, each a
+    /// value of its own.
+    fn inserts<'a>(&self, tree: &'t IrTree<'a>) -> (Vec<Insert<'a>>, bool) {
         let mut inserts = Vec::new();
+        let mut flat = self.data.len() == 1;
         for &id in &self.data {
             let element = tree.element(id);
             if element.name.as_str() == "EventData" {
                 let room = MAX_INSERTS - inserts.len();
-                let values = element_children(tree, element).take(room);
-                inserts.extend(values.map(|child| insert(&child.children)));
+                for child in element_children(tree, element).take(room) {
+                    flat &= !child.has_element_child;
+                    inserts.push(insert(&child.children));
+                }
             } else {
+                flat = false;
                 collect_leaves(tree, element, &mut inserts);
             }
         }
-        inserts
+        (inserts, flat)
     }
 }
 
@@ -872,7 +1072,11 @@ fn element_children<'e, 'a>(
 /// [`MAX_INSERTS`]. A crafted record's tree can nest values tens of thousands of elements deep,
 /// and place one value's elements in many places, so that it has far more paths to leaves than
 /// nodes: this walks with a stack of its own, and stops at the inserts a message can use.
-fn collect_leaves<'e, 'a>(tree: &'e IrTree<'a>, element: &'e Element<'a>, out: &mut Vec<Insert>) {
+fn collect_leaves<'e, 'a>(
+    tree: &'e IrTree<'a>,
+    element: &'e Element<'a>,
+    out: &mut Vec<Insert<'a>>,
+) {
     let mut stack = vec![element.children.iter()];
     while out.len() < MAX_INSERTS
         && let Some(children) = stack.last_mut()
@@ -891,17 +1095,20 @@ fn collect_leaves<'e, 'a>(tree: &'e IrTree<'a>, element: &'e Element<'a>, out: &
     }
 }
 
-fn insert(nodes: &[Node<'_>]) -> Insert {
+fn insert<'a>(nodes: &[Node<'a>]) -> Insert<'a> {
     let number = match nodes {
         [Node::Value(value)] => value_number(value),
         _ => None,
     };
-    let text = node_text(nodes);
+    let text = text(nodes);
     let text = match nodes {
         [Node::Value(BinXmlValue::FileTimeType(_) | BinXmlValue::SysTimeType(_))] => {
-            message_time(&text).unwrap_or_else(|| text.into_owned())
+            match message_time(&text) {
+                Some(time) => Cow::Owned(time),
+                None => text,
+            }
         }
-        _ => text.into_owned(),
+        _ => text,
     };
     Insert { text, number }
 }
@@ -920,36 +1127,6 @@ fn message_time(xml: &str) -> Option<String> {
     ))
 }
 
-/// The text of `nodes`, with values as the event's XML shows them (unescaped).
-fn node_text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
-    let text = |node: &Node<'n>| -> Cow<'n, str> {
-        match node {
-            Node::Text(Text::Utf8(s)) | Node::Value(BinXmlValue::AnsiStringType(s)) => {
-                Cow::Borrowed(*s)
-            }
-            Node::Text(Text::Utf16(s))
-            | Node::CData(Text::Utf16(s))
-            | Node::Value(BinXmlValue::StringType(s)) => Cow::Owned(decode_utf16(s.as_bytes())),
-            Node::CData(Text::Utf8(s)) => Cow::Borrowed(*s),
-            Node::Value(value) => Cow::Owned(value.to_string()),
-            Node::CharRef(c) => Cow::Owned(char::from_u32(u32::from(*c)).unwrap_or('_').into()),
-            Node::EntityRef(name) => Cow::Borrowed(match name.as_str() {
-                "amp" => "&",
-                "lt" => "<",
-                "gt" => ">",
-                "quot" => "\"",
-                "apos" => "'",
-                _ => "",
-            }),
-            _ => Cow::Borrowed(""),
-        }
-    };
-    match nodes {
-        [node] => text(node),
-        _ => Cow::Owned(nodes.iter().map(text).collect()),
-    }
-}
-
 /// Adds a `RenderingInfo` element to a record's tree from `catalog`, unless its provider isn't
 /// in the catalog or it has one already.
 pub(crate) fn add_rendering_info<'a>(
@@ -957,12 +1134,12 @@ pub(crate) fn add_rendering_info<'a>(
     catalog: &'a MessageCatalog,
     bump: &'a Bump,
 ) {
-    let Some((fields, has_rendering_info)) = EventFields::of(tree) else {
-        return;
-    };
-    if has_rendering_info {
+    if catalog.providers.is_empty() && catalog.sources.is_empty() {
         return;
     }
+    let Some(fields) = EventFields::of(tree) else {
+        return;
+    };
     let Some(info) = catalog.rendering_info(&fields, tree, bump) else {
         return;
     };
@@ -985,9 +1162,18 @@ mod tests {
         std::fs::create_dir(dir.path().join("en-us")).unwrap();
         std::fs::write(dir.path().join("en-us").join("adtschema.dll.mui"), b"").unwrap();
         // On a case-insensitive filesystem (macOS, Windows) the exact path is found as it is.
-        let found = find_mui(dir.path(), "en-US", "AdtSchema.dll").unwrap();
+        let folder = locale_folder(dir.path(), "en-US").unwrap();
+        let found = find_mui(&folder, "AdtSchema.dll").unwrap();
         assert!(found.is_file(), "{found:?}");
-        assert_eq!(find_mui(dir.path(), "de-DE", "AdtSchema.dll"), None);
+        assert_eq!(locale_folder(dir.path(), "de-DE"), None);
+    }
+
+    #[test]
+    fn a_bare_file_name_looks_in_the_current_folder() {
+        // `add_path("adtschema.dll")` gives the folder `""`, which `read_dir` refuses. Tests run
+        // in the crate's folder, which has `src`.
+        let found = locale_folder(Path::new(""), "SRC").unwrap();
+        assert!(found.is_dir(), "{found:?}");
     }
 
     /// A `MESSAGE_RESOURCE_DATA` with one block of Unicode entries from id `low`.
@@ -1042,6 +1228,50 @@ mod tests {
         assert!(MessageTable::parse(&data).is_err());
     }
 
+    fn resource(lang_id: u32, id: u32, messages: &[&str]) -> PeResource {
+        PeResource {
+            resource: ResourceIdentifier::Id(id),
+            lang_id,
+            data: table(100, messages),
+        }
+    }
+
+    #[test]
+    fn reads_the_tables_of_the_locale() {
+        let resources = [
+            resource(EN_US, 1, &["English"]),
+            resource(0x0407, 1, &["Deutsch"]),
+            resource(0x0407, 2, &["Deutsch", "Zwei"]),
+        ];
+        let read = |locale| MessageTable::from_resources(&resources, Language::of(locale)).unwrap();
+        // Both of the German tables, the first one's strings first.
+        let german = read("de-DE");
+        assert_eq!(
+            (german.get(100), german.get(101)),
+            (Some("Deutsch"), Some("Zwei"))
+        );
+        // Another country of a language takes its tables, then `en-US`, then the first.
+        assert_eq!(read("de-AT").get(100), Some("Deutsch"));
+        assert_eq!(read("fr-FR").get(100), Some("English"));
+        let resources = [resource(0x0407, 1, &["Deutsch"])];
+        let table = MessageTable::from_resources(&resources, Language::of("xx-YY")).unwrap();
+        assert_eq!(table.get(100), Some("Deutsch"));
+    }
+
+    #[test]
+    fn a_bad_message_file_leaves_the_provider_its_own_strings() {
+        let dll = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/dlls/adtschema.dll");
+        let dll = std::fs::read(dll).unwrap();
+        let mut catalog = MessageCatalog::new();
+        let added = catalog
+            .add_provider_files(&dll, &[b"not a PE file"])
+            .unwrap();
+        assert_eq!(added, 1);
+        let provider = catalog.providers.values().next().unwrap();
+        assert!(!provider.tables.is_empty());
+        assert!(catalog.lookup(&provider.tables, 4624).is_some());
+    }
+
     fn catalog_with(messages: &[&str]) -> MessageCatalog {
         let mut catalog = MessageCatalog::new();
         let table = MessageTable::parse(&table(100, messages)).unwrap();
@@ -1049,9 +1279,9 @@ mod tests {
         catalog
     }
 
-    fn insert(text: &str) -> Insert {
+    fn insert(text: &str) -> Insert<'_> {
         Insert {
-            text: text.to_string(),
+            text: Cow::Borrowed(text),
             number: None,
         }
     }
@@ -1061,7 +1291,7 @@ mod tests {
         let catalog = MessageCatalog::new();
         let bump = Bump::new();
         let inserts = [insert("alice"), insert("C:\\x"), insert("3")];
-        let format = |template| catalog.format(template, &inserts, &[], &[], &bump);
+        let format = |template| catalog.format(template, &inserts, &[], &bump);
         assert_eq!(
             format("User:%t%1%nPath: %2!s!.%n%n"),
             "User:\talice\r\nPath: C:\\x."
@@ -1069,6 +1299,8 @@ mod tests {
         assert_eq!(format("100%% sure%b%3%0 cut"), "100% sure 3");
         // An insert without a value stays as written, so does an unknown escape.
         assert_eq!(format("%1 and %12!d! %q"), "alice and %12!d! q");
+        assert_eq!(format("%4!x"), "%4!x");
+        assert_eq!(format("50%"), "50%");
     }
 
     #[test]
@@ -1077,18 +1309,18 @@ mod tests {
         let bump = Bump::new();
         let inserts = [
             Insert {
-                text: "999".to_string(),
+                text: Cow::Borrowed("999"),
                 number: Some(999),
             },
             Insert {
-                text: "0x1c8".to_string(),
+                text: Cow::Borrowed("0x1c8"),
                 number: Some(0x1c8),
             },
         ];
         // `win:UInt64` shown as `win:HexInt64`, and a `win:Pointer` shown as `win:HexInt64`.
         let types = [(10, 19), (INTYPE_POINTER, 19)];
         assert_eq!(
-            catalog.format("%1 %2", &inserts, &types, &[], &bump),
+            catalog.format("%1 %2", &inserts, &types, &bump),
             "0x3E7 0x1c8"
         );
     }
@@ -1098,8 +1330,25 @@ mod tests {
         let mut catalog = catalog_with(&["Yes\r\n", "No\r\n"]);
         catalog.parameter_tables.push(0);
         assert_eq!(
-            catalog.parameters("%%100 then %%101, %%7 and 100%", &[], usize::MAX),
+            catalog.parameters("%%100 then %%101, %%7 and 100%", usize::MAX),
             "Yes then No, %%7 and 100%"
+        );
+    }
+
+    #[test]
+    fn parameters_come_from_parameter_files_only() {
+        // Table 0 is a provider's, table 1 a parameter file's.
+        let mut catalog = catalog_with(&["Provider"]);
+        catalog.add_table(MessageTable::parse(&table(100, &["Parameter"])).unwrap());
+        let bump = Bump::new();
+        assert_eq!(catalog.parameters("%%100", usize::MAX), "%%100");
+        assert_eq!(catalog.format("%%100", &[], &[], &bump), "%%100");
+        catalog.parameter_tables.push(1);
+        assert_eq!(catalog.parameters("%%100", usize::MAX), "Parameter");
+        // In the message itself too, where `%%` not before digits is `%`.
+        assert_eq!(
+            catalog.format("%%100 at 5%%.", &[], &[], &bump),
+            "Parameter at 5%."
         );
     }
 
@@ -1110,8 +1359,9 @@ mod tests {
         let mut catalog = catalog_with(&[&long]);
         catalog.parameter_tables.push(0);
         let bump = Bump::new();
-        let inserts = [insert(&"%%100".repeat(1000)), insert(&"%%100".repeat(1000))];
-        let message = catalog.format("%1%2", &inserts, &[], &[], &bump);
+        let (first, second) = ("%%100".repeat(1000), "%%100".repeat(1000));
+        let inserts = [insert(&first), insert(&second)];
+        let message = catalog.format("%1%2", &inserts, &[], &bump);
         assert!(message.len() > MAX_RECORD_OUTPUT);
         assert!(message.len() < MAX_RECORD_OUTPUT + 2 * 5000 + 30_000);
     }
@@ -1122,5 +1372,40 @@ mod tests {
             message_time("2016-07-08T18:16:31.1081039Z").unwrap(),
             "\u{200e}2016\u{200e}-\u{200e}07\u{200e}-\u{200e}08T18:16:31.108103900Z"
         );
+    }
+
+    #[test]
+    fn names_the_standard_keywords() {
+        let names: Vec<_> = (48..=55).filter_map(winmeta_keyword).collect();
+        assert_eq!(
+            names,
+            [
+                "Response Time",
+                "WDI Context",
+                "WDI Diag",
+                "SQM",
+                "Audit Failure",
+                "Audit Success",
+                "Correlation Hint",
+                "Classic"
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_providers_by_any_spelling_of_their_guid() {
+        let mut catalog = MessageCatalog::new();
+        let guid = "54849625-5478-4994-a5ba-3e3b0328c30d";
+        catalog
+            .providers
+            .insert(guid.to_string(), ProviderMessages::default());
+        for spelling in [
+            guid,
+            "{54849625-5478-4994-A5BA-3E3B0328C30D}",
+            " {54849625-5478-4994-a5ba-3e3b0328c30d} ",
+        ] {
+            assert!(catalog.provider(spelling).is_some(), "{spelling}");
+        }
+        assert!(catalog.provider("").is_none());
     }
 }

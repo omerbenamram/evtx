@@ -1530,3 +1530,61 @@ fn message_inserts_of_shared_user_data_are_bounded() {
     });
     assert_fails_with(&evtx, security_messages(), NODES_ERROR);
 }
+
+/// The message of event 4624 of `Microsoft-Windows-Security-Auditing` whose `EventData` holds
+/// `strings` strings, then the number 255.
+#[cfg(feature = "wevt_templates")]
+fn logon_message(strings: usize) -> String {
+    let evtx = synthetic_evtx(|record| {
+        record
+            .fragment_header()
+            .template_instance(
+                |root| {
+                    root.open("Event", true).close_start();
+                    root.open("System", true).close_start();
+                    (root.open_with_attributes("Provider", true))
+                        .attribute("Guid")
+                        .text("{54849625-5478-4994-a5ba-3e3b0328c30d}")
+                        .close_empty();
+                    root.open("EventID", true)
+                        .close_start()
+                        .text("4624")
+                        .end_element();
+                    root.end_element();
+                    root.open("EventData", true).close_start();
+                    for _ in 0..strings {
+                        root.open("Data", true).close_start().text("s").end_element();
+                    }
+                    root.open("Data", true)
+                        .close_start()
+                        .substitution(0, 0x0A)
+                        .end_element();
+                    root.end_element();
+                    root.end_element();
+                },
+                vec![value(0x0A, |v| {
+                    v.raw(&255u64.to_le_bytes());
+                })],
+            )
+            .eof();
+    });
+    let mut parser = EvtxParser::from_buffer(evtx)
+        .unwrap()
+        .with_configuration(security_messages());
+    let record = parser.records_json_value().next().unwrap().unwrap();
+    record.data["Event"]["RenderingInfo"]["Message"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[cfg(feature = "wevt_templates")]
+#[test]
+fn message_inserts_are_hex_only_by_their_own_item() {
+    // The fourth item of event 4624's template, `SubjectLogonId`, is shown in hex. Its value
+    // here is the fourth of four, but the template has 27 items: the values can't be told to
+    // be the template's items, and render as their XML does.
+    let message = logon_message(3);
+    assert!(message.contains("255"), "{message}");
+    assert!(!message.contains("0xFF"), "{message}");
+}

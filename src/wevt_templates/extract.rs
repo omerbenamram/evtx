@@ -9,7 +9,7 @@
 //! - Microsoft PE/COFF specification (resource directory layout)
 
 use super::error::WevtTemplateExtractError;
-use super::types::{ResourceIdentifier, WevtTemplateResource};
+use super::types::{PeResource, ResourceIdentifier, WevtTemplateResource};
 use crate::utils::{Utf16LeSlice, bytes};
 
 use goblin::pe::options::{ParseMode, ParseOptions};
@@ -138,7 +138,7 @@ pub const RT_MESSAGETABLE: u32 = 11;
 pub fn extract_resources(
     pe_bytes: &[u8],
     resource_type: &ResourceIdentifier,
-) -> Result<Vec<WevtTemplateResource>, WevtTemplateExtractError> {
+) -> Result<Vec<PeResource>, WevtTemplateExtractError> {
     let mut opts = ParseOptions::default();
     // We only need sections + data directories; parsing TLS/certificates is wasted work here.
     opts.parse_tls_data = false;
@@ -259,7 +259,7 @@ pub fn extract_resources(
                 })?
                 .to_vec();
 
-            out.push(WevtTemplateResource {
+            out.push(PeResource {
                 resource: resource_id.clone(),
                 lang_id,
                 data,

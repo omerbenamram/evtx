@@ -496,6 +496,10 @@ impl ParserSettings {
 
     /// Whether records get strings that only their tree can give, so the compiled renderer
     /// can't render them.
+    ///
+    /// With a message catalog, that is every record, even one whose provider the catalog
+    /// doesn't have: telling them apart before the tree is built would need the provider's
+    /// GUID from the compiled program, as `mta::SystemFields` reads the provider's name.
     pub(crate) fn needs_tree_for_strings(&self) -> bool {
         #[cfg(feature = "wevt_templates")]
         if self.messages.is_some() {

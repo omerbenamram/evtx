@@ -80,7 +80,7 @@ mod messages {
         let dlls = Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/dlls");
         let mut catalog = MessageCatalog::from_directory(&dlls, None).unwrap();
         // Its message file is missing, as `MtaTestClassicMissing`'s is.
-        catalog.add_classic_source("MtaTestClassic", &[]).unwrap();
+        catalog.add_classic_source("MtaTestClassic", &[]);
         let catalog = Arc::new(catalog);
         for (sample, events) in [("system-sample", 6), ("classic", 3)] {
             let settings = ParserSettings::new().messages(Some(catalog.clone()));

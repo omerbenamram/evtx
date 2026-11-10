@@ -146,6 +146,7 @@ impl EvtxDump {
 
         let wevt_cache_path = matches.get_one::<String>("wevt-cache").map(Path::new);
         let mta_path = matches.get_one::<PathBuf>("mta").map(PathBuf::as_path);
+        let messages_paths = matches.get_many::<PathBuf>("messages");
 
         // What can be checked about the output file is checked (and asked) now, before any
         // long work. The file itself is created once the input has been opened (see
@@ -158,7 +159,16 @@ impl EvtxDump {
             Self::check_output_file(
                 output_file,
                 !matches.get_flag("no-confirm-overwrite"),
-                read.into_iter().chain(wevt_cache_path).chain(mta_path),
+                read.into_iter()
+                    .chain(wevt_cache_path)
+                    .chain(mta_path)
+                    .chain(
+                        messages_paths
+                            .clone()
+                            .into_iter()
+                            .flatten()
+                            .map(PathBuf::as_path),
+                    ),
             )?;
         }
 
@@ -170,8 +180,8 @@ impl EvtxDump {
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
 
-        let messages = match matches.get_many::<PathBuf>("messages") {
-            Some(paths) => {
+        let messages = messages_paths
+            .map(|paths| -> Result<_> {
                 let locale = matches
                     .get_one::<String>("messages-locale")
                     .map(String::as_str);
@@ -184,10 +194,9 @@ impl EvtxDump {
                 if catalog.provider_count() == 0 {
                     eprintln!("warning: found no event providers in the --messages paths");
                 }
-                Some(std::sync::Arc::new(catalog))
-            }
-            None => None,
-        };
+                Ok(std::sync::Arc::new(catalog))
+            })
+            .transpose()?;
 
         let carve = matches.get_flag("carve");
         let recover_records = matches.get_flag("recover-records");
