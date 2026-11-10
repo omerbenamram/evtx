@@ -636,3 +636,32 @@ fn a_string_array_ends_with_its_own_bytes() {
     assert_eq!(xml, "<Event><A>a</A><A>b</A><B>7</B></Event>");
     assert_eq!(json, r#"{"Event":{"A":"a","A_1":"b","B":7}}"#);
 }
+
+#[test]
+fn xml_has_no_character_it_does_not_allow_wherever_text_is() {
+    for in_template in [true, false] {
+        let evtx = event(in_template, |root, in_template| {
+            root.open("A", in_template)
+                .close_start()
+                .cdata("a\u{1}b\u{ffff}c\td")
+                .char_ref(0x41)
+                .char_ref(0x1)
+                .char_ref(0xffff)
+                .char_ref(0xd800)
+                .processing_instruction("p", "x?>y\u{2}z??>")
+                .end_element();
+        });
+        let [xml, _, chunk_xml, _] = render_everywhere(&evtx).map(Result::unwrap);
+        assert_eq!(chunk_xml.trim_end(), xml.trim_end());
+        assert!(
+            xml.contains("<A><![CDATA[a_b_c\td]]>&#65;___<?p x? >y_z?? >?></A>"),
+            "{xml}"
+        );
+        // And it parses, to the text and the instruction a reader should see.
+        let parsed = roxmltree::Document::parse(&xml).unwrap();
+        let a = parsed.descendants().find(|n| n.has_tag_name("A")).unwrap();
+        assert_eq!(a.text(), Some("a_b_c\tdA___"));
+        let pi = a.children().find_map(|n| n.pi()).unwrap();
+        assert_eq!((pi.target, pi.value), ("p", Some("x? >y_z?? >")));
+    }
+}

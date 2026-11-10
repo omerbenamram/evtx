@@ -44,6 +44,12 @@ and this project adheres to
 
 ### Fixed
 
+- XML: a crafted record could still give output that isn't well-formed, in three places that
+  have no escapes. A character XML doesn't allow (a C0 control other than tab, LF and CR,
+  U+FFFE, U+FFFF) is now `_` in a CDATA section and in a processing instruction's data, as it
+  already was in text. A character reference to one (`&#1;`), or to a surrogate, is `_` too.
+  And a `?>` in a processing instruction's data, which ended the instruction and had the rest
+  read as markup, is written `? >`.
 - A template value is read from its own bytes only, the count its descriptor gives. One that
   needs more (a UInt32 of two bytes, a SID whose sub-authority count runs past its size) was
   read out of the next values' bytes, and every value after it from the wrong place, so the

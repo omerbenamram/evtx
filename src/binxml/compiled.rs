@@ -1681,7 +1681,17 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                             self.lits.extend_from_slice(name.as_str().as_bytes());
                             if let Some(Node::PIData(data)) = nodes.get(idx + 1) {
                                 self.lits.push(b' ');
+                                let start = self.lits.len();
                                 self.compile_raw_text(data);
+                                // A `?>` in the data would end the instruction early.
+                                let body = self.lits.split_off(start);
+                                let mut rest = &body[..];
+                                while let Some(at) = rest.windows(2).position(|w| w == b"?>") {
+                                    self.lits.extend_from_slice(&rest[..=at]);
+                                    self.lits.push(b' ');
+                                    rest = &rest[at + 1..];
+                                }
+                                self.lits.extend_from_slice(rest);
                                 self.lits.extend_from_slice(b"?>");
                                 idx += 2;
                                 continue;
@@ -1955,7 +1965,14 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 Ok(())
             }
             Node::CharRef(ch) => {
-                self.lits.extend_from_slice(format!("&#{};", ch).as_bytes());
+                // A reference to a character XML doesn't allow is no more allowed than the
+                // character: `_`, as for one in text.
+                match ch {
+                    0x09 | 0x0A | 0x0D | 0x20..=0xD7FF | 0xE000..=0xFFFD => {
+                        self.lits.extend_from_slice(format!("&#{};", ch).as_bytes())
+                    }
+                    _ => self.lits.push(b'_'),
+                }
                 Ok(())
             }
             Node::CData(text) => {
@@ -1993,7 +2010,39 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         }
     }
 
+    /// Text as it is, for where XML has no escapes (a CDATA section, a processing
+    /// instruction's data), but for the characters XML doesn't allow anywhere, which are `_`
+    /// as in text (see `ValueRenderer::write_xml_escaped_str`).
     fn compile_raw_text(&mut self, text: &Text<'a>) {
+        let start = self.lits.len();
+        self.write_raw_text(text);
+        let written = &self.lits[start..];
+        let allowed = |at: usize| match written[at] {
+            b'\t' | b'\n' | b'\r' => true,
+            0x00..=0x1F => false,
+            0xEF => !matches!(written.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])),
+            _ => true,
+        };
+        if (0..written.len()).all(allowed) {
+            return;
+        }
+        let written = self.lits.split_off(start);
+        let mut at = 0;
+        while at < written.len() {
+            match written[at] {
+                b'\t' | b'\n' | b'\r' => self.lits.push(written[at]),
+                0x00..=0x1F => self.lits.push(b'_'),
+                0xEF if matches!(written.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])) => {
+                    self.lits.push(b'_');
+                    at += 2;
+                }
+                byte => self.lits.push(byte),
+            }
+            at += 1;
+        }
+    }
+
+    fn write_raw_text(&mut self, text: &Text<'a>) {
         match text {
             Text::Utf16(value) => {
                 let bytes = value.as_bytes();
