@@ -46,9 +46,20 @@ and this project adheres to
   `to_string()` must escape the text itself (or use `serde_json`).
 - `MtaError` has a new variant, `SharedRecord`, for an `.MTA` section whose records share
   bytes (see Fixed).
+- `evtx_dump` exits with status 2 when records or chunks could not be read, after writing
+  all it could read and saying how many are missing. It exited with 0, as for a log it read
+  all of, so a script could not tell. Status 1 is still any failure that stops the run.
 
 ### Fixed
 
+- `evtx_dump --events 5-3`, a range that ends before it starts, is refused. It printed nothing
+  and succeeded.
+- `evtx_dump --events` no longer prints the errors of records it leaves out (where the error
+  names its record).
+- `evtx_dump extract-wevt-templates` fails for an `--input` that doesn't exist, and for a
+  directory given without `--recursive`. It wrote an empty cache and succeeded. Its
+  recursive walk reads a directory once, so a link back up the tree no longer has it go
+  round until paths are too long.
 - `evtx_dump` warns when `--mta` is given with `--carve` or `--recover-records`. An `.MTA`
   file finds an event's message by its record's position and `EventRecordID`, so a carved or
   recovered record that is not an event of the file's log can get another event's message.

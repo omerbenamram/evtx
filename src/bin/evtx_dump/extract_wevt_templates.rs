@@ -81,7 +81,19 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     let mut inputs: Vec<PathBuf> = vec![];
 
     if let Some(paths) = matches.get_many::<String>("input") {
-        inputs.extend(paths.map(PathBuf::from));
+        for path in paths.map(PathBuf::from) {
+            // A glob may match nothing or a directory; a path given by name is meant.
+            if !path.exists() {
+                bail!("input `{}` does not exist", path.display());
+            }
+            if path.is_dir() && !recursive {
+                bail!(
+                    "input `{}` is a directory: pass --recursive to read the files in it",
+                    path.display()
+                );
+            }
+            inputs.push(path);
+        }
     }
 
     if let Some(patterns) = matches.get_many::<String>("glob") {
@@ -183,8 +195,15 @@ fn collect_input_paths(
 
         let mut queue = VecDeque::new();
         queue.push_back(input.to_path_buf());
+        // A link to a directory above it would have the walk go round for ever.
+        let mut walked = HashSet::new();
 
         while let Some(dir) = queue.pop_front() {
+            let real = fs::canonicalize(&dir)
+                .with_context(|| format!("failed to read directory `{}`", dir.display()))?;
+            if !walked.insert(real) {
+                continue;
+            }
             let entries = fs::read_dir(&dir)
                 .with_context(|| format!("failed to read directory `{}`", dir.display()))?;
             for entry in entries {

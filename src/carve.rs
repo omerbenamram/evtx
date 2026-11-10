@@ -5,6 +5,8 @@
 //! table and templates they need. [`CarvedEvtx`] scans a source for chunk headers, keeps the
 //! ones that look like real chunks, drops exact copies, and presents them to [`EvtxParser`] as
 //! a virtual EVTX file: a file header it makes up, then each carved chunk in the order found.
+//! The parser reads that file as it reads any log, starting at the chunk with the lowest record
+//! ID and wrapping around, so records come out from that chunk on and not from the first found.
 //! So everything the parser does works on carved chunks too, including recovering stale records
 //! from their slack (`ParserSettings::recover_records`).
 //!

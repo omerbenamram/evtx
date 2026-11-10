@@ -79,6 +79,8 @@ struct EvtxDump {
     stop_after_error: bool,
     /// When set, only the records whose event record IDs are in these ranges are output.
     ranges: Option<Ranges>,
+    /// Records and chunks that could not be read, and so are missing from the output.
+    failed: u64,
     /// Whether the input is raw data to carve chunks from, rather than an EVTX file.
     carve: bool,
 }
@@ -196,6 +198,7 @@ impl EvtxDump {
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
+            failed: 0,
             carve,
         })
     }
@@ -290,6 +293,10 @@ impl EvtxDump {
 
         // Dropping the buffer flushes it too, but ignores a failed write.
         self.output.flush()?;
+        // The output is whole but for these: a script must be able to tell.
+        if self.failed > 0 {
+            return Err(Incomplete(self.failed).into());
+        }
         Ok(())
     }
 
@@ -420,6 +427,16 @@ impl EvtxDump {
                 }
                 // This error is non fatal.
                 RenderedChunkItem::Failed(e) => {
+                    // A record that `--events` leaves out is not one this run was asked for.
+                    if let (
+                        Some(ranges),
+                        evtx::err::EvtxError::FailedToParseRecord { record_id, .. },
+                    ) = (&self.ranges, &e)
+                        && !ranges.contains(&(*record_id as usize))
+                    {
+                        continue;
+                    }
+                    self.failed += 1;
                     eprintln!(
                         "{:?}",
                         anyhow::Error::from(e).context("Failed to dump the next record.")
@@ -479,6 +496,9 @@ impl FromStr for Ranges {
         for range in s.split(',') {
             let (start, stop) = range.split_once('-').unwrap_or((range, range));
             match (start.parse::<usize>(), stop.parse::<usize>()) {
+                (Ok(start), Ok(stop)) if start > stop => {
+                    bail!("Range {range} ends before it starts and holds no record ID")
+                }
                 (Ok(start), Ok(stop)) => res.push(start..=stop),
                 _ => bail!("Expected range to be a positive number, got: {}", range),
             }
@@ -512,6 +532,8 @@ fn test_ranges() {
     assert!(matches_ranges("1").is_ok());
     assert!(matches_ranges("1-").is_err());
     assert!(matches_ranges("-2").is_err());
+    assert!(matches_ranges("3-3").is_ok());
+    assert!(matches_ranges("5-3").is_err());
 }
 
 #[test]
@@ -535,9 +557,33 @@ fn main() -> Result<()> {
         // A reader that stops early, such as `head`, closes the pipe: that ends the output, as
         // it does for other command-line tools, rather than being an error.
         Err(error) if is_broken_pipe(&error) => Ok(()),
+        Err(error) if error.is::<Incomplete>() => {
+            eprintln!("Error: {error}");
+            std::process::exit(INCOMPLETE_EXIT_CODE)
+        }
         result => result,
     }
 }
+
+/// The exit status of a run that wrote everything it could read, but could not read it all.
+/// Any other failure exits with 1.
+const INCOMPLETE_EXIT_CODE: i32 = 2;
+
+/// The output is complete but for this many records or chunks, which could not be read.
+#[derive(Debug)]
+struct Incomplete(u64);
+
+impl std::fmt::Display for Incomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} records or chunks could not be read and are missing from the output (see the errors above)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for Incomplete {}
 
 fn is_broken_pipe(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
@@ -599,7 +645,8 @@ fn run_cli() -> Result<()> {
                 .long("events")
                 .action(ArgAction::Set)
                 .value_parser(matches_ranges)
-                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output.
+                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output,
+                and only their errors are reported.
                 For example:
                     --events=1 outputs the record whose ID is 1.
                     --events=0-10,20-30 outputs the records with IDs 0 to 10 and 20 to 30.
