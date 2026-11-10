@@ -117,7 +117,7 @@ pub(crate) fn walk_tokens<'a>(
                 src.ansi_codec,
                 src.bump,
             )?)?,
-            0x01 | 0x41 => {
+            token::OPEN_START_ELEMENT | token::OPEN_START_ELEMENT_WITH_ATTRIBUTES => {
                 let (name, dependency) = read_open_start_element_cursor(
                     &mut cursor,
                     token & 0x40 != 0,
@@ -204,6 +204,8 @@ struct TemplateValueDescriptor {
 /// BinXML stream token bytes (MS-EVEN6 §2.2.3.1).
 pub(crate) mod token {
     pub(crate) const EOF: u8 = 0x00;
+    pub(crate) const OPEN_START_ELEMENT: u8 = 0x01;
+    pub(crate) const OPEN_START_ELEMENT_WITH_ATTRIBUTES: u8 = 0x41;
     pub(crate) const TEMPLATE_INSTANCE: u8 = 0x0c;
     pub(crate) const FRAGMENT_HEADER: u8 = 0x0f;
 }
@@ -227,6 +229,26 @@ pub(crate) const fn single_instance_offset(bytes: &[u8]) -> Option<usize> {
         [token::TEMPLATE_INSTANCE, ..] => Some(1),
         _ => None,
     }
+}
+
+/// Whether a BinXML value's `stream` opens an element first, after a fragment header if it
+/// has one. A stream that builds at all then builds at least that element; any other stream
+/// may build nothing, and a value that builds nothing is NULL (`validate_tpl_instance`).
+pub(crate) const fn starts_with_element(stream: &[u8]) -> bool {
+    matches!(
+        stream,
+        [
+            token::OPEN_START_ELEMENT | token::OPEN_START_ELEMENT_WITH_ATTRIBUTES,
+            ..
+        ] | [
+            token::FRAGMENT_HEADER,
+            _,
+            _,
+            _,
+            token::OPEN_START_ELEMENT | token::OPEN_START_ELEMENT_WITH_ATTRIBUTES,
+            ..
+        ]
+    )
 }
 
 /// Whether a single-instance `stream` whose instance parsed `consumed` bytes

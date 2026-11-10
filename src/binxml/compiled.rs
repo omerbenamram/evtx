@@ -22,7 +22,9 @@ use crate::binxml::ir::{
     read_template_definition_header_at, template_body_at,
 };
 use crate::binxml::name::read_name_link;
-use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
+use crate::binxml::tokens::{
+    Stream, TokenSink, ends_stream, single_instance_offset, starts_with_element, walk_tokens,
+};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
@@ -2243,6 +2245,13 @@ pub(crate) struct Preflight {
     array_items: Vec<(u32, u16)>,
 }
 
+/// Whether a BinXML value's stream opens neither a template nor an element first. Kept out
+/// of the scan's loop, which is the hot one.
+#[inline(never)]
+fn may_build_nothing(stream: &[u8]) -> bool {
+    !stream.is_empty() && single_instance_offset(stream).is_none() && !starts_with_element(stream)
+}
+
 /// How the pre-flight validates a descriptor of a given type.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TyClass {
@@ -2252,8 +2261,10 @@ enum TyClass {
     Fixed(u8),
     /// Even-length UTF-16LE payload.
     Utf16,
-    /// Any-length payload (NULL skips it, BINARY/BIN_XML slice it).
+    /// Any-length payload (NULL skips it, BINARY slices it).
     Sized,
+    /// A BinXML stream of any length.
+    BinXml,
     /// ANSI string: any length, pre-decoded at pre-flight.
     Ansi,
     /// Pointer-width integer: 4 (32-bit) or 8 (64-bit) bytes.
@@ -2292,7 +2303,7 @@ const TY_CLASS: [TyClass; 256] = {
     t[SID as usize] = Sid;
     t[HEX_INT32 as usize] = Fixed(4);
     t[HEX_INT64 as usize] = Fixed(8);
-    t[BIN_XML as usize] = Sized;
+    t[BIN_XML as usize] = BinXml;
     t[STR_ARRAY as usize] = StrArray;
     t
 };
@@ -2448,6 +2459,14 @@ impl Preflight {
                     // Admitted only on slots the program compiled as
                     // expandable; everything else keeps the slow lane.
                     if len % 2 != 0 || !progs.programs[prog].expand_slots().contains(&(i as u16)) {
+                        return Err(PreflightBail);
+                    }
+                }
+                TyClass::BinXml => {
+                    // A stream that doesn't open an element or a template first may build
+                    // nothing, which makes the value NULL and not an element: only
+                    // building it tells, which the slow lane does.
+                    if may_build_nothing(&data[off..end]) {
                         return Err(PreflightBail);
                     }
                 }

@@ -886,7 +886,14 @@ fn validate_tpl_instance<'a>(
             depth + 1,
             budget,
         )?;
-        *value = ValidatedValue::Fragment(roots.into_slice(src.bump));
+        // A stream that builds nothing (only its end, say) is nothing, as one with no bytes
+        // is: NULL, which an optional substitution skips and a dependent element is left
+        // out for. As a fragment of no elements the compiled XML broke the line for it.
+        *value = if roots.first.is_none() {
+            ValidatedValue::Scalar(BinXmlValue::NullType)
+        } else {
+            ValidatedValue::Fragment(roots.into_slice(src.bump))
+        };
     }
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
