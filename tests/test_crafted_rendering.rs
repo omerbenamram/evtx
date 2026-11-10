@@ -511,7 +511,7 @@ fn a_named_data_with_an_empty_attribute_has_a_key_of_its_own() {
 
 #[test]
 fn a_numeric_array_of_one_item_is_a_number_as_the_items_of_longer_ones_are() {
-    // `<X>%0</X>` and `<Y a="%0"/>` for an array of `count` items of 1, each `size` bytes.
+    // `<X>%0</X><Y a="%0"/>` for an array of `count` items of 1, each `size` bytes.
     let record = |value_type: u8, size: usize, count: usize| {
         let evtx = synthetic_evtx(|record| {
             record.fragment_header().template_instance(
@@ -521,6 +521,10 @@ fn a_numeric_array_of_one_item_is_a_number_as_the_items_of_longer_ones_are() {
                         .close_start()
                         .substitution(0, value_type)
                         .end_element();
+                    root.open_with_attributes("Y", true)
+                        .attribute("a")
+                        .substitution(0, value_type)
+                        .close_empty();
                     root.end_element();
                 },
                 vec![value(value_type, |items| {
@@ -537,15 +541,24 @@ fn a_numeric_array_of_one_item_is_a_number_as_the_items_of_longer_ones_are() {
         assert_eq!(chunk_json.trim_end(), json);
         json
     };
+    let y = |a: &str| format!(r##"{{"#attributes":{{"a":{a}}}}}"##);
+    let one = |item: &str| format!(r#"{{"Event":{{"X":{item},"Y":{}}}}}"#, y(item));
+    let two = |item: &str| {
+        format!(
+            r#"{{"Event":{{"X":{item},"X_1":{item},"Y":{},"Y_1":{}}}}}"#,
+            y(item),
+            y(item)
+        )
+    };
     // Int8 to UInt64, then Bool.
     let sizes = [1, 1, 2, 2, 4, 4, 8, 8];
     for (value_type, size) in (0x83..=0x8a).zip(sizes) {
-        assert_eq!(record(value_type, size, 1), r#"{"Event":{"X":1}}"#);
-        assert_eq!(record(value_type, size, 2), r#"{"Event":{"X":1,"X_1":1}}"#);
+        assert_eq!(record(value_type, size, 1), one("1"));
+        assert_eq!(record(value_type, size, 2), two("1"));
     }
-    assert_eq!(record(0x8d, 4, 1), r#"{"Event":{"X":true}}"#);
-    assert_eq!(record(0x8d, 4, 2), r#"{"Event":{"X":true,"X_1":true}}"#);
+    assert_eq!(record(0x8d, 4, 1), one("true"));
+    assert_eq!(record(0x8d, 4, 2), two("true"));
     // A HexInt32 is a string, alone or in an array.
-    assert_eq!(record(0x94, 4, 1), r#"{"Event":{"X":"0x1"}}"#);
-    assert_eq!(record(0x94, 4, 2), r#"{"Event":{"X":"0x1","X_1":"0x1"}}"#);
+    assert_eq!(record(0x94, 4, 1), one(r#""0x1""#));
+    assert_eq!(record(0x94, 4, 2), two(r#""0x1""#));
 }
