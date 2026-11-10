@@ -138,18 +138,18 @@ impl<'a> EvtxRecord<'a> {
 
     /// Render the record through the compiled-template machinery: cached
     /// program when the record's templates compile (the common case), the
-    /// same materialized walker otherwise. With an `.MTA` file set, the
-    /// record's tree gets its `RenderingInfo` and is rendered instead. The
-    /// chunk's render budget pays for it (see `ChunkBudget`).
+    /// same materialized walker otherwise. With an `.MTA` file or a message
+    /// catalog set, the record's tree gets its `RenderingInfo` and is rendered
+    /// instead. The chunk's render budget pays for it (see `ChunkBudget`).
     fn render_into(&self, json: bool, data: &mut Vec<u8>) -> Result<()> {
         let settings = &self.chunk.settings;
-        let mta = settings.get_mta();
+        let needs_tree = settings.get_mta().is_some() || settings.needs_tree_for_strings();
         let chunk_budget = &self.chunk.render_budget;
         chunk_budget.render(self.nodes, data, |budget, data| {
             let mut tree = match &self.content {
                 RecordContent::Tree(tree) => Cow::Borrowed(tree),
                 RecordContent::Template(content) => {
-                    if mta.is_none()
+                    if !needs_tree
                         && crate::binxml::compiled::try_render_validated(
                             content,
                             self.chunk,
@@ -164,9 +164,9 @@ impl<'a> EvtxRecord<'a> {
                     Cow::Owned(content.materialize(&self.chunk.arena, budget)?)
                 }
             };
-            if let Some(mta) = mta {
+            if needs_tree {
                 let arena = &self.chunk.arena;
-                crate::mta::add_rendering_info(tree.to_mut(), self.event_record_id, mta, arena);
+                settings.add_rendering_info(tree.to_mut(), self.event_record_id, arena);
             }
             render_tree(&tree, settings, json, budget, data)
         })

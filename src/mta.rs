@@ -542,7 +542,7 @@ fn parse_publisher(payload: &[u8], messages: &[(u32, Arc<str>)]) -> Option<MtaPu
 }
 
 /// Decodes UTF-16LE text up to the first NUL, replacing unpaired surrogates.
-fn decode_utf16(bytes: &[u8]) -> String {
+pub(crate) fn decode_utf16(bytes: &[u8]) -> String {
     let units = bytes.as_chunks::<2>().0;
     // Strings usually end with their NUL.
     let units = units.strip_suffix(&[[0, 0]]).unwrap_or(units);
@@ -823,7 +823,7 @@ fn has_substitution(nodes: &[Node<'_>]) -> bool {
 /// The value of the first attribute called `name` (no nodes if there is none). `None` when the
 /// name repeats and has a substitution: a record's tree leaves out attributes whose
 /// substitutions are empty, so which one comes first depends on the record.
-fn attribute<'e, 'a>(element: &'e Element<'a>, name: &str) -> Option<&'e [Node<'a>]> {
+pub(crate) fn attribute<'e, 'a>(element: &'e Element<'a>, name: &str) -> Option<&'e [Node<'a>]> {
     let mut attrs = element
         .attrs
         .iter()
@@ -838,7 +838,7 @@ fn attribute<'e, 'a>(element: &'e Element<'a>, name: &str) -> Option<&'e [Node<'
 }
 
 /// A missing or out-of-range value counts as 0.
-fn narrow<T: TryFrom<u64> + Default>(value: Option<u64>) -> T {
+pub(crate) fn narrow<T: TryFrom<u64> + Default>(value: Option<u64>) -> T {
     value
         .and_then(|value| T::try_from(value).ok())
         .unwrap_or_default()
@@ -846,7 +846,7 @@ fn narrow<T: TryFrom<u64> + Default>(value: Option<u64>) -> T {
 
 /// The value of a number-valued element or attribute: a single typed value, or text in decimal
 /// or `0x`-prefixed hex.
-fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
+pub(crate) fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
     if let [Node::Value(value)] = nodes
         && let Some(number) = value_number(value)
     {
@@ -860,7 +860,7 @@ fn number_value(nodes: &[Node<'_>]) -> Option<u64> {
     }
 }
 
-fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
+pub(crate) fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
     match *value {
         BinXmlValue::UInt8Type(v) => Some(v.into()),
         BinXmlValue::UInt16Type(v) => Some(v.into()),
@@ -874,16 +874,28 @@ fn value_number(value: &BinXmlValue<'_>) -> Option<u64> {
     }
 }
 
-/// The text of string-valued nodes, concatenated.
-fn text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
-    let text = |node: &Node<'n>| match node {
-        Node::Text(Text::Utf8(s)) | Node::Value(BinXmlValue::AnsiStringType(s)) => {
-            Cow::Borrowed(*s)
+/// The text of `nodes`, concatenated, with values as the event's XML shows them (unescaped).
+pub(crate) fn text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
+    let text = |node: &Node<'n>| -> Cow<'n, str> {
+        match node {
+            Node::Text(Text::Utf8(s))
+            | Node::CData(Text::Utf8(s))
+            | Node::Value(BinXmlValue::AnsiStringType(s)) => Cow::Borrowed(*s),
+            Node::Text(Text::Utf16(s))
+            | Node::CData(Text::Utf16(s))
+            | Node::Value(BinXmlValue::StringType(s)) => Cow::Owned(decode_utf16(s.as_bytes())),
+            Node::Value(value) => Cow::Owned(value.to_string()),
+            Node::CharRef(c) => Cow::Owned(char::from_u32(u32::from(*c)).unwrap_or('_').into()),
+            Node::EntityRef(name) => Cow::Borrowed(match name.as_str() {
+                "amp" => "&",
+                "lt" => "<",
+                "gt" => ">",
+                "quot" => "\"",
+                "apos" => "'",
+                _ => "",
+            }),
+            _ => Cow::Borrowed(""),
         }
-        Node::Text(Text::Utf16(s)) | Node::Value(BinXmlValue::StringType(s)) => {
-            Cow::Owned(decode_utf16(s.as_bytes()))
-        }
-        _ => Cow::Borrowed(""),
     };
     match nodes {
         [node] => text(node),

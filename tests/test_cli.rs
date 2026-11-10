@@ -455,7 +455,7 @@ fn a_file_the_run_reads_is_refused_as_the_output_file() {
 
     // The side files are refused before they are read, so they needn't be valid.
     let side = d.as_ref().join("side-file");
-    for flag in ["--wevt-cache", "--mta"] {
+    for flag in ["--wevt-cache", "--mta", "--messages"] {
         std::fs::write(&side, b"precious").unwrap();
         let stderr = failing_dump_to(&side, &[flag, side.to_str().unwrap(), log_arg]);
         assert!(stderr.contains("which this run reads"), "{stderr}");

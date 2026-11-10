@@ -17,6 +17,7 @@
 //! - libfwevt manifest format documentation / reference implementation
 
 pub mod manifest;
+pub mod messages;
 
 /// `TEMP` layout: a fixed 40-byte header, then the BinXML fragment.
 pub(crate) const TEMP_HEADER_SIZE: usize = 40;
@@ -31,13 +32,14 @@ pub mod wevtcache;
 
 pub use cache::{WevtCache, WevtCacheError, normalize_guid};
 pub use error::WevtTemplateExtractError;
-pub use extract::extract_wevt_template_resources;
+pub use extract::{RT_MESSAGETABLE, extract_resources, extract_wevt_template_resources};
 pub use render::{
     render_temp_to_xml, render_temp_to_xml_with_values, render_template_definition_to_xml,
     render_template_definition_to_xml_with_values,
 };
 pub use temp::extract_temp_templates_from_wevt_blob;
 pub use types::{
-    ResourceIdentifier, WevtTempTemplateHeader, WevtTempTemplateRef, WevtTemplateResource,
+    PeResource, ResourceIdentifier, WevtTempTemplateHeader, WevtTempTemplateRef,
+    WevtTemplateResource,
 };
 pub use wevtcache::{WevtCacheFileError, WevtCacheReader, WevtCacheWriter, for_each_crim_blob};
