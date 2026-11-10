@@ -1,4 +1,4 @@
-use criterion::{black_box, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use sonic_rs::format::{CompactFormatter, Formatter};
 use std::mem::MaybeUninit;
 
@@ -65,8 +65,7 @@ fn build_cases() -> Vec<Case> {
         0x08, 0x00, // backspace
         0x0A, 0x00, // newline
         0x1F, 0x00, // unit separator
-        b'"', 0x00,
-        b'\\', 0x00,
+        b'"', 0x00, b'\\', 0x00,
     ];
     cases.push(Case {
         name: "controls",
@@ -103,8 +102,7 @@ fn bench_utf16_json(c: &mut Criterion) {
             |b, case| {
                 let mut out = vec![MaybeUninit::uninit(); max_len];
                 b.iter(|| {
-                    let len =
-                        escape_json_utf16le_scalar(&case.utf16le, num_units, &mut out, true);
+                    let len = escape_json_utf16le_scalar(&case.utf16le, num_units, &mut out, true);
                     black_box(len);
                 });
             },

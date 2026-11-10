@@ -26,11 +26,11 @@ fuzz_target!(|data: &[u8]| {
     let len_scalar = escape_utf16_raw_scalar(&utf16, &mut out_scalar);
 
     // SAFETY: the escape functions guarantee the first `len_*` bytes are initialized.
-    let simd_bytes = unsafe { core::slice::from_raw_parts(out_simd.as_ptr() as *const u8, len_simd) };
+    let simd_bytes =
+        unsafe { core::slice::from_raw_parts(out_simd.as_ptr() as *const u8, len_simd) };
     let scalar_bytes =
         unsafe { core::slice::from_raw_parts(out_scalar.as_ptr() as *const u8, len_scalar) };
 
     assert_eq!(simd_bytes, scalar_bytes);
     core::str::from_utf8(simd_bytes).unwrap();
 });
-

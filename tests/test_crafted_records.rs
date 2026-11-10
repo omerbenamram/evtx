@@ -1590,7 +1590,10 @@ fn logon_message(strings: usize) -> String {
                     root.end_element();
                     root.open("EventData", true).close_start();
                     for _ in 0..strings {
-                        root.open("Data", true).close_start().text("s").end_element();
+                        root.open("Data", true)
+                            .close_start()
+                            .text("s")
+                            .end_element();
                     }
                     root.open("Data", true)
                         .close_start()
