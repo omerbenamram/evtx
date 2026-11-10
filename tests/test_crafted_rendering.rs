@@ -849,6 +849,14 @@ fn unused_binxml_value(stream: impl Fn(&mut BinXml)) -> Vec<u8> {
     })
 }
 
+/// Every renderer fails the record, with one error.
+fn fails_alike(evtx: &[u8]) {
+    let [first, rest @ ..] = render_everywhere(evtx).map(Result::unwrap_err);
+    for err in rest {
+        assert_eq!(err, first);
+    }
+}
+
 #[test]
 fn a_binxml_value_the_template_does_not_use_is_still_read() {
     // The records API builds every BinXML value, so one that can't be read fails the record.
@@ -867,10 +875,7 @@ fn a_binxml_value_the_template_does_not_use_is_still_read() {
         let evtx = unused_binxml_value(|fragment| {
             fragment.raw(stream);
         });
-        let [first, rest @ ..] = render_everywhere(&evtx).map(Result::unwrap_err);
-        for err in rest {
-            assert_eq!(err, first, "{stream:?}");
-        }
+        fails_alike(&evtx);
     }
 
     // Nor did it read one in an element it left out, here for the NULL the element depends on.
@@ -894,10 +899,7 @@ fn a_binxml_value_the_template_does_not_use_is_still_read() {
         );
         record.eof();
     });
-    let [first, rest @ ..] = render_everywhere(&evtx).map(Result::unwrap_err);
-    for err in rest {
-        assert_eq!(err, first);
-    }
+    fails_alike(&evtx);
 
     // One that can be read changes nothing.
     let evtx = unused_binxml_value(|fragment| {

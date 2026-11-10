@@ -704,7 +704,7 @@ pub(crate) struct XmlProgram {
     elem_slots: Vec<(u16, u16)>,
     /// Slots compiled as `XOp::Expand` (string arrays allowed).
     expand_slots: Vec<u16>,
-    /// Slots whose ops a guard op skips when it leaves their element out.
+    /// Slots whose ops a guard op skips when it leaves their element out, sorted.
     guarded_slots: Vec<u16>,
     root_name: Vec<u8>,
     system_fields: Option<SystemFields>,
@@ -1143,7 +1143,7 @@ impl TemplateProgram for XmlProgram {
         &self.expand_slots
     }
     fn may_skip(&self, slot: u16) -> bool {
-        self.guarded_slots.contains(&slot)
+        self.guarded_slots.binary_search(&slot).is_ok()
     }
     fn root_name(&self) -> &[u8] {
         &self.root_name
@@ -2276,10 +2276,10 @@ fn needs_the_slow_lane(stream: &[u8], slot: usize, elem_slots: &[(u16, u16)]) ->
         single_instance_offset(stream).is_none() && !starts_with_element(stream);
     // A stream the program doesn't render as an element is one the fast lane never reads,
     // and a record with a stream that can't be read fails.
-    let unread = !elem_slots
-        .iter()
-        .any(|&(rendered, _)| usize::from(rendered) == slot);
-    may_build_nothing || unread
+    may_build_nothing
+        || !elem_slots
+            .iter()
+            .any(|&(rendered, _)| usize::from(rendered) == slot)
 }
 
 /// How the pre-flight validates a descriptor of a given type.
