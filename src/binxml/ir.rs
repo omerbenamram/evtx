@@ -1217,8 +1217,8 @@ fn clone_and_resolve<'a>(
                 budget,
                 &mut new_attr.value,
             )?;
-            // A BinXML value gives elements, which an attribute can't hold. XML output can't
-            // write one there; JSON output took it for nothing.
+            // A BinXML value gives elements, which an attribute can't hold and no output
+            // can write there.
             if new_attr.value[before..]
                 .iter()
                 .any(|n| matches!(n, Node::Element(_)))
