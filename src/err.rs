@@ -151,11 +151,16 @@ impl InputError {
 /// May also be raised if common chunk resources are not read succesfully.
 #[derive(Debug, Error)]
 pub enum ChunkError {
+    /// The file ends before the end of the chunk's header (or before the chunk).
     #[error("Reached EOF while trying to allocate chunk")]
     IncompleteChunk,
 
+    /// The reader failed while reading the chunk.
+    #[error("Failed to read chunk")]
+    FailedToReadChunk(#[source] io::Error),
+
     #[error("Failed to seek to start of chunk.")]
-    FailedToSeekToChunk(io::Error),
+    FailedToSeekToChunk(#[source] io::Error),
 
     #[error("Failed to parse chunk header")]
     FailedToParseChunkHeader(#[from] DeserializationError),
@@ -172,9 +177,6 @@ pub enum ChunkError {
     /// past the end of the chunk, so the records' CRC32 can't be checked.
     #[error("chunk free space offset {offset} is outside the chunk's records area")]
     InvalidFreeSpaceOffset { offset: u32 },
-
-    #[error("Failed to build string cache")]
-    FailedToBuildStringCache { source: DeserializationError },
 }
 
 /// Public result API.
@@ -217,6 +219,12 @@ pub enum EvtxError {
 
     #[error("An IO error occured.")]
     IoError(#[from] std::io::Error),
+
+    /// An element, attribute, entity or processing instruction is named `name`, which XML and
+    /// JSON output can't write: names aren't escaped. `offset` is where the chunk (or, for a
+    /// `WEVT_TEMPLATE`, the template) holds the name.
+    #[error("{name:?}, the name at offset {offset}, is not an XML name")]
+    NotAnXmlName { name: String, offset: u32 },
 
     // TODO: move this error.
     #[error("Failed to create record model, reason: {}", .0)]

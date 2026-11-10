@@ -1,9 +1,13 @@
 use crate::EvtxChunk;
 use crate::binxml::BinXmlTemplateValues;
 use crate::binxml::compiled::Budget;
-use crate::binxml::ir::RecordContent;
+use crate::binxml::ir::{
+    MAX_BINXML_NESTING, RecordContent, binxml_slice_offset_in, read_template_definition_header_at,
+};
 use crate::binxml::tokens::{Stream, TokenSink, walk_tokens};
+use crate::binxml::value_variant::BinXmlValue;
 use crate::err::{DeserializationError, DeserializationResult, EvtxError, Result};
+use crate::guid::Guid;
 use crate::utils::bytes;
 use crate::utils::windows::filetime_to_timestamp;
 use std::borrow::Cow;
@@ -204,29 +208,92 @@ impl<'a> EvtxRecord<'a> {
         self.into_xml_bytes()?.into_string_record()
     }
 
-    /// Parse all `TemplateInstance` substitution arrays from this record.
+    /// Parse all `TemplateInstance` substitution arrays from this record, in document order:
+    /// each instance is followed by the instances inside its BinXML-typed values. A Windows
+    /// event is usually two: the outer one that fills in `System`, then the one in its last
+    /// value, the provider's own template, that fills in `EventData` or `UserData`.
+    ///
+    /// Each has its template's GUID, also when the record refers to a definition stored
+    /// earlier in the chunk: it is read from where the instance says the definition is, and is
+    /// `None` when that is outside the chunk.
     ///
     /// This is a lightweight scan over the record's BinXML stream that extracts typed substitution
     /// values without building a legacy token vector.
     pub fn template_instances(&self) -> Result<Vec<BinXmlTemplateValues<'a>>> {
-        struct Instances<'a>(Vec<BinXmlTemplateValues<'a>>);
-        impl<'a> TokenSink<'a> for Instances<'a> {
-            fn template_instance(&mut self, template: BinXmlTemplateValues<'a>) -> Result<()> {
-                self.0.push(template);
-                Ok(())
+        let mut instances = Vec::new();
+        let (start, len) = (self.binxml_offset as usize, self.binxml_size as usize);
+        collect_template_instances(self.chunk, start, len, 0, &mut instances)?;
+        Ok(instances)
+    }
+}
+
+/// Adds the template instances of the BinXML stream at `chunk.data[start..start + len]` to
+/// `instances`, each followed by those of the streams embedded in it.
+fn collect_template_instances<'a>(
+    chunk: &'a EvtxChunk<'a>,
+    start: usize,
+    len: usize,
+    depth: usize,
+    instances: &mut Vec<BinXmlTemplateValues<'a>>,
+) -> Result<()> {
+    struct Sink<'a, 'o> {
+        chunk: &'a EvtxChunk<'a>,
+        depth: usize,
+        instances: &'o mut Vec<BinXmlTemplateValues<'a>>,
+    }
+
+    impl<'a> Sink<'a, '_> {
+        /// A BinXML-typed value: a stream of its own.
+        fn embedded(&mut self, bytes: &'a [u8]) -> Result<()> {
+            // An empty one is an optional value left out.
+            if bytes.is_empty() {
+                return Ok(());
             }
+            let start = binxml_slice_offset_in(self.chunk.data, bytes)? as usize;
+            let depth = self.depth + 1;
+            collect_template_instances(self.chunk, start, bytes.len(), depth, self.instances)
+        }
+    }
+
+    impl<'a> TokenSink<'a> for Sink<'a, '_> {
+        fn template_instance(&mut self, mut instance: BinXmlTemplateValues<'a>) -> Result<()> {
+            // An instance carries the GUID itself only where the definition is inline.
+            if instance.template_guid.is_none() {
+                let offset = instance.template_def_offset;
+                let header = read_template_definition_header_at(self.chunk.data, offset);
+                instance.template_guid = header.ok().map(|h| Guid::from_bytes(h.guid));
+            }
+            let at = self.instances.len();
+            self.instances.push(instance);
+            for value in 0..self.instances[at].values.len() {
+                if let BinXmlValue::BinXmlType(bytes) = self.instances[at].values[value] {
+                    self.embedded(bytes)?;
+                }
+            }
+            Ok(())
         }
 
-        let mut out = Instances(Vec::new());
-        walk_tokens(
-            Stream::chunk(self.chunk, &self.chunk.arena),
-            self.binxml_offset as usize,
-            self.binxml_size as usize,
-            false,
-            &mut out,
-        )?;
-        Ok(out.0)
+        fn value(&mut self, value: BinXmlValue<'a>) -> Result<()> {
+            match value {
+                BinXmlValue::BinXmlType(bytes) => self.embedded(bytes),
+                _ => Ok(()),
+            }
+        }
     }
+
+    // As for rendering the record.
+    if depth > MAX_BINXML_NESTING {
+        return Err(EvtxError::FailedToCreateRecordModel(
+            "BinXML fragments nested too deeply",
+        ));
+    }
+    let mut sink = Sink {
+        chunk,
+        depth,
+        instances,
+    };
+    let stream = Stream::chunk(chunk, &chunk.arena);
+    walk_tokens(stream, start, len, false, &mut sink)
 }
 
 #[cfg(test)]
@@ -242,6 +309,38 @@ mod validated_content_tests {
         let file = include_bytes!("../samples/security.evtx");
         let chunk = &file[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
         EvtxChunkData::new(chunk.to_vec(), false).unwrap()
+    }
+
+    #[test]
+    fn template_instances_include_the_ones_inside_binxml_values() {
+        let mut data = first_chunk();
+        let mut chunk = data.parse(Arc::new(ParserSettings::default())).unwrap();
+        // Record 3 is event 4902. Its own template is defined in it, and record 5's (event
+        // 4735) was defined by record 4.
+        let records: Vec<_> = chunk.iter().take(5).map(|record| record.unwrap()).collect();
+        let instances = records[2].template_instances().unwrap();
+        let [system, event_data] = &instances[..] else {
+            panic!("{instances:?}")
+        };
+        assert_eq!(system.values.len(), 18);
+        assert_eq!(system.values[3], BinXmlValue::UInt16Type(4902));
+        assert_eq!(
+            event_data.values,
+            [
+                BinXmlValue::UInt32Type(0),
+                BinXmlValue::HexInt64Type(0x35cb0)
+            ]
+        );
+
+        let guid = |instance: &BinXmlTemplateValues| instance.template_guid.clone().unwrap();
+        let later = records[4].template_instances().unwrap();
+        assert_eq!(later.len(), 2);
+        assert_eq!(guid(&later[0]), guid(system));
+        assert_eq!(
+            guid(&later[1]),
+            guid(&records[3].template_instances().unwrap()[1])
+        );
+        assert_ne!(guid(&later[1]), guid(event_data));
     }
 
     #[test]

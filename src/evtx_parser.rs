@@ -35,6 +35,13 @@ fn spawn(f: impl FnOnce()) {
 pub(crate) const EVTX_CHUNK_SIZE: usize = 65536;
 pub(crate) const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
+/// Where chunk `chunk_number` starts in the file, if that fits a `u64`.
+fn chunk_offset(chunk_number: u64) -> Option<u64> {
+    chunk_number
+        .checked_mul(EVTX_CHUNK_SIZE as u64)?
+        .checked_add(EVTX_FILE_HEADER_SIZE as u64)
+}
+
 /// One processed chunk's payload plus its (reusable) bump arena.
 struct ChunkBatch<P> {
     payload: P,
@@ -410,6 +417,10 @@ impl ParserSettings {
     /// log saved with display information) to every record as a `RenderingInfo` element. See
     /// [`crate::mta`].
     ///
+    /// It must be the file saved with the log. An event's message is found by its record's
+    /// position and `EventRecordID`, so a record that is not an event of that log (another
+    /// log's, a carved one, one recovered from slack) can get another event's message.
+    ///
     /// This slows rendering down, most of all through the record API ([`EvtxParser::records`]
     /// and the like), which then builds each record's tree to add the element.
     pub fn mta(mut self, mta: Option<Arc<MtaFile>>) -> Self {
@@ -600,33 +611,39 @@ impl<T: ReadSeek> EvtxParser<T> {
         &self.header
     }
 
-    /// Allocate a new chunk from the given data, at the offset expected by `chunk_number`.
-    /// If the read chunk contains valid data, an `Ok(Some(EvtxChunkData))` will be returned.
-    /// If the read chunk contains invalid data (bad magic, bad checksum when `validate_checksum` is set to true),
-    /// of if not enough data can be read (e.g. because we reached EOF), an `Err` is returned.
-    /// If the read chunk is empty, `Ok(None)` will be returned.
+    /// Read the chunk at the offset expected by `chunk_number`.
+    /// If it holds data, an `Ok(Some(EvtxChunkData))` is returned. That goes for a last chunk
+    /// that the end of the file cuts off too, as long as its header is whole: its data is then
+    /// shorter than a chunk, and the records that fit are read.
+    /// If it is invalid (bad magic, bad checksum when `validate_checksum` is set to true), if
+    /// it can't be read, or if the file ends before the end of its header, an `Err` is returned.
+    /// If the chunk is empty, `Ok(None)` is returned.
     fn allocate_chunk(
         data: &mut T,
         chunk_number: u64,
         validate_checksum: bool,
     ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
-        let chunk_offset = EVTX_FILE_HEADER_SIZE + chunk_number as usize * EVTX_CHUNK_SIZE;
+        // No file reaches an offset that doesn't fit.
+        let chunk_offset = chunk_offset(chunk_number)
+            .ok_or_else(|| EvtxError::chunk(chunk_number, ChunkError::IncompleteChunk))?;
 
         trace!(
             "Offset `0x{:08x} ({})` - Reading chunk number `{}`",
             chunk_offset, chunk_offset, chunk_number
         );
 
-        data.seek(SeekFrom::Start(chunk_offset as u64))
+        data.seek(SeekFrom::Start(chunk_offset))
             .map_err(|e| EvtxError::chunk(chunk_number, ChunkError::FailedToSeekToChunk(e)))?;
 
+        // The end of the file is a short read, not an error: an error here is the reader's
+        // (a disk that can't be read, an exception from a Python file object).
         let amount_read = data
             .take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut chunk_data)
-            .map_err(|_| EvtxError::chunk(chunk_number, ChunkError::IncompleteChunk))?;
+            .map_err(|e| EvtxError::chunk(chunk_number, ChunkError::FailedToReadChunk(e)))?;
 
-        if amount_read != EVTX_CHUNK_SIZE {
+        if amount_read < EVTX_CHUNK_HEADER_SIZE {
             return Err(EvtxError::chunk(chunk_number, ChunkError::IncompleteChunk));
         }
 
@@ -638,6 +655,12 @@ impl<T: ReadSeek> EvtxParser<T> {
         let mut chunk = EvtxChunkData::new(chunk_data, validate_checksum)
             .map_err(|e| EvtxError::chunk(chunk_number, e))?;
         chunk.number = Some(chunk_number);
+        if amount_read < EVTX_CHUNK_SIZE {
+            warn!(
+                "Chunk {chunk_number} is cut off by the end of the file after {amount_read} of \
+                 its {EVTX_CHUNK_SIZE} bytes; reading the records that fit"
+            );
+        }
         Ok(Some(chunk))
     }
 
@@ -659,9 +682,18 @@ impl<T: ReadSeek> EvtxParser<T> {
                 self.config.validate_checksums,
             ) {
                 Err(err) => {
-                    // We try to read past the `chunk_count` to allow for dirty files.
-                    // But if we failed, it means we really are at the end of the file.
-                    if chunk_number >= self.calculated_chunk_count {
+                    // Past the last whole chunk there is a cut-off chunk, which is read like
+                    // the others, or the end of the file, or bytes that aren't a chunk.
+                    let not_a_chunk = matches!(
+                        &err,
+                        EvtxError::FailedToParseChunk { source, .. } if matches!(
+                            **source,
+                            ChunkError::IncompleteChunk | ChunkError::FailedToParseChunkHeader(_)
+                        )
+                    );
+                    let whole_chunks = self.calculated_chunk_count;
+                    if chunk_number > whole_chunks || (chunk_number == whole_chunks && not_a_chunk)
+                    {
                         return None;
                     } else {
                         return Some((Err(err), chunk_number));
@@ -709,8 +741,11 @@ impl<T: ReadSeek> EvtxParser<T> {
     fn oldest_chunk(&mut self) -> u64 {
         let mut oldest = (u64::MAX, 0);
         let mut header = [0; EVTX_CHUNK_HEADER_SIZE];
-        for chunk_number in 0..self.calculated_chunk_count {
-            let offset = EVTX_FILE_HEADER_SIZE as u64 + chunk_number * EVTX_CHUNK_SIZE as u64;
+        // One more than the whole chunks, for a last chunk that the end of the file cuts off.
+        for chunk_number in 0..=self.calculated_chunk_count {
+            let Some(offset) = chunk_offset(chunk_number) else {
+                break;
+            };
             if self.data.seek(SeekFrom::Start(offset)).is_err()
                 || self.data.read_exact(&mut header).is_err()
             {
@@ -778,22 +813,17 @@ impl<T: ReadSeek> EvtxParser<T> {
                     };
                 }
             };
-            match EvtxChunk::new_with_arena(
+            let mut chunk = EvtxChunk::new_with_arena(
                 &chunk_data.data,
                 &chunk_data.header,
                 Arc::clone(&settings),
                 arena,
                 Arc::clone(&program_store),
                 Some(chunk_number),
-            ) {
-                Err(err) => ChunkBatch {
-                    payload: on_err(EvtxError::chunk(chunk_number, err)),
-                    arena: Bump::new(),
-                },
-                Ok(mut chunk) => ChunkBatch {
-                    payload: f(&mut chunk),
-                    arena: chunk.arena,
-                },
+            );
+            ChunkBatch {
+                payload: f(&mut chunk),
+                arena: chunk.arena,
             }
         };
 
@@ -1131,6 +1161,182 @@ mod tests {
         let mut intact = EvtxParser::from_buffer(evtx_file.to_vec()).unwrap();
         assert!(intact.header().validate_checksum());
         assert_eq!(records, intact.records().filter(Result::is_ok).count());
+    }
+
+    /// `security.evtx` cut `cut` bytes short of the end of its last chunk with records (its
+    /// 26th, which holds records 2202 to 2261): the IDs of the records read, and the errors.
+    fn records_of_cut_off_log(cut: usize, settings: ParserSettings) -> (Vec<u64>, Vec<EvtxError>) {
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let end = EVTX_FILE_HEADER_SIZE + 26 * EVTX_CHUNK_SIZE;
+        let mut parser = EvtxParser::from_buffer(evtx_file[..end - cut].to_vec())
+            .unwrap()
+            .with_configuration(settings);
+        let (mut ids, mut errors) = (Vec::new(), Vec::new());
+        for record in parser.records() {
+            match record {
+                Ok(record) => ids.push(record.event_record_id),
+                Err(error) => errors.push(error),
+            }
+        }
+        (ids, errors)
+    }
+
+    #[test]
+    fn last_chunk_cut_off_in_its_free_space_is_read() {
+        ensure_env_logger_initialized();
+        for settings in [
+            ParserSettings::new(),
+            // What is left holds all that the chunk's CRC32s cover.
+            ParserSettings::new().validate_checksums(true),
+            ParserSettings::new().recover_records(true),
+        ] {
+            let (ids, errors) = records_of_cut_off_log(1000, settings);
+            assert!(errors.is_empty(), "{errors:?}");
+            assert_eq!(ids, (1..=2261).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn last_chunk_cut_off_in_its_records_is_read_up_to_the_cut() {
+        ensure_env_logger_initialized();
+        let (ids, errors) = records_of_cut_off_log(40_000, ParserSettings::new());
+        let last = *ids.last().unwrap();
+        assert!((2202..2261).contains(&last), "{last}");
+        assert_eq!(ids, (1..=last).collect::<Vec<_>>());
+        // The record that the end of the file cuts off.
+        let [error] = &errors[..] else {
+            panic!("{errors:?}")
+        };
+        assert!(
+            matches!(
+                error,
+                EvtxError::FailedToReadRecordAt {
+                    chunk: Some(25),
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+
+        // The records' CRC32 covers bytes that are gone.
+        let settings = ParserSettings::new().validate_checksums(true);
+        let (ids, errors) = records_of_cut_off_log(40_000, settings);
+        assert_eq!(ids, (1..=2201).collect::<Vec<_>>());
+        assert!(
+            matches!(
+                &errors[..],
+                [EvtxError::FailedToParseChunk { chunk_id: 25, source }]
+                    if matches!(**source, ChunkError::InvalidFreeSpaceOffset { .. })
+            ),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn last_chunk_cut_off_between_two_records_reports_the_loss() {
+        ensure_env_logger_initialized();
+        // Record 2232 starts 25,656 bytes into the chunk.
+        let (ids, errors) = records_of_cut_off_log(EVTX_CHUNK_SIZE - 25_656, ParserSettings::new());
+        assert_eq!(ids, (1..=2231).collect::<Vec<_>>());
+        assert!(
+            matches!(
+                &errors[..],
+                [EvtxError::FailedToReadRecordAt {
+                    chunk: Some(25),
+                    offset: 25_656,
+                    ..
+                }]
+            ),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn last_chunk_cut_off_in_its_header_is_left_out() {
+        ensure_env_logger_initialized();
+        for cut in [EVTX_CHUNK_SIZE - 511, EVTX_CHUNK_SIZE - 1] {
+            let (ids, errors) = records_of_cut_off_log(cut, ParserSettings::new());
+            assert!(errors.is_empty(), "{errors:?}");
+            assert_eq!(ids, (1..=2201).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn wrapped_log_with_a_cut_off_last_chunk_starts_at_its_oldest_chunk() {
+        ensure_env_logger_initialized();
+        // The first two chunks of security.evtx in reverse order, the second cut off in its
+        // free space: the oldest records are in the chunk that isn't whole.
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let chunk = |n: usize| {
+            let start = EVTX_FILE_HEADER_SIZE + n * EVTX_CHUNK_SIZE;
+            &evtx_file[start..start + EVTX_CHUNK_SIZE]
+        };
+        let mut wrapped = evtx_file[..EVTX_FILE_HEADER_SIZE].to_vec();
+        wrapped.extend_from_slice(chunk(1));
+        wrapped.extend_from_slice(&chunk(0)[..EVTX_CHUNK_SIZE - 100]);
+
+        let mut parser = EvtxParser::from_buffer(wrapped).unwrap();
+        let ids: Vec<_> = parser
+            .records()
+            .map(|record| record.unwrap().event_record_id)
+            .collect();
+        assert_eq!(ids.len(), 177);
+        assert!(ids.is_sorted(), "{ids:?}");
+        assert_eq!(ids[0], 1);
+    }
+
+    #[test]
+    fn read_errors_are_reported_as_they_are() {
+        /// Fails the reads of the second chunk's records.
+        struct FailingReader(Cursor<Vec<u8>>);
+        impl Read for FailingReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                // After the chunk's header, which finding the oldest chunk reads.
+                let records = EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE + EVTX_CHUNK_HEADER_SIZE;
+                let end = EVTX_FILE_HEADER_SIZE + 2 * EVTX_CHUNK_SIZE;
+                let position = self.0.position() as usize;
+                if (records..end).contains(&position) {
+                    return Err(io::Error::new(io::ErrorKind::PermissionDenied, "no entry"));
+                }
+                // A read never runs into those bytes from before them.
+                let room = records.checked_sub(position).unwrap_or(buf.len());
+                let len = buf.len().min(room);
+                self.0.read(&mut buf[..len])
+            }
+        }
+        impl Seek for FailingReader {
+            fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+
+        ensure_env_logger_initialized();
+        let evtx_file = include_bytes!("../samples/security.evtx");
+        let reader = FailingReader(Cursor::new(evtx_file.to_vec()));
+        let mut parser = EvtxParser::from_read_seek(reader).unwrap();
+        let (mut records, mut errors) = (0, Vec::new());
+        for record in parser.records() {
+            match record {
+                Ok(_) => records += 1,
+                Err(error) => errors.push(error),
+            }
+        }
+        // Every record but the second chunk's (92 to 177).
+        assert_eq!(records, 2261 - 86);
+        let [
+            EvtxError::FailedToParseChunk {
+                chunk_id: 1,
+                source,
+            },
+        ] = &errors[..]
+        else {
+            panic!("{errors:?}")
+        };
+        let ChunkError::FailedToReadChunk(source) = &**source else {
+            panic!("{source:?}")
+        };
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(source.to_string(), "no entry");
     }
 
     #[test]

@@ -213,29 +213,6 @@ impl<'a> ByteCursor<'a> {
             .map_err(|_| invalid_data(what, start as u64))
     }
 
-    /// Read UTF-16 code units until a NUL (0x0000) code unit is encountered.
-    pub(crate) fn null_terminated_utf16_string(
-        &mut self,
-        what: &'static str,
-    ) -> DeserializationResult<Utf16LeSlice<'a>> {
-        let start = self.pos;
-        loop {
-            let cu = bytes::read_u16_le_r(self.buf, self.pos, what)?;
-            self.pos += 2;
-            if cu == 0 {
-                break;
-            }
-        }
-
-        let end = self.pos.saturating_sub(2);
-        let bytes = self
-            .buf
-            .get(start..end)
-            .ok_or_else(|| bytes::truncated(what, start, 2, self.buf.len()))?;
-
-        Ok(Utf16LeSlice::new(bytes, bytes.len() / 2))
-    }
-
     /// Read a length-prefixed UTF-16LE string and decode into a bump string.
     pub(crate) fn len_prefixed_utf16_string_bump(
         &mut self,

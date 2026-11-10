@@ -21,6 +21,8 @@ pub(crate) enum StringEscapeMode {
     Json,
     /// Escape string content for embedding in XML text/attribute contexts.
     Xml { in_attribute: bool },
+    /// The string as it is, for text that isn't going into a document.
+    Plain,
 }
 
 /// Stateful BinXmlValue formatter (owns reusable scratch buffers).
@@ -289,6 +291,9 @@ impl ValueRenderer {
                 utf16_simd::write_xml_utf16le(writer, bytes, units, in_attribute)
                     .map_err(EvtxError::from)
             }
+            StringEscapeMode::Plain => {
+                utf16_simd::write_utf16le_raw(writer, bytes, units).map_err(EvtxError::from)
+            }
         }
     }
 
@@ -306,6 +311,7 @@ impl ValueRenderer {
             StringEscapeMode::Xml { in_attribute } => {
                 self.write_xml_escaped_str(writer, value, in_attribute)
             }
+            StringEscapeMode::Plain => self.write_bytes(writer, value.as_bytes()),
         }
     }
 

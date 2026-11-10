@@ -119,7 +119,7 @@ impl MessageTable {
                     .ok_or(malformed("entry text runs past the table"))?;
                 // `MESSAGE_RESOURCE_UNICODE`, then `MESSAGE_RESOURCE_UTF8`.
                 let text = if flags & 1 != 0 {
-                    String::from(decode_utf16(text))
+                    decode_utf16(text)
                 } else if flags & 2 != 0 {
                     String::from_utf8_lossy(text).into_owned()
                 } else {
@@ -929,9 +929,7 @@ fn node_text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
             }
             Node::Text(Text::Utf16(s))
             | Node::CData(Text::Utf16(s))
-            | Node::Value(BinXmlValue::StringType(s)) => {
-                Cow::Owned(decode_utf16(s.as_bytes()).into())
-            }
+            | Node::Value(BinXmlValue::StringType(s)) => Cow::Owned(decode_utf16(s.as_bytes())),
             Node::CData(Text::Utf8(s)) => Cow::Borrowed(*s),
             Node::Value(value) => Cow::Owned(value.to_string()),
             Node::CharRef(c) => Cow::Owned(char::from_u32(u32::from(*c)).unwrap_or('_').into()),
