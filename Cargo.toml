@@ -32,6 +32,7 @@ anyhow = { version = "1", optional = true }
 simplelog = { version = "0.12.0", optional = true }
 clap = { version = "4", optional = true }
 dialoguer = { version = "0.12", optional = true }
+same-file = { version = "1", optional = true }
 indoc = { version = "2", optional = true }
 tempfile = { version = "3.3.0", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
@@ -58,7 +59,7 @@ rpmalloc = { version = "0.2.2", optional = true }
 [features]
 default = ["multithreading", "evtx_dump"]
 fast-alloc = ["tikv-jemallocator", "rpmalloc"]
-evtx_dump = ["simplelog", "clap", "dialoguer", "indoc", "anyhow", "tempfile", "dep:serde", "wevt_templates"]
+evtx_dump = ["simplelog", "clap", "dialoguer", "same-file", "indoc", "anyhow", "tempfile", "dep:serde", "wevt_templates"]
 multithreading = ["rayon"]
 # Enable WEVT_TEMPLATE extraction helpers (used by `evtx_dump extract-wevt-templates`).
 wevt_templates = ["glob", "goblin"]

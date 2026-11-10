@@ -38,6 +38,14 @@ and this project adheres to
 
 ### Fixed
 
+- `evtx_dump -f <file>` no longer empties an existing output file when the run can't start.
+  The file was created before the input was opened, so a mistyped input path, an input that
+  isn't an EVTX file, or a `--wevt-cache` or `--mta` file that failed to load, left a
+  zero-byte file where the last export had been. It is now created once all of them have
+  been read.
+- `evtx_dump -f` refuses an output file that is the input file, the `--wevt-cache` file or the
+  `--mta` file, under any name (another spelling of the path, a symlink, a hard link). It
+  used to empty the log before reading it.
 - A log whose last chunk is cut off by the end of the file (an interrupted copy, a file
   recovered in part) lost that chunk's records without an error or a warning: `security.evtx`
   short of 1,000 bytes of its last chunk's free space gave 2,201 of its 2,261 records. The

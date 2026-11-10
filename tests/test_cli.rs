@@ -301,3 +301,77 @@ fn it_carves_chunks_from_raw_data() {
         .unwrap();
     assert_eq!(carved.stdout, intact.stdout);
 }
+
+/// Runs `evtx_dump -f <output> --no-confirm-overwrite <args>`, which must fail, and returns
+/// what it printed to stderr.
+fn failing_dump_to(output: &std::path::Path, args: &[&str]) -> String {
+    let mut cmd = Command::new(assert_cmd::cargo_bin!("evtx_dump"));
+    cmd.args(["-f", output.to_str().unwrap(), "--no-confirm-overwrite"]);
+    cmd.args(args);
+    let assert = cmd.assert().failure();
+    String::from_utf8_lossy(&assert.get_output().stderr).into_owned()
+}
+
+#[test]
+fn a_run_that_cannot_start_leaves_the_output_file_as_it_was() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
+    let d = tempdir().unwrap();
+    let output = d.as_ref().join("kept.xml");
+    let missing = d.as_ref().join("missing");
+    let missing = missing.to_str().unwrap();
+    let not_a_log = d.as_ref().join("not-a-log.evtx");
+    std::fs::write(&not_a_log, b"not an EVTX file").unwrap();
+    let sample = regular_sample();
+    let sample = sample.to_str().unwrap();
+
+    for args in [
+        // No input, an input that isn't a log, and side files that can't be loaded.
+        &[missing][..],
+        &[not_a_log.to_str().unwrap()],
+        &["--wevt-cache", missing, sample],
+        &["--mta", missing, sample],
+    ] {
+        std::fs::write(&output, b"precious").unwrap();
+        failing_dump_to(&output, args);
+        assert_eq!(std::fs::read(&output).unwrap(), b"precious", "{args:?}");
+    }
+}
+
+#[test]
+fn a_file_the_run_reads_is_refused_as_the_output_file() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
+    let d = tempdir().unwrap();
+    let log = d.as_ref().join("log.evtx");
+    std::fs::copy(regular_sample(), &log).unwrap();
+    let original = std::fs::read(&log).unwrap();
+    let log_arg = log.to_str().unwrap();
+
+    // The input under its own name, another spelling of it, and a hard link to it.
+    let other_spelling = d.as_ref().join(".").join("log.evtx");
+    let link = d.as_ref().join("link.evtx");
+    std::fs::hard_link(&log, &link).unwrap();
+    for output in [&log, &other_spelling, &link] {
+        let stderr = failing_dump_to(output, &[log_arg]);
+        assert!(stderr.contains("which this run reads"), "{stderr}");
+        assert!(std::fs::read(&log).unwrap() == original);
+    }
+
+    // The side files are refused before they are read, so they needn't be valid.
+    let side = d.as_ref().join("side-file");
+    for flag in ["--wevt-cache", "--mta"] {
+        std::fs::write(&side, b"precious").unwrap();
+        let stderr = failing_dump_to(&side, &[flag, side.to_str().unwrap(), log_arg]);
+        assert!(stderr.contains("which this run reads"), "{stderr}");
+        assert_eq!(std::fs::read(&side).unwrap(), b"precious");
+    }
+}
+
+#[test]
+fn a_bad_output_path_fails_before_the_input_is_read() {
+    let _guard = CLI_TEST_LOCK.lock().unwrap();
+    let d = tempdir().unwrap();
+    // The input doesn't exist, and the complaint is about the output.
+    let missing = d.as_ref().join("missing.evtx");
+    let stderr = failing_dump_to(d.as_ref(), &[missing.to_str().unwrap()]);
+    assert!(stderr.contains("There is a directory at"), "{stderr}");
+}
