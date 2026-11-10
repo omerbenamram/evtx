@@ -533,15 +533,17 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
             name: name.to_string(),
             offset,
         };
+        // Chunk streams reference the string table, whose names were checked as they were
+        // read.
+        let listed = self
+            .src
+            .chunk
+            .and_then(|chunk| chunk.string_cache.get_cached_string(offset));
+        if let Some(name) = listed {
+            return Name::from_table(name).ok_or_else(|| not_a_name(name.as_str()));
+        }
         let name = match self.src.chunk {
-            // Chunk streams reference the string table, whose names were checked as they
-            // were read.
-            Some(chunk) => match chunk.string_cache.get_cached_string(offset) {
-                Some(name) => {
-                    return Name::from_table(name).ok_or_else(|| not_a_name(name.as_str()));
-                }
-                None => read_string_at(offset, chunk, self.src.bump),
-            },
+            Some(chunk) => read_string_at(offset, chunk, self.src.bump),
             // WEVT templates inline names.
             None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
         }?;
