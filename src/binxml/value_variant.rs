@@ -436,14 +436,10 @@ impl<'a> BinXmlValue<'a> {
 
             // The array types are always sized.
             (BinXmlValueType::StringArrayType, Some(sz)) => {
-                let size_usize = usize::from(sz);
-                if size_usize == 0 {
-                    return Ok(BinXmlValue::StringArrayType(&[]));
-                }
                 // NUL-terminated strings, one after the other, within the value's own bytes. A
-                // last string without its NUL still counts.
-                let raw = cursor.take_bytes(size_usize & !1, "string_array")?;
-                cursor.take_bytes(size_usize & 1, "string_array")?;
+                // last string without its NUL still counts, and an odd last byte doesn't.
+                let raw = cursor.take_bytes(usize::from(sz), "string_array")?;
+                let raw = &raw[..raw.len() & !1];
                 let mut out = bumpalo::collections::Vec::new_in(arena);
                 let mut start = 0;
                 let item =

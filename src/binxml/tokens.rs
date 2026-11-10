@@ -10,6 +10,7 @@ use crate::evtx_chunk::EvtxChunk;
 use crate::utils::{ByteCursor, Utf16LeSlice};
 
 use log::{trace, warn};
+use std::cmp::Ordering;
 
 use bumpalo::Bump;
 
@@ -306,29 +307,35 @@ pub(crate) fn read_template_values_cursor<'a>(
         let current_position = cursor.position();
         let expected_position = position_before_reading_value + u64::from(descriptor.size);
 
-        if current_position > expected_position && descriptor.size == 0 {
-            // A value of a type with a width that has no bytes is no value, as a string, an
-            // array or a BinXML fragment with none is. What was read was the next value's.
-            value = BinXmlValue::NullType;
-            cursor.set_pos_u64(expected_position, "empty template value")?;
-        } else if current_position > expected_position {
-            // The value took more bytes than are its own: the rest were the next values'. It
-            // isn't what its descriptor says, and nothing after it is where it should be.
-            return Err(DeserializationError::Truncated {
-                what: "template value",
-                offset: position_before_reading_value,
-                need: (current_position - position_before_reading_value) as usize,
-                have: usize::from(descriptor.size),
-            });
-        }
-        if current_position < expected_position {
-            // This sometimes occurs with dirty samples, but it's usually still possible to
-            // recover the rest of the record: the next value starts after this one's bytes.
-            warn!(
-                "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
-                current_position, expected_position, &descriptor
-            );
-            cursor.set_pos_u64(expected_position, "Broken record")?;
+        match current_position.cmp(&expected_position) {
+            Ordering::Equal => {}
+            Ordering::Greater if descriptor.size == 0 => {
+                // A value of a type with a width that has no bytes is no value, as a string,
+                // an array or a BinXML fragment with none is. What was read was the next
+                // value's.
+                value = BinXmlValue::NullType;
+                cursor.set_pos_u64(expected_position, "empty template value")?;
+            }
+            Ordering::Greater => {
+                // The value took more bytes than are its own: the rest were the next values'.
+                // It isn't what its descriptor says.
+                return Err(DeserializationError::Truncated {
+                    what: "template value",
+                    offset: position_before_reading_value,
+                    need: (current_position - position_before_reading_value) as usize,
+                    have: usize::from(descriptor.size),
+                });
+            }
+            Ordering::Less => {
+                // This sometimes occurs with dirty samples, but it's usually still possible
+                // to recover the rest of the record: the next value starts after this one's
+                // bytes.
+                warn!(
+                    "Read incorrect amount of data, cursor position is at {}, but should have ended up at {}, last descriptor was {:?}.",
+                    current_position, expected_position, &descriptor
+                );
+                cursor.set_pos_u64(expected_position, "Broken record")?;
+            }
         }
         values.push(value);
     }
