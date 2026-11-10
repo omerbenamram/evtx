@@ -82,22 +82,19 @@ impl EvtxChunkData {
 
     /// Require that the settings live at least as long as &self.
     pub fn parse(&mut self, settings: Arc<ParserSettings>) -> EvtxChunkResult<EvtxChunk<'_>> {
-        EvtxChunk::new_with_arena(
+        Ok(EvtxChunk::new_with_arena(
             &self.data,
             &self.header,
             settings,
             Bump::new(),
             Default::default(),
             self.number,
-        )
+        ))
     }
 
     /// Computed CRC32 of the header (bytes 0..120 and 128..512).
     fn header_crc(&self) -> u32 {
-        let mut hasher = crc32fast::Hasher::new();
-        hasher.update(&self.data[..120]);
-        hasher.update(&self.data[128..512]);
-        hasher.finalize()
+        chunk_header_crc(&self.data)
     }
 
     pub fn validate_data_checksum(&self) -> bool {
@@ -160,23 +157,25 @@ pub struct EvtxChunk<'chunk> {
 }
 
 impl<'chunk> EvtxChunk<'chunk> {
-    /// Will fail if the data starts with an invalid evtx chunk header.
+    /// A chunk over `data` and its already parsed `header`. It always succeeds, and returns a
+    /// `Result` only because it used to fail on a damaged string table. That now costs only
+    /// the cache of the table's names, which records then read where they are.
     pub fn new(
         data: &'chunk [u8],
         header: &'chunk EvtxChunkHeader,
         settings: Arc<ParserSettings>,
     ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
-        EvtxChunk::new_with_arena(
+        Ok(EvtxChunk::new_with_arena(
             data,
             header,
             settings,
             Bump::new(),
             Default::default(),
             None,
-        )
+        ))
     }
 
-    /// Will fail if the data starts with an invalid evtx chunk header.
+    /// See [`EvtxChunk::new`].
     ///
     /// The provided arena is reset before use, so any previously allocated chunk-scoped
     /// data is cleared while retaining the bump capacity.
@@ -187,14 +186,13 @@ impl<'chunk> EvtxChunk<'chunk> {
         mut arena: Bump,
         program_store: Arc<crate::binxml::compiled::ProgramStore>,
         number: Option<u64>,
-    ) -> EvtxChunkResult<EvtxChunk<'chunk>> {
+    ) -> EvtxChunk<'chunk> {
         arena.reset();
 
         info!("Initializing string cache");
-        let string_cache = StringCache::populate(data, &header.strings_offsets)
-            .map_err(|e| ChunkError::FailedToBuildStringCache { source: e })?;
+        let string_cache = StringCache::populate(data, &header.strings_offsets);
 
-        Ok(EvtxChunk {
+        EvtxChunk {
             header,
             data,
             string_cache,
@@ -204,7 +202,7 @@ impl<'chunk> EvtxChunk<'chunk> {
             render_budget: Default::default(),
             program_store,
             number,
-        })
+        }
     }
 
     /// Iterate raw record windows (header walk only, no content build).
@@ -344,6 +342,15 @@ impl<'a> Iterator for IterRawRecords<'a> {
             let offset = self.walk?;
             if offset >= self.live_end() {
                 self.skip_to(offset, None);
+                // The chunk's data ends where its header says more records are: the end of
+                // the file cut the chunk off between two records.
+                if self.cut_off()
+                    && offset < u64::from(self.chunk.header.free_space_offset)
+                    && let Err(err) =
+                        EvtxRecordHeader::from_bytes_at(self.chunk.data, offset as usize)
+                {
+                    return Some(Err(self.unreadable_record(offset, err.into())));
+                }
                 continue;
             }
             match self.record_at(offset, false) {
@@ -361,12 +368,8 @@ impl<'a> Iterator for IterRawRecords<'a> {
                     // Zeroes where a record should start are where the free space really
                     // starts when the header's `free_space_offset` is too large (issue
                     // #197), unless live records follow them.
-                    if next.is_some() || !is_blank(&err) {
-                        return Some(Err(EvtxError::FailedToReadRecordAt {
-                            chunk: self.chunk.number,
-                            offset,
-                            source: Box::new(err),
-                        }));
+                    if next.is_some() || !self.is_blank(&err, offset) {
+                        return Some(Err(self.unreadable_record(offset, err)));
                     }
                 }
             }
@@ -374,19 +377,40 @@ impl<'a> Iterator for IterRawRecords<'a> {
     }
 }
 
-/// A zeroed or truncated record header.
-fn is_blank(err: &EvtxError) -> bool {
-    matches!(
-        err,
-        EvtxError::DeserializationError(
-            DeserializationError::InvalidEvtxRecordHeaderMagic {
-                magic: [0, 0, 0, 0]
-            } | DeserializationError::Truncated { .. }
-        )
-    )
-}
-
 impl<'a> IterRawRecords<'a> {
+    /// The error for a record at `offset` that can't be read.
+    #[cold]
+    fn unreadable_record(&self, offset: u64, source: EvtxError) -> EvtxError {
+        EvtxError::FailedToReadRecordAt {
+            chunk: self.chunk.number,
+            offset,
+            source: Box::new(source),
+        }
+    }
+
+    /// Whether the chunk's data is shorter than a chunk: the end of its file cut it off.
+    fn cut_off(&self) -> bool {
+        self.chunk.data.len() < crate::evtx_parser::EVTX_CHUNK_SIZE
+    }
+
+    /// A zeroed record header, or one that the end of the chunk leaves no room for. In a chunk
+    /// that the end of its file cut off, a header without room is a record lost, unless what
+    /// is left of it is zeroes.
+    fn is_blank(&self, err: &EvtxError, offset: u64) -> bool {
+        match err {
+            EvtxError::DeserializationError(
+                DeserializationError::InvalidEvtxRecordHeaderMagic {
+                    magic: [0, 0, 0, 0],
+                },
+            ) => true,
+            EvtxError::DeserializationError(DeserializationError::Truncated { .. }) => {
+                let rest = self.chunk.data.get(offset as usize..).unwrap_or_default();
+                !self.cut_off() || rest.iter().all(|&byte| byte == 0)
+            }
+            _ => false,
+        }
+    }
+
     /// End of the live area: the free space, or the chunk's end when it says more.
     fn live_end(&self) -> u64 {
         u64::from(self.chunk.header.free_space_offset).min(self.chunk.data.len() as u64)
@@ -564,6 +588,15 @@ impl EvtxChunkHeader {
     }
 }
 
+/// The CRC32 of a chunk's header, the one its `header_chunk_checksum` holds: bytes 0..120 and
+/// 128..512 of the chunk.
+pub(crate) fn chunk_header_crc(chunk: &[u8]) -> u32 {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(&chunk[..120]);
+    hasher.update(&chunk[128..EVTX_CHUNK_HEADER_SIZE]);
+    hasher.finalize()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,6 +766,41 @@ mod tests {
         };
 
         assert_eq!(corrupted_count, baseline_count);
+    }
+
+    #[test]
+    fn records_render_the_same_with_a_damaged_string_table() {
+        let (original, _) = security_chunk();
+        let render = |data: &[u8]| -> Vec<String> {
+            let mut chunk_data = EvtxChunkData::new(data.to_vec(), false).unwrap();
+            let mut chunk = chunk_data.parse(Arc::new(ParserSettings::new())).unwrap();
+            chunk
+                .iter()
+                .map(|record| record.unwrap().into_xml().unwrap().data)
+                .collect()
+        };
+        let expected = render(&original);
+        assert_eq!(expected.len(), 91);
+
+        // Every bucket of the string table points past the end of the chunk, at a name cut off
+        // by it, or at the first record instead of a name. The records name their strings by
+        // offset, so they still resolve.
+        for bad_offset in [
+            u32::MAX,
+            EVTX_CHUNK_SIZE as u32 - 3,
+            EVTX_CHUNK_HEADER_SIZE as u32,
+        ] {
+            let mut data = original.clone();
+            let mut buckets = 0;
+            for bucket in data[128..384].as_chunks_mut::<4>().0 {
+                if *bucket != [0; 4] {
+                    bucket.copy_from_slice(&bad_offset.to_le_bytes());
+                    buckets += 1;
+                }
+            }
+            assert!(buckets > 0);
+            assert_eq!(render(&data), expected);
+        }
     }
 
     /// Chunk 0 of security.evtx (records 1 to 91), and the offset of each record by ID.

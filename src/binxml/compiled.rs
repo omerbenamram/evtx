@@ -18,11 +18,13 @@ use crate::ChunkOffset;
 use crate::ParserSettings;
 use crate::binxml::ir::{
     IrTemplateCache, MAX_ELEMENT_DEPTH, TEMPLATE_DEFINITION_HEADER_SIZE, TemplateContent,
-    ValidatedValue, binxml_slice_offset_in, build_fragment_from_binxml_bytes,
+    ValidatedValue, binxml_slice_offset_in, build_fragment_from_binxml_bytes, element_in_attr,
     read_template_definition_header_at, template_body_at,
 };
 use crate::binxml::name::read_name_link;
-use crate::binxml::tokens::{Stream, TokenSink, ends_stream, single_instance_offset, walk_tokens};
+use crate::binxml::tokens::{
+    Stream, TokenSink, ends_stream, single_instance_offset, starts_with_element, walk_tokens,
+};
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType, decode_ansi_value, value_ty};
 use crate::err::{EvtxError, Result};
@@ -248,6 +250,7 @@ type SlotRange = (u32, u32);
 /// time) and the materialized layer (per record) so the rule cannot drift.
 /// The first names go in a list, as many as real elements have, the rest in a
 /// map: a crafted element can have thousands of children of as many names.
+#[derive(Default)]
 struct NameCounts<K> {
     list: Vec<(K, u32)>,
     map: Option<AHashMap<K, u32>>,
@@ -265,6 +268,7 @@ impl<K: Copy + Eq + std::hash::Hash> NameCounts<K> {
     }
 
     /// 0 the first time `name` is seen (no suffix), then 1, 2, … for repeats.
+    #[inline(always)]
     fn next_suffix(&mut self, name: K) -> u32 {
         let count = if let Some(at) = self.list.iter().position(|(seen, _)| *seen == name) {
             &mut self.list[at].1
@@ -282,6 +286,19 @@ impl<K: Copy + Eq + std::hash::Hash> NameCounts<K> {
         *count - 1
     }
 
+    /// How many times `name` was seen.
+    fn count(&self, name: K) -> u32 {
+        match self.list.iter().find(|(seen, _)| *seen == name) {
+            Some((_, count)) => *count,
+            None => self
+                .map
+                .as_ref()
+                .and_then(|map| map.get(&name))
+                .copied()
+                .unwrap_or(0),
+        }
+    }
+
     /// Each name seen, with how many times.
     fn iter(&self) -> impl Iterator<Item = (K, u32)> + '_ {
         let map = self.map.iter().flatten();
@@ -290,6 +307,129 @@ impl<K: Copy + Eq + std::hash::Hash> NameCounts<K> {
             .copied()
             .chain(map.map(|(&name, &count)| (name, count)))
     }
+}
+
+/// The keys of one JSON object, so that no two members share one: an object whose members
+/// repeat a key reads as fewer members than it has. Shared by the JSON compiler and the
+/// materialized layer so the rule cannot drift.
+///
+/// A name that repeats is numbered (`D`, `D_1`, `D_2`). A numbered key can be a name too: of
+/// `D`, `D` and `D_1`, the last can't be `D_1` again, and is `D_1_1`. So a name takes its
+/// next number until its key is new. (Its numbers only go up: one that was passed over is
+/// not tried again.)
+///
+/// Counting each name is enough until a key could be made two ways, which takes a name that
+/// ends as a made key does (`_1`, `_attributes`) or a key that isn't an element's name. From
+/// then on each key written is kept.
+struct Keys<'k> {
+    names: NameCounts<&'k [u8]>,
+    /// Whether a member counted in `names` has an attributes key.
+    attributes: bool,
+    kept: Option<Box<KeptKeys>>,
+}
+
+impl<'k> Keys<'k> {
+    fn new() -> Self {
+        Keys {
+            names: NameCounts::new(),
+            attributes: false,
+            kept: None,
+        }
+    }
+
+    /// The number to write after the element name `name`, so that `name_N` isn't a key of the
+    /// object yet, nor `name_N_attributes` when the member has that key too (in
+    /// separate-attributes mode); 0 for no number. Those keys are the object's from here on.
+    #[inline(always)]
+    fn suffix(&mut self, name: &'k [u8], attributes: bool) -> u32 {
+        if self.kept.is_none() && !ends_as_a_made_key(name) {
+            self.attributes |= attributes;
+            return self.names.next_suffix(name);
+        }
+        self.suffix_of_any(name, attributes)
+    }
+
+    /// `suffix` for a key of any kind, `name` being its bytes as written.
+    fn suffix_of_any(&mut self, name: &[u8], attributes: bool) -> u32 {
+        let (names, any_attributes) = (&self.names, self.attributes);
+        let kept = self.kept.get_or_insert_with(|| {
+            // The keys so far: each name, numbered as often as it repeated. Which of them
+            // have an attributes key isn't known, so all are taken to.
+            let mut kept = Box::new(KeptKeys::default());
+            for (name, count) in names.iter() {
+                for _ in 0..count {
+                    kept.suffix(name, any_attributes);
+                }
+            }
+            kept
+        });
+        kept.suffix(name, attributes)
+    }
+
+    /// Keeps `key`, which the object has under that name whatever else it holds.
+    fn reserve(&mut self, key: &[u8]) {
+        self.suffix_of_any(key, false);
+    }
+}
+
+/// The keys of an object, by their hashes. (Two keys with one hash would cost a key a number
+/// it didn't need, and nothing else.)
+#[derive(Default)]
+struct KeptKeys {
+    /// How many numbers each name has taken or passed over.
+    numbers: NameCounts<u64>,
+    seen: NameCounts<u64>,
+}
+
+impl KeptKeys {
+    const EMPTY: u64 = 0xcbf2_9ce4_8422_2325;
+
+    /// FNV-1a, a byte at a time: the hash of a key is the hash of its parts in turn.
+    fn hash(mut hash: u64, bytes: &[u8]) -> u64 {
+        for &byte in bytes {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    fn suffix(&mut self, name: &[u8], attributes: bool) -> u32 {
+        let name = Self::hash(Self::EMPTY, name);
+        loop {
+            let number = self.numbers.next_suffix(name);
+            let key = match number {
+                0 => name,
+                _ => {
+                    let mut digits = [0; 10];
+                    let mut at = digits.len();
+                    let mut left = number;
+                    while left > 0 {
+                        at -= 1;
+                        digits[at] = b'0' + (left % 10) as u8;
+                        left /= 10;
+                    }
+                    Self::hash(Self::hash(name, b"_"), &digits[at..])
+                }
+            };
+            let attributes = attributes.then(|| Self::hash(key, b"_attributes"));
+            if self.seen.count(key) > 0 || attributes.is_some_and(|key| self.seen.count(key) > 0) {
+                continue;
+            }
+            self.seen.next_suffix(key);
+            if let Some(key) = attributes {
+                self.seen.next_suffix(key);
+            }
+            return number;
+        }
+    }
+}
+
+/// Whether `name` ends as a key made from another name does: in `_` and digits, as a numbered
+/// key, or as the key of a member's attributes.
+#[inline(always)]
+fn ends_as_a_made_key(name: &[u8]) -> bool {
+    // Few names end in a digit or an `s`: the last byte settles the rest.
+    matches!(name.last(), Some(b'0'..=b'9' | b's'))
+        && (ends_in_a_number(name) || name.ends_with(b"_attributes"))
 }
 
 /// A `Data` element's name, the nodes of its `Name` attribute, for numbering the names that
@@ -347,34 +487,61 @@ impl std::hash::Hash for DataName<'_, '_> {
     }
 }
 
-/// Whether `element` is a data container whose `Data` children may share a name: its template
-/// repeats one, a substitution names one, or a substitution is a child, which can be `Data`.
-/// Records whose arena doesn't say so render without numbering names (see
-/// [`IrArena::repeated_names`]), since most never repeat one.
+/// Whether `element` is a data container whose named `Data` children may need a number to
+/// have a key of their own: its template repeats a name, a substitution names one, a
+/// substitution is a child, which can be `Data`, another element is a member beside them (a
+/// `Data` without a name or with other attributes is one), or a name isn't plain text, or
+/// starts as the keys `#attributes` and `#text` do. Records whose
+/// arena doesn't say so render without keeping their keys (see [`IrArena::repeated_names`]),
+/// since most never repeat one.
 pub(crate) fn data_names_may_repeat(arena: &IrArena<'_>, element: &Element<'_>) -> bool {
     if !is_data_container_name(element.name.as_str()) {
         return false;
     }
     let mut names = NameCounts::new();
+    let mut named = false;
+    let mut other_elements = false;
     for node in &element.children {
         let child = match node {
             Node::Placeholder(_) => return true,
             Node::Element(id) => arena.get(*id),
             _ => None,
         };
-        let Some(name) = child
-            .filter(|child| is_data_element_name(child.name.as_str()))
-            .and_then(data_name)
-        else {
+        let Some(child) = child else { continue };
+        if !is_data_element_name(child.name.as_str()) {
+            other_elements = true;
             continue;
+        }
+        // What the walk makes of a `Data` (see `JsonCompiler::named_data_plain`) depends on
+        // which of its attributes have text. Only the plain shapes are told apart here: a
+        // `Data` with no attributes, which is left out or written as an element, and one
+        // whose only attribute is its name. For any other, keys are kept.
+        let name = match &child.attrs[..] {
+            [] => {
+                other_elements = true;
+                continue;
+            }
+            [attr] if attr.name.as_str() == "Name" => &attr.value[..],
+            _ => return true,
         };
-        if name.iter().any(|n| matches!(n, Node::Placeholder(_)))
-            || names.next_suffix(DataName::new(name)) > 0
-        {
+        named = true;
+        let plain = match name {
+            // Unpaired surrogates all render as U+FFFD: two names can then be one key.
+            [Node::Text(Text::Utf16(text))] => {
+                let text = text.as_bytes();
+                !text.is_empty()
+                    && !text.starts_with(b"#\0")
+                    && !text
+                        .chunks_exact(2)
+                        .any(|unit| (0xd8..=0xdf).contains(&unit[1]))
+            }
+            _ => false,
+        };
+        if !plain || names.next_suffix(DataName::new(name)) > 0 {
             return true;
         }
     }
-    false
+    named && other_elements
 }
 
 /// A `Data` element's `Name` attribute: the nodes of its value.
@@ -386,8 +553,20 @@ fn data_name<'t, 'a>(element: &'t Element<'a>) -> Option<&'t [Node<'a>]> {
         .map(|a| &a.value[..])
 }
 
+/// What a `Data` child is in a container's named form, where a `Data` with a name is a member
+/// under that name, with its text for a value.
+enum NamedData<'t, 'a> {
+    /// The member `name: text`.
+    Named(&'t [Node<'a>]),
+    /// Left out: it has no name, no text and no attributes.
+    Nothing,
+    /// A `Data` the form would lose part of, one with text and no name or with attributes
+    /// beside its name: a member as any other element is, `Data: …`.
+    Element,
+}
+
 /// The object `JsonCompiler::element_body_plain` is writing.
-struct BodyPlain<'t, 'a> {
+struct BodyPlain<'t> {
     in_data_container: bool,
     /// One non-empty `Data[@Name]` selects the named form for the container's `Data`.
     should_flatten_named_data: bool,
@@ -395,8 +574,8 @@ struct BodyPlain<'t, 'a> {
     positional_data_count: usize,
     positional_data_emitted: bool,
     wrote_any: bool,
-    /// The names of the named `Data` members so far, to number repeats.
-    data_names: NameCounts<DataName<'t, 'a>>,
+    /// The keys of the object's members so far.
+    keys: Keys<'t>,
     /// The `Data` children left in the run the last named one began, written with it.
     skip: usize,
 }
@@ -525,6 +704,8 @@ pub(crate) struct XmlProgram {
     elem_slots: Vec<(u16, u16)>,
     /// Slots compiled as `XOp::Expand` (string arrays allowed).
     expand_slots: Vec<u16>,
+    /// Slots whose ops a guard op skips when it leaves their element out, sorted.
+    guarded_slots: Vec<u16>,
     root_name: Vec<u8>,
     system_fields: Option<SystemFields>,
 }
@@ -912,6 +1093,11 @@ pub(crate) trait TemplateProgram: Sized {
     fn expand_slots(&self) -> &[u16] {
         &[]
     }
+    /// Whether the executor may pass over `slot` without rendering it, because its element
+    /// is left out. Only asked where `ALLOW_GENERIC_FRAGS`.
+    fn may_skip(&self, _slot: u16) -> bool {
+        false
+    }
     /// The template's root element name.
     fn root_name(&self) -> &[u8];
     /// Where the program's records keep their `System` fields, when an `.MTA` file is set.
@@ -956,6 +1142,9 @@ impl TemplateProgram for XmlProgram {
     fn expand_slots(&self) -> &[u16] {
         &self.expand_slots
     }
+    fn may_skip(&self, slot: u16) -> bool {
+        self.guarded_slots.binary_search(&slot).is_ok()
+    }
     fn root_name(&self) -> &[u8] {
         &self.root_name
     }
@@ -986,6 +1175,7 @@ impl TemplateProgram for XmlProgram {
             + heap_size(&self.deps)
             + heap_size(&self.elem_slots)
             + heap_size(&self.expand_slots)
+            + heap_size(&self.guarded_slots)
             + heap_size(&self.root_name)
             + (self.system_fields.as_ref()).map_or(0, SystemFields::heap_size)
     }
@@ -1194,10 +1384,6 @@ fn unresolved_placeholder() -> EvtxError {
     model_err("unresolved placeholder in tree")
 }
 
-fn element_in_attr() -> EvtxError {
-    model_err("element node inside attribute value")
-}
-
 fn element_in_text() -> EvtxError {
     model_err("unexpected element node in text context")
 }
@@ -1226,6 +1412,18 @@ fn too_many_nodes() -> EvtxError {
 #[cold]
 fn chunk_spent() -> EvtxError {
     model_err("earlier records of the chunk spent its render budget")
+}
+
+/// What a reference to one of the five entities XML defines stands for.
+fn predefined_entity(name: &str) -> Option<&'static str> {
+    match name {
+        "quot" => Some("\""),
+        "apos" => Some("'"),
+        "amp" => Some("&"),
+        "lt" => Some("<"),
+        "gt" => Some(">"),
+        _ => None,
+    }
 }
 
 fn model_err(msg: &'static str) -> EvtxError {
@@ -1270,6 +1468,16 @@ fn compile_xml_template(
             c.deps.shrink_to_fit();
             c.elem_slots.shrink_to_fit();
             c.expand_slots.shrink_to_fit();
+            let mut guarded_slots = Vec::new();
+            for (at, op) in c.ops.iter().enumerate() {
+                if let XOp::Depends { len, .. } | XOp::LeftOut { len, .. } = op {
+                    let skipped = &c.ops[at + 1..][..*len as usize];
+                    guarded_slots.extend(skipped.iter().filter_map(XOp::slot));
+                }
+            }
+            guarded_slots.sort_unstable();
+            guarded_slots.dedup();
+            guarded_slots.shrink_to_fit();
             Some(XmlProgram {
                 lits: c.lits,
                 ops: c.ops,
@@ -1277,6 +1485,7 @@ fn compile_xml_template(
                 indent_on: c.indent_on,
                 elem_slots: c.elem_slots,
                 expand_slots: c.expand_slots,
+                guarded_slots,
                 root_name: tree.root_element().name.as_str().as_bytes().to_vec(),
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
@@ -1500,11 +1709,29 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                         // Mirror `render_nodes`' processing-instruction
                         // pairing: `<?target data?>` / `<?target?>`.
                         Node::PITarget(name) => {
+                            if name.as_str().eq_ignore_ascii_case("xml") {
+                                return Err(model_err(
+                                    "a processing instruction named `xml`, which XML reserves",
+                                ));
+                            }
                             self.lits.extend_from_slice(b"<?");
                             self.lits.extend_from_slice(name.as_str().as_bytes());
                             if let Some(Node::PIData(data)) = nodes.get(idx + 1) {
                                 self.lits.push(b' ');
+                                let start = self.lits.len();
                                 self.compile_raw_text(data);
+                                // A `?>` in the data would end the instruction early.
+                                let ends = |bytes: &[u8]| bytes.windows(2).position(|w| w == b"?>");
+                                if ends(&self.lits[start..]).is_some() {
+                                    let body = self.lits.split_off(start);
+                                    let mut rest = &body[..];
+                                    while let Some(at) = ends(rest) {
+                                        self.lits.extend_from_slice(&rest[..=at]);
+                                        self.lits.push(b' ');
+                                        rest = &rest[at + 1..];
+                                    }
+                                    self.lits.extend_from_slice(rest);
+                                }
                                 self.lits.extend_from_slice(b"?>");
                                 idx += 2;
                                 continue;
@@ -1772,13 +1999,25 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 res
             }
             Node::EntityRef(name) => {
-                self.lits.push(b'&');
-                self.lits.extend_from_slice(name.as_str().as_bytes());
+                // XML defines five entities, and a record can't declare another: a reference
+                // to one is its text, `&name;`, as in JSON.
+                let name = name.as_str();
+                let defined = predefined_entity(name).is_some();
+                self.lits
+                    .extend_from_slice(if defined { b"&" } else { b"&amp;" });
+                self.lits.extend_from_slice(name.as_bytes());
                 self.lits.push(b';');
                 Ok(())
             }
             Node::CharRef(ch) => {
-                self.lits.extend_from_slice(format!("&#{};", ch).as_bytes());
+                // A reference to a character XML doesn't allow is no more allowed than the
+                // character: `_`, as for one in text.
+                match ch {
+                    0x09 | 0x0A | 0x0D | 0x20..=0xD7FF | 0xE000..=0xFFFD => {
+                        self.lits.extend_from_slice(format!("&#{};", ch).as_bytes())
+                    }
+                    _ => self.lits.push(b'_'),
+                }
                 Ok(())
             }
             Node::CData(text) => {
@@ -1816,7 +2055,44 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         }
     }
 
+    /// Text as it is, for where XML has no escapes (a CDATA section, a processing
+    /// instruction's data), but for the characters XML doesn't allow anywhere, which are `_`
+    /// as in text (see `ValueRenderer::write_xml_escaped_str`). An unpaired surrogate is
+    /// U+FFFD here, which XML allows, where text has `_` for it.
     fn compile_raw_text(&mut self, text: &Text<'a>) {
+        /// How many bytes at `at` are a character XML doesn't allow: a C0 control other than
+        /// tab, LF and CR, U+FFFE or U+FFFF.
+        fn not_allowed(text: &[u8], at: usize) -> usize {
+            match text[at] {
+                b'\t' | b'\n' | b'\r' => 0,
+                0x00..=0x1F => 1,
+                0xEF if matches!(text.get(at + 1..at + 3), Some([0xBF, 0xBE | 0xBF])) => 3,
+                _ => 0,
+            }
+        }
+        let start = self.lits.len();
+        self.write_raw_text(text);
+        let written = &self.lits[start..];
+        if (0..written.len()).all(|at| not_allowed(written, at) == 0) {
+            return;
+        }
+        let written = self.lits.split_off(start);
+        let mut at = 0;
+        while at < written.len() {
+            match not_allowed(&written, at) {
+                0 => {
+                    self.lits.push(written[at]);
+                    at += 1;
+                }
+                len => {
+                    self.lits.push(b'_');
+                    at += len;
+                }
+            }
+        }
+    }
+
+    fn write_raw_text(&mut self, text: &Text<'a>) {
         match text {
             Text::Utf16(value) => {
                 let bytes = value.as_bytes();
@@ -1987,6 +2263,25 @@ pub(crate) struct Preflight {
     array_items: Vec<(u32, u16)>,
 }
 
+/// Whether the fast lane can't take a record for the stream of its BinXML value `slot`.
+/// Kept out of the scan's loop, which is the hot one.
+#[inline(never)]
+fn needs_the_slow_lane(stream: &[u8], slot: usize, elem_slots: &[(u16, u16)]) -> bool {
+    if stream.is_empty() {
+        return false;
+    }
+    // A stream that opens neither a template nor an element first may build nothing, which
+    // makes the value NULL and not an element: only building it tells.
+    let may_build_nothing =
+        single_instance_offset(stream).is_none() && !starts_with_element(stream);
+    // A stream the program doesn't render as an element is one the fast lane never reads,
+    // and a record with a stream that can't be read fails.
+    may_build_nothing
+        || !elem_slots
+            .iter()
+            .any(|&(rendered, _)| usize::from(rendered) == slot)
+}
+
 /// How the pre-flight validates a descriptor of a given type.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TyClass {
@@ -1996,8 +2291,10 @@ enum TyClass {
     Fixed(u8),
     /// Even-length UTF-16LE payload.
     Utf16,
-    /// Any-length payload (NULL skips it, BINARY/BIN_XML slice it).
+    /// Any-length payload (NULL skips it, BINARY slices it).
     Sized,
+    /// A BinXML stream of any length.
+    BinXml,
     /// ANSI string: any length, pre-decoded at pre-flight.
     Ansi,
     /// Pointer-width integer: 4 (32-bit) or 8 (64-bit) bytes.
@@ -2036,7 +2333,7 @@ const TY_CLASS: [TyClass; 256] = {
     t[SID as usize] = Sid;
     t[HEX_INT32 as usize] = Fixed(4);
     t[HEX_INT64 as usize] = Fixed(8);
-    t[BIN_XML as usize] = Sized;
+    t[BIN_XML as usize] = BinXml;
     t[STR_ARRAY as usize] = StrArray;
     t
 };
@@ -2195,6 +2492,12 @@ impl Preflight {
                         return Err(PreflightBail);
                     }
                 }
+                TyClass::BinXml => {
+                    let elem_slots = progs.programs[prog].elem_slots();
+                    if needs_the_slow_lane(&data[off..end], i, elem_slots) {
+                        return Err(PreflightBail);
+                    }
+                }
                 TyClass::Sized | TyClass::Ansi => {}
             }
             let mut slot = RawSlot {
@@ -2216,8 +2519,9 @@ impl Preflight {
             } else if ty == value_ty::STR_ARRAY {
                 // Split the payload into NUL-terminated item spans now so the
                 // executor stays infallible. Mirrors the deserializer: every
-                // NUL ends an item; the payload must end exactly on one (an
-                // unterminated tail keeps the legacy lane's read-past quirk).
+                // NUL ends an item; the payload must end exactly on one (the
+                // deserializer makes an item of an unterminated tail too, and
+                // its lane renders such a value).
                 let items_start = self.array_items.len() as u32;
                 let mut item_off = off;
                 for (pi, pair) in data[off..end].chunks_exact(2).enumerate() {
@@ -2256,7 +2560,9 @@ impl Preflight {
             let Some(inst_off) = single_instance_offset(frag) else {
                 // Generic fragment: rendered via the materialized fallback
                 // where the executor supports it; otherwise fall back.
-                if P::ALLOW_GENERIC_FRAGS {
+                // Not one the executor may pass over: the stream would go unread, and a
+                // record with a stream that can't be read fails.
+                if P::ALLOW_GENERIC_FRAGS && !progs.programs[prog].may_skip(slot_id) {
                     continue;
                 }
                 return Err(PreflightBail);
@@ -3078,6 +3384,12 @@ fn compile_json_template(
     program
 }
 
+/// Whether `name` ends as a numbered key does, in `_` and digits.
+fn ends_in_a_number(name: &[u8]) -> bool {
+    let digits = name.iter().rev().take_while(|b| b.is_ascii_digit()).count();
+    digits > 0 && name.len() > digits && name[name.len() - digits - 1] == b'_'
+}
+
 fn is_data_container_name(name: &str) -> bool {
     name == "EventData" || name == "UserData"
 }
@@ -3285,9 +3597,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let mut members = Members::default();
 
         // `#attributes` for literal attrs (static decision + static bytes).
-        if !element.attrs.is_empty() && self.attrs_object_plain(&element.attrs).map_err(|_| Bail)? {
-            members.certain = true;
-        }
+        let has_attributes = !element.attrs.is_empty()
+            && self.attrs_object_plain(&element.attrs).map_err(|_| Bail)?;
+        members.certain |= has_attributes;
 
         // Flattening / positional decisions are compile-time: literal `Data`
         // children only (placeholder `Data` shapes bail via classify above).
@@ -3313,6 +3625,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if flatten_named && dependent_data {
             return Err(Bail); // leaving a named Data out could change the form: fallback
         }
+
+        // The compiler numbers element names and `Data` names apart, each as often as it
+        // repeats. `keys` are the members' keys as the materialized layer writes them: where
+        // the two differ (a key that two kinds of member would share, or a name that is a
+        // numbered key), that layer writes the record.
+        let mut keys = Keys::new();
+        let mut data_names = NameCounts::new();
+        if has_attributes && flatten_named {
+            // A `Data` can be named anything, this key too. No element can.
+            keys.reserve(b"#attributes");
+        }
         let positional_data: Vec<ElementId> = if container && !flatten_named {
             element
                 .children
@@ -3336,7 +3659,6 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         // Compile-time `_N` suffix counting for static members.
         let mut static_names = NameCounts::new();
-        let mut data_names = NameCounts::new();
 
         let mut seen_slot_child = false;
         for (index, node) in element.children.iter().enumerate() {
@@ -3351,19 +3673,28 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     let dependency = child.dependency;
                     if container && is_data_element_name(cname) {
                         if flatten_named {
-                            let Some(name) = data_name(child) else {
-                                continue; // unnamed Data skipped in named form
+                            let name =
+                                data_name(child).filter(|name| name.iter().any(literal_nonempty));
+                            let Some(name) = name else {
+                                if child.attrs.is_empty() && child.children.is_empty() {
+                                    continue; // nothing to write
+                                }
+                                return Err(Bail); // an element member: the tree's walk
                             };
-                            if !name.iter().any(literal_nonempty) {
-                                continue; // empty literal name: skipped
+                            if child.attrs.len() > 1 {
+                                return Err(Bail);
                             }
                             // Data of one name in a row are an array: the tree's walk writes it.
                             if self.data_run(name, &element.children[index + 1..]) > 1 {
                                 return Err(Bail);
                             }
                             self.member_comma(&mut members, false);
-                            let suffix = data_names.next_suffix(DataName::new(name));
-                            self.data_key_plain(name, suffix).map_err(|_| Bail)?;
+                            let suffix = self
+                                .data_key_plain(name, Some(&mut keys))
+                                .map_err(|_| Bail)?;
+                            if suffix != data_names.next_suffix(DataName::new(name)) {
+                                return Err(Bail);
+                            }
                             self.compile_data_value(*id, false)?;
                         } else if !positional_emitted && !positional_data.is_empty() {
                             positional_emitted = true;
@@ -3395,6 +3726,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     // Normal member. Leaving one out mustn't change another's `_N` suffix, so
                     // no member whose name repeats may be one an instance can leave out.
                     let suffix = static_names.next_suffix(cname.as_bytes());
+                    if keys.suffix(cname.as_bytes(), false) != suffix {
+                        return Err(Bail);
+                    }
                     if suffix > 0
                         && (dependency.is_some()
                             || element.children[..index].iter().any(|node| {
@@ -3423,6 +3757,16 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     // Its comma and `_N` suffix are decided here, so no member before it may be
                     // left out.
                     if members.possible {
+                        return Err(Bail);
+                    }
+                    // Its key is its name, numbered after the members of that name: it mustn't
+                    // be able to be the key of another member, a `Data`'s name or a numbered
+                    // one, nor a member's name its numbered key.
+                    if flatten_named
+                        || static_names
+                            .iter()
+                            .any(|(name, count)| count > 1 || ends_in_a_number(name))
+                    {
                         return Err(Bail);
                     }
                     // Dynamic member: nested-instance value (or absent).
@@ -4136,7 +4480,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         self.visit(root)?;
         self.lits.push(b'{');
         if self.separate {
-            if !root.attrs.is_empty() && self.render_separate_attrs_plain(root, 0)? {
+            let has_text = self.attr_flags_plain(&root.attrs).1;
+            if self.render_separate_attrs_plain(root, 0, has_text)? {
                 self.lits.push(b',');
             }
             self.key_with_suffix_plain(root.name.as_str(), 0);
@@ -4179,16 +4524,42 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     /// A named `Data` member's key: its escaped name, numbered as `key_with_suffix_plain` numbers
-    /// elements.
-    fn data_key_plain(&mut self, name: &[Node<'a>], suffix: u32) -> Result<()> {
+    /// elements when `keys` are the object's, and that number. Without them the name is known
+    /// to be the only member of that name (see [`data_names_may_repeat`]).
+    fn data_key_plain(&mut self, name: &[Node<'a>], keys: Option<&mut Keys<'_>>) -> Result<u32> {
         self.lits.push(b'"');
+        let start = self.lits.len();
         self.text_content_plain(name, false)?;
+        let suffix = keys.map_or(0, |keys| keys.suffix_of_any(&self.lits[start..], false));
         if suffix > 0 {
             self.lits.push(b'_');
             self.lits.extend_from_slice(suffix.to_string().as_bytes());
         }
         self.lits.extend_from_slice(b"\":");
-        Ok(())
+        Ok(suffix)
+    }
+
+    /// What a `Data` child is in a container's named form.
+    fn named_data_plain(&mut self, data: &'t Element<'a>) -> NamedData<'t, 'a> {
+        let name = data_name(data).filter(|name| self.has_text_content_plain(name));
+        match name {
+            Some(name) if !Self::has_attributes_beside_name(data) => NamedData::Named(name),
+            None if !self.attr_flags_plain(&data.attrs).1
+                && Self::content_layout_plain(data) == (false, false) =>
+            {
+                NamedData::Nothing
+            }
+            _ => NamedData::Element,
+        }
+    }
+
+    /// Whether a `Data` has an attribute to write that isn't its `Name`. (`data_run` asks
+    /// this of each `Data` of a run, so it doesn't charge the scan as `has_text_content_plain`
+    /// does: the walk charges each of those elements when it writes it.)
+    fn has_attributes_beside_name(data: &Element<'_>) -> bool {
+        data.attrs
+            .iter()
+            .any(|a| a.name.as_str() != "Name" && a.value.iter().any(Self::node_is_content_plain))
     }
 
     /// How many `Data` elements in a row, one named `name` and those of `following` right after
@@ -4200,7 +4571,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 Node::Element(id) => Some(self.element_ref(*id)),
                 _ => None,
             })
-            .take_while(|e| is_data_element_name(e.name.as_str()) && data_name(e) == Some(name))
+            .take_while(|e| {
+                is_data_element_name(e.name.as_str())
+                    && data_name(e) == Some(name)
+                    && !Self::has_attributes_beside_name(e)
+            })
             .count();
         1 + same
     }
@@ -4302,35 +4677,21 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     res?;
                 }
                 Node::CharRef(ch) => {
-                    // In JSON, emit the resolved character (not `&#...;`).
-                    if let Some(ch) = char::from_u32(u32::from(*ch)) {
-                        let mut buf = [0_u8; 4];
-                        let s = ch.encode_utf8(&mut buf);
-                        self.json_escaped_str_plain(s)?;
-                    } else {
-                        self.lits.extend_from_slice(b"&#");
-                        self.vr.write_u64(&mut self.lits, u64::from(*ch))?;
+                    // In JSON, emit the resolved character (not `&#...;`). A surrogate isn't
+                    // one: U+FFFD, as for an unpaired surrogate in text.
+                    let ch = char::from_u32(u32::from(*ch)).unwrap_or(char::REPLACEMENT_CHARACTER);
+                    let mut buf = [0_u8; 4];
+                    let s = ch.encode_utf8(&mut buf);
+                    self.json_escaped_str_plain(s)?;
+                }
+                Node::EntityRef(name) => match predefined_entity(name.as_str()) {
+                    Some(s) => self.json_escaped_str_plain(s)?,
+                    None => {
+                        self.lits.push(b'&');
+                        self.lits.extend_from_slice(name.as_str().as_bytes());
                         self.lits.push(b';');
                     }
-                }
-                Node::EntityRef(name) => {
-                    let resolved = match name.as_str() {
-                        "quot" => Some("\""),
-                        "apos" => Some("'"),
-                        "amp" => Some("&"),
-                        "lt" => Some("<"),
-                        "gt" => Some(">"),
-                        _ => None,
-                    };
-                    match resolved {
-                        Some(s) => self.json_escaped_str_plain(s)?,
-                        None => {
-                            self.lits.push(b'&');
-                            self.lits.extend_from_slice(name.as_str().as_bytes());
-                            self.lits.push(b';');
-                        }
-                    }
-                }
+                },
                 Node::PITarget(_) | Node::PIData(_) => {}
                 Node::Placeholder(_) => return Err(unresolved_placeholder()),
                 Node::Element(_) => {
@@ -4456,12 +4817,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         Ok(wrote_any)
     }
 
-    /// Mirrors `render_separate_attributes_for_element`.
-    fn render_separate_attrs_plain(&mut self, element: &Element<'a>, suffix: u32) -> Result<bool> {
-        if element.attrs.is_empty() {
-            return Ok(false);
-        }
-        let (_has_any, has_text) = self.attr_flags_plain(&element.attrs);
+    /// Mirrors `render_separate_attributes_for_element`. `has_text` is `attr_flags_plain`'s
+    /// second flag for the element's attributes: whether there are any to write.
+    fn render_separate_attrs_plain(
+        &mut self,
+        element: &Element<'a>,
+        suffix: u32,
+        has_text: bool,
+    ) -> Result<bool> {
         if !has_text {
             return Ok(false);
         }
@@ -4593,13 +4956,12 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     ) -> Result<()> {
         let mut body =
             self.body_start_plain(element, in_data_container, omit_attributes, has_text)?;
-        let mut name_counts = NameCounts::new();
         let mut children = &element.children[..];
         while let [node, following @ ..] = children {
             children = following;
             let Node::Element(id) = node else { continue };
             let child = self.element_ref(*id);
-            let member = self.member_key_plain(child, following, &mut body, &mut name_counts)?;
+            let member = self.member_key_plain(child, following, &mut body)?;
             self.member_value_plain(element, child, following, member)?;
         }
         self.lits.push(b'}');
@@ -4614,7 +4976,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         in_data_container: bool,
         omit_attributes: bool,
         has_text: bool,
-    ) -> Result<BodyPlain<'t, 'a>> {
+    ) -> Result<BodyPlain<'t>> {
         // A materialized tree nests values' elements where they are used.
         if self.depth >= MAX_RENDER_DEPTH
             && element
@@ -4652,12 +5014,18 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         self.lits.push(b'{');
         let mut wrote_any = false;
+        let mut keys = Keys::new();
+        // A `Data` can be named anything, these keys too. No element can.
+        let data_keys = should_flatten_named_data && self.data_names;
 
         if !omit_attributes
             && !element.attrs.is_empty()
             && self.attrs_object_plain(&element.attrs)?
         {
             wrote_any = true;
+            if data_keys {
+                keys.reserve(b"#attributes");
+            }
         }
 
         if has_text {
@@ -4665,6 +5033,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 self.lits.push(b',');
             }
             wrote_any = true;
+            if data_keys {
+                keys.reserve(b"#text");
+            }
             self.lits.extend_from_slice(b"\"#text\":");
             self.content_as_json_value_plain(&element.children, true)?;
         }
@@ -4687,7 +5058,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             positional_data_count,
             positional_data_emitted: false,
             wrote_any,
-            data_names: NameCounts::new(),
+            keys,
             skip: 0,
         })
     }
@@ -4698,8 +5069,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         &mut self,
         child: &'t Element<'a>,
         following: &[Node<'a>],
-        body: &mut BodyPlain<'t, 'a>,
-        name_counts: &mut NameCounts<&'t str>,
+        body: &mut BodyPlain<'t>,
     ) -> Result<MemberPlain> {
         self.visit(child)?;
         if body.skip > 0 {
@@ -4708,42 +5078,46 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         }
 
         if body.in_data_container && is_data_element_name(child.name.as_str()) {
-            if body.should_flatten_named_data {
-                let Some(name) = data_name(child) else {
-                    return Ok(MemberPlain::None);
-                };
-                if !self.has_text_content_plain(name) {
+            if !body.should_flatten_named_data {
+                if body.positional_data_emitted || body.positional_data_count == 0 {
                     return Ok(MemberPlain::None);
                 }
                 if body.wrote_any {
                     self.lits.push(b',');
                 }
                 body.wrote_any = true;
-                let (run, suffix) = if self.data_names {
-                    let run = self.data_run(name, following);
-                    body.skip = run - 1;
-                    (run, body.data_names.next_suffix(DataName::new(name)))
-                } else {
-                    (1, 0)
-                };
-                self.data_key_plain(name, suffix)?;
-                return Ok(MemberPlain::Data { run });
+                body.positional_data_emitted = true;
+                self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                return Ok(MemberPlain::PositionalData(body.positional_data_count));
             }
-            if body.positional_data_emitted || body.positional_data_count == 0 {
-                return Ok(MemberPlain::None);
+            match self.named_data_plain(child) {
+                NamedData::Nothing => return Ok(MemberPlain::None),
+                NamedData::Named(name) => {
+                    if body.wrote_any {
+                        self.lits.push(b',');
+                    }
+                    body.wrote_any = true;
+                    let (run, keys) = if self.data_names {
+                        let run = self.data_run(name, following);
+                        body.skip = run - 1;
+                        (run, Some(&mut body.keys))
+                    } else {
+                        (1, None)
+                    };
+                    self.data_key_plain(name, keys)?;
+                    return Ok(MemberPlain::Data { run });
+                }
+                // A member as any other element is.
+                NamedData::Element => {}
             }
-            if body.wrote_any {
-                self.lits.push(b',');
-            }
-            body.wrote_any = true;
-            body.positional_data_emitted = true;
-            self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
-            return Ok(MemberPlain::PositionalData(body.positional_data_count));
         }
 
         // Normal child member with `_N` suffixing.
         let cname = child.name.as_str();
-        let suffix = name_counts.next_suffix(cname);
+        // In separate-attributes mode an element with attributes is two members.
+        let attributes =
+            self.separate && !child.attrs.is_empty() && self.attr_flags_plain(&child.attrs).1;
+        let suffix = body.keys.suffix(cname.as_bytes(), attributes);
 
         if body.wrote_any {
             self.lits.push(b',');
@@ -4752,7 +5126,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         let container = is_data_container_name(cname);
         if self.separate {
-            let wrote_attrs = self.render_separate_attrs_plain(child, suffix)?;
+            let wrote_attrs = self.render_separate_attrs_plain(child, suffix, attributes)?;
             let (child_text, child_elem) = Self::content_layout_plain(child);
             let child_has_value = child_elem || child_text;
             let write_value = child_has_value || !wrote_attrs;

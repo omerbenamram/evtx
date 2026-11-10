@@ -5,10 +5,12 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
 
+use evtx::carve::CarvedEvtx;
+use evtx::err::EvtxError;
 use evtx::{AnsiCodec, EvtxParser, ParserSettings, RenderedChunk, RenderedChunkItem};
 use log::Level;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -24,12 +26,12 @@ mod extract_wevt_templates;
 mod info;
 
 fn load_wevt_cache_from_wevtcache_file(
-    path: &str,
+    path: &Path,
 ) -> Result<std::sync::Arc<evtx::wevt_templates::WevtCache>> {
     use evtx::wevt_templates::wevtcache::{EntryKind, WevtCacheReader};
 
     let mut cache = evtx::wevt_templates::WevtCache::new();
-    let mut reader = WevtCacheReader::open(Path::new(path))?;
+    let mut reader = WevtCacheReader::open(path)?;
     while let Some((kind, bytes)) = reader.next_entry()? {
         match kind {
             EntryKind::Crim => {
@@ -70,11 +72,18 @@ struct EvtxDump {
     input: PathBuf,
     show_record_number: bool,
     output_format: EvtxOutputFormat,
+    /// Where the records go: stdout, until `open_output` has created the `-f` file.
     output: Box<dyn Write>,
+    /// The `-f` file, until it has been created.
+    output_file: Option<PathBuf>,
     verbosity_level: Option<Level>,
     stop_after_error: bool,
     /// When set, only the records whose event record IDs are in these ranges are output.
     ranges: Option<Ranges>,
+    /// What could not be read, and so is missing from the output.
+    missing: Incomplete,
+    /// Whether the input is raw data to carve chunks from, rather than an EVTX file.
+    carve: bool,
 }
 
 impl EvtxDump {
@@ -135,27 +144,40 @@ impl EvtxDump {
             .get_one::<AnsiCodec>("ansi-codec")
             .expect("has default");
 
-        let output: Box<dyn Write> = if let Some(path) = matches.get_one::<String>("output-target")
-        {
-            Box::new(BufWriter::new(
-                Self::create_output_file(path, !matches.get_flag("no-confirm-overwrite"))
-                    .with_context(|| {
-                        format!("An error occurred while creating output file at `{}`", path)
-                    })?,
-            ))
-        } else {
-            Box::new(BufWriter::new(io::stdout()))
-        };
+        let wevt_cache_path = matches.get_one::<String>("wevt-cache").map(Path::new);
+        let mta_path = matches.get_one::<PathBuf>("mta").map(PathBuf::as_path);
 
-        let wevt_cache = matches
-            .get_one::<String>("wevt-cache")
-            .map(|p| load_wevt_cache_from_wevtcache_file(p))
+        // What can be checked about the output file is checked (and asked) now, before any
+        // long work. The file itself is created once the input has been opened (see
+        // `open_output`).
+        let output_file = matches
+            .get_one::<String>("output-target")
+            .map(PathBuf::from);
+        if let Some(output_file) = &output_file {
+            let read = (!Self::is_stdin_input(&input)).then_some(input.as_path());
+            Self::check_output_file(
+                output_file,
+                !matches.get_flag("no-confirm-overwrite"),
+                read.into_iter().chain(wevt_cache_path).chain(mta_path),
+            )?;
+        }
+
+        let wevt_cache = wevt_cache_path
+            .map(load_wevt_cache_from_wevtcache_file)
             .transpose()?;
 
-        let mta = matches
-            .get_one::<PathBuf>("mta")
+        let mta = mta_path
             .map(|path| evtx::mta::MtaFile::from_path(path).map(std::sync::Arc::new))
             .transpose()?;
+
+        let carve = matches.get_flag("carve");
+        let recover_records = matches.get_flag("recover-records");
+        if mta.is_some() && (carve || recover_records) {
+            eprintln!(
+                "warning: a carved or recovered record may get another event's message unless \
+                 the .MTA file is this log's own (see --help)"
+            );
+        }
 
         let parser_settings = ParserSettings::new()
             .num_threads(num_threads.try_into().expect("u32 -> usize"))
@@ -163,7 +185,7 @@ impl EvtxDump {
             .separate_json_attributes(separate_json_attrib_flag)
             .indent(!no_indent)
             .ansi_codec(ansi_codec)
-            .recover_records(matches.get_flag("recover-records"))
+            .recover_records(recover_records)
             .wevt_cache(wevt_cache)
             .mta(mta);
 
@@ -172,10 +194,13 @@ impl EvtxDump {
             input,
             show_record_number: !no_show_record_number,
             output_format,
-            output,
+            output: Box::new(BufWriter::new(io::stdout())),
+            output_file,
             verbosity_level,
             stop_after_error,
             ranges: event_ranges,
+            missing: Incomplete::default(),
+            carve,
         })
     }
 
@@ -185,9 +210,67 @@ impl EvtxDump {
             eprintln!("{:?}", err);
         }
 
-        let mut parser = self
-            .open_parser()
-            .map(|parser| parser.with_configuration(self.parser_settings.clone()))?;
+        let input = self.open_input()?;
+        if self.carve {
+            let carved = CarvedEvtx::new(input)
+                .with_context(|| format!("Failed to carve chunks from {}", self.input.display()))?;
+            eprintln!(
+                "Carved {} chunks from {}",
+                carved.chunk_offsets().len(),
+                self.input.display()
+            );
+            self.missing.unread_bytes = carved.unreadable_bytes();
+            if carved.unreadable_bytes() > 0 {
+                eprintln!(
+                    "{} bytes of {} could not be read and were skipped",
+                    carved.unreadable_bytes(),
+                    self.input.display()
+                );
+            }
+            // Not an empty log: nothing here to dump, which a script should hear about.
+            if carved.chunk_offsets().is_empty() {
+                bail!("No EVTX chunks were found in {}", self.input.display());
+            }
+            for (number, offset) in carved.chunk_offsets().iter().enumerate() {
+                log::info!("chunk {number}: offset {offset} ({offset:#x})");
+            }
+            let parser = EvtxParser::from_read_seek(carved).with_context(|| {
+                format!(
+                    "Failed to read the chunks carved from {}",
+                    self.input.display()
+                )
+            })?;
+            return self.dump(parser);
+        }
+        let parser = if Self::is_stdin_input(&self.input) {
+            EvtxParser::from_read_seek(input).context("Failed to parse EVTX data from stdin")
+        } else {
+            EvtxParser::from_read_seek(input)
+                .with_context(|| format!("Failed to open evtx file at: {}", self.input.display()))
+        }?;
+        self.dump(parser)
+    }
+
+    /// Create the `-f` output file. This comes after the input, the template cache and the
+    /// `.MTA` file have been opened, so that a run that can't start leaves an existing file as
+    /// it was: creating it empties it.
+    fn open_output(&mut self) -> Result<()> {
+        let Some(path) = self.output_file.take() else {
+            return Ok(());
+        };
+        let file = Self::create_output_file(&path).with_context(|| {
+            format!(
+                "An error occurred while creating output file at `{}`",
+                path.display()
+            )
+        })?;
+        self.output = Box::new(BufWriter::new(file));
+        Ok(())
+    }
+
+    fn dump<T: Read + Seek>(&mut self, parser: EvtxParser<T>) -> Result<()> {
+        self.open_output()?;
+        let mut parser = parser.with_configuration(self.parser_settings.clone());
         let header = parser.header();
         // With logging on, the parser's own warning says this.
         if !header.validate_checksum() && self.verbosity_level.is_none() {
@@ -212,10 +295,15 @@ impl EvtxDump {
 
         // Dropping the buffer flushes it too, but ignores a failed write.
         self.output.flush()?;
+        // The output is whole but for these: a script must be able to tell.
+        if self.missing != Incomplete::default() {
+            return Err(self.missing.into());
+        }
         Ok(())
     }
 
-    fn open_parser(&self) -> Result<EvtxParser<File>> {
+    /// The input file, or a copy of stdin.
+    fn open_input(&self) -> Result<File> {
         if Self::is_stdin_input(&self.input) {
             let mut tmp =
                 tempfile().context("Failed to create temporary file for stdin buffering")?;
@@ -230,10 +318,9 @@ impl EvtxDump {
 
             tmp.seek(SeekFrom::Start(0))
                 .context("Failed to rewind stdin buffer")?;
-
-            EvtxParser::from_read_seek(tmp).context("Failed to parse EVTX data from stdin")
+            Ok(tmp)
         } else {
-            EvtxParser::from_path(&self.input)
+            File::open(&self.input)
                 .with_context(|| format!("Failed to open evtx file at: {}", &self.input.display()))
         }
     }
@@ -251,49 +338,61 @@ impl EvtxDump {
             || path == Path::new("/proc/self/fd/0")
     }
 
-    /// If `prompt` is passed, will display a confirmation prompt before overwriting files.
-    fn create_output_file(path: impl AsRef<Path>, prompt: bool) -> Result<File> {
-        let p = path.as_ref();
-
+    /// Refuse an output file that this run can't or mustn't write, without touching it.
+    /// `inputs` are the files the run reads. If `prompt` is passed, will display a
+    /// confirmation prompt before overwriting a file.
+    fn check_output_file<'a>(
+        p: &Path,
+        prompt: bool,
+        inputs: impl Iterator<Item = &'a Path>,
+    ) -> Result<()> {
         if p.is_dir() {
             bail!(
                 "There is a directory at {}, refusing to overwrite",
                 p.display()
             );
         }
-
-        if p.exists() {
-            if prompt {
-                match Confirm::new()
-                    .with_prompt(format!(
-                        "Are you sure you want to override output file at {}",
-                        p.display()
-                    ))
-                    .default(false)
-                    .interact()
-                {
-                    Ok(true) => Ok(File::create(p)?),
-                    Ok(false) => bail!("Cancelled"),
-                    Err(_e) => bail!("Failed to display confirmation prompt"),
-                }
-            } else {
-                Ok(File::create(p)?)
-            }
-        } else {
-            // Ok to assume p is not an existing directory
-            match p.parent() {
-                Some(parent) =>
-                // Parent exist
-                {
-                    if !parent.exists() {
-                        fs::create_dir_all(parent)?;
-                    }
-
-                    Ok(File::create(p)?)
-                }
-                None => bail!("Output file cannot be root."),
+        if p.parent().is_none() {
+            bail!("Output file cannot be root.");
+        }
+        if !p.exists() {
+            return Ok(());
+        }
+        // Creating the output empties it, under any of its names (a link, another spelling).
+        for input in inputs {
+            if same_file::is_same_file(input, p).unwrap_or(false) {
+                bail!(
+                    "The output file {} is {}, which this run reads: refusing to overwrite it",
+                    p.display(),
+                    input.display()
+                );
             }
         }
+        if prompt {
+            match Confirm::new()
+                .with_prompt(format!(
+                    "Are you sure you want to override output file at {}",
+                    p.display()
+                ))
+                .default(false)
+                .interact()
+            {
+                Ok(true) => {}
+                Ok(false) => bail!("Cancelled"),
+                Err(_e) => bail!("Failed to display confirmation prompt"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Create (or empty) an output file that `check_output_file` has accepted.
+    fn create_output_file(p: &Path) -> Result<File> {
+        if let Some(parent) = p.parent()
+            && !parent.exists()
+        {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(File::create(p)?)
     }
 
     /// Write one rendered chunk: a single `write_all` on the common path, or a
@@ -330,6 +429,19 @@ impl EvtxDump {
                 }
                 // This error is non fatal.
                 RenderedChunkItem::Failed(e) => {
+                    // A record that `--events` leaves out is not one this run was asked for.
+                    // (`--stop-after-one-error` is for finding any record that fails.)
+                    if let (Some(ranges), EvtxError::FailedToParseRecord { record_id, .. }) =
+                        (&self.ranges, &e)
+                        && !ranges.contains(&(*record_id as usize))
+                        && !self.stop_after_error
+                    {
+                        continue;
+                    }
+                    match e {
+                        EvtxError::FailedToParseChunk { .. } => self.missing.chunks += 1,
+                        _ => self.missing.records += 1,
+                    }
                     eprintln!(
                         "{:?}",
                         anyhow::Error::from(e).context("Failed to dump the next record.")
@@ -389,6 +501,9 @@ impl FromStr for Ranges {
         for range in s.split(',') {
             let (start, stop) = range.split_once('-').unwrap_or((range, range));
             match (start.parse::<usize>(), stop.parse::<usize>()) {
+                (Ok(start), Ok(stop)) if start > stop => {
+                    bail!("Range {range} ends before it starts and holds no record ID")
+                }
                 (Ok(start), Ok(stop)) => res.push(start..=stop),
                 _ => bail!("Expected range to be a positive number, got: {}", range),
             }
@@ -422,6 +537,8 @@ fn test_ranges() {
     assert!(matches_ranges("1").is_ok());
     assert!(matches_ranges("1-").is_err());
     assert!(matches_ranges("-2").is_err());
+    assert!(matches_ranges("3-3").is_ok());
+    assert!(matches_ranges("5-3").is_err());
 }
 
 #[test]
@@ -445,8 +562,29 @@ fn main() -> Result<()> {
         // A reader that stops early, such as `head`, closes the pipe: that ends the output, as
         // it does for other command-line tools, rather than being an error.
         Err(error) if is_broken_pipe(&error) => Ok(()),
+        Err(error) if error.is::<Incomplete>() => {
+            eprintln!("Error: {error}");
+            std::process::exit(INCOMPLETE_EXIT_CODE)
+        }
         result => result,
     }
+}
+
+/// The exit status of a run that wrote everything it could read, but could not read it all.
+/// A failure that stops the run exits with 1, and clap exits with 2 for arguments it refuses.
+const INCOMPLETE_EXIT_CODE: i32 = 3;
+
+/// What a run could not read. Its output is complete but for these.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "could not read {records} record(s), {chunks} chunk(s) and {unread_bytes} byte(s) of the input: \
+     they are missing from the output (see the errors above)"
+)]
+struct Incomplete {
+    records: u64,
+    chunks: u64,
+    /// Bytes of a carved source that could not be read.
+    unread_bytes: u64,
 }
 
 fn is_broken_pipe(error: &anyhow::Error) -> bool {
@@ -509,7 +647,8 @@ fn run_cli() -> Result<()> {
                 .long("events")
                 .action(ArgAction::Set)
                 .value_parser(matches_ranges)
-                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output.
+                .help(indoc!("When set, only the records with these event record IDs (`EventRecordID`) are output,
+                and only their errors are reported.
                 For example:
                     --events=1 outputs the record whose ID is 1.
                     --events=0-10,20-30 outputs the records with IDs 0 to 10 and 20 to 30.
@@ -527,6 +666,14 @@ fn run_cli() -> Result<()> {
                 .long("recover-records")
                 .action(ArgAction::SetTrue)
                 .help("Also carve deleted/stale records from unallocated chunk space (cleared chunks, chunk slack)."),
+        )
+        .arg(
+            Arg::new("carve")
+                .long("carve")
+                .action(ArgAction::SetTrue)
+                .help(indoc!("Treats INPUT as raw data (a disk image, unallocated space, a memory dump, a damaged log) and
+                parses the EVTX chunks found anywhere in it, skipping exact copies. Prints how many it found;
+                with -v, where each one is. Combine with --recover-records to also carve their slack.")),
         )
         .arg(
             Arg::new("no-indent")
@@ -568,13 +715,13 @@ fn run_cli() -> Result<()> {
                 .long("mta")
                 .value_name("MTA")
                 .value_parser(clap::value_parser!(PathBuf))
-                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element."),
+                .help("Path to an .MTA file (LocaleMetaData\\<log>_<LCID>.MTA, written next to logs saved with display information). Adds each event's localized message, level, task, opcode and keyword names as a RenderingInfo element. It must be the file saved with this log: an event's message is found by the record's position and EventRecordID, which a record of another log (or one found by --carve or --recover-records) can have too."),
         )
         .arg(
             Arg::new("stop-after-one-error")
                 .long("stop-after-one-error")
                 .action(ArgAction::SetTrue)
-                .help("When set, will exit after any failure of reading a record. Useful for debugging."),
+                .help("When set, will exit after any failure of reading a record, also one that --events leaves out. Useful for debugging."),
         )
         .arg(Arg::new("verbose")
             .short('v')

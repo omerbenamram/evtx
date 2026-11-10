@@ -8,8 +8,30 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `evtx_dump --carve` parses the EVTX chunks found anywhere in raw data (a disk image,
+  unallocated space, a memory dump, or a log whose file header is gone), skipping exact copies
+  of a chunk. With `-v` it lists where each one was found, and `--recover-records` also carves
+  their slack. In the library, `evtx::carve::CarvedEvtx` scans a `Read + Seek` source and reads
+  as a virtual EVTX file that `EvtxParser::from_read_seek` takes. A chunk counts when its header
+  fields are in range and its header CRC32 matches or a record starts right after it. Carving an
+  image built from every sample log, with noise between them and half of their file headers
+  dropped, gives the same set of records as parsing each log. Where the source can't be read
+  (a bad sector), the scan gives up that 4 KiB page and goes on: `evtx_dump` says how many
+  bytes it skipped, and `CarvedEvtx::unreadable_bytes()` gives the count. A chunk with such a
+  hole ends at it. A source of which nothing can be read (a directory, a device that is
+  gone) is an error, and so is one where `evtx_dump --carve` finds no chunks.
+
 ### Breaking changes
 
+- `EvtxError` has a new variant, `NotAnXmlName`, for a record with a name that can't be
+  written (see Fixed).
+- `ChunkError` has a new variant, `FailedToReadChunk`, which holds the reader's error. A read
+  that fails used to be reported as `IncompleteChunk` ("Reached EOF"), which now only means
+  that the file ends before the end of a chunk's header.
+- `ChunkError::FailedToBuildStringCache` is gone: a damaged string table no longer fails its
+  chunk (see Fixed).
 - evtx no longer depends on `winstructs` (and through it on `chrono`). GUIDs
   are now `evtx::Guid` instead of `winstructs::guid::Guid`: in
   `binxml::BinXmlTemplateValues::template_guid`, `DeserializationError::FailedToDeserializeTemplate`
@@ -19,9 +41,130 @@ and this project adheres to
   use `to_string()`.
 - `WevtManifestError::InvalidGuid` is removed: reading a GUID from 16 bytes
   can't fail, so it was never returned.
+- `BinXmlValue`'s `Display` gives the value's text as it is. It gave the text escaped for a
+  JSON string, so a quote came out as `\"` and a newline as `\n`. Code that built JSON from
+  `to_string()` must escape the text itself (or use `serde_json`).
+- `MtaError` has a new variant, `SharedRecord`, for an `.MTA` section whose records share
+  bytes (see Fixed).
+- `evtx_dump` exits with status 3 when records or chunks could not be read (or, with
+  `--carve`, bytes of the source), after writing all it could read and saying how much is
+  missing. It exited with 0, as for a log it read all of, so a script could not tell. Status 1
+  is still a failure that stops the run, and 2 arguments that are refused.
 
 ### Fixed
 
+- `evtx_dump --events 5-3`, a range that ends before it starts, is refused. It printed nothing
+  and succeeded.
+- `evtx_dump --events` no longer prints the errors of records it leaves out, where the error
+  names its record and `--stop-after-one-error` is not set. An error that can't name its
+  record (a damaged chunk or record header) may be of a record that was asked for, and is
+  still reported.
+- `evtx_dump extract-wevt-templates` fails for an `--input` that doesn't exist, for a
+  directory given without `--recursive`, and when its inputs come to no file at all. It wrote
+  an empty cache (over an existing one, with `--overwrite`) and succeeded. It reads a file or
+  a directory once whatever name it is reached by, so a link back up the tree no longer has
+  the recursive walk go round until paths are too long.
+- `evtx_dump` warns when `--mta` is given with `--carve` or `--recover-records`. An `.MTA`
+  file finds an event's message by its record's position and `EventRecordID`, so a carved or
+  recovered record that is not an event of the file's log can get another event's message.
+  The `--mta` help, `ParserSettings::mta` and `docs/mta.md` now say that the file must be the
+  log's own.
+- `.MTA`: a crafted file of 200 KB could take 2 GB to refuse or to load. A page chain that
+  came back to a page, or slots that all named one record, had the same bytes read and
+  decoded again and again; and a publisher's table kept a copy of its string for every
+  entry. The pages and records read may no longer be longer together than their section
+  (`PageLoop`, or the new `SharedRecord`), and table entries share their string.
+- A record with a BinXML value that can't be read fails in `evtx_dump` and the chunk
+  renderers (`chunks_xml_bytes`, `chunks_json_bytes`) too when its template doesn't use the
+  value. They rendered such a record, where `records()` and `records_json()` failed it, so
+  the two gave different record sets for the same file.
+- JSON: a record whose template puts a BinXML value with an element in it in an attribute
+  fails, as it does in XML (`element node inside attribute value`). JSON output wrote the
+  element as `null` and dropped the value.
+- A value of type BinXML whose stream builds nothing (only its end, or only fragment
+  headers) is NULL, as one with no bytes is. In XML a compiled template took it for an
+  element and broke the line for it (`<X>`, newline, `</X>`), where the tree walker wrote
+  `<X></X>`. In XML and JSON an element that depends on such a value is now left out.
+- XML: a crafted record could still give output that isn't well-formed:
+  - A character XML doesn't allow (a C0 control other than tab, LF and CR, U+FFFE, U+FFFF) is
+    now `_` in a CDATA section and in a processing instruction's data, as it already was in
+    text. A character reference to one (`&#1;`), or to a surrogate, is `_` too.
+  - A `?>` in a processing instruction's data, which ended the instruction and had the rest
+    read as markup, is written `? >`.
+  - A reference to an entity other than the five XML defines is written as its text
+    (`&amp;name;`), which is what JSON has for it. A record can't declare an entity.
+  - A processing instruction named `xml`, which XML reserves, fails its record in XML.
+- JSON: a character reference to a surrogate is U+FFFD, as an unpaired surrogate in text is.
+  It was the text `&#55296;`.
+- A template value is read from its own bytes only, the count its descriptor gives. One that
+  needs more (a UInt32 of two bytes, a SID whose sub-authority count runs past its size) was
+  read out of the next values' bytes, and every value after it from the wrong place, so the
+  record rendered with data that was not its own. Now:
+  - such a value fails its record with `DeserializationError::Truncated`;
+  - a string array whose last string has no NUL ends with its bytes (it read on to the next
+    NUL, wherever that was), as an ANSI string array already did;
+  - a value with no bytes at all, of a type that has a width, is no value (NULL).
+
+  A value with bytes to spare is read as before, and the next starts after them. No sample
+  log has any of these.
+- JSON: an array value with one item, of an integer or Bool type, is a number or a bool, as
+  each item of a longer array is. It was a string (`"5"`), so a field's JSON type depended on
+  how many items its array had. An array of one item is now its item wherever an array of
+  more is an element for each item (in every element but a template's root).
+- JSON: in an `EventData` or `UserData` where a `Data` has a name, each `Data` is written
+  under its name with its text for a value, and a `Data` that didn't fit that was dropped: one
+  with text and no name (or an empty one), and the attributes of one with more than `Name`.
+  Such a `Data` is now a member as any other element is: `"Data":"text"`, or
+  `"Data":{"#attributes":{"Name":"B","Type":"t"},"#text":"text"}`. A `Data` with nothing to
+  write is still left out. No sample log has such a `Data`.
+- JSON: no two members of one object share a key any more. A repeated element name is
+  numbered (`D`, `D_1`), and that number could be another member's name: `D`, `D` and `D_1`
+  gave the key `D_1` twice, and so did a `Data` named as a sibling element, or as the
+  `#attributes` key, and in `--separate-json-attributes` mode an element named `A_attributes`
+  beside an `A` with attributes. A reader keeps one of two such members and loses the other.
+  A name is now numbered on until its key is new (`D`, `D_1`, `D_1_1`). Only crafted records
+  have such names: the output for all sample logs is unchanged.
+- An element, attribute, entity or processing-instruction name that isn't an XML name (one
+  with a quote, a space, `<`, `>`, `=` or a control character in it, or an empty one) now fails
+  its record with the new `EvtxError::NotAnXmlName`. Names are written as they are, so a crafted
+  log could close a tag or a JSON key early and have the rest of the name read as markup:
+  a name of `x":1,"y` gave the JSON keys `x` and `y`, and one of `x y="1"` an XML attribute.
+  Windows writes names from a provider's manifest, which are XML names.
+- `EvtxRecord::template_instances()` now includes the template instances inside
+  BinXML-typed values. It returned only the outer instance, the one that fills in `System`,
+  for every Windows event, so the provider's own values (`EventData`, `UserData`) were out of
+  reach. Each instance now has its template's GUID, also when the definition is stored
+  earlier in the chunk.
+- `evtx_dump apply-wevt-cache --evtx --record-id` rendered the provider's template with the
+  values of the `System` instance (event 4902's `PuaPolicyId` printed `0`, not `0x35cb0`). It
+  now takes the values of the record's instance of that template, or of its second instance
+  when the GUIDs differ. `--template-instance-index` still picks one by hand.
+- `evtx_dump dump-template-instances` prints every instance of each record, one line each,
+  where it printed the `System` one only. `--template-instance-index` limits it to one.
+- `evtx_dump -f <file>` no longer empties an existing output file when the run can't start.
+  The file was created before the input was opened, so a mistyped input path, an input that
+  isn't an EVTX file, or a `--wevt-cache` or `--mta` file that failed to load, left a
+  zero-byte file where the last export had been. It is now created once all of them have
+  been read.
+- `evtx_dump -f` refuses an output file that is the input file, the `--wevt-cache` file or the
+  `--mta` file, under any name (another spelling of the path, a symlink, a hard link). It
+  used to empty the log before reading it.
+- A log whose last chunk is cut off by the end of the file (an interrupted copy, a file
+  recovered in part) lost that chunk's records without an error or a warning: `security.evtx`
+  short of 1,000 bytes of its last chunk's free space gave 2,201 of its 2,261 records. The
+  records that fit are now read, the record that the end of the file cuts into is an error, and
+  a `warn!` names the chunk. A chunk whose header is cut off is still left out.
+- An error from the reader while a chunk is read (a disk that can't be read, an exception from
+  a Python file object) was reported as "Reached EOF while trying to allocate chunk", and its
+  cause was dropped. It is now `ChunkError::FailedToReadChunk`, with the reader's error as its
+  source.
+- Chunk offsets are computed in 64 bits, so on 32-bit targets a log larger than 4 GiB no longer
+  overflows (a panic with overflow checks, the wrong chunks read without).
+- A chunk whose string table is damaged (a bucket offset past the end of the chunk, a name
+  that can't be decoded) lost all of its records to `Failed to build string cache`, although
+  records name their strings by offset and already read the ones the table doesn't list. The
+  damaged chain is now left out and every record renders: one bad offset in the first chunk of
+  `security.evtx` used to cost its 91 records.
 - A `WEVT_TEMPLATE` manifest whose MAPS table points a map past the table's
   declared end no longer panics with an out-of-range slice (found by fuzzing).
 

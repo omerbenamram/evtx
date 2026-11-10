@@ -258,7 +258,7 @@ enum BuildMode {
 /// Hard cap on BinXML fragment / template-instance nesting per record. Real
 /// records nest one or two levels; the cap exists to bound recursion depth on
 /// crafted input (a 64 KiB chunk could otherwise chain thousands of levels).
-const MAX_BINXML_NESTING: usize = 64;
+pub(crate) const MAX_BINXML_NESTING: usize = 64;
 
 /// Hard cap on open-element depth within one BinXML stream, bounding tree
 /// depth (and the walkers' recursion over it) on crafted input.
@@ -529,12 +529,25 @@ impl<'a, 'cache, 'arena> TreeBuilder<'a, 'cache, 'arena> {
     }
 
     fn name(&self, offset: ChunkOffset) -> Result<Name<'a>> {
-        // Chunk streams reference the string table; WEVT templates inline names.
+        let not_a_name = |name: &str| EvtxError::NotAnXmlName {
+            name: name.to_string(),
+            offset,
+        };
+        // Chunk streams reference the string table, whose names were checked as they were
+        // read.
+        let listed = self
+            .src
+            .chunk
+            .and_then(|chunk| chunk.string_cache.get_cached_string(offset));
+        if let Some(name) = listed {
+            return Name::from_table(name).ok_or_else(|| not_a_name(name.as_str()));
+        }
         let name = match self.src.chunk {
-            Some(chunk) => expand_string_ref(offset, chunk, self.src.bump),
+            Some(chunk) => read_string_at(offset, chunk, self.src.bump),
+            // WEVT templates inline names.
             None => expand_wevt_inline_name_ref(self.src.data, offset, self.src.bump),
         }?;
-        Ok(Name::new(name))
+        Name::parse(name).ok_or_else(|| not_a_name(name))
     }
 
     fn push_node(&mut self, node: Node<'a>) -> Result<()> {
@@ -873,7 +886,14 @@ fn validate_tpl_instance<'a>(
             depth + 1,
             budget,
         )?;
-        *value = ValidatedValue::Fragment(roots.into_slice(src.bump));
+        // A stream that builds nothing (only its end, say) is nothing, as one with no bytes
+        // is: NULL, which an optional substitution skips and a dependent element is left
+        // out for. As a fragment of no elements the compiled XML broke the line for it.
+        *value = if roots.first.is_none() {
+            ValidatedValue::Scalar(BinXmlValue::NullType)
+        } else {
+            ValidatedValue::Fragment(roots.into_slice(src.bump))
+        };
     }
     Ok(ValidatedInstance {
         offset: template_ref.template_def_offset,
@@ -1263,6 +1283,14 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
             for node in &attr.value {
                 let before = new_attr.value.len();
                 resolve_node_into(node, values, budget, &mut new_attr.value)?;
+                // A BinXML value gives elements, which an attribute can't hold and no output
+                // can write there.
+                if new_attr.value[before..]
+                    .iter()
+                    .any(|n| matches!(n, Node::Element(_)))
+                {
+                    return Err(element_in_attr());
+                }
                 needs_array_expansion = needs_array_expansion
                     || new_attr.value[before..]
                         .iter()
@@ -1290,6 +1318,11 @@ impl<'t, 'a> CloneFrame<'t, 'a> {
     }
 }
 
+/// The error for a tree with an element in an attribute's value, which no output can write.
+pub(crate) fn element_in_attr() -> EvtxError {
+    EvtxError::FailedToCreateRecordModel("element node inside attribute value")
+}
+
 /// Resolve one template [`Node`] that isn't an element, and append the result into `out`.
 ///
 /// This function is intentionally "append-only" because some input nodes expand to multiple
@@ -1308,9 +1341,7 @@ fn resolve_node_into<'a>(
 ) -> Result<()> {
     match node {
         Node::Placeholder(ph) => resolve_placeholder_into(ph, values, budget, out),
-        Node::Element(_) => Err(EvtxError::FailedToCreateRecordModel(
-            "template element outside of element content",
-        )),
+        Node::Element(_) => Err(element_in_attr()),
         other => {
             out.push(other.clone());
             Ok(())
@@ -1412,29 +1443,24 @@ fn value_to_node<'a>(value: BinXmlValue<'a>) -> Result<Node<'a>> {
     }
 }
 
-fn expand_string_ref<'a>(
+/// The name at `offset` of a chunk whose string table doesn't list it (a damaged table, or
+/// a name that only a record holds), decoded into `bump`.
+fn read_string_at<'a>(
     offset: ChunkOffset,
     chunk: &'a EvtxChunk<'a>,
     bump: &'a Bump,
 ) -> Result<&'a str> {
-    match chunk.string_cache.get_cached_string(offset) {
-        Some(s) => Ok(s.as_str()),
-        None => {
-            // Fail-soft fallback for corrupted chunks / missing string cache entries:
-            // decode the name into the caller-provided bump arena.
-            let name_off =
-                offset
-                    .checked_add(NAME_LINK_SIZE)
-                    .ok_or(EvtxError::FailedToCreateRecordModel(
-                        "string table offset overflow",
-                    ))?;
-            let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
-            let s = cursor
-                .len_prefixed_utf16_string_bump(true, "name", bump)?
-                .unwrap_or("");
-            Ok(s)
-        }
-    }
+    let name_off =
+        offset
+            .checked_add(NAME_LINK_SIZE)
+            .ok_or(EvtxError::FailedToCreateRecordModel(
+                "string table offset overflow",
+            ))?;
+    let mut cursor = ByteCursor::with_pos(chunk.data, name_off as usize)?;
+    let s = cursor
+        .len_prefixed_utf16_string_bump(true, "name", bump)?
+        .unwrap_or("");
+    Ok(s)
 }
 
 fn expand_wevt_inline_name_ref<'a>(

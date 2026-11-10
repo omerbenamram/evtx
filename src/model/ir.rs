@@ -10,6 +10,7 @@
 //!   is resolved during template instantiation (IR build), before rendering.
 //! - `Element::has_element_child` is maintained to optimize rendering decisions.
 
+use crate::binxml::name::{BinXmlName, is_xml_name};
 use crate::binxml::value_variant::BinXmlValue;
 use crate::utils::Utf16LeSlice;
 use bumpalo::Bump;
@@ -18,17 +19,31 @@ use std::mem::ManuallyDrop;
 
 /// An XML name backed by a UTF-8 string slice.
 ///
-/// Names are guaranteed to be valid XML names as produced by the BinXML
-/// stream.
+/// A name read from a BinXML stream is made with `Name::parse` or `Name::from_table`, so it
+/// is an XML name.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Name<'a> {
     value: &'a str,
 }
 
 impl<'a> Name<'a> {
-    /// Wrap a string slice as an IR name.
+    /// Wrap a string slice as an IR name. For names the crate writes itself: one from a
+    /// stream goes through `parse` or `from_table`.
     pub(crate) fn new(value: &'a str) -> Self {
         Name { value }
+    }
+
+    /// `value` as a name, if it is an XML name.
+    pub(crate) fn parse(value: &'a str) -> Option<Self> {
+        is_xml_name(value).then_some(Name { value })
+    }
+
+    /// A name of a chunk's string table as a name, if it is an XML name: as `parse`, with the
+    /// check made when the table was read.
+    pub(crate) fn from_table(name: &'a BinXmlName) -> Option<Self> {
+        name.is_xml_name().then_some(Name {
+            value: name.as_str(),
+        })
     }
 
     /// Returns the name as a UTF-8 string slice.

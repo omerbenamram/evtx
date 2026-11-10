@@ -16,12 +16,48 @@ pub(crate) const NAME_LINK_SIZE: u32 = 6;
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Hash)]
 pub struct BinXmlName {
     str: String,
+    /// Whether `str` is an XML name, checked once here: a chunk's records use each of its
+    /// names many times over.
+    is_xml_name: bool,
 }
 
 impl fmt::Display for BinXmlName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.str)
     }
+}
+
+/// Whether `name` is an XML `Name`: what XML and JSON output need of an element or attribute
+/// name, an entity reference, a processing instruction target or a JSON key, since they write
+/// it as it is (XML has no way to escape a name). A name with a quote, a space or an angle
+/// bracket in it would end its tag or its key early and have the rest read as markup.
+/// Windows writes names that came from a manifest, which are XML names.
+pub(crate) fn is_xml_name(name: &str) -> bool {
+    // XML 1.0 (fifth edition), productions [4] NameStartChar and [4a] NameChar.
+    fn starts_name(c: char) -> bool {
+        matches!(c,
+            ':' | 'A'..='Z' | '_' | 'a'..='z'
+            | '\u{C0}'..='\u{D6}' | '\u{D8}'..='\u{F6}' | '\u{F8}'..='\u{2FF}'
+            | '\u{370}'..='\u{37D}' | '\u{37F}'..='\u{1FFF}' | '\u{200C}'..='\u{200D}'
+            | '\u{2070}'..='\u{218F}' | '\u{2C00}'..='\u{2FEF}' | '\u{3001}'..='\u{D7FF}'
+            | '\u{F900}'..='\u{FDCF}' | '\u{FDF0}'..='\u{FFFD}' | '\u{10000}'..='\u{EFFFF}')
+    }
+    fn continues_name(c: char) -> bool {
+        starts_name(c)
+            || matches!(c,
+                '-' | '.' | '0'..='9' | '\u{B7}' | '\u{300}'..='\u{36F}' | '\u{203F}'..='\u{2040}')
+    }
+    // Nearly every name is ASCII, which a walk over its bytes settles.
+    if name.is_ascii() {
+        let starts = |b: u8| b.is_ascii_alphabetic() || b == b'_' || b == b':';
+        let continues = |b: u8| starts(b) || b.is_ascii_digit() || b == b'-' || b == b'.';
+        return match name.as_bytes() {
+            [first, rest @ ..] => starts(*first) && rest.iter().all(|b| continues(*b)),
+            [] => false,
+        };
+    }
+    let mut chars = name.chars();
+    chars.next().is_some_and(starts_name) && chars.all(continues_name)
 }
 
 /// Read a string-table link, returning the next string's offset (if any).
@@ -102,10 +138,47 @@ impl BinXmlName {
         let name = cursor
             .len_prefixed_utf16_string_utf8(true, "name")?
             .unwrap_or_default();
-        Ok(BinXmlName { str: name })
+        let is_xml_name = is_xml_name(&name);
+        Ok(BinXmlName {
+            str: name,
+            is_xml_name,
+        })
+    }
+
+    /// Whether the name is an XML name, which is what the renderers can write.
+    pub(crate) fn is_xml_name(&self) -> bool {
+        self.is_xml_name
     }
 
     pub fn as_str(&self) -> &str {
         &self.str
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_xml_name;
+
+    #[test]
+    fn ascii_names_are_judged_as_any_other() {
+        // The ASCII walk and the walk over characters, which a non-ASCII character after the
+        // name under test selects, agree on every ASCII character first and second.
+        for first in 0..128u8 {
+            for second in 0..128u8 {
+                let name = String::from_utf8(vec![first, second]).unwrap();
+                assert_eq!(
+                    is_xml_name(&name),
+                    is_xml_name(&format!("{name}é")),
+                    "{name:?}"
+                );
+            }
+            let name = char::from(first).to_string();
+            assert_eq!(
+                is_xml_name(&name),
+                is_xml_name(&format!("{name}é")),
+                "{name:?}"
+            );
+        }
+        assert!(!is_xml_name(""));
     }
 }
