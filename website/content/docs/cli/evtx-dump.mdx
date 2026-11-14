@@ -1,86 +1,158 @@
 ---
 title: evtx_dump
-description: Turn .evtx event logs into JSON, JSON lines or XML.
+description: Turn .evtx event logs into JSON lines or XML, and ask them questions with jq.
 ---
+
+You have a `Security.evtx` from a host. Turn it into one JSON object per line:
 
 ```bash
 evtx_dump -o jsonl Security.evtx > security.jsonl
 ```
 
-One event per line, ready for `jq`, `grep` or a SIEM upload:
+That is 2,261 events for this sample. Now ask it something. Which accounts were created, and who was put in which group?
 
-```json
-{"Event":{"System":{"Provider":{"#attributes":{"Name":"Microsoft-Windows-Security-Auditing"}},"EventID":4624,"TimeCreated":{"#attributes":{"SystemTime":"2016-07-08T18:12:51.6816408Z"}},"EventRecordID":2,"Channel":"Security","Computer":"37L4247F27-25"},"EventData":{"TargetUserName":"SYSTEM","LogonType":0,"IpAddress":"-"}}}
+```bash
+jq -r 'select(.Event.System.EventID == 4720 or .Event.System.EventID == 4732)
+  | .Event | [.System.TimeCreated["#attributes"].SystemTime, .System.EventID,
+     .EventData.SubjectUserName, .EventData.TargetUserName, .EventData.MemberSid // "-"] | @tsv' security.jsonl
 ```
 
-(Trimmed. Real records carry every `System` and `EventData` field.)
+```text
+2016-07-08T18:15:23.3980262Z	4720	WIN-03DLIIOFRRA$	fsir	-
+2016-07-08T18:15:23.4136262Z	4732	WIN-03DLIIOFRRA$	Users	S-1-5-21-2603537626-3982775912-406486804-1000
+2016-07-08T18:15:23.4292263Z	4732	WIN-03DLIIOFRRA$	Administrators	S-1-5-21-2603537626-3982775912-406486804-1000
+2016-07-08T22:23:19.2919383Z	4720	fsir	archir	-
+2016-07-08T22:23:19.3075383Z	4732	fsir	Users	S-1-5-21-2603537626-3982775912-406486804-1001
+2016-07-09T22:25:47.6209057Z	4732	fsir	Administrators	S-1-5-21-2603537626-3982775912-406486804-1001
+2016-07-16T00:18:31.3954906Z	4732	archir	Administrators	S-1-5-21-2603537626-3982775912-406486804-1000
+2016-07-16T00:37:38.4730227Z	4732	WIN-03DLIIOFRRA$	Performance Log Users	S-1-5-21-2603537626-3982775912-406486804-1000
+```
 
-## Pick an output format
+The machine's own account created `fsir` and made it an administrator, which is what Windows setup does for the first user. Four hours later `fsir` created `archir`, and made it an administrator the next day.
 
-| Flag | You get | Use it when |
+## What a record looks like
+
+Every record is an `Event` with a `System` part, which is the same for all events, and an `EventData` (or `UserData`) part, which depends on the event ID. This is the `EventData` of a 4624 logon:
+
+```bash
+jq 'select(.Event.System.EventRecordID == 128) | .Event.EventData' security.jsonl
+```
+
+```json
+{
+  "SubjectUserSid": "S-1-5-18",
+  "SubjectUserName": "WIN-03DLIIOFRRA$",
+  "SubjectDomainName": "WORKGROUP",
+  "SubjectLogonId": "0x3e7",
+  "TargetUserSid": "S-1-5-21-2603537626-3982775912-406486804-1000",
+  "TargetUserName": "fsir",
+  "TargetDomainName": "WIN-03DLIIOFRRA",
+  "TargetLogonId": "0x2610b",
+  "LogonType": 2,
+  "LogonProcessName": "User32 ",
+  "AuthenticationPackageName": "Negotiate",
+  "WorkstationName": "WIN-03DLIIOFRRA",
+  "LogonGuid": "{00000000-0000-0000-0000-000000000000}",
+  "TransmittedServices": "-",
+  "LmPackageName": "-",
+  "KeyLength": 0,
+  "ProcessId": "0x194",
+  "ProcessName": "C:\\Windows\\System32\\winlogon.exe",
+  "IpAddress": "127.0.0.1",
+  "IpPort": "0"
+}
+```
+
+Values that are attributes in the XML sit under `#attributes`, which is why the event time is `.Event.System.TimeCreated["#attributes"].SystemTime`. It is always UTC.
+
+## Output formats
+
+| Flag | You get | Use it for |
 | --- | --- | --- |
-| `-o jsonl` | one JSON object per line | piping into `jq`, a SIEM or a script. **Start here.** |
-| `-o json` | indented JSON with a `Record <id>` line before each | reading by eye |
-| `-o xml` (default) | the XML Event Viewer shows | comparing with Windows, or tools that want XML |
+| `-o jsonl` | one JSON object per line | `jq`, `grep`, scripts, SIEM uploads. This is the one you want most of the time. |
+| `-o json` | the same lines, each under a `Record <id>` line | paging through by eye. It is not one valid JSON document, and it is not indented: pipe a line through `jq .` for that. |
+| `-o xml` (the default) | the XML that Event Viewer shows on its Details tab | comparing with Windows, or tools that take XML |
 
-## Recipes
+## More questions to ask
 
-**Logons, as a table**
-
-```bash
-evtx_dump -o jsonl Security.evtx | jq -c '
-  select(.Event.System.EventID == 4624) |
-  {time: .Event.System.TimeCreated["#attributes"].SystemTime,
-   user: .Event.EventData.TargetUserName,
-   type: .Event.EventData.LogonType}'
-```
-
-```json
-{"time":"2016-07-08T18:12:51.6816408Z","user":"SYSTEM","type":0}
-{"time":"2016-07-08T18:12:51.7908409Z","user":"SYSTEM","type":5}
-{"time":"2016-07-08T18:12:51.8532411Z","user":"NETWORK SERVICE","type":5}
-```
-
-**Which event IDs are in this log?**
+**What is in this log?** Count the event IDs before you read anything:
 
 ```bash
-evtx_dump -o jsonl Security.evtx | jq '.Event.System.EventID' | sort | uniq -c | sort -rn
+jq '.Event.System.EventID' security.jsonl | sort | uniq -c | sort -rn | head -5
 ```
 
-**Only some records**
+```text
+    620 4907
+    583 4624
+    459 4672
+    102 5061
+    102 5058
+```
+
+**Who logged on, how, and from where?**
 
 ```bash
-evtx_dump --events 1000-1200,5000 Security.evtx
+jq -r 'select(.Event.System.EventID == 4624) | .Event.EventData
+  | [.LogonType, .TargetUserName, .IpAddress] | @tsv' security.jsonl | sort | uniq -c | sort -rn
 ```
 
-**Write to a file, no prompt** (for scripts)
+```text
+    337 5	SYSTEM	-
+     78 2	fsir	127.0.0.1
+     40 5	NETWORK SERVICE	-
+     40 0	SYSTEM	-
+     39 5	LOCAL SERVICE	-
+     39 3	ANONYMOUS LOGON	-
+      4 7	fsir	127.0.0.1
+      4 2	archir	::1
+      2 2	fsir	-
+```
+
+Type 5 is a service starting and type 0 is the system at boot, so the rows about people are the ones with type 2 (at the console), 7 (unlock), 3 (over the network) and 10 (RDP).
+
+**Only some records**, by `EventRecordID`:
 
 ```bash
-evtx_dump -o jsonl -f out/security.jsonl --no-confirm-overwrite Security.evtx
+evtx_dump --events 120-130,2000 Security.evtx
 ```
 
-**Read from stdin**
+**Every log in a folder**, each to its own file:
 
 ```bash
-cat Security.evtx | evtx_dump -o jsonl -
+for f in winevt/Logs/*.evtx; do
+  evtx_dump -o jsonl -f "out/$(basename "$f" .evtx).jsonl" --no-confirm-overwrite "$f"
+done
 ```
 
-**A whole folder of logs**
+`-f` creates `out/` if it is missing, and without `--no-confirm-overwrite` it asks before it replaces a file.
+
+**A compressed log**, without unpacking it to disk:
 
 ```bash
-for f in winevt/Logs/*.evtx; do evtx_dump -o jsonl "$f" > "out/$(basename "$f" .evtx).jsonl"; done
+zcat Security.evtx.gz | evtx_dump -o jsonl -
 ```
+
+## When it goes wrong
+
+A log copied from a running system is marked dirty, and often has a half-written last chunk. `evtx_dump` reads what it can, prints each record or chunk it could not read to stderr, and keeps going. Records go to stdout, so the two never mix.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | Every record was read. |
+| 1 | The run could not start or had to stop: the file is missing, or it is not an event log. |
+| 3 | The output is complete except for the records or chunks named on stderr. From evtx 0.16; before that this case also exits with 0. |
+
+In a script, treat 3 as "keep the output, and keep stderr next to it".
 
 ## When you need more
 
 | Situation | Flag | Read |
 | --- | --- | --- |
-| You want the sentence Event Viewer shows ("An account was successfully logged on...") | `--mta` (`--messages` coming in 0.16) | [Event messages](/docs/guides/event-messages) |
-| The log was cleared, or you want records from chunk slack | `--recover-records` | [Deleted and damaged logs](/docs/guides/deleted-events) |
-| You have a disk image or unallocated space, not a `.evtx` | `--carve` (coming in 0.16) | [Deleted and damaged logs](/docs/guides/deleted-events) |
-| Your SIEM rejects fields that are sometimes a number, sometimes an object | `--separate-json-attributes` | [Feeding a SIEM](/docs/guides/siem-pipelines) |
-| Strings in a non-Latin code page come out garbled | `--ansi-codec windows-1251` (or `gbk`, ...) | |
-| A log looks damaged and you want to see its chunks | `evtx_dump info --input Security.evtx` | [Deleted and damaged logs](/docs/guides/deleted-events) |
-| Only trust chunks whose CRC32 matches | `--validate-checksums` | |
+| You want the sentence Event Viewer shows ("An account was successfully logged on...") | `--mta` or `--messages` | [Event messages](/docs/guides/event-messages) |
+| The log was cleared, or you want the old records still inside the file | `--recover-records` | [Deleted and damaged logs](/docs/guides/deleted-events) |
+| You have a disk image or unallocated space, not a `.evtx` | `--carve` | [Deleted and damaged logs](/docs/guides/deleted-events) |
+| Your SIEM rejects a field that is a number in one event and an object in the next | `--separate-json-attributes` | [Feeding a SIEM](/docs/guides/siem-pipelines) |
+| Text from a system with a non-Western code page comes out garbled | `--ansi-codec windows-1251` (or `gbk`, `shift_jis`, ...) | |
+| A log looks damaged and you want to see its chunks before parsing it | `evtx_dump info -i Security.evtx` | [Deleted and damaged logs](/docs/guides/deleted-events) |
 
-`-t 1` turns threading off. By default `evtx_dump` uses every core, and records still come out in order.
+`evtx_dump` parses on every core and still writes records in file order. A 30 MB Security log with 62,031 records takes about 30 ms on a 4-core machine. `-t 1` keeps it to one thread, for when you run many copies side by side.

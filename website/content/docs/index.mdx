@@ -1,30 +1,36 @@
 ---
 title: Start here
-description: Pick the tool for the file you have, then pick CLI or library.
+description: Which tool reads the file you have, and where to go next.
 ---
 
-## What do you have?
+Two command-line tools, `evtx_dump` and `mft_dump`, and the same parsers as Python packages and Rust crates. They read files you have already collected, with KAPE, Velociraptor, FTK Imager, The Sleuth Kit or anything else. They run on Linux, macOS and Windows, and none of them needs Windows to read a Windows artifact.
 
-| You have | Use | Try |
+## What did you collect?
+
+| You have | Run | Then read |
 | --- | --- | --- |
-| A Windows event log (`.evtx`) | `evtx_dump` / `pip install evtx` | `evtx_dump -o jsonl Security.evtx` |
-| A disk image or unallocated space with event logs in it | `evtx_dump --carve` | `evtx_dump --carve -o jsonl disk.raw` |
-| An `$MFT` | `mft_dump` / `pip install mft` | `mft_dump -o csv '$MFT'` |
-| `$UsnJrnl:$J`, `$I30`, `$LogFile`, `$Boot`, `$Secure:$SDS` | `mft_dump` | `mft_dump -o jsonl '$J'` |
+| A Windows event log (`.evtx`) | `evtx_dump -o jsonl Security.evtx` | [evtx_dump](/docs/cli/evtx-dump) |
+| An `$MFT` | `mft_dump -o csv '$MFT'` | [mft_dump](/docs/cli/mft-dump) |
+| `$UsnJrnl:$J`, `$I30`, `$LogFile`, `$Boot` or `$Secure:$SDS` | `mft_dump -o jsonl '$J'` | [NTFS files](/docs/cli/ntfs-files) |
+| A disk image, unallocated space or a memory dump, and you want the event logs in it | `evtx_dump --carve -o jsonl disk.raw` | [Deleted and damaged logs](/docs/guides/deleted-events) |
 
-The parsers read files you already extracted (with KAPE, Velociraptor, FTK Imager, The Sleuth Kit and the like). They never need Windows.
+The single quotes matter in a Unix shell: without them `$MFT` is an empty variable.
 
-## CLI or library?
+## Working a case, or building a pipeline?
 
-- **Command line**: you are working a case or triaging a machine. You want a JSON, CSV or XML file to read, grep, `jq` or load into Timeline Explorer. Start at [evtx_dump](/docs/cli/evtx-dump) or [mft_dump](/docs/cli/mft-dump).
-- **Library**: the parser is one step in something bigger, such as a SIEM ingest job, a collection pipeline or a notebook. Start at [Python](/docs/python/evtx) or [Rust](/docs/rust/evtx), then read [Feeding a SIEM](/docs/guides/siem-pipelines).
+If you are at a terminal with a case open, use the command-line tools. They write JSON, CSV or XML that you can `grep`, feed to `jq`, or open in Timeline Explorer. Start at [evtx_dump](/docs/cli/evtx-dump) or [mft_dump](/docs/cli/mft-dump).
 
-## Not sure which option you need?
+If the parser is a step in something that runs unattended, such as a SIEM ingest job or a collection pipeline, use the [Python packages](/docs/python/evtx) or the [Rust crates](/docs/rust/evtx), and read [Feeding a SIEM or pipeline](/docs/guides/siem-pipelines) before you choose settings.
 
-The guides answer one question each:
+## Questions the guides answer
 
-- [Feeding a SIEM or pipeline](/docs/guides/siem-pipelines): JSON shape, speed, errors.
-- [Event messages](/docs/guides/event-messages): when to add the text Event Viewer shows.
-- [Deleted and damaged logs](/docs/guides/deleted-events): `--recover-records` or `--carve`.
+- [Should I add the message text Event Viewer shows?](/docs/guides/event-messages) Usually not for detection, usually yes for a case.
+- [The log was cleared. What can I get back?](/docs/guides/deleted-events)
 - [Which NTFS file answers my question?](/docs/guides/ntfs-which-file)
-- [Building a timeline](/docs/guides/timelines)
+- [How do I put all of this on one timeline?](/docs/guides/timelines)
+
+## About the examples
+
+Every command on this site was run, and its output is pasted as it came out. Where a line is too long to show, a `jq` filter in the command cuts it down, so you get the same thing when you run it.
+
+The event log examples use sample logs from the [evtx repository](https://github.com/omerbenamram/evtx/tree/master/samples). The NTFS examples use the Narcos-1 teaching image from [Digital Corpora](https://digitalcorpora.org/): a Windows 10 laptop whose user ran CCleaner before it was seized, which makes it a good test of what survives a cleanup.

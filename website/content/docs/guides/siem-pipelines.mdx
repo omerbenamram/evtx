@@ -1,69 +1,90 @@
 ---
 title: Feeding a SIEM or pipeline
-description: Settings for ingesting event logs and MFTs at scale, and the JSON shapes to expect.
+description: The settings that matter when event logs are parsed unattended, and the JSON shapes to plan for.
 ---
 
-The short version for event logs:
+If you read nothing else, use this:
 
 ```bash tab="CLI"
 evtx_dump -o jsonl --separate-json-attributes Security.evtx
 ```
 
 ```python tab="Python"
-PyEvtxParser(f, indent=False, separate_json_attributes=True, skip_errors=True)
+PyEvtxParser(f, separate_json_attributes=True, skip_errors=True).records_json()
 ```
 
 ```rust tab="Rust"
-ParserSettings::new().indent(false).separate_json_attributes(true)
+ParserSettings::new().separate_json_attributes(true)
 ```
 
-Here is why each of those matters.
+The rest of this page is why, and what will surprise your index mapping.
 
-## Fields that change type
+## A field that changes type
 
-An XML element with attributes becomes an object. Most events have a plain `EventID`, but classic events add a `Qualifiers` attribute:
+`EventID` is a number, until it is not:
+
+```bash
+evtx_dump -o jsonl System.evtx | jq -c '.Event.System.EventID' | sort | uniq -c | sort -rn | head -n 4
+```
+
+```text
+    394 16
+    210 1
+    160 1014
+    147 {"#attributes":{"Qualifiers":24580},"#text":32}
+```
+
+Classic event sources put a `Qualifiers` attribute on `EventID`. An XML element with an attribute becomes a JSON object, so the same field is a number in one event and an object in the next. Elasticsearch, OpenSearch and anything else with a schema fixes the type on the first event it sees and rejects the others.
+
+`--separate-json-attributes` keeps the value where it was and puts the attributes in a sibling:
+
+```bash
+evtx_dump -o jsonl --separate-json-attributes System.evtx \
+  | jq -c 'select(.Event.System.EventID_attributes) | .Event.System | {EventID, EventID_attributes, TimeCreated_attributes}' | head -n 1
+```
 
 ```json
-"EventID": 12
-"EventID": {"#attributes": {"Qualifiers": 32768}, "#text": 6009}
+{"EventID":6009,"EventID_attributes":{"Qualifiers":32768},"TimeCreated_attributes":{"SystemTime":"2017-07-12T17:16:28.2141616Z"}}
 ```
 
-Elasticsearch, OpenSearch and anything else with a schema rejects the second one after it has seen the first. `--separate-json-attributes` keeps the value where it was and moves the attributes next to it:
+Turn it on for any store with typed fields. Note what else moved: the event time is now `Event.System.TimeCreated_attributes.SystemTime`, not `Event.System.TimeCreated["#attributes"].SystemTime`. It is off by default so that existing pipelines keep the paths they have.
 
-```json
-"EventID": 6009, "EventID_attributes": {"Qualifiers": 32768}
-```
+## Three shapes of event data
 
-**Turn it on for any store with typed fields.** Leave it off if your queries already use `#attributes` (it's the default, so existing pipelines don't change).
-
-## What `EventData` looks like
-
-| Event kind | Shape | Example |
+| Kind of event | Shape | Example |
 | --- | --- | --- |
-| Manifest events (most modern ones) | named fields | `"EventData": {"TargetUserName": "bob", "LogonType": 3}` |
-| Classic events (`Application`, many `System`) | unnamed values in a list | `"EventData": {"Data": {"#text": ["10.00.", "15063", ""]}}` |
-| Some providers | `UserData` instead of `EventData` | `"UserData": {"LogFileCleared": {...}}` |
+| Manifest-based, which is most of what modern Windows logs | named fields | `"EventData":{"TargetUserName":"fsir","LogonType":2}` |
+| Classic sources (`Application`, much of `System`) | a list of unnamed strings | `"EventData":{"Data":{"#text":["10.00.","15063","","Multiprocessor Free","0"]}}` |
+| Some providers | `UserData` with the provider's own element | `"UserData":{"EventXML":{"Param1":"mpowers","Param3":"174.127.93.2"}}` |
 
-Detection rules (Sigma and the like) match the named fields. For classic events, match by `Provider`, `EventID` and the position in `Data`.
+Sigma rules and the like match named fields. For a classic event, the meaning of each string is its position, so match on the provider, the event ID and the index into `Data`. An event with no data at all has `"EventData":null`.
 
 ## Errors
 
-- **CLI:** a bad record is printed to stderr and the run goes on. `--stop-after-one-error` stops instead.
-- **Python:** a bad record raises unless `skip_errors=True`, which turns it into a `RuntimeWarning`.
-- **Rust:** each item is a `Result`; skip the `Err`s you don't care about.
+Logs from live systems are dirty, and some have a half-written record at the end. Decide what a bad record does before the first one arrives at 3 am:
 
-Dirty logs (copied from a live system) are normal and parse fine. Don't pass `--validate-checksums` unless you want to drop chunks that were mid-write.
+- **CLI:** each bad record or chunk is reported on stderr and the run continues. From evtx 0.16 the exit status is then 3. `--stop-after-one-error` stops at the first one.
+- **Python:** a bad record raises `RuntimeError`, which ends a `for` loop. With `skip_errors=True` it becomes a `RuntimeWarning` and the loop goes on. Route warnings to your log, or you will not know that records are missing.
+- **Rust:** every item is a `Result`. Log the `Err` and continue.
 
-## Speed
+Leave `--validate-checksums` off. A dirty log's last chunk often fails its checksum because Windows had not written it out yet, and the flag would drop the newest events, which are usually the ones you want.
 
-Each file is parsed on every core by default. For many files, run one process per file and let each use a few threads (`-t 4`, `number_of_threads=4`). Keep the record order you get: it is the file's order, even with threads.
+## Speed and threads
 
-Leave [message text](/docs/guides/event-messages) off for bulk ingestion: it makes parsing several times slower and rules don't need it.
+One file is parsed on all cores, and records still come out in file order. When you have thousands of files, parallelism across files is what counts: run one process or thread per file, and give each parser a few threads (`-t 4`, `number_of_threads=4`) or one.
+
+For a sense of scale, `evtx_dump -o jsonl` reads a 30 MB Security log with 62,031 records in about 30 ms on four cores. The Python package is slower, because it builds a `dict` and a string for every record, but the parsing itself is the same code.
+
+Leave [message text](/docs/guides/event-messages) off for bulk ingestion. It doubles the output and triples the time, and rules don't use it.
+
+## JSON is always compact
+
+Records come out as one line of JSON each. The `indent` setting (`--no-indent` on the command line) changes XML output only, so there is nothing to turn off for JSON.
 
 ## Timestamps
 
-`System.TimeCreated.#attributes.SystemTime` is UTC with 100 ns precision (`2016-07-08T18:12:51.6816408Z`). Map it to a nanosecond date type (`date_nanos` in Elasticsearch) to keep event order within a second.
+`SystemTime` is UTC with seven decimal places, such as `2016-07-08T18:12:51.6816408Z`. That is 100 ns precision, and a millisecond date type will put several events in the same instant. Use a nanosecond type (`date_nanos` in Elasticsearch) to keep their order.
 
-## MFTs
+## The MFT in a pipeline
 
-`mft_dump -o jsonl` gives every attribute; `-o csv` gives one flat row per file with fixed columns, which is easier to map. For path-based searches, the CSV `FullPath` column is what you want.
+`mft_dump -o csv` gives one flat row per file with 30 fixed columns, which is easy to map and has the full path in `FullPath`. `mft_dump -o jsonl` gives every attribute of every record, nested, at about six times the size. Start with the CSV, and take the JSON when you need an attribute that the CSV does not have.

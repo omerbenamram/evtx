@@ -11,35 +11,47 @@ const artifacts = [
 const paths = [
   {
     title: 'Command line',
-    text: 'One binary per format. Point it at a file, get JSON, CSV or XML.',
-    code: 'evtx_dump -o jsonl Security.evtx | jq .',
+    text: 'For working a case. Give a tool a file and read the JSON, CSV or XML with jq, grep or Timeline Explorer.',
+    code: "mft_dump -o csv '$MFT' > mft.csv",
     href: '/docs/cli/evtx-dump',
   },
   {
     title: 'Python',
-    text: 'pip install, iterate records, feed your pipeline or SIEM.',
+    text: 'For pipelines and notebooks. Wheels for Linux, macOS and Windows, with nothing to compile.',
     code: 'pip install evtx mft',
     href: '/docs/python/evtx',
   },
   {
     title: 'Rust',
-    text: 'The same parsers as crates. Safe Rust, multithreaded.',
+    text: 'The parsers themselves, as crates. No unsafe code.',
     code: 'cargo add evtx mft',
     href: '/docs/rust/evtx',
   },
 ];
+
+const session = `$ evtx_dump -o jsonl Security.evtx > security.jsonl
+$ jq -r 'select(.Event.System.EventID == 4720) | .Event
+    | [.System.TimeCreated["#attributes"].SystemTime,
+       .EventData.SubjectUserName, "created", .EventData.TargetUserName] | @tsv' security.jsonl
+2016-07-08T18:15:23.3980262Z\tWIN-03DLIIOFRRA$\tcreated\tfsir
+2016-07-08T22:23:19.2919383Z\tfsir\tcreated\tarchir`;
 
 export default function HomePage() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-14 px-4 py-16">
       <section className="flex flex-col gap-4">
         <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-          Parse Windows forensic artifacts. Fast.
+          Read Windows event logs and NTFS metadata, on any OS.
         </h1>
         <p className="max-w-2xl text-lg text-fd-muted-foreground">
-          Event logs and NTFS metadata to JSON, CSV or XML, from the command line, Python or Rust.
-          Open source, safe Rust, built for triage at scale.
+          <code>evtx_dump</code> and <code>mft_dump</code> turn <code>.evtx</code> logs, the{' '}
+          <code>$MFT</code>, the change journal and other NTFS files into JSON, CSV or XML. The
+          same parsers are Python packages and Rust crates. A 30 MB Security log takes a fraction
+          of a second.
         </p>
+        <pre className="overflow-x-auto rounded-xl border bg-fd-card p-4 font-mono text-xs leading-relaxed">
+          <code>{session}</code>
+        </pre>
         <div className="flex flex-wrap gap-3">
           <Link
             href="/docs"

@@ -1,11 +1,13 @@
 ---
 title: evtx (Python)
-description: pip install evtx. Iterate records as JSON or XML, from a path or any file-like object.
+description: pip install evtx. Iterate the records of an event log as JSON or XML, from a path or a file object.
 ---
 
 ```bash
 pip install evtx
 ```
+
+The package is the Rust parser behind `evtx_dump`, with a thin Python layer. You get one `dict` per record, with the event itself as a JSON (or XML) string in `record["data"]`:
 
 ```python
 import json
@@ -14,88 +16,117 @@ from evtx import PyEvtxParser
 parser = PyEvtxParser("Security.evtx")
 for record in parser.records_json():
     event = json.loads(record["data"])["Event"]
-    if event["System"]["EventID"] == 4624:
+    if event["System"]["EventID"] == 4720:  # a user account was created
         data = event["EventData"]
-        print(record["timestamp"], data["TargetUserName"], data["LogonType"])
+        print(record["timestamp"], data["SubjectUserName"], "created", data["TargetUserName"])
 ```
 
 ```text
-2016-07-08T18:12:51.6816408Z UTC SYSTEM 0
+2016-07-08T18:15:23.3980262Z UTC WIN-03DLIIOFRRA$ created fsir
+2016-07-08T22:23:19.2919383Z UTC fsir created archir
 ```
 
-Each `record` is a dict: `event_record_id`, `timestamp`, `data` (a JSON or XML string) and `recovered`.
+A record has four keys: `event_record_id`, `timestamp`, `data` and `recovered`. `data` is a string so that you can pass it on untouched when you don't need to look inside. `json.loads` is the slow part of the loop above: on a 30 MB log with 62,031 records, parsing takes 0.08 s and decoding every record takes another 0.4 s. Skip it for records you only forward.
 
-## Recipes
+## Common jobs
 
-**JSON lines for a pipeline**
+**Convert a log to JSON lines**
 
 ```python
-import json
 from evtx import PyEvtxParser
 
-with open("Security.evtx", "rb") as f, open("security.jsonl", "w") as out:
-    for record in PyEvtxParser(f, indent=False).records_json():
+with open("security.jsonl", "w") as out:
+    for record in PyEvtxParser("Security.evtx").records_json():
         out.write(record["data"] + "\n")
 ```
 
-`PyEvtxParser` takes a path or any binary file-like object with `read` and `seek`: an open file, `io.BytesIO`, a file inside a zip or a cloud storage stream.
+Each `data` is already one line of JSON.
 
-**XML instead of JSON**
+**Read from something that is not a file on disk**
+
+```python
+import zipfile
+from evtx import PyEvtxParser
+
+with zipfile.ZipFile("collection.zip") as archive, archive.open("Security.evtx") as log:
+    for record in PyEvtxParser(log).records_json():
+        ...
+```
+
+`PyEvtxParser` takes a path, or any binary object with `read` and `seek`: an open file, `io.BytesIO`, a member of a zip, a cloud storage stream that can seek.
+
+**Don't let one bad record end the job**
+
+```python
+import warnings
+from evtx import PyEvtxParser
+
+with warnings.catch_warnings(record=True) as skipped:
+    warnings.simplefilter("always")
+    count = sum(1 for _ in PyEvtxParser("RCM.evtx", skip_errors=True).records_json())
+
+print(count, "records,", len(skipped), "skipped")
+```
+
+```text
+1795 records, 2 skipped
+```
+
+By default, a record or chunk that can't be parsed raises `RuntimeError`, and the `for` loop ends there. With `skip_errors=True` each one becomes a `RuntimeWarning` that says what was skipped, and the loop goes on. Use it in ingestion jobs and send the warnings to your log. Leave it off when you would rather know.
+
+**Records from a cleared log** (see [Deleted and damaged logs](/docs/guides/deleted-events))
+
+```python
+for record in PyEvtxParser("RCM.evtx", recover_records=True, skip_errors=True).records_json():
+    if record["recovered"]:
+        print("recovered", record["event_record_id"], record["timestamp"])
+        break
+```
+
+```text
+recovered 350163 2018-08-02T02:37:44.4341228Z UTC
+```
+
+**XML, as Event Viewer shows it**
 
 ```python
 for record in PyEvtxParser("Security.evtx").records():
-    print(record["data"])  # <?xml version="1.0" ...?><Event ...>
+    print(record["data"])  # <?xml version="1.0" encoding="utf-8"?> <Event ...
 ```
 
-**Keep going past damaged records**
+**Look at a log before parsing it**
 
 ```python
-parser = PyEvtxParser("Security.evtx", skip_errors=True)
-```
-
-By default a bad record raises. With `skip_errors=True` it becomes a `RuntimeWarning` and iteration goes on. Use this in ingestion jobs; leave it off when you want to know about every problem.
-
-**Deleted records** (see [Deleted and damaged logs](/docs/guides/deleted-events))
-
-```python
-for record in PyEvtxParser("Security.evtx", recover_records=True).records_json():
-    if record["recovered"]:
-        print("recovered", record["event_record_id"])
-```
-
-**Event messages from an exported log** (see [Event messages](/docs/guides/event-messages))
-
-```python
-parser = PyEvtxParser("log.evtx", mta="LocaleMetaData/log_1033.MTA")
-```
-
-**Look at the header before parsing**
-
-```python
-parser = PyEvtxParser("Security.evtx")
+parser = PyEvtxParser("RCM.evtx")
 print(parser.header.is_dirty, parser.header.next_record_id)
 for chunk in parser.chunks():
-    print(chunk.number, chunk.first_event_record_id, chunk.last_event_record_id)
+    print(chunk.number, chunk.first_event_record_id, chunk.last_event_record_id, chunk.events_checksum_valid)
 ```
+
+This reads the headers only, like [`evtx_dump info`](/docs/guides/deleted-events#what-is-wrong-with-this-log-info).
 
 ## Options
 
-| Argument | Default | Use it when |
+All are keyword arguments of `PyEvtxParser`.
+
+| Argument | Default | Change it when |
 | --- | --- | --- |
-| `number_of_threads` | one per core | `1` to parse on the calling thread |
-| `indent` | `True` | `False` for compact JSON, smaller and faster to ship |
-| `separate_json_attributes` | `False` | your SIEM needs a field to keep one type. See [Feeding a SIEM](/docs/guides/siem-pipelines) |
-| `skip_errors` | `False` | ingestion should never stop on one bad record |
-| `recover_records` | `False` | you want records from cleared chunks and chunk slack |
-| `mta` | `None` | the log was exported with display information |
-| `ansi_codec` | `windows-1252` | ANSI strings in another code page, such as `windows-1251` or `gbk` |
-| `validate_checksums` | `False` | skip chunks whose CRC32 doesn't match |
-| `wevt_cache` | `None` | records whose templates are missing from the log |
+| `skip_errors` | `False` | an ingestion job must not stop at one bad record |
+| `separate_json_attributes` | `False` | your store needs each field to keep one type. See [Feeding a SIEM](/docs/guides/siem-pipelines). |
+| `recover_records` | `False` | you want the old records left in cleared chunks and chunk slack |
+| `number_of_threads` | one per core | you parse many files at once: give each parser `1` or a few |
+| `mta` | `None` | the log was exported with display information. See [Event messages](/docs/guides/event-messages). |
+| `ansi_codec` | `windows-1252` | the log is from a system with another code page, such as `windows-1251` or `gbk` |
+| `indent` | `True` | you want XML on one line. JSON is always compact. |
+| `validate_checksums` | `False` | you want to skip chunks whose CRC32 doesn't match. This drops records from dirty logs. |
+| `wevt_cache` | `None` | records fail because their template is missing from the log |
 
 ## Two timestamps
 
-`record["timestamp"]` comes from the record header. `Event.System.TimeCreated.#attributes.SystemTime` is inside the event and is what Event Viewer shows. They usually agree; when they don't, trust `TimeCreated` for "when did it happen".
+`record["timestamp"]` comes from the record's header. `Event.System.TimeCreated` is inside the event, and it is the time Event Viewer shows. They are stored separately and usually agree. When you report when something happened, use `TimeCreated`, and keep both if a difference between them matters to your case.
 
-## Threads
+## Threads and processes
 
-Chunks are parsed with the GIL released. To parse several files at once, give each thread its own `PyEvtxParser`. Free-threaded Python 3.14 is supported.
+Parsing runs with the GIL released, on `number_of_threads` threads. To parse several logs at once, give each thread its own `PyEvtxParser`. Free-threaded Python 3.14 is supported.
+
+If you use `multiprocessing` with the fork start method, create parsers in the child processes, not before the fork. Version 0.15.0 hangs in a forked child once the parent has made a parser. That is fixed in the repository and ships with the next release.

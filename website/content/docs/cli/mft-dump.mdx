@@ -1,66 +1,100 @@
 ---
 title: mft_dump
-description: Turn an $MFT into CSV, JSON lines or a bodyfile, with full paths.
+description: Turn an $MFT into CSV, JSON lines or a bodyfile, with a full path for every file.
 ---
+
+The `$MFT` has one record for every file and folder on an NTFS volume, deleted ones included until their record is reused. `mft_dump` turns it into one row per file:
 
 ```bash
 mft_dump -o csv '$MFT' > mft.csv
 ```
 
-One row per file, with its full path and both sets of timestamps (`$STANDARD_INFORMATION` and `$FILE_NAME`). Opens in Timeline Explorer or Excel:
+For the 124 MB `$MFT` of the Narcos-1 laptop that is 127,480 rows in about half a second. Each row has the full path, the size, a deleted flag, and both sets of timestamps: the four from `$STANDARD_INFORMATION` that Explorer shows, and the four from `$FILE_NAME` that are much harder to change. Look at one file:
 
-```text
-EntryId,Sequence,...,IsDeleted,...,StandardInfoCreated,...,FullPath,...
-0,1,...,false,...,2019-01-24T21:25:28.1065851Z,...,$MFT,...
+```bash
+mft_dump -o csv -r 86111 '$MFT' | cut -d, -f2,10,12,15,17,19,21,22
 ```
 
-## Pick an output format
+```text
+EntryId,FileSize,IsDeleted,StandardInfoLastModified,StandardInfoCreated,FileNameLastModified,FileNameCreated,FullPath
+86111,142877,false,2019-01-30T21:25:01.9529725Z,2019-01-30T21:25:01.7761507Z,2019-01-30T21:25:01.8517242Z,2019-01-30T21:25:01.7761507Z,Users\Steve Kowhai\Documents\Misc\Airport Crystals.jpg
+```
 
-| Flag | You get | Use it when |
+`mft.csv` opens in Timeline Explorer or Excel as it is. All times are UTC.
+
+## Output formats
+
+| Flag | You get | Use it for |
 | --- | --- | --- |
-| `-o csv` | one flat row per file | spreadsheets, Timeline Explorer, quick `grep` |
-| `-o jsonl` | every attribute of every record, one per line | scripts and SIEMs: nothing is left out |
-| `-o json` (default) | the same, indented | reading one record by eye |
-| `-o bodyfile` | Sleuth Kit bodyfile lines (like `fls -m`) | a timeline with `mactime`. See [Building a timeline](/docs/guides/timelines) |
+| `-o csv` | one flat row per file, 30 fixed columns | Timeline Explorer, spreadsheets, `grep` |
+| `-o jsonl` | every attribute of every record, one record per line | `jq`, scripts and SIEMs. Nothing is left out, so it is about six times the size of the CSV. |
+| `-o json` (the default) | the same, indented over many lines | reading one record with `-r` |
+| `-o bodyfile` | Sleuth Kit bodyfile lines, as `fls -m` writes | `mactime`. See [Building a timeline](/docs/guides/timelines). |
 
-## Recipes
+## Questions to ask it
 
-**Deleted files**
-
-```bash
-mft_dump -o csv '$MFT' | awk -F, 'NR == 1 || $12 == "true"'
-```
-
-**Files that came from the internet** (they have a `Zone.Identifier` stream)
+**Where did this file come from?** Windows marks files that arrived from elsewhere with a `Zone.Identifier` stream. `--stream-rows` adds a row for each named stream:
 
 ```bash
-mft_dump -o csv --stream-rows '$MFT' | grep ':Zone.Identifier'
+mft_dump -o csv --stream-rows '$MFT' | grep 'Documents.*:Zone.Identifier' | cut -d, -f2,17,22
 ```
 
 ```text
-72096,...,Users\informant\Downloads\icloudsetup.exe:Zone.Identifier
+2160,2019-01-29T01:08:14.1306476Z,Users\Steve Kowhai\Documents\Misc\routes-2.png:Zone.Identifier
+21220,2019-02-01T00:11:32.0012918Z,Users\Steve Kowhai\Documents\Misc\BNE.png:Zone.Identifier
+86055,2019-01-30T21:22:24.1667593Z,Users\Steve Kowhai\Documents\Misc\Method Route.jpg:Zone.Identifier
+86111,2019-01-30T21:25:01.7761507Z,Users\Steve Kowhai\Documents\Misc\Airport Crystals.jpg:Zone.Identifier
+117602,2019-01-29T01:07:20.3758230Z,Users\Steve Kowhai\Documents\Misc\routes-1.png:Zone.Identifier
+122442,2019-02-02T01:00:13.8088391Z,Users\Steve Kowhai\Documents\Misc\DropOff.jpg:Zone.Identifier
+122687,2019-02-02T02:28:21.2947110Z,Users\Steve Kowhai\Documents\Misc\Flight_booking.PNG:Zone.Identifier
 ```
 
-**Every name of a file, not just its main one**
+**What does the stream say?** A stream this small is stored inside the MFT record itself, so you can read it without the disk image. `-e` writes every such resident stream to a folder:
+
+```bash
+mft_dump -e streams/ -o json -f /dev/null --no-confirm-overwrite '$MFT'
+cat streams/*Airport\ Crystals.jpg*Zone.Identifier.dontrun
+```
+
+```text
+[ZoneTransfer]
+LastWriterPackageFamilyName=Microsoft.ScreenSketch_8wekyb3d8bbwe
+ZoneId=3
+```
+
+So `Airport Crystals.jpg` was not downloaded by a browser. It was saved by Snip & Sketch: a screenshot of something on an internet page. `-e` also gets back any other file small enough to be resident, up to about 700 bytes, such as scripts, `desktop.ini` files and `.url` shortcuts. This `$MFT` gives 24,492 of them. The files are named `<path>__<random>_<number>_<stream>.dontrun`, so that nothing can be run by a double click.
+
+**What was deleted?** In JSON the deleted records are the ones whose flags lack `ALLOCATED`:
+
+```bash
+mft_dump -o jsonl '$MFT' | jq -r 'select(.header.flags | test("ALLOCATED") | not) | .full_path' | sed -n '3,6p'
+```
+
+```text
+Windows\System32\LogFiles\WMI\RtBackup\EtwRTDefenderAuditLogger.etl
+[Orphaned]\Z...ZZZ...Z..Z.Z
+[Orphaned]\Z.Z.......ZZZ.ZZ
+[Orphaned]\Z.ZZZZ.ZZ.ZZZZ.Z
+```
+
+Of the 3,985 deleted records in this `$MFT`, 3,956 look like the last three. This is what CCleaner leaves. Its secure delete renames a file to a run of `Z`s and dots before it deletes it, and its free-space wipe fills unused records with files named the same way. The record survives, but the name does not. `[Orphaned]` means the parent folder's record was reused, so the path above the file can't be known. The original names are gone from the `$MFT`. They are still in the change journal: see [NTFS files](/docs/cli/ntfs-files).
+
+In CSV, the same filter is the `IsDeleted` column. Filter CSV in a tool that understands it (Timeline Explorer, `qsv`, Python's `csv`), because a file name may hold a comma.
+
+**Was a timestamp changed by hand?** Compare `StandardInfoCreated` with `FileNameCreated`. A tool that sets timestamps changes the first and usually can't change the second. A `StandardInfoCreated` that is earlier than `FileNameCreated` is not proof, though. Installers and archive tools set the original creation time on the files they unpack, and so does a move from another volume. On this laptop, `openoffice1.cab` on the desktop has a `StandardInfoCreated` of 2018-10-24 and a `FileNameCreated` of 2019-01-28, which is just the day OpenOffice was installed. Check what the change journal says happened at the `$FILE_NAME` time before you call it timestomping.
+
+**Every name of a file.** A file can have several hard links, and the CSV shows one. `--hard-link-rows` adds a row for each of the others:
 
 ```bash
 mft_dump -o csv --hard-link-rows '$MFT'
 ```
 
-**Save the content of small files** (resident data: a few hundred bytes or less, kept inside the record itself)
+**Only some records**, by record number:
 
 ```bash
-mft_dump -e streams/ -o json '$MFT' > /dev/null
-```
-
-Each file is written as `<path>__<random>_<stream>_<name>.dontrun`, so nothing runs by accident. This is how you get `Zone.Identifier` contents, small scripts and `desktop.ini` files back without the disk image.
-
-**Only some entries**
-
-```bash
-mft_dump -r 0-15,30 '$MFT'
+mft_dump -r 0-15,86111 '$MFT'
 ```
 
 ## Other NTFS files
 
-`mft_dump` also reads `$UsnJrnl:$J`, `$I30`, `$LogFile`, `$Boot` and `$Secure:$SDS`. It tells them apart by their first bytes. See [NTFS files](/docs/cli/ntfs-files).
+`mft_dump` also reads `$UsnJrnl:$J`, `$I30`, `$LogFile`, `$Boot` and `$Secure:$SDS`, and tells them apart by their first bytes. See [NTFS files](/docs/cli/ntfs-files).

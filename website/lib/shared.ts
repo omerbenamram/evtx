@@ -2,7 +2,7 @@ import { createGetUrl } from 'fumadocs-core/source';
 
 export const appName = 'DFIR Parsers';
 export const appDescription =
-  'Fast, safe parsers for Windows forensic artifacts: event logs (.evtx), $MFT, $UsnJrnl, $LogFile and more. CLI tools, Python packages and Rust crates.';
+  'Parsers for Windows event logs (.evtx) and NTFS metadata ($MFT, $UsnJrnl, $LogFile and more), as command-line tools, Python packages and Rust crates.';
 
 // Where the site is served from: `DOCS_BASE_PATH` is the path prefix (such as `/docs` on
 // GitHub Pages; next.config.mjs inlines it into client code too), and `DOCS_SITE_URL` the

@@ -1,10 +1,10 @@
 ---
 title: evtx (Rust)
-description: The evtx crate. Records as JSON values, strings or XML, multithreaded.
+description: The evtx crate. Records as JSON values, JSON strings or XML, parsed on several threads.
 ---
 
 ```bash
-cargo add evtx
+cargo add evtx anyhow
 ```
 
 ```rust
@@ -15,8 +15,12 @@ fn main() -> anyhow::Result<()> {
     for record in parser.records_json_value() {
         let record = record?;
         let event = &record.data["Event"];
-        if event["System"]["EventID"] == 4624 {
-            println!("{} {}", record.timestamp, event["EventData"]["TargetUserName"]);
+        if event["System"]["EventID"] == 4720 {
+            let data = &event["EventData"];
+            println!(
+                "{} {} created {}",
+                record.timestamp, data["SubjectUserName"], data["TargetUserName"]
+            );
         }
     }
     Ok(())
@@ -24,10 +28,19 @@ fn main() -> anyhow::Result<()> {
 ```
 
 ```text
-2016-07-08T18:12:51.6816408Z "SYSTEM"
+2016-07-08T18:15:23.3980262Z "WIN-03DLIIOFRRA$" created "fsir"
+2016-07-08T22:23:19.2919383Z "fsir" created "archir"
 ```
 
-`records_json_value()` gives `serde_json::Value`s. Use `records_json()` for JSON strings (fastest when you only forward them) and `records()` for XML.
+There are three iterators, and the choice matters for speed:
+
+| Iterator | `record.data` is | Use it when |
+| --- | --- | --- |
+| `records_json_value()` | a `serde_json::Value` | you look inside the events, as above |
+| `records_json()` | a `String` of JSON | you forward events without reading them. No `Value` tree is built, so it is the fastest. |
+| `records()` | a `String` of XML | you need what Event Viewer shows |
+
+Each item is a `Result`. A damaged record is an `Err` for that item only, and the iterator goes on to the next record.
 
 ## Settings
 
@@ -36,36 +49,50 @@ use evtx::{EvtxParser, ParserSettings};
 
 fn main() -> anyhow::Result<()> {
     let settings = ParserSettings::new()
-        .num_threads(0) // one per core (the default)
-        .separate_json_attributes(true) // EventID stays a number
-        .recover_records(true); // records from cleared chunks and slack
+        .num_threads(4)
+        .separate_json_attributes(true)
+        .recover_records(true);
 
-    let mut parser = EvtxParser::from_path("Security.evtx")?.with_configuration(settings);
+    let mut parser = EvtxParser::from_path("RCM.evtx")?.with_configuration(settings);
+    let (mut live, mut recovered, mut failed) = (0, 0, 0);
     for record in parser.records_json() {
         match record {
-            Ok(r) => println!("{}", r.data),
-            Err(e) => eprintln!("{e}"), // one bad record doesn't end the loop
+            Ok(r) if r.recovered => recovered += 1,
+            Ok(_) => live += 1,
+            Err(e) => {
+                failed += 1;
+                eprintln!("{e}");
+            }
         }
     }
+    println!("{live} live, {recovered} recovered, {failed} failed");
     Ok(())
 }
 ```
 
+```text
+Failed to parse record number 463011
+Failed to read the record at offset 0x8088 of chunk 1 (file offset 0x19088)
+1795 live, 245 recovered, 2 failed
+```
+
 | Setting | Use it when |
 | --- | --- |
-| `num_threads(n)` | `1` to stay on one thread. Records come out in order either way |
-| `separate_json_attributes(true)` | fields must keep one JSON type. See [Feeding a SIEM](/docs/guides/siem-pipelines) |
-| `indent(false)` | compact JSON for shipping |
-| `recover_records(true)` | you want records from cleared chunks and slack (`record.recovered` is `true`) |
-| `validate_checksums(true)` | skip chunks whose CRC32 doesn't match |
-| `ansi_codec(...)` | ANSI strings in a code page other than windows-1252 |
-| `mta(...)`, `messages(...)` | add the message text. See [Event messages](/docs/guides/event-messages) |
+| `num_threads(n)` | you parse many files at once and want each parser on `1` or a few threads. The default, `0`, is one per core. Records come out in file order either way. |
+| `separate_json_attributes(true)` | a field must keep one JSON type. See [Feeding a SIEM](/docs/guides/siem-pipelines). |
+| `recover_records(true)` | you want the old records left in cleared chunks and chunk slack. They have `record.recovered` set. |
+| `indent(false)` | you want XML on one line. JSON is always compact. |
+| `validate_checksums(true)` | you want to skip chunks whose CRC32 doesn't match. This drops records from dirty logs. |
+| `ansi_codec(...)` | the log is from a system with a code page other than windows-1252 |
+| `mta(...)`, `messages(...)` | you want the message text. See [Event messages](/docs/guides/event-messages). |
 
-`EvtxParser::from_read_seek` takes anything `Read + Seek`, and `from_buffer` a `Vec<u8>`.
+`EvtxParser::from_read_seek` takes anything that is `Read + Seek`, and `from_buffer` takes a `Vec<u8>`.
 
 ## Carve chunks from raw data
 
-> **Coming in evtx 0.16** (merged, not released yet).
+<Callout title="Not in a release yet" type="warn">
+`evtx::carve` is in `master` and ships with evtx 0.16.
+</Callout>
 
 ```rust
 use evtx::EvtxParser;
@@ -74,20 +101,27 @@ use std::fs::File;
 
 fn main() -> anyhow::Result<()> {
     let carved = CarvedEvtx::new(File::open("disk.raw")?)?;
-    eprintln!("found {} chunks", carved.chunk_offsets().len());
+    println!("found {} chunks", carved.chunk_offsets().len());
+
     let mut parser = EvtxParser::from_read_seek(carved)?;
-    for record in parser.records_json() {
-        println!("{}", record?.data);
-    }
+    let records = parser.records_json().filter_map(Result::ok).count();
+    println!("{records} records");
     Ok(())
 }
 ```
 
-`CarvedEvtx` finds the 64 KiB chunks anywhere in a disk image, unallocated space or memory dump, drops exact copies, and hands the parser a virtual `.evtx`. See [Deleted and damaged logs](/docs/guides/deleted-events).
+```text
+found 41 chunks
+4142 records
+```
+
+`CarvedEvtx` scans a disk image, unallocated space or a memory dump for event log chunks, drops exact copies, and reads as a virtual `.evtx` that the parser takes like any other. See [Deleted and damaged logs](/docs/guides/deleted-events) for what it finds and what it can't.
 
 ## Message text
 
-> **Coming in evtx 0.16** ([evtx#365](https://github.com/omerbenamram/evtx/pull/365), in review).
+<Callout title="Not in a release yet" type="warn">
+`ParserSettings::messages` is in `master` and ships with evtx 0.16.
+</Callout>
 
 ```rust
 use evtx::wevt_templates::messages::MessageCatalog;
@@ -95,23 +129,26 @@ use evtx::{EvtxParser, ParserSettings};
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
-    // Build once, share across every file and thread.
+    // Reading the DLLs is the slow part. Build the catalog once and share it.
     let catalog = Arc::new(MessageCatalog::from_directory("image/Windows/System32", None)?);
     let settings = ParserSettings::new().messages(Some(catalog));
 
     let mut parser = EvtxParser::from_path("Security.evtx")?.with_configuration(settings);
     for record in parser.records_json_value() {
         let record = record?;
-        println!("{}", record.data["Event"]["RenderingInfo"]["Message"]);
+        if let Some(message) = record.data["Event"]["RenderingInfo"]["Message"].as_str() {
+            println!("{}", message.lines().next().unwrap_or_default());
+            break;
+        }
     }
     Ok(())
 }
 ```
 
 ```text
-"Domain Policy was changed.\r\n\r\nChange Type:\t\tLogoff Policy modified\r\n\r\nSubject: ..."
+Windows is starting up.
 ```
 
-Rendering with messages is several times slower, so only turn it on when people read the text. See [Event messages](/docs/guides/event-messages).
+With messages on, parsing takes about three times as long, so turn it on where people read the text. See [Event messages](/docs/guides/event-messages).
 
-API reference: [docs.rs/evtx](https://docs.rs/evtx).
+The API reference is on [docs.rs/evtx](https://docs.rs/evtx).
