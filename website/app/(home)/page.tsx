@@ -1,13 +1,6 @@
 import Link from 'next/link';
 import { basePath } from '@/lib/shared';
 
-const artifacts = [
-  { name: '.evtx event logs', tool: 'evtx_dump', href: '/docs/cli/evtx-dump' },
-  { name: '$MFT', tool: 'mft_dump', href: '/docs/cli/mft-dump' },
-  { name: '$UsnJrnl:$J, $I30, $LogFile, $Boot, $Secure:$SDS', tool: 'mft_dump', href: '/docs/cli/ntfs-files' },
-  { name: 'Disk images, unallocated space', tool: 'evtx_dump --carve', href: '/docs/guides/deleted-events' },
-];
-
 const paths = [
   {
     title: 'Command line',
@@ -77,22 +70,6 @@ export default function HomePage() {
             <code className="mt-auto rounded-md bg-fd-muted px-3 py-2 font-mono text-xs">{path.code}</code>
           </Link>
         ))}
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <h2 className="text-xl font-semibold">What do you have?</h2>
-        <div className="divide-y rounded-xl border">
-          {artifacts.map((artifact) => (
-            <Link
-              key={artifact.name}
-              href={artifact.href}
-              className="flex flex-col justify-between gap-1 px-5 py-3 transition-colors hover:bg-fd-accent sm:flex-row"
-            >
-              <span>{artifact.name}</span>
-              <code className="font-mono text-sm text-fd-muted-foreground">{artifact.tool}</code>
-            </Link>
-          ))}
-        </div>
       </section>
 
       <p className="text-sm text-fd-muted-foreground">

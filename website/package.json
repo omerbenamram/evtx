@@ -4,8 +4,7 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "dev": "next dev",
-    "types:check": "next typegen && tsc --noEmit"
+    "dev": "next dev"
   },
   "dependencies": {
     "fumadocs-core": "16.18.1",

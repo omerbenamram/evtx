@@ -64,7 +64,7 @@ Sigma rules and the like match named fields. For a classic event, the meaning of
 Logs from live systems are dirty, and some have a half-written record at the end. Decide what a bad record does before the first one arrives at 3 am:
 
 - **CLI:** each bad record or chunk is reported on stderr and the run continues. From evtx 0.16 the exit status is then 3. `--stop-after-one-error` stops at the first one.
-- **Python:** a bad record raises `RuntimeError`, which ends a `for` loop. With `skip_errors=True` it becomes a `RuntimeWarning` and the loop goes on. Route warnings to your log, or you will not know that records are missing.
+- **Python:** a bad record raises `RuntimeError`, which ends a `for` loop, unless you pass [`skip_errors=True`](/docs/python/evtx#common-jobs). Route the warnings it gives to your log, or you will not know that records are missing.
 - **Rust:** every item is a `Result`. Log the `Err` and continue.
 
 Leave `--validate-checksums` off. A dirty log's last chunk often fails its checksum because Windows had not written it out yet, and the flag would drop the newest events, which are usually the ones you want.
@@ -75,7 +75,7 @@ Leave `--validate-checksums` off. A dirty log's last chunk often fails its check
 
 For a sense of scale, `evtx_dump -o jsonl` reads a 30 MB Security log with 62,031 records in about 30 ms on four cores. The Python package is slower, because it builds a `dict` and a string for every record, but the parsing itself is the same code.
 
-Leave [message text](/docs/guides/event-messages) off for bulk ingestion. It doubles the output and takes three to five times as long, and rules don't use it.
+Leave message text off for bulk ingestion: rules don't use it, and [it costs size and time](/docs/guides/event-messages#from-the-machines-own-dlls---messages).
 
 ## JSON is always compact
 

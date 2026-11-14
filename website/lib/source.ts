@@ -1,18 +1,12 @@
 import { llms, loader } from 'fumadocs-core/source';
-import { docsRoute, siteUrl } from './shared';
+import { docsRoute, linkBase } from './shared';
 import { defineDocs } from 'fumadocs-mdx/macro';
-import { metaSchema, pageSchema } from 'fumadocs-core/source/schema';
 
 const docs = defineDocs({
-  dir: 'content/docs',
   docs: {
-    schema: pageSchema,
     postprocess: {
       includeProcessedMarkdown: true,
     },
-  },
-  meta: {
-    schema: metaSchema,
   },
 });
 
@@ -23,7 +17,7 @@ export const source = loader({
 });
 
 export const docsLlms = llms(source, {
-  renderPage: async (page) => `# ${page.data.title} (${siteUrl}${page.url})
+  renderPage: async (page) => `# ${page.data.title} (${linkBase}${page.url})
 
-${(await page.data.getText('processed')).replaceAll(`](${docsRoute}/`, `](${siteUrl}${docsRoute}/`)}`,
+${(await page.data.getText('processed')).replace(/\]\(\/(?!\/)/g, `](${linkBase}/`)}`,
 });

@@ -52,7 +52,7 @@ mft_dump -o csv --stream-rows '$MFT' | grep 'Documents.*:Zone.Identifier' | cut 
 **What does the stream say?** A stream this small is stored inside the MFT record itself, so you can read it without the disk image. `-e` writes every such resident stream to a folder:
 
 ```bash
-mft_dump -e streams/ -o json -f /dev/null --no-confirm-overwrite '$MFT'
+mft_dump -e streams/ -o csv -f /dev/null --no-confirm-overwrite '$MFT'
 cat streams/*Airport\ Crystals.jpg*Zone.Identifier.dontrun
 ```
 

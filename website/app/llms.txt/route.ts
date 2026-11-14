@@ -1,6 +1,6 @@
 import type { Node } from 'fumadocs-core/page-tree';
 import { source } from '@/lib/source';
-import { appDescription, appName, getPageMarkdownUrl, siteUrl } from '@/lib/shared';
+import { appDescription, appName, getPageMarkdownUrl, linkBase } from '@/lib/shared';
 
 export const revalidate = false;
 
@@ -8,7 +8,7 @@ function pageLink(node: Node): string[] {
   if (node.type !== 'page') return [];
   const page = source.getNodePage(node);
   if (!page) return [];
-  const url = `${siteUrl}${getPageMarkdownUrl(page).url}`;
+  const url = `${linkBase}${getPageMarkdownUrl(page).url}`;
   return [`- [${page.data.title}](${url}): ${page.data.description ?? ''}`];
 }
 
@@ -21,7 +21,7 @@ export async function GET() {
     '',
     `> ${appDescription}`,
     '',
-    `Every link below is the page as plain markdown. All pages in one file: ${siteUrl}/llms-full.txt`,
+    `Every link below is the page as plain markdown. All pages in one file: ${linkBase}/llms-full.txt`,
     '',
     '## Start here',
     '',

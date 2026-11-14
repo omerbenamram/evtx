@@ -10,6 +10,10 @@ export const appDescription =
 export const basePath = process.env.DOCS_BASE_PATH ?? '';
 export const siteUrl = `${process.env.DOCS_SITE_URL || 'http://localhost:3000'}${basePath}`;
 
+// The prefix of a link in llms.txt and the markdown pages. Without `DOCS_SITE_URL` it is the
+// path alone, which is right wherever the site is hosted; `localhost` is right nowhere.
+export const linkBase = process.env.DOCS_SITE_URL ? siteUrl : basePath;
+
 export const docsRoute = '/docs';
 export const editUrlBase = 'https://github.com/omerbenamram/evtx/blob/master/website/content/docs';
 

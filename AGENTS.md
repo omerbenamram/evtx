@@ -89,7 +89,7 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 - When you change the parser: `python3 fuzz/seed_corpus.py`, then `cargo +nightly fuzz run <target> -- -runs=0` for each target that `cargo fuzz list` prints. In a cloud session, add `--target x86_64-unknown-linux-gnu`, because the `cargo-fuzz` installed there defaults to musl.
 - When you change `src/`: `cargo check --manifest-path evtx-wasm/Cargo.toml --target wasm32-unknown-unknown`. The `viewer` job builds this crate for WebAssembly without its default features on every pull request, so code that needs threads, files or an `evtx_dump` dependency outside its feature gate fails there.
 - When you change `evtx-wasm/`: `wasm-pack build evtx-wasm --target web --out-dir evtx-viewer/src/wasm --out-name evtx_wasm --release`, then `bun install --frozen-lockfile` and `bun run check` in `evtx-wasm/evtx-viewer`. In a cloud session, replace `--release` with `--no-opt`, because the optimizer cannot be downloaded there.
-- When you change `website/`: `npm ci`, then `npm run build`, in `website`. `.github/workflows/website.yml` runs this on a pull request that touches the site. Run every command that a page shows, and paste its real output.
+- When you change `website/`: `npm ci`, then `npm run build`, in `website`. `.github/workflows/website.yml` runs this on a pull request that touches the site.
 - When you change Rust code: ``for manifest in $(git ls-files '*Cargo.toml'); do cargo fmt --manifest-path "$manifest" -- --check; done``. Each `Cargo.toml` is a package of its own, and a plain `cargo fmt` formats only the one it is run in.
 
 CI does not run clippy here.
