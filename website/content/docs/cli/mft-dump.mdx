@@ -1,0 +1,66 @@
+---
+title: mft_dump
+description: Turn an $MFT into CSV, JSON lines or a bodyfile, with full paths.
+---
+
+```bash
+mft_dump -o csv '$MFT' > mft.csv
+```
+
+One row per file, with its full path and both sets of timestamps (`$STANDARD_INFORMATION` and `$FILE_NAME`). Opens in Timeline Explorer or Excel:
+
+```text
+EntryId,Sequence,...,IsDeleted,...,StandardInfoCreated,...,FullPath,...
+0,1,...,false,...,2019-01-24T21:25:28.1065851Z,...,$MFT,...
+```
+
+## Pick an output format
+
+| Flag | You get | Use it when |
+| --- | --- | --- |
+| `-o csv` | one flat row per file | spreadsheets, Timeline Explorer, quick `grep` |
+| `-o jsonl` | every attribute of every record, one per line | scripts and SIEMs: nothing is left out |
+| `-o json` (default) | the same, indented | reading one record by eye |
+| `-o bodyfile` | Sleuth Kit bodyfile lines (like `fls -m`) | a timeline with `mactime`. See [Building a timeline](/docs/guides/timelines) |
+
+## Recipes
+
+**Deleted files**
+
+```bash
+mft_dump -o csv '$MFT' | awk -F, 'NR == 1 || $12 == "true"'
+```
+
+**Files that came from the internet** (they have a `Zone.Identifier` stream)
+
+```bash
+mft_dump -o csv --stream-rows '$MFT' | grep ':Zone.Identifier'
+```
+
+```text
+72096,...,Users\informant\Downloads\icloudsetup.exe:Zone.Identifier
+```
+
+**Every name of a file, not just its main one**
+
+```bash
+mft_dump -o csv --hard-link-rows '$MFT'
+```
+
+**Save the content of small files** (resident data: a few hundred bytes or less, kept inside the record itself)
+
+```bash
+mft_dump -e streams/ -o json '$MFT' > /dev/null
+```
+
+Each file is written as `<path>__<random>_<stream>_<name>.dontrun`, so nothing runs by accident. This is how you get `Zone.Identifier` contents, small scripts and `desktop.ini` files back without the disk image.
+
+**Only some entries**
+
+```bash
+mft_dump -r 0-15,30 '$MFT'
+```
+
+## Other NTFS files
+
+`mft_dump` also reads `$UsnJrnl:$J`, `$I30`, `$LogFile`, `$Boot` and `$Secure:$SDS`. It tells them apart by their first bytes. See [NTFS files](/docs/cli/ntfs-files).

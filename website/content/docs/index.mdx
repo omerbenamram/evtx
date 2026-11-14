@@ -1,0 +1,30 @@
+---
+title: Start here
+description: Pick the tool for the file you have, then pick CLI or library.
+---
+
+## What do you have?
+
+| You have | Use | Try |
+| --- | --- | --- |
+| A Windows event log (`.evtx`) | `evtx_dump` / `pip install evtx` | `evtx_dump -o jsonl Security.evtx` |
+| A disk image or unallocated space with event logs in it | `evtx_dump --carve` | `evtx_dump --carve -o jsonl disk.raw` |
+| An `$MFT` | `mft_dump` / `pip install mft` | `mft_dump -o csv '$MFT'` |
+| `$UsnJrnl:$J`, `$I30`, `$LogFile`, `$Boot`, `$Secure:$SDS` | `mft_dump` | `mft_dump -o jsonl '$J'` |
+
+The parsers read files you already extracted (with KAPE, Velociraptor, FTK Imager, The Sleuth Kit and the like). They never need Windows.
+
+## CLI or library?
+
+- **Command line**: you are working a case or triaging a machine. You want a JSON, CSV or XML file to read, grep, `jq` or load into Timeline Explorer. Start at [evtx_dump](/docs/cli/evtx-dump) or [mft_dump](/docs/cli/mft-dump).
+- **Library**: the parser is one step in something bigger, such as a SIEM ingest job, a collection pipeline or a notebook. Start at [Python](/docs/python/evtx) or [Rust](/docs/rust/evtx), then read [Feeding a SIEM](/docs/guides/siem-pipelines).
+
+## Not sure which option you need?
+
+The guides answer one question each:
+
+- [Feeding a SIEM or pipeline](/docs/guides/siem-pipelines): JSON shape, speed, errors.
+- [Event messages](/docs/guides/event-messages): when to add the text Event Viewer shows.
+- [Deleted and damaged logs](/docs/guides/deleted-events): `--recover-records` or `--carve`.
+- [Which NTFS file answers my question?](/docs/guides/ntfs-which-file)
+- [Building a timeline](/docs/guides/timelines)

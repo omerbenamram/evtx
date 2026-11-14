@@ -1,0 +1,59 @@
+---
+title: mft (Rust)
+description: The mft crate. $MFT entries, attributes and full paths, plus $J, $I30, $LogFile, $SDS and $Boot.
+---
+
+```bash
+cargo add mft
+```
+
+```rust
+use mft::MftParser;
+
+fn main() -> anyhow::Result<()> {
+    let mut parser = MftParser::from_path("$MFT")?;
+    let entries: Vec<_> = parser.iter_entries().filter_map(Result::ok).collect();
+    for entry in entries.iter().filter(|e| !e.is_allocated() && !e.is_dir()) {
+        // Unused records have no name, so no path.
+        if let Some(path) = parser.get_full_path_for_entry(entry)? {
+            println!("{} {}", entry.header.record_number, path.display());
+        }
+    }
+    Ok(())
+}
+```
+
+```text
+47 1/2/3/4/file.txt
+```
+
+Each `MftEntry` has its `header` and `iter_attributes()`. Match on `attribute.data` (`MftAttributeContent::AttrX10` is `$STANDARD_INFORMATION`, `AttrX30` is `$FILE_NAME`, and so on) for the details. Paths are cached, so resolving every entry's path is cheap.
+
+## $UsnJrnl:$J with full paths
+
+> **Coming in mft 0.11** ([mft#189](https://github.com/omerbenamram/mft/pull/189), in review).
+
+```rust
+use mft::MftParser;
+use mft::usn::UsnJournal;
+use std::fs::File;
+
+fn main() -> anyhow::Result<()> {
+    let mut mft = MftParser::from_path("$MFT")?;
+    for record in UsnJournal::new(File::open("$J")?) {
+        let record = record?;
+        let Some(name) = record.name() else { continue };
+        let path = mft.get_full_path_in_directory(record.file_reference.entry, name, record.parent_reference);
+        println!("{:?} {:?} {}", record.timestamp(), record.reason, path.display());
+    }
+    Ok(())
+}
+```
+
+```text
+Some(2019-01-28T22:48:39.9099741Z) UsnReasonFlags(USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE) ProgramData/VMware/VMware CAF/pme/data/output/tmp/preconfigure-listener.bat.stdout.tmp
+```
+
+The other NTFS files have their own modules, each with a reader for the extracted file: `mft::indx` (`$I30`), `mft::logfile` (`$LogFile`), `mft::sds` (`$Secure:$SDS`) and `mft::boot` (`$Boot`). They are what [`mft_dump`](/docs/cli/ntfs-files) uses.
+
+API reference: [docs.rs/mft](https://docs.rs/mft).

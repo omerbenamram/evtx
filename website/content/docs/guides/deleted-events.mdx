@@ -1,0 +1,64 @@
+---
+title: Deleted and damaged logs
+description: Get records back from cleared logs, chunk slack, disk images and unallocated space.
+---
+
+| Situation | Use |
+| --- | --- |
+| The log was cleared, or you want every stale record still inside the file | `--recover-records` |
+| You don't have the `.evtx`, only a disk image, unallocated space, a memory dump or a broken file | `--carve` |
+| Both: a raw image, and the slack of every chunk found in it | `--carve --recover-records` |
+| A log just looks wrong and you want to see why | `evtx_dump info --input` |
+
+## Records inside the file: `--recover-records`
+
+```bash tab="CLI"
+evtx_dump -o jsonl --recover-records Security.evtx
+```
+
+```python tab="Python"
+PyEvtxParser("Security.evtx", recover_records=True)
+```
+
+Clearing a log resets its chunks, but the old records stay in them until they're overwritten. Records also linger in the slack after a chunk's last record. `--recover-records` reads those too and marks them:
+
+```json
+{"recovered":true,"Event":{"System":{"EventID":5058, ...}}}
+```
+
+Recovered records are often the interesting ones: they are what someone tried to remove. Their record IDs can repeat live ones, so key on `recovered` plus `EventRecordID`.
+
+## No log file: `--carve`
+
+> **Coming in evtx 0.16** (merged, not released yet).
+
+```bash
+evtx_dump --carve -o jsonl disk.raw > carved.jsonl
+```
+
+```text
+Carved 26 chunks from disk.raw
+```
+
+`--carve` scans any file for the 64 KiB chunks that make up an event log, keeps the ones that look real, skips exact copies (logs exist in shadow copies and backups too), and parses them as one log. `-v` prints where each chunk was found. Each chunk carries its own templates and strings, so carved records render in full.
+
+Give it the biggest thing you have: a raw image (`.dd`, `.raw`, an E01 mounted as raw), the unallocated space from `blkls`, a `pagefile.sys` or a memory dump. Records whose chunk header was overwritten can't be carved.
+
+## Looking at a damaged log: `info`
+
+```bash
+evtx_dump info --input Security.evtx
+```
+
+```text
+File header
+  Flags            DIRTY
+  CRC32            ok (0xf89ea37d)
+  Next record ID   14427
+  Chunk count      180 (the file has room for 193)
+
+Chunk  Offset      Record numbers  Record IDs   Flags  Header CRC32  Records CRC32
+0      0x00001000  1-92            1-92         DIRTY  ok            ok
+```
+
+A `DIRTY` flag just means the log was copied while Windows had it open. That's normal for live collection.

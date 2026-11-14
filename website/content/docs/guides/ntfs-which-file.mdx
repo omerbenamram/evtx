@@ -1,0 +1,30 @@
+---
+title: Which NTFS file answers my question?
+description: $MFT, $J, $I30, $LogFile, $SDS and $Boot, by the question you're asking.
+---
+
+| Question | File | How far back |
+| --- | --- | --- |
+| What files exist, where, and their timestamps? | `$MFT` | now, plus deleted files whose records weren't reused yet |
+| Was this file deleted? What was it called? | `$MFT`, then `$I30` slack | until the record (or index slot) is reused |
+| What happened to a file: created, renamed, written, deleted, and when? | `$UsnJrnl:$J` | days to weeks, depends on activity |
+| Which files were in this folder, even deleted ones? | `$I30` of the folder | until the slack is overwritten |
+| What changed in the last few minutes or hours, step by step? | `$LogFile` | minutes to hours |
+| Who owns this file, who can read it? | `$Secure:$SDS` (join on `SecurityId`) | now |
+| What volume is this: cluster size, serial number? | `$Boot` | now |
+| Was this file downloaded? | `$MFT` with `--stream-rows` (look for `Zone.Identifier`) | now |
+| Were timestamps faked? | `$MFT`: compare `StandardInfo*` with `FileName*` times, then check `$J` | |
+
+All of them go through `mft_dump`. See [mft_dump](/docs/cli/mft-dump) and [NTFS files](/docs/cli/ntfs-files).
+
+## Getting the files
+
+Copy them off the volume with a collector (KAPE, Velociraptor, FTK Imager) or from an image with The Sleuth Kit:
+
+```bash
+icat -o 2048 disk.raw 0 > '$MFT'      # -o: the partition's start sector
+icat -o 2048 disk.raw 2 > '$LogFile'
+icat -o 2048 disk.raw 7 > '$Boot'
+```
+
+`$J` and `$SDS` are named streams whose inode differs per volume: find them with `fls -o 2048 disk.raw 11` (the `$Extend` folder) and `fls -o 2048 disk.raw 9` (`$Secure`), then `icat` the `<inode>-<type>-<id>` it lists.

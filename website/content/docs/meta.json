@@ -1,0 +1,4 @@
+{
+  "title": "Docs",
+  "pages": ["index", "install", "agents", "cli", "python", "rust", "guides"]
+}

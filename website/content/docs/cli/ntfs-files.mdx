@@ -1,0 +1,79 @@
+---
+title: NTFS files
+description: $UsnJrnl:$J, $I30, $LogFile, $Boot and $Secure:$SDS with mft_dump.
+---
+
+> **Coming in mft 0.11.** These input types are in review ([mft#189](https://github.com/omerbenamram/mft/pull/189) to [#193](https://github.com/omerbenamram/mft/pull/193)) and not in a release yet.
+
+Give `mft_dump` the file. It works out what it is from the first bytes (`--input-type` forces it).
+
+| File | Answers | Command |
+| --- | --- | --- |
+| `$Extend\$UsnJrnl:$J` | What happened to which file, and when: created, renamed, deleted | `mft_dump -o jsonl -m '$MFT' '$J'` |
+| `$I30` (a directory's `$INDEX_ALLOCATION`) | Which files a directory held, including deleted ones still in slack | `mft_dump -o jsonl '$I30'` |
+| `$LogFile` | The last few minutes or hours of metadata changes, record by record | `mft_dump -o csv '$LogFile'` |
+| `$Secure:$SDS` | Who owns a file and who can open it (resolve a `SecurityId`) | `mft_dump -o jsonl '$SDS'` |
+| `$Boot` | Cluster size, volume size and serial number | `mft_dump '$Boot'` |
+
+Not sure which one you need? See [Which NTFS file answers my question?](/docs/guides/ntfs-which-file)
+
+## $UsnJrnl:$J
+
+```bash
+mft_dump -o jsonl -m '$MFT' '$J'
+```
+
+```json
+{"full_path":"ProgramData\\VMware\\...\\preconfigure-listener.bat.stdout.tmp","usn":67109000,"reason":"USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE","timestamp":"2019-01-28T22:48:39.9099741Z","file_reference":{"entry":2164,"sequence":39},"name":"preconfigure-listener.bat.stdout.tmp", ...}
+```
+
+`-m '$MFT'` adds each file's full path. Leave it out and you get only the file name and the parent's entry number. A path through a directory whose record was reused starts with `[Orphaned]`.
+
+Exported `$J` files are often mostly zeros at the front (the journal is sparse). That's fine: the zeros are skipped.
+
+## $I30
+
+```bash
+mft_dump -o jsonl '$I30'
+```
+
+```json
+{"from_slack":false,"mft_reference":{"entry":28654,"sequence":1},"file_name":{"name":"All Users","created":"2018-09-15T07:42:33.1423397Z","modified":"2018-09-15T07:42:33.1423397Z", ...}}
+{"from_slack":true,"mft_reference":null,"file_name":{"name":"...","created":"2019-01-28T19:50:56.1466554Z", ...}}
+```
+
+`"from_slack": true` entries are names the directory no longer lists: usually deleted files, with their four `$FILE_NAME` timestamps and size. `-m '$MFT'` adds full paths.
+
+## $LogFile
+
+```bash
+mft_dump -o csv '$LogFile' > logfile.csv
+```
+
+One row per log record, with its LSN, transaction, redo and undo operation (`InitializeFileRecordSegment`, `AddIndexEntryAllocation`, ...) and, for index changes, the file name it touched. `-o jsonl` adds the raw redo and undo bytes.
+
+Use it for the recent past: Windows overwrites `$LogFile` in a loop, so it covers minutes to hours on a busy system.
+
+## $Secure:$SDS
+
+```bash
+mft_dump -o jsonl '$SDS'
+```
+
+```json
+{"security_id":256,"sddl":"O:S-1-5-18G:S-1-5-32-544D:(A;;0x120089;;;S-1-5-18)(A;;0x120089;;;S-1-5-32-544)","valid_hash":true, ...}
+```
+
+Join on `security_id` with the `SecurityId` column of `mft_dump -o csv '$MFT'` to get each file's owner and ACL.
+
+## $Boot
+
+```bash
+mft_dump '$Boot'
+```
+
+```json
+{"cluster_size":4096,"volume_size":31566331392,"mft_offset":3221225472,"mft_entry_size":1024,"volume_serial":"9CB2-C4F8", ...}
+```
+
+`volume_serial` is the serial number that LNK files and prefetch record, so it ties those to this volume.
