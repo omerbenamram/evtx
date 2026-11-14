@@ -1,6 +1,6 @@
 ---
 title: evtx (Rust)
-description: The evtx crate. Records as JSON values, JSON strings or XML, parsed on several threads.
+description: The evtx crate. Records as JSON values, JSON strings or XML, on one thread or several.
 ---
 
 ```bash
@@ -78,7 +78,7 @@ Failed to read the record at offset 0x8088 of chunk 1 (file offset 0x19088)
 
 | Setting | Use it when |
 | --- | --- |
-| `num_threads(n)` | you parse many files at once and want each parser on `1` or a few threads. The default, `0`, is one per core. Records come out in file order either way. |
+| `num_threads(n)` | you parse many files at once and want each parser on `1` or a few threads. A parser that is never given `num_threads` runs on one thread, and `num_threads(0)` asks for one per core, which is what `evtx_dump` and the Python package do. Records come out in file order either way. |
 | `separate_json_attributes(true)` | a field must keep one JSON type. See [Feeding a SIEM](/docs/guides/siem-pipelines). |
 | `recover_records(true)` | you want the old records left in cleared chunks and chunk slack. They have `record.recovered` set. |
 | `indent(false)` | you want XML on one line. JSON is always compact. |
@@ -149,6 +149,6 @@ fn main() -> anyhow::Result<()> {
 Windows is starting up.
 ```
 
-With messages on, parsing takes about three times as long, so turn it on where people read the text. See [Event messages](/docs/guides/event-messages).
+With messages on, parsing takes three to five times as long, so turn it on where people read the text. See [Event messages](/docs/guides/event-messages).
 
 The API reference is on [docs.rs/evtx](https://docs.rs/evtx).

@@ -18,7 +18,7 @@ The reader is an analyst with a file and a question. Write the page a colleague 
 - Run every command and paste what it printed. When the output is too long, cut it with a filter in the command (`jq`, `cut`, `head`), not by hand, so that the reader gets the same thing. The event log examples use `samples/` of this repository. The NTFS examples use the Narcos-1 image from Digital Corpora (`narcos-ccleaner.MFT` and the files extracted from the same volume).
 - Give numbers you measured, with the size of the input, in place of words such as "fast".
 - Say what goes wrong and what a result does not prove: dirty logs, reused records, a slack entry that is not a deleted file.
-- A feature that is merged but not released gets a `<Callout title="Not in a release yet" type="warn">` that names the version it ships with. Remove the note in the release pull request.
+- A feature that is merged but not released gets a `<Callout title="Not in a release yet" type="warn">` that names the version it ships with, or says "the next release" when the number is not decided. Remove the note in the release pull request.
 
 The build also writes, for agents:
 

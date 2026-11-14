@@ -11,7 +11,7 @@ So by default you get the fields and no sentence. That is enough for most work, 
 
 | You are | Add messages? | Why |
 | --- | --- | --- |
-| Ingesting into a SIEM for detection | No | Rules match `EventID` and fields such as `TargetUserName`, which you already have. Messages double the size of the output and make parsing about three times slower. |
+| Ingesting into a SIEM for detection | No | Rules match `EventID` and fields such as `TargetUserName`, which you already have. Messages double the size of the output and make parsing three to five times slower. |
 | Working a case from a disk image | Yes | You have the machine's own DLLs, so you get the text it would have shown. It makes a timeline readable and lets you `grep` for phrases. |
 | Reading events from a provider you don't know | Yes | The event ID of a third-party product means nothing without its message. |
 | Showing events to analysts in a tool | For the events they open | Familiar text helps. Add it when one event is displayed, not at ingest. |
@@ -48,6 +48,11 @@ New Logon:
 ```
 
 `RenderingInfo` also names the level, task, opcode and keywords, which the record stores as numbers:
+
+```bash
+evtx_dump -o jsonl --mta LocaleMetaData/security-sample_1033.MTA security-sample.evtx \
+  | jq -c 'select(.Event.System.EventID == 4624) | .Event.RenderingInfo | del(.Message)' | head -n 1
+```
 
 ```json
 {"Level":"Log Always","Task":"Logon","Opcode":"Info","Keywords":{"Keyword":"Audit Success"}}
@@ -94,7 +99,7 @@ Things to know:
 - `--messages-locale de-DE` reads the German text, if the image has that language installed.
 - A value such as `%%1793` in a message is a reference to a string in another DLL, `msobjs.dll` for Security events. It stays as it is when that DLL is not in the folder you gave.
 - If you pass both, the `--mta` text wins.
-- On the Security sample, parsing with `--messages` takes about three times as long as without. In a library, build the catalog once and share it between files: reading the DLLs is the slow part.
+- Parsing with `--messages` takes three times as long as without on the 2,261 records of `security.evtx`, and five times as long on a 30 MB Security log. In a library, build the catalog once and share it between files: reading the DLLs is the slow part.
 
 In Rust:
 

@@ -13,7 +13,7 @@ const paths = [
     title: 'Command line',
     text: 'For working a case. Give a tool a file and read the JSON, CSV or XML with jq, grep or Timeline Explorer.',
     code: "mft_dump -o csv '$MFT' > mft.csv",
-    href: '/docs/cli/evtx-dump',
+    href: '/docs/cli/mft-dump',
   },
   {
     title: 'Python',

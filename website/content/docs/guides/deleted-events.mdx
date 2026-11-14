@@ -39,7 +39,7 @@ A recovered record has `"recovered": true` as its first key. Live records don't 
 - A recovered record can be an older copy of a record that is also live, so it can repeat an `EventRecordID`. Remove duplicates on `EventRecordID` plus the event time before you count.
 - Recovered records are the ones Windows was done with. They are not all something an attacker removed. A cleared Security log is the case where they matter most.
 
-In Python it is `PyEvtxParser("RCM.evtx", recover_records=True)`, and every record has a `recovered` key that is `True` or `False`.
+In Python it is `PyEvtxParser("RCM.evtx", recover_records=True, skip_errors=True)`, and every record has a `recovered` key that is `True` or `False`.
 
 ## No log file: `--carve`
 
@@ -70,14 +70,14 @@ Things to know:
 
 - Give it the biggest thing you have: a raw image, the output of `blkls`, a `pagefile.sys`, a memory dump. An E01 has to be mounted or converted to raw first.
 - The records of all logs come out in one stream, in the order the chunks were found. Split them by `Event.System.Channel`.
-- `-v` prints the offset of each chunk, for your notes: `chunk 0: offset 304096 (0x4a3e0)`.
+- `-v` prints the offset of each chunk on standard error, for your notes: `21:19:10 [INFO] chunk 0: offset 4096 (0x1000)`.
 - A record whose chunk header was overwritten can't be carved, because the header is how a chunk is found and the chunk is what makes a record readable.
 - It fails with exit status 1 when it finds no chunks at all.
 
 ## What is wrong with this log: `info`
 
 ```bash
-evtx_dump info -i RCM.evtx
+evtx_dump info -i RCM.evtx | head -n 15
 ```
 
 ```text

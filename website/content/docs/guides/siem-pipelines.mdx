@@ -71,11 +71,11 @@ Leave `--validate-checksums` off. A dirty log's last chunk often fails its check
 
 ## Speed and threads
 
-One file is parsed on all cores, and records still come out in file order. When you have thousands of files, parallelism across files is what counts: run one process or thread per file, and give each parser a few threads (`-t 4`, `number_of_threads=4`) or one.
+`evtx_dump` and the Python package parse one file on all cores, and records still come out in file order. When you have thousands of files, parallelism across files is what counts: run one process or thread per file, and give each parser a few threads (`-t 4`, `number_of_threads=4`) or one.
 
 For a sense of scale, `evtx_dump -o jsonl` reads a 30 MB Security log with 62,031 records in about 30 ms on four cores. The Python package is slower, because it builds a `dict` and a string for every record, but the parsing itself is the same code.
 
-Leave [message text](/docs/guides/event-messages) off for bulk ingestion. It doubles the output and triples the time, and rules don't use it.
+Leave [message text](/docs/guides/event-messages) off for bulk ingestion. It doubles the output and takes three to five times as long, and rules don't use it.
 
 ## JSON is always compact
 

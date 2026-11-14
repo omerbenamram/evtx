@@ -31,6 +31,10 @@ In Python, `PyMftParser("$MFT").entries_bodyfile()` yields the same lines. It is
 
 ## Several sources, sorted
 
+<Callout title="Not in a release yet" type="warn">
+Reading a `$J` with `mft_dump` is in `master` and ships with mft 0.11. Until then, [build from the repository](/docs/install#features-that-are-not-in-a-release-yet).
+</Callout>
+
 Write each source as rows of `time, source, what, path`, then sort them all together:
 
 ```bash
@@ -63,7 +67,7 @@ Event logs go in the same way:
 
 ```bash
 evtx_dump -o jsonl Security.evtx | jq -r '.Event
-  | [.System.TimeCreated["#attributes"].SystemTime, "evtx", .System.EventID, .EventData.TargetUserName // ""] | @csv' > evtx.csv
+  | [.System.TimeCreated["#attributes"].SystemTime, "evtx", (.System.EventID | if type == "object" then .["#text"] else . end), .EventData.TargetUserName // ""] | @csv' > evtx.csv
 ```
 
 Two of its rows:
