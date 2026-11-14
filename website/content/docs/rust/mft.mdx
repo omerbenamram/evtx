@@ -1,0 +1,89 @@
+---
+title: mft (Rust)
+description: The mft crate. $MFT records, attributes and full paths, and readers for $J, $I30, $LogFile, $Boot and $SDS.
+---
+
+```bash
+cargo add mft anyhow
+```
+
+```rust
+use mft::MftParser;
+
+fn main() -> anyhow::Result<()> {
+    let mut parser = MftParser::from_path("$MFT")?;
+    let entries: Vec<_> = parser.iter_entries().filter_map(Result::ok).collect();
+
+    for entry in entries.iter().filter(|e| !e.is_allocated() && !e.is_dir()) {
+        // A record that was never used has no name, so no path.
+        if let Some(path) = parser.get_full_path_for_entry(entry)? {
+            println!("{} {}", entry.header.record_number, path.display());
+        }
+    }
+    Ok(())
+}
+```
+
+```text
+58 Windows/System32/LogFiles/WMI/RtBackup/EtwRTUBPM.etl
+62 Windows/System32/LogFiles/WMI/RtBackup/EtwRTEventlog-Security.etl
+1438 Windows/System32/LogFiles/WMI/RtBackup/EtwRTDefenderAuditLogger.etl
+21913 [Orphaned]/Z...ZZZ...Z..Z.Z
+```
+
+Those are the first four of 3,966 deleted files in this `$MFT`. Things to know:
+
+- `iter_entries` yields a `Result` for each record. Real `$MFT`s have damaged records, so decide whether to skip or report the `Err`s. The example skips them.
+- Paths are built by walking parent references, and the parser caches the folders it has seen, so asking for the path of every entry is cheap.
+- `[Orphaned]` starts a path whose parent folder record has been reused by another file.
+- An `MftEntry` has a `header` and `iter_attributes()`. Match on `attribute.data` to read one: `MftAttributeContent::AttrX10` is `$STANDARD_INFORMATION`, `AttrX30` is `$FILE_NAME`, `AttrX80` is `$DATA`.
+
+## The change journal, with full paths
+
+<Callout title="Not in a release yet" type="warn">
+`mft::usn` is in `master` and ships with mft 0.11.
+</Callout>
+
+```rust
+use mft::MftParser;
+use mft::usn::UsnJournal;
+use std::fs::File;
+
+fn main() -> anyhow::Result<()> {
+    let mut mft = MftParser::from_path("$MFT")?;
+    for record in UsnJournal::new(File::open("$J")?) {
+        let record = record?;
+        let Some(name) = record.name() else { continue };
+        if name != "Memo Things.odt" {
+            continue;
+        }
+        let path = mft.get_full_path_in_directory(
+            record.file_reference.entry,
+            name,
+            record.parent_reference,
+        );
+        if let Some(time) = record.timestamp() {
+            println!("{time} {} {}", record.reason, path.display());
+        }
+    }
+    Ok(())
+}
+```
+
+```text
+2019-01-29T23:42:09.4361264Z USN_REASON_BASIC_INFO_CHANGE | USN_REASON_CLOSE Users/Steve Kowhai/Documents/Misc/Memo Things.odt
+2019-01-29T23:42:09.4389802Z USN_REASON_DATA_OVERWRITE Users/Steve Kowhai/Documents/Misc/Memo Things.odt
+2019-01-29T23:42:09.4639531Z USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND Users/Steve Kowhai/Documents/Misc/Memo Things.odt
+2019-01-29T23:42:09.4954013Z USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_CLOSE Users/Steve Kowhai/Documents/Misc/Memo Things.odt
+2019-01-29T23:42:09.4970995Z USN_REASON_RENAME_OLD_NAME Users/Steve Kowhai/Documents/Misc/Memo Things.odt
+```
+
+These are the last five journal records under that name. The next record for the same file renames it to `ZZZZZZZZZZZ.ZZZ`: see [NTFS files](/docs/cli/ntfs-files#usnjrnlj) for the rest of the story.
+
+A journal record has the file's name and its parent's record number, not a path. `get_full_path_in_directory` builds the path from the `$MFT`, and checks the sequence number of the parent so that a reused folder record gives `[Orphaned]` and not a wrong path.
+
+## The other NTFS files
+
+Each has a module with a reader for the extracted file, also from mft 0.11: `mft::indx` for `$I30`, `mft::logfile` for `$LogFile`, `mft::sds` for `$Secure:$SDS` and `mft::boot` for `$Boot`. They are what [`mft_dump`](/docs/cli/ntfs-files) uses.
+
+The API reference is on [docs.rs/mft](https://docs.rs/mft).

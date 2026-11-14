@@ -1,0 +1,111 @@
+---
+title: Event messages
+description: When to add the text Event Viewer shows, and where the parsers get it from.
+---
+
+A record in an `.evtx` holds an event ID and its values. The paragraph Event Viewer shows on its General tab, "An account was successfully logged on...", is not in the log. Windows builds it when you open the event, from a template stored in a DLL on that machine.
+
+So by default you get the fields and no sentence. That is enough for most work, and it is what detection rules match on. When you do want the text, the parsers can build it the same way and add it to each record as a `RenderingInfo` element.
+
+## Do you need it?
+
+| You are | Add messages? | Why |
+| --- | --- | --- |
+| Ingesting into a SIEM for detection | No | Rules match `EventID` and fields such as `TargetUserName`, which you already have. Messages double the size of the output and make parsing three to five times slower. |
+| Working a case from a disk image | Yes | You have the machine's own DLLs, so you get the text it would have shown. It makes a timeline readable and lets you `grep` for phrases. |
+| Reading events from a provider you don't know | Yes | The event ID of a third-party product means nothing without its message. |
+| Showing events to analysts in a tool | For the events they open | Familiar text helps. Add it when one event is displayed, not at ingest. |
+| Holding a log that was exported with display information | Yes, with `--mta` | The text is in the export already. |
+
+## Where the text comes from
+
+| You have | Use |
+| --- | --- |
+| A `LocaleMetaData` folder next to the `.evtx`. Event Viewer writes it when you pick *Save All Events As* and say yes to display information, and so does `wevtutil export-log` followed by `wevtutil archive-log`. | `--mta` |
+| A disk image, or a copy of `C:\Windows\System32` with its `en-US` folder | `--messages` |
+| Neither | Nothing. Use the fields, and look the event ID up. |
+
+## From an exported log: `--mta`
+
+```bash
+evtx_dump -o jsonl --mta LocaleMetaData/security-sample_1033.MTA security-sample.evtx \
+  | jq -r 'select(.Event.System.EventID == 4624) | .Event.RenderingInfo.Message' | head -n 12
+```
+
+```text
+An account was successfully logged on.
+
+Subject:
+	Security ID:		S-1-5-18
+	Account Name:		WIN-03DLIIOFRRA$
+	Account Domain:		WORKGROUP
+	Logon ID:		0x3E7
+
+Logon Type:			5
+
+New Logon:
+	Security ID:		S-1-5-18
+```
+
+`RenderingInfo` also names the level, task, opcode and keywords, which the record stores as numbers:
+
+```bash
+evtx_dump -o jsonl --mta LocaleMetaData/security-sample_1033.MTA security-sample.evtx \
+  | jq -c 'select(.Event.System.EventID == 4624) | .Event.RenderingInfo | del(.Message)' | head -n 1
+```
+
+```json
+{"Level":"Log Always","Task":"Logon","Opcode":"Info","Keywords":{"Keyword":"Audit Success"}}
+```
+
+There is one `.MTA` file per language, and `1033` is English (US). The file must be the one saved with this log, because it finds an event's text by the record's position in the log and its `EventRecordID`. For the same reason, don't combine `--mta` with `--recover-records` or `--carve`: a recovered record can get another event's text.
+
+In Python: `PyEvtxParser("security-sample.evtx", mta="LocaleMetaData/security-sample_1033.MTA")`.
+
+## From the machine's own DLLs: `--messages`
+
+<Callout title="Not in a release yet" type="warn">
+`--messages` is in `master` and ships with evtx 0.16, in `evtx_dump` and the Rust crate. It is not in the Python package yet. Until then, [build from the repository](/docs/install#features-that-are-not-in-a-release-yet).
+</Callout>
+
+```bash
+evtx_dump -o jsonl --messages /mnt/image/Windows/System32 Security.evtx \
+  | jq -r 'select(.Event.System.EventID == 4732) | .Event.RenderingInfo.Message' | head -n 14
+```
+
+```text
+A member was added to a security-enabled local group.
+
+Subject:
+	Security ID:		S-1-5-18
+	Account Name:		WIN-03DLIIOFRRA$
+	Account Domain:		WORKGROUP
+	Logon ID:		0x3E7
+
+Member:
+	Security ID:		S-1-5-21-2603537626-3982775912-406486804-1000
+	Account Name:		-
+
+Group:
+	Security ID:		S-1-5-32-545
+```
+
+The output above comes from the five provider binaries in the repository's `samples/dlls`, in place of a whole `System32`. One of them is `adtschema.dll`, which holds the Security messages.
+
+Things to know:
+
+- Use the `System32` of the machine that wrote the log. Message text changes between Windows builds, and a third-party provider's DLL exists only where the product was installed.
+- `--messages` takes a folder or a single DLL, and you can give it more than once, for example `System32` and an application's install folder.
+- `--messages-locale de-DE` reads the German text, if the image has that language installed.
+- A value such as `%%1793` in a message is a reference to a string in another DLL, `msobjs.dll` for Security events. It stays as it is when that DLL is not in the folder you gave.
+- If you pass both, the `--mta` text wins.
+- Parsing with `--messages` takes three times as long as without on the 2,261 records of `security.evtx`, and five times as long on a 30 MB Security log. In a library, build the catalog once and share it between files: reading the DLLs is the slow part.
+
+In Rust:
+
+```rust
+let catalog = Arc::new(MessageCatalog::from_directory("/mnt/image/Windows/System32", None)?);
+let settings = ParserSettings::new().messages(Some(catalog));
+```
+
+The full example is on the [Rust page](/docs/rust/evtx#message-text).

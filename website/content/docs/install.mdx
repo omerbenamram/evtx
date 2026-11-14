@@ -1,0 +1,49 @@
+---
+title: Install
+description: Prebuilt binaries, pip or cargo.
+---
+
+## Command-line tools
+
+Download a binary for Windows, macOS or Linux. Each is one file with nothing to install beside it, so it can go on a USB stick or a collection share:
+
+- `evtx_dump`: [github.com/omerbenamram/evtx/releases](https://github.com/omerbenamram/evtx/releases)
+- `mft_dump`: [github.com/omerbenamram/mft/releases](https://github.com/omerbenamram/mft/releases)
+
+Or build them, if you have a Rust toolchain:
+
+```bash
+cargo install evtx   # installs evtx_dump
+cargo install mft    # installs mft_dump
+```
+
+## Python
+
+```bash
+pip install evtx mft
+```
+
+There are wheels for Linux (x86_64 and arm64, glibc and musl), macOS and Windows, for CPython 3.10 and newer, including free-threaded 3.14. On those platforms pip compiles nothing.
+
+## Rust
+
+```bash
+cargo add evtx mft
+```
+
+## Check it works
+
+```bash
+evtx_dump --version
+mft_dump --version
+python -c "import evtx, mft"
+```
+
+## Features that are not in a release yet
+
+Some pages describe features that are merged but not yet released. Each says so in a note that names the version the feature ships with. To use one now, build from the repository:
+
+```bash
+cargo install --git https://github.com/omerbenamram/evtx evtx
+cargo install --git https://github.com/omerbenamram/mft mft
+```

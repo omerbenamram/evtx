@@ -1,0 +1,105 @@
+---
+title: Deleted and damaged logs
+description: Get records back from cleared logs, chunk slack, disk images and unallocated space.
+---
+
+An event log is a file of 64 KiB chunks. Windows reuses chunks, and clearing a log resets them without wiping them, so old records stay in the file until new ones are written over them. Chunks also survive outside any file, in unallocated space and in shadow copies. There are two options for getting at them:
+
+| Situation | Use |
+| --- | --- |
+| You have the `.evtx`, and want the old records still inside it | `--recover-records` |
+| You have no usable `.evtx`: a disk image, unallocated space, a memory dump, a log with a broken header | `--carve` |
+| A raw image, and you want the old records inside every chunk found in it | `--carve --recover-records` |
+| A log looks wrong and you want to see why before parsing it | `evtx_dump info -i` |
+
+## Old records inside a log: `--recover-records`
+
+This is the RDP connection log (`TerminalServices-RemoteConnectionManager/Operational`) from a shadow copy of a machine that had RDP open to the internet. Event 1149 is a successful RDP authentication, with the user and the source address:
+
+```bash
+evtx_dump -o jsonl --recover-records RCM.evtx 2>errors.txt | jq -c '
+  select(.Event.System.EventID == 1149)
+  | [.recovered, .Event.System.TimeCreated["#attributes"].SystemTime]
+    + [.Event.UserData.EventXML | .Param1, .Param3]'
+```
+
+```json
+[null,"2018-08-07T18:37:12.9640911Z","mpowers","174.127.93.2"]
+[null,"2018-08-07T18:41:49.6889035Z","mpowers","174.127.93.2"]
+[true,"2018-08-07T19:02:42.0449916Z","mpowers","174.127.93.2"]
+[null,"2018-08-07T19:12:04.6039509Z","administrator","31.14.75.59"]
+[null,"2018-08-07T19:14:52.8880541Z","A","103.11.244.223"]
+[null,"2018-08-07T19:19:42.9348779Z","Administrator","31.14.75.59"]
+```
+
+The third line is not in the log as Windows would read it. Without `--recover-records` you get 1,795 records and five logons. With it you get 245 more, one of which is a third logon by `mpowers`.
+
+A recovered record has `"recovered": true` as its first key. Live records don't have the key at all. Two things to keep in mind when you use them:
+
+- A recovered record can be an older copy of a record that is also live, so it can repeat an `EventRecordID`. Remove duplicates on `EventRecordID` plus the event time before you count.
+- Recovered records are the ones Windows was done with. They are not all something an attacker removed. A cleared Security log is the case where they matter most.
+
+In Python it is `PyEvtxParser("RCM.evtx", recover_records=True, skip_errors=True)`, and every record has a `recovered` key that is `True` or `False`.
+
+## No log file: `--carve`
+
+<Callout title="Not in a release yet" type="warn">
+`--carve` is in `master` and ships with evtx 0.16. Until then, [build from the repository](/docs/install#features-that-are-not-in-a-release-yet).
+</Callout>
+
+```bash
+evtx_dump --carve -o jsonl disk.raw > carved.jsonl
+```
+
+```text
+Carved 41 chunks from disk.raw
+```
+
+`--carve` reads any file from start to end, looks for chunks, keeps the ones whose header holds up, drops exact copies of a chunk it already has (the same log is often in a shadow copy too), and parses what is left as one log. A chunk carries its own templates and strings, so carved records come out complete, not as fragments. `disk.raw` here is a test image: two sample logs, one of them with its file header cut off, with random data between them and a second copy of the first log at the end. The 41 chunks give all 4,142 records of both logs, once:
+
+```bash
+jq -r '.Event.System.Channel' carved.jsonl | sort | uniq -c
+```
+
+```text
+   2261 Security
+   1881 System
+```
+
+Things to know:
+
+- Give it the biggest thing you have: a raw image, the output of `blkls`, a `pagefile.sys`, a memory dump. An E01 has to be mounted or converted to raw first.
+- The records of all logs come out in one stream, in the order the chunks were found. Split them by `Event.System.Channel`.
+- `-v` prints the offset of each chunk on standard error, for your notes: `21:19:10 [INFO] chunk 0: offset 4096 (0x1000)`.
+- A record whose chunk header was overwritten can't be carved, because the header is how a chunk is found and the chunk is what makes a record readable.
+- It fails with exit status 1 when it finds no chunks at all.
+
+## What is wrong with this log: `info`
+
+```bash
+evtx_dump info -i RCM.evtx | head -n 15
+```
+
+```text
+File header
+  Version          3.1
+  Flags            DIRTY
+  CRC32            ok (0x9bbd5a76)
+  First chunk      10
+  Last chunk       9
+  Next record ID   308335
+  Chunk count      16 (the file has room for 16)
+  Header size      128 (block 4096)
+
+Chunk  Offset      Record numbers  Record IDs     Flags  Header CRC32  Records CRC32
+0      0x00001000  462823-462949   462823-462949  DIRTY  ok            ok
+1      0x00011000  401513-401596   401513-401596  DIRTY  ok            BAD
+2      0x00021000  444649-444690   444649-444690  DIRTY  ok            ok
+3      0x00031000  463204-463330   463204-463330  DIRTY  ok            ok
+```
+
+How to read it:
+
+- `DIRTY` means the log was copied while Windows had it open. Every log taken from a live system or a shadow copy says this. It is not damage.
+- `First chunk 10`, `Last chunk 9` and record IDs that go down between chunks mean the log is full and has wrapped around, so the oldest records are not at the start of the file. Sort the output by `EventRecordID` if you need it in order.
+- `BAD` in `Records CRC32` means the chunk was being written when the copy was made, or was damaged later. It is still parsed. Here chunk 1 holds the two records that could not be read. They are the two errors in `errors.txt`, and the reason the exit status is 3. Only `--validate-checksums` makes `evtx_dump` skip such a chunk, and with it the good records inside.

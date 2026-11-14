@@ -1,0 +1,51 @@
+---
+title: Which NTFS file answers my question?
+description: $MFT, $J, $I30, $LogFile, $SDS and $Boot, by the question you are asking.
+---
+
+Start with the `$MFT` and the `$J`. Between them they answer most questions about files. The others are for when those two have been overwritten or cleaned.
+
+| Question | File | How far back it goes |
+| --- | --- | --- |
+| What files are on the volume, where, how big, with what timestamps? | `$MFT` | The present, plus deleted files whose record has not been reused. |
+| What happened to this file: created, written, renamed, deleted, and when? | `$UsnJrnl:$J` | Days to weeks on a workstation, sometimes hours on a busy server. |
+| A file was renamed or wiped. What was it called before? | `$UsnJrnl:$J` | The same. |
+| What was in this folder, including files that are gone? | the folder's `$I30` | Until the slack of the index is overwritten, which on a quiet folder can be a long time. |
+| In exactly what order did the last operations happen? | `$LogFile` | Minutes to hours. |
+| Where did this file come from? | `$MFT` with `--stream-rows`, then the `Zone.Identifier` stream | The present. |
+| Were timestamps changed by hand? | `$MFT`: compare `StandardInfo*` with `FileName*`, then check `$J` | |
+| Who owns this file, and who can read it? | `$Secure:$SDS`, joined on `SecurityId` | The present. |
+| Which volume is this? Does this LNK file point to it? | `$Boot` (the volume serial number) | The present. |
+
+All of them go through `mft_dump`: see [mft_dump](/docs/cli/mft-dump) for the `$MFT` and [NTFS files](/docs/cli/ntfs-files) for the rest.
+
+## An example of using them together
+
+On the Narcos-1 laptop the `$MFT` shows 3,956 deleted files named like `ZZZZZZZZ.ZZZ`, which is what CCleaner leaves. The `$J` has the rename of each one, so it gives back 858 original names, such as `Documents\Misc\Memo Things.odt`, and the second each was wiped. The `$I30` of a folder still has the size and creation time of the files that were in it. No single file has all three.
+
+## Getting the files off a volume
+
+Windows won't let you copy these while the volume is mounted, so use a collector (KAPE, Velociraptor, FTK Imager), or take them from an image with The Sleuth Kit:
+
+```bash
+mmls disk.raw                          # find the partition's start sector, here 2048
+icat -o 2048 disk.raw 0 > '$MFT'
+icat -o 2048 disk.raw 2 > '$LogFile'
+icat -o 2048 disk.raw 7 > '$Boot'
+```
+
+Those three have fixed record numbers. The others are named streams, so ask for their address and copy it. These lines are from a small test volume, and the numbers on yours will differ:
+
+```bash
+fls -o 2048 disk.raw | grep SDS
+# r/r 9-128-8:	$Secure:$SDS
+icat -o 2048 disk.raw 9-128-8 > '$SDS'
+
+istat -o 2048 disk.raw 5 | grep INDEX_ALLOCATION      # 5 is the root folder
+# Type: $INDEX_ALLOCATION (160-8)   Name: $I30   Non-Resident   size: 4096  init_size: 4096
+icat -o 2048 disk.raw 5-160-8 > '$I30'
+```
+
+The `$J` is found the same way: `fls -o 2048 disk.raw 11` lists the `$Extend` folder, and the line for `$UsnJrnl:$J` has the address to give `icat`.
+
+A small folder has no `$INDEX_ALLOCATION`. Its whole index fits in the MFT record, and `mft_dump` shows it with the rest of the record.

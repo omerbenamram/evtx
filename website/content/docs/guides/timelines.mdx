@@ -1,0 +1,87 @@
+---
+title: Building a timeline
+description: Put the $MFT, the change journal and event logs on one sorted timeline.
+---
+
+There are two ways to do this. `mactime` is the quick one when the `$MFT` is all you need. Sorting CSV rows from several sources takes a few more lines and puts files, journal records and events side by side.
+
+## The file system, with mactime
+
+```bash
+mft_dump -o bodyfile '$MFT' > mft.body
+mactime -b mft.body -d -y 2019-01-30T21:22:00..2019-01-30T21:26:00 | grep 'Documents/Misc'
+```
+
+```text
+2019-01-30T21:22:24Z,92,m..b,r/rrwxrwxrwx,0,0,86055-128-5,"/Users/Steve Kowhai/Documents/Misc/Method Route.jpg:Zone.Identifier"
+2019-01-30T21:22:24Z,149936,m..b,r/rrwxrwxrwx,0,0,86055-128-6,"/Users/Steve Kowhai/Documents/Misc/Method Route.jpg"
+2019-01-30T21:22:24Z,98,macb,r/rrwxrwxrwx,0,0,86055-48-7,"/Users/Steve Kowhai/Documents/Misc/Method Route.jpg ($FILE_NAME)"
+2019-01-30T21:25:01Z,92,m.cb,r/rrwxrwxrwx,0,0,86111-128-5,"/Users/Steve Kowhai/Documents/Misc/Airport Crystals.jpg:Zone.Identifier"
+2019-01-30T21:25:01Z,142877,m.cb,r/rrwxrwxrwx,0,0,86111-128-6,"/Users/Steve Kowhai/Documents/Misc/Airport Crystals.jpg"
+2019-01-30T21:25:01Z,106,macb,r/rrwxrwxrwx,0,0,86111-48-2,"/Users/Steve Kowhai/Documents/Misc/Airport Crystals.jpg ($FILE_NAME)"
+2019-01-30T21:25:06Z,92,.a..,r/rrwxrwxrwx,0,0,86111-128-5,"/Users/Steve Kowhai/Documents/Misc/Airport Crystals.jpg:Zone.Identifier"
+2019-01-30T21:25:06Z,142877,.a..,r/rrwxrwxrwx,0,0,86111-128-6,"/Users/Steve Kowhai/Documents/Misc/Airport Crystals.jpg"
+2019-01-30T21:25:18Z,92,..c.,r/rrwxrwxrwx,0,0,86055-128-5,"/Users/Steve Kowhai/Documents/Misc/Method Route.jpg:Zone.Identifier"
+2019-01-30T21:25:18Z,149936,..c.,r/rrwxrwxrwx,0,0,86055-128-6,"/Users/Steve Kowhai/Documents/Misc/Method Route.jpg"
+```
+
+`-o bodyfile` writes what The Sleuth Kit's `fls -m` writes: a line for each name and each data stream with the `$STANDARD_INFORMATION` times, and a line ending in `($FILE_NAME)` with the `$FILE_NAME` times. `mactime` rounds to seconds, and its four letters are modified, accessed, changed (the MFT record) and born.
+
+In Python, `PyMftParser("$MFT").entries_bodyfile()` yields the same lines. It is in the repository and ships with the next release of the `mft` package.
+
+## Several sources, sorted
+
+<Callout title="Not in a release yet" type="warn">
+Reading a `$J` with `mft_dump` is in `master` and ships with mft 0.11. Until then, [build from the repository](/docs/install#features-that-are-not-in-a-release-yet).
+</Callout>
+
+Write each source as rows of `time, source, what, path`, then sort them all together:
+
+```bash
+mft_dump -o jsonl '$MFT' | jq -r 'select(.full_path) | . as $e
+  | first(.attributes[] | select(.header.type_code == "FileName"))
+  | [.data.created, "mft", "created", $e.full_path] | @csv' > mft.csv
+
+mft_dump -o jsonl -m '$MFT' '$J' | jq -r 'select(.reason | test("CLOSE"))
+  | [.timestamp, "usn", .reason, .full_path] | @csv' > usn.csv
+
+LC_ALL=C sort mft.csv usn.csv > timeline.csv
+grep 'Misc\\Method Route' timeline.csv | cut -c 1-140
+```
+
+```text
+"2019-01-30T21:22:24.1667593Z","mft","created","Users\Steve Kowhai\Documents\Misc\Method Route.jpg"
+"2019-01-30T21:22:24.1680596Z","usn","USN_REASON_FILE_CREATE | USN_REASON_CLOSE","Users\Steve Kowhai\Documents\Misc\Method Route 2.jpg"
+"2019-01-30T21:22:24.1680596Z","usn","USN_REASON_FILE_DELETE | USN_REASON_CLOSE","Users\Steve Kowhai\Documents\Misc\Method Route 2.jpg"
+"2019-01-30T21:22:24.2700969Z","usn","USN_REASON_FILE_CREATE | USN_REASON_CLOSE","Users\Steve Kowhai\Documents\Misc\Method Route 2.jpg"
+"2019-01-30T21:22:24.2840608Z","usn","USN_REASON_OBJECT_ID_CHANGE | USN_REASON_CLOSE","Users\Steve Kowhai\Documents\Misc\Method Route 2.jpg"
+"2019-01-30T21:22:24.4167321Z","usn","USN_REASON_DATA_EXTEND | USN_REASON_NAMED_DATA_EXTEND | USN_REASON_BASIC_INFO_CHANGE | USN_REASON_STRE
+"2019-01-30T21:25:18.2068099Z","usn","USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE","Users\Steve Kowhai\Documents\Misc\Method Route.jpg"
+```
+
+The `$MFT` says `Method Route.jpg` was created at 21:22:24. The journal adds what the `$MFT` can't: the file was saved as `Method Route 2.jpg`, and renamed three minutes later.
+
+Why this works without a real CSV sorter: every tool here writes UTC times in the same form, always with seven decimal places, so sorting the lines as bytes (`LC_ALL=C`) sorts them by time. Keeping only the journal records with `CLOSE` gives one row per action in place of one per step.
+
+Event logs go in the same way:
+
+```bash
+evtx_dump -o jsonl Security.evtx | jq -r '.Event
+  | [.System.TimeCreated["#attributes"].SystemTime, "evtx", (.System.EventID | if type == "object" then .["#text"] else . end), .EventData.TargetUserName // ""] | @csv' > evtx.csv
+```
+
+Two of its rows:
+
+```text
+"2016-07-08T18:12:51.6816408Z","evtx",4624,"SYSTEM"
+"2016-07-08T18:12:51.7596409Z","evtx",4902,""
+```
+
+## Which timestamp is which
+
+| Source | Field | It changes when | Trust |
+| --- | --- | --- | --- |
+| `$MFT`, `$STANDARD_INFORMATION` | `StandardInfo*` | the file is created, written, read or has its metadata changed | Any program can set these, so they are the first thing a timestomping tool changes. |
+| `$MFT`, `$FILE_NAME` | `FileName*` | the file is created, renamed or moved | Windows sets them itself. Changing them takes raw disk access or a trick such as a rename after setting the others. |
+| `$J` | `timestamp` | never: it is when the journal record was written | Good, and it comes with the reason for the change. |
+| Event log | `TimeCreated` | never: it is when the event was logged | Good, but it follows the system clock, so look for clock changes (event 4616). |

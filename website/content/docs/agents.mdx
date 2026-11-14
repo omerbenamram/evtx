@@ -1,0 +1,28 @@
+---
+title: For AI agents
+description: Every page as plain markdown, an llms.txt index, and what an agent needs to know to drive the tools.
+---
+
+If an agent is doing the parsing for you, it does not need a browser to read this site.
+
+| What | Where |
+| --- | --- |
+| An index of all pages, with a link to each page's markdown | [`/llms.txt`](/llms.txt) |
+| Every page in one file | [`/llms-full.txt`](/llms-full.txt) |
+| One page as markdown | the **Copy Markdown** button on the page, or `/llms.mdx/docs/<page>/content.md` |
+
+To hand an agent the tools in one message, paste this:
+
+```text
+Read https://<this site>/llms-full.txt. Use evtx_dump (or `pip install evtx`) for .evtx files and
+mft_dump (or `pip install mft`) for $MFT, $J, $I30, $LogFile, $Boot and $Secure:$SDS.
+Ask for `-o jsonl`: one JSON object per line.
+```
+
+What an agent should know before it runs them:
+
+- `-o jsonl` output is one record per line, so `head`, `grep` and `jq -c` work on a part of it. A full `Security.evtx` is far too big to read into context: count event IDs first, then select.
+- `--events 100-200` (`evtx_dump`) and `-r 0-50` (`mft_dump`) cut a file down to a range of records.
+- Records go to stdout and errors to stderr. `evtx_dump` continues past a damaged record, and from evtx 0.16 it exits with status 3 when it had to skip something.
+- Quote `'$MFT'` and `'$J'` in a shell, or the name expands to nothing.
+- Don't pass `-f` without `--no-confirm-overwrite` in a script: it asks before it replaces a file, and waits for an answer.
