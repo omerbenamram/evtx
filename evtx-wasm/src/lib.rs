@@ -72,6 +72,7 @@ pub struct EvtxWasmParser {
 
 const FILE_HEADER_SIZE: usize = 4096;
 const CHUNK_SIZE: usize = 65536;
+const CHUNK_HEADER_SIZE: usize = 512;
 
 impl EvtxWasmParser {
     fn from_data(data: Vec<u8>) -> Result<Self, String> {
@@ -80,12 +81,26 @@ impl EvtxWasmParser {
         let chunks = data
             .get(FILE_HEADER_SIZE..)
             .ok_or_else(|| "Incomplete EVTX file header".to_owned())?;
-        let chunk_offsets = chunks
+        let mut chunk_offsets: Vec<usize> = chunks
             .chunks(CHUNK_SIZE)
             .enumerate()
             .filter(|(_, bytes)| bytes.iter().any(|byte| *byte != 0))
             .map(|(index, _)| FILE_HEADER_SIZE + index * CHUNK_SIZE)
             .collect();
+        // Start at the chunk holding the lowest record ID so wrapped logs read in record order,
+        // matching `EvtxParser::chunks`.
+        let oldest = chunk_offsets
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &offset)| {
+                let bytes = data.get(offset..offset + CHUNK_HEADER_SIZE)?;
+                let header = EvtxChunkHeader::from_bytes(bytes).ok()?;
+                (header.first_event_record_id <= header.last_event_record_id)
+                    .then_some((header.first_event_record_id, pos))
+            })
+            .min_by_key(|&(first_id, _)| first_id)
+            .map_or(0, |(_, pos)| pos);
+        chunk_offsets.rotate_left(oldest);
         Ok(Self {
             data,
             chunk_offsets,
@@ -98,7 +113,7 @@ impl EvtxWasmParser {
             .get(index)
             .ok_or_else(|| format!("Chunk index {index} out of range"))?;
         let bytes = &self.data[offset..self.data.len().min(offset + CHUNK_SIZE)];
-        if bytes.len() != CHUNK_SIZE {
+        if bytes.len() < CHUNK_HEADER_SIZE {
             return Err(format!("incomplete chunk ({} bytes)", bytes.len()));
         }
         let header = EvtxChunkHeader::from_bytes(bytes).map_err(|e| e.to_string())?;
