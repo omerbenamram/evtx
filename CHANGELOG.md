@@ -37,7 +37,7 @@ and this project adheres to
   `binxml::BinXmlTemplateValues::template_guid`, `DeserializationError::FailedToDeserializeTemplate`
   and the `wevt_templates` types. It has the same `new`, `from_buffer`,
   `from_reader` and `Display` (upper-case, `54849625-5478-4994-A5BA-3E3B0328C30D`),
-  plus `from_bytes`, and it is `Copy`. It does not implement `serde::Serialize`;
+  plus `from_bytes` and `parse`, and it is `Copy`. It does not implement `serde::Serialize`;
   use `to_string()`.
 - `WevtManifestError::InvalidGuid` is removed: reading a GUID from 16 bytes
   can't fail, so it was never returned.

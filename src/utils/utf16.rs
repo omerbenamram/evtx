@@ -128,9 +128,72 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
     Ok(out)
 }
 
+/// Decode a UTF-16LE byte slice up to the first NUL (`0x0000`), ignoring any trailing odd byte
+/// and replacing unpaired surrogates with `U+FFFD`.
+pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
+    let units = bytes.as_chunks::<2>().0;
+    // Strings usually end with their NUL; strip it before the single-pass ASCII check so
+    // ordinary ASCII strings avoid scanning for NUL up front.
+    let units = units.strip_suffix(&[[0, 0]]).unwrap_or(units);
+    if units.is_empty() {
+        return String::new();
+    }
+    let bits = units
+        .iter()
+        .fold(0u16, |acc, unit| acc | u16::from_le_bytes(*unit));
+    if bits < 0x80 {
+        let mut text =
+            String::from_utf8(units.iter().map(|&[low, _]| low).collect()).expect("ASCII");
+        if let Some(nul) = text.find('\0') {
+            text.truncate(nul);
+        }
+        return text;
+    }
+    let len = units
+        .iter()
+        .position(|unit| *unit == [0, 0])
+        .unwrap_or(units.len());
+    let units = &units[..len];
+    let mut out = String::with_capacity(units.len());
+    for ch in char::decode_utf16(units.iter().map(|unit| u16::from_le_bytes(*unit))) {
+        out.push(ch.unwrap_or(char::REPLACEMENT_CHARACTER));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Utf16LeDecodeError as E, Utf16LeSlice, decode_utf16le_bytes_to_bump_str};
+    use super::{
+        Utf16LeDecodeError as E, Utf16LeSlice, decode_utf16le_bytes_to_bump_str,
+        decode_utf16le_lossy_z,
+    };
+
+    #[test]
+    fn lossy_z_decodes_ascii_surrogates_nul_and_odd_tail() {
+        let le = |u: &[u16]| u.iter().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+        // Empty and odd single byte.
+        assert_eq!(decode_utf16le_lossy_z(&[]), "");
+        assert_eq!(decode_utf16le_lossy_z(&[0x61]), "");
+        // ASCII + surrogate pair (non-BMP) + lone surrogates -> U+FFFD + embedded NUL truncation.
+        let mut bytes = le(&[0x61, 0xD83D, 0xDE00, 0xD800, 0xDC00, 0xD800, 0, 0x62]);
+        assert_eq!(
+            decode_utf16le_lossy_z(&bytes),
+            "a\u{1F600}\u{10000}\u{FFFD}"
+        );
+        // Trailing odd byte after non-NUL content is ignored.
+        let mut odd = le(&[0x61, 0xD800, 0x62]);
+        odd.push(0x99);
+        assert_eq!(decode_utf16le_lossy_z(&odd), "a\u{FFFD}b");
+        // Lone low surrogate and lone high surrogate at end.
+        bytes = le(&[0xDC00, 0x61, 0xD800]);
+        assert_eq!(decode_utf16le_lossy_z(&bytes), "\u{FFFD}a\u{FFFD}");
+        // Multi-chunk decode with a surrogate pair straddling the 1024-unit chunk boundary.
+        let mut units = vec![0x0061u16; 1023];
+        units.extend_from_slice(&[0xD83D, 0xDE00, 0x0062]);
+        let mut expected = "a".repeat(1023);
+        expected.push_str("\u{1F600}b");
+        assert_eq!(decode_utf16le_lossy_z(&le(&units)), expected);
+    }
 
     #[test]
     fn decode_rejects_unpaired_surrogates_and_stops_at_nul() {
