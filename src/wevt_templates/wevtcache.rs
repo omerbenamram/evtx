@@ -72,13 +72,19 @@ pub enum WevtCacheFileError {
     #[error("wevtcache entry count overflow for `{path}`")]
     EntryCountOverflow { path: PathBuf },
 
+    /// A `CRIM` entry in the `.wevtcache` file failed to parse or index.
     #[error(
         "failed to index `.wevtcache` entry {index} at offset {offset:#x} in `{path}`: {source}"
     )]
     InvalidEntry {
+        /// Path of the `.wevtcache` file being loaded.
         path: PathBuf,
+        /// Zero-based index of the `CRIM` entry in the `.wevtcache` file.
         index: u32,
+        /// Byte offset from the start of the `.wevtcache` file to the first byte of the entry's
+        /// `CRIM` payload (past its 9-byte entry header).
         offset: u64,
+        /// Underlying manifest or cache indexing error.
         #[source]
         source: super::WevtCacheError,
     },
