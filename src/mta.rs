@@ -663,15 +663,19 @@ impl<'t> MaterializedEvent<'t> {
                     }
                 }
                 "EventID" => {
-                    event.event_id = narrow(number());
+                    if collect_data {
+                        event.event_id = narrow(number());
+                    }
                     event.qualifiers = narrow(number_value(attr(child, "Qualifiers")));
                 }
-                "Version" => event.version = narrow(number()),
+                "Version" if collect_data => event.version = narrow(number()),
                 "Level" => event.level = narrow(number()),
                 "Task" => event.task = narrow(number()),
                 "Opcode" => event.opcode = narrow(number()),
                 "Keywords" => event.keywords = number().unwrap_or_default(),
-                "EventRecordID" => event.event_record_id = number().unwrap_or_default(),
+                "EventRecordID" if !collect_data => {
+                    event.event_record_id = number().unwrap_or_default();
+                }
                 _ => {}
             }
         }
