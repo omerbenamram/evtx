@@ -260,6 +260,44 @@ pub(crate) fn ends_stream(stream: &[u8], consumed: usize) -> Option<bool> {
         .map(|rest| matches!(rest, [] | [token::EOF, ..]))
 }
 
+/// Parsed header of a `TemplateInstance` token body (after the `0x0c` token),
+/// with any inline template definition skipped so the cursor rests at the
+/// substitution descriptor table.
+pub(crate) struct TemplateInstanceHeader {
+    pub(crate) template_id: u32,
+    pub(crate) def_offset: u32,
+    pub(crate) inline_guid: Option<Guid>,
+    pub(crate) num_substitutions: u32,
+}
+
+/// Read a `TemplateInstance` header and skip any inline template definition.
+pub(crate) fn read_template_instance_header(
+    cursor: &mut ByteCursor<'_>,
+) -> Result<TemplateInstanceHeader> {
+    let _ = cursor.u8()?;
+    let template_id = cursor.u32()?;
+    let def_offset = cursor.u32()?;
+    let mut inline_guid = None;
+
+    // Need to skip over the template data.
+    if (cursor.position() as u32) == def_offset {
+        let template_header = read_template_header(cursor)?;
+        inline_guid = Some(Guid::from_bytes(template_header.guid));
+        cursor.set_pos_u64(
+            cursor.position() + u64::from(template_header.data_size),
+            "Skip cached template",
+        )?;
+    }
+
+    let num_substitutions = cursor.u32()?;
+    Ok(TemplateInstanceHeader {
+        template_id,
+        def_offset,
+        inline_guid,
+        num_substitutions,
+    })
+}
+
 /// Read a `TemplateInstance` and parse its substitution values directly.
 ///
 /// This is used by the direct IR builder path.
@@ -270,26 +308,11 @@ pub(crate) fn read_template_values_cursor<'a>(
 ) -> Result<BinXmlTemplateValues<'a>> {
     trace!("TemplateInstance at {}", cursor.position());
 
-    let _ = cursor.u8()?;
-    let template_id = cursor.u32()?;
-    let template_definition_data_offset = cursor.u32()?;
-    let mut template_guid: Option<Guid> = None;
-
-    // Need to skip over the template data.
-    if (cursor.position() as u32) == template_definition_data_offset {
-        let template_header = read_template_header(cursor)?;
-        template_guid = Some(Guid::from_bytes(template_header.guid));
-        cursor.set_pos_u64(
-            cursor.position() + u64::from(template_header.data_size),
-            "Skip cached template",
-        )?;
-    }
-
-    let number_of_substitutions = cursor.u32()?;
+    let header = read_template_instance_header(cursor)?;
     let descriptor_start = cursor.pos();
     // Validate the entire table before reading values, preserving both error
     // precedence and cursor positions for truncated/unknown descriptors.
-    for _ in 0..number_of_substitutions {
+    for _ in 0..header.num_substitutions {
         let _ = cursor.u16()?;
         BinXmlValueType::from_cursor(cursor)?;
         let _ = cursor.u8()?;
@@ -363,9 +386,9 @@ pub(crate) fn read_template_values_cursor<'a>(
     }
 
     Ok(BinXmlTemplateValues {
-        template_id,
-        template_def_offset: template_definition_data_offset,
-        template_guid,
+        template_id: header.template_id,
+        template_def_offset: header.def_offset,
+        template_guid: header.inline_guid,
         values,
     })
 }

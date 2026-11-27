@@ -30,6 +30,20 @@ impl Scratch {
         Scratch { buf: Vec::new() }
     }
 
+    #[inline]
+    fn escape_with(
+        &mut self,
+        max_units: usize,
+        need_quote: bool,
+        escape: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize,
+    ) -> &[u8] {
+        let needed = max_escaped_len(max_units, need_quote);
+        let dst = self.prepare(needed);
+        let len = escape(dst);
+        // SAFETY: `escape` initialized the first `len` bytes of `dst`.
+        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+    }
+
     /// JSON-escape UTF-16LE data and return a borrowed UTF-8 slice.
     #[inline]
     pub fn escape_json_utf16le<'a>(
@@ -38,11 +52,10 @@ impl Scratch {
         num_units: usize,
         need_quote: bool,
     ) -> &'a [u8] {
-        let needed = max_escaped_len(num_units, need_quote);
-        let dst = self.prepare(needed);
-        let len = escape_json_utf16le(utf16le, num_units, dst, need_quote);
-        // SAFETY: escape_json_utf16le initialized the first `len` bytes.
-        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+        let max_units = scalar::max_units(num_units, utf16le.len());
+        self.escape_with(max_units, need_quote, |dst| {
+            escape_json_utf16le(utf16le, max_units, dst, need_quote)
+        })
     }
 
     /// XML-escape UTF-16LE data and return a borrowed UTF-8 slice.
@@ -53,51 +66,41 @@ impl Scratch {
         num_units: usize,
         in_attribute: bool,
     ) -> &'a [u8] {
-        let needed = max_escaped_len(num_units, false);
-        let dst = self.prepare(needed);
-        let len = escape_xml_utf16le(utf16le, num_units, dst, in_attribute);
-        // SAFETY: escape_xml_utf16le initialized the first `len` bytes.
-        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+        let max_units = scalar::max_units(num_units, utf16le.len());
+        self.escape_with(max_units, false, |dst| {
+            escape_xml_utf16le(utf16le, max_units, dst, in_attribute)
+        })
     }
 
     /// Convert UTF-16LE data to raw UTF-8 and return a borrowed slice.
     #[inline]
     pub fn escape_utf16le_raw<'a>(&'a mut self, utf16le: &[u8], num_units: usize) -> &'a [u8] {
-        let needed = max_escaped_len(num_units, false);
-        let dst = self.prepare(needed);
-        let len = escape_utf16le_raw(utf16le, num_units, dst);
-        // SAFETY: escape_utf16le_raw initialized the first `len` bytes.
-        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+        let max_units = scalar::max_units(num_units, utf16le.len());
+        self.escape_with(max_units, false, |dst| {
+            escape_utf16le_raw(utf16le, max_units, dst)
+        })
     }
 
     /// JSON-escape UTF-16 code units (`u16`) and return a borrowed UTF-8 slice.
     #[inline]
     pub fn escape_json_utf16<'a>(&'a mut self, utf16: &[u16], need_quote: bool) -> &'a [u8] {
-        let needed = max_escaped_len(utf16.len(), need_quote);
-        let dst = self.prepare(needed);
-        let len = escape_json_utf16(utf16, dst, need_quote);
-        // SAFETY: escape_json_utf16 initialized the first `len` bytes.
-        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+        self.escape_with(utf16.len(), need_quote, |dst| {
+            escape_json_utf16(utf16, dst, need_quote)
+        })
     }
 
     /// XML-escape UTF-16 code units (`u16`) and return a borrowed UTF-8 slice.
     #[inline]
     pub fn escape_xml_utf16<'a>(&'a mut self, utf16: &[u16], in_attribute: bool) -> &'a [u8] {
-        let needed = max_escaped_len(utf16.len(), false);
-        let dst = self.prepare(needed);
-        let len = escape_xml_utf16(utf16, dst, in_attribute);
-        // SAFETY: escape_xml_utf16 initialized the first `len` bytes.
-        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+        self.escape_with(utf16.len(), false, |dst| {
+            escape_xml_utf16(utf16, dst, in_attribute)
+        })
     }
 
     /// Convert UTF-16 code units (`u16`) to raw UTF-8 bytes and return a borrowed slice.
     #[inline]
     pub fn escape_utf16_raw<'a>(&'a mut self, utf16: &[u16]) -> &'a [u8] {
-        let needed = max_escaped_len(utf16.len(), false);
-        let dst = self.prepare(needed);
-        let len = escape_utf16_raw(utf16, dst);
-        // SAFETY: escape_utf16_raw initialized the first `len` bytes.
-        unsafe { core::slice::from_raw_parts(dst.as_ptr() as *const u8, len) }
+        self.escape_with(utf16.len(), false, |dst| escape_utf16_raw(utf16, dst))
     }
 
     /// Write JSON-escaped UTF-16LE bytes into an `io::Write`, reusing this scratch buffer.
@@ -109,8 +112,7 @@ impl Scratch {
         num_units: usize,
         need_quote: bool,
     ) -> io::Result<()> {
-        let out = self.escape_json_utf16le(utf16le, num_units, need_quote);
-        writer.write_all(out)
+        writer.write_all(self.escape_json_utf16le(utf16le, num_units, need_quote))
     }
 
     /// Write XML-escaped UTF-16LE bytes into an `io::Write`, reusing this scratch buffer.
@@ -122,8 +124,7 @@ impl Scratch {
         num_units: usize,
         in_attribute: bool,
     ) -> io::Result<()> {
-        let out = self.escape_xml_utf16le(utf16le, num_units, in_attribute);
-        writer.write_all(out)
+        writer.write_all(self.escape_xml_utf16le(utf16le, num_units, in_attribute))
     }
 
     /// Write raw UTF-8 (no escaping) converted from UTF-16LE bytes into an `io::Write`.
@@ -134,8 +135,7 @@ impl Scratch {
         utf16le: &[u8],
         num_units: usize,
     ) -> io::Result<()> {
-        let out = self.escape_utf16le_raw(utf16le, num_units);
-        writer.write_all(out)
+        writer.write_all(self.escape_utf16le_raw(utf16le, num_units))
     }
 
     /// Write JSON-escaped UTF-16 code units (`u16`) into an `io::Write`, reusing this scratch buffer.
@@ -146,8 +146,7 @@ impl Scratch {
         utf16: &[u16],
         need_quote: bool,
     ) -> io::Result<()> {
-        let out = self.escape_json_utf16(utf16, need_quote);
-        writer.write_all(out)
+        writer.write_all(self.escape_json_utf16(utf16, need_quote))
     }
 
     /// Write XML-escaped UTF-16 code units (`u16`) into an `io::Write`, reusing this scratch buffer.
@@ -158,8 +157,7 @@ impl Scratch {
         utf16: &[u16],
         in_attribute: bool,
     ) -> io::Result<()> {
-        let out = self.escape_xml_utf16(utf16, in_attribute);
-        writer.write_all(out)
+        writer.write_all(self.escape_xml_utf16(utf16, in_attribute))
     }
 
     /// Write raw UTF-8 (no escaping) converted from UTF-16 code units (`u16`) into an `io::Write`.
@@ -169,8 +167,7 @@ impl Scratch {
         writer: &mut W,
         utf16: &[u16],
     ) -> io::Result<()> {
-        let out = self.escape_utf16_raw(utf16);
-        writer.write_all(out)
+        writer.write_all(self.escape_utf16_raw(utf16))
     }
 
     #[inline]
@@ -225,15 +222,10 @@ pub fn write_json_utf16le<W: WriteExt>(
     num_units: usize,
     need_quote: bool,
 ) -> io::Result<()> {
-    let max_units = crate::scalar::max_units(num_units, utf16le.len());
-    let max_len = max_escaped_len(max_units, need_quote);
-    let buf = writer.reserve_with(max_len)?;
-    let len = escape_json_utf16le(utf16le, num_units, buf, need_quote);
-    // SAFETY: `escape_json_utf16le` initialized the first `len` bytes in `buf`.
-    unsafe {
-        writer.flush_len(len)?;
-    }
-    Ok(())
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    write_with(writer, max_units, need_quote, |buf| {
+        escape_json_utf16le(utf16le, max_units, buf, need_quote)
+    })
 }
 
 /// JSON-escape UTF-16LE data into `out`, reusing its allocation.
@@ -244,10 +236,10 @@ pub fn escape_json_utf16le_into(
     out: &mut Vec<u8>,
     need_quote: bool,
 ) {
-    let needed = max_escaped_len(num_units, need_quote);
-    let buf = prepare_output(out, needed);
-    let len = escape_json_utf16le(utf16le, num_units, buf, need_quote);
-    out.truncate(len);
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    escape_into(max_units, out, need_quote, |buf| {
+        escape_json_utf16le(utf16le, max_units, buf, need_quote)
+    });
 }
 
 /// XML-escape UTF-16LE data into `dst`, using SIMD when available.
@@ -273,17 +265,10 @@ pub fn write_xml_utf16le<W: WriteExt>(
     num_units: usize,
     in_attribute: bool,
 ) -> io::Result<()> {
-    let max_units = crate::scalar::max_units(num_units, utf16le.len());
-    if max_units == 0 {
-        return Ok(());
-    }
-    let max_len = max_escaped_len(max_units, false);
-    let buf = writer.reserve_with(max_len)?;
-    let len = escape_xml_utf16le(utf16le, num_units, buf, in_attribute);
-    unsafe {
-        writer.flush_len(len)?;
-    }
-    Ok(())
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    write_with(writer, max_units, false, |buf| {
+        escape_xml_utf16le(utf16le, max_units, buf, in_attribute)
+    })
 }
 
 /// XML-escape UTF-16LE data into `out`, reusing its allocation.
@@ -294,10 +279,10 @@ pub fn escape_xml_utf16le_into(
     out: &mut Vec<u8>,
     in_attribute: bool,
 ) {
-    let needed = max_escaped_len(num_units, false);
-    let buf = prepare_output(out, needed);
-    let len = escape_xml_utf16le(utf16le, num_units, buf, in_attribute);
-    out.truncate(len);
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    escape_into(max_units, out, false, |buf| {
+        escape_xml_utf16le(utf16le, max_units, buf, in_attribute)
+    });
 }
 
 /// Convert UTF-16LE data into raw UTF-8 bytes without escaping.
@@ -315,26 +300,19 @@ pub fn write_utf16le_raw<W: WriteExt>(
     utf16le: &[u8],
     num_units: usize,
 ) -> io::Result<()> {
-    let max_units = crate::scalar::max_units(num_units, utf16le.len());
-    if max_units == 0 {
-        return Ok(());
-    }
-    let max_len = max_escaped_len(max_units, false);
-    let buf = writer.reserve_with(max_len)?;
-    let len = escape_utf16le_raw(utf16le, num_units, buf);
-    unsafe {
-        writer.flush_len(len)?;
-    }
-    Ok(())
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    write_with(writer, max_units, false, |buf| {
+        escape_utf16le_raw(utf16le, max_units, buf)
+    })
 }
 
 /// Convert UTF-16LE data into raw UTF-8 bytes without escaping, reusing `out`.
 #[inline]
 pub fn escape_utf16le_raw_into(utf16le: &[u8], num_units: usize, out: &mut Vec<u8>) {
-    let needed = max_escaped_len(num_units, false);
-    let buf = prepare_output(out, needed);
-    let len = escape_utf16le_raw(utf16le, num_units, buf);
-    out.truncate(len);
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    escape_into(max_units, out, false, |buf| {
+        escape_utf16le_raw(utf16le, max_units, buf)
+    });
 }
 
 /// JSON-escape UTF-16LE data into a new `Vec<u8>`.
@@ -342,16 +320,22 @@ pub fn escape_utf16le_raw_into(utf16le: &[u8], num_units: usize, out: &mut Vec<u
 /// This is a convenience wrapper around [`escape_json_utf16le`].
 #[inline]
 pub fn escape_json_utf16le_to_vec(utf16le: &[u8], num_units: usize, need_quote: bool) -> Vec<u8> {
-    let mut buf = vec![MaybeUninit::uninit(); max_escaped_len(num_units, need_quote)];
-    let len = escape_json_utf16le(utf16le, num_units, &mut buf, need_quote);
-    // SAFETY: we have initialized the first `len` bytes.
+    let max_units = scalar::max_units(num_units, utf16le.len());
+    let needed = max_escaped_len(max_units, need_quote);
+    let mut out = Vec::with_capacity(needed);
+    let len = escape_json_utf16le(
+        utf16le,
+        max_units,
+        &mut out.spare_capacity_mut()[..needed],
+        need_quote,
+    );
+    debug_assert!(len <= needed);
+    // SAFETY: `escape_json_utf16le` initialized the first `len` bytes of
+    // `out`'s spare capacity, and `len <= needed <= out.capacity()`.
     unsafe {
-        let ptr = buf.as_mut_ptr() as *mut u8;
-        let mut out = Vec::with_capacity(buf.len());
         out.set_len(len);
-        core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), len);
-        out
     }
+    out
 }
 
 /// JSON-escape UTF-16 code units (`u16`) into `dst`, using SIMD when available.
@@ -363,10 +347,9 @@ pub fn escape_json_utf16(utf16: &[u16], dst: &mut [MaybeUninit<u8>], need_quote:
 /// JSON-escape UTF-16 code units (`u16`) into `out`, reusing its allocation.
 #[inline]
 pub fn escape_json_utf16_into(utf16: &[u16], out: &mut Vec<u8>, need_quote: bool) {
-    let needed = max_escaped_len(utf16.len(), need_quote);
-    let buf = prepare_output(out, needed);
-    let len = escape_json_utf16(utf16, buf, need_quote);
-    out.truncate(len);
+    escape_into(utf16.len(), out, need_quote, |buf| {
+        escape_json_utf16(utf16, buf, need_quote)
+    });
 }
 
 /// XML-escape UTF-16 code units (`u16`) into `dst`, using SIMD when available.
@@ -378,10 +361,9 @@ pub fn escape_xml_utf16(utf16: &[u16], dst: &mut [MaybeUninit<u8>], in_attribute
 /// XML-escape UTF-16 code units (`u16`) into `out`, reusing its allocation.
 #[inline]
 pub fn escape_xml_utf16_into(utf16: &[u16], out: &mut Vec<u8>, in_attribute: bool) {
-    let needed = max_escaped_len(utf16.len(), false);
-    let buf = prepare_output(out, needed);
-    let len = escape_xml_utf16(utf16, buf, in_attribute);
-    out.truncate(len);
+    escape_into(utf16.len(), out, false, |buf| {
+        escape_xml_utf16(utf16, buf, in_attribute)
+    });
 }
 
 /// Convert UTF-16 code units (`u16`) into raw UTF-8 bytes without escaping.
@@ -393,9 +375,40 @@ pub fn escape_utf16_raw(utf16: &[u16], dst: &mut [MaybeUninit<u8>]) -> usize {
 /// Convert UTF-16 code units (`u16`) into raw UTF-8 bytes without escaping, reusing `out`.
 #[inline]
 pub fn escape_utf16_raw_into(utf16: &[u16], out: &mut Vec<u8>) {
-    let needed = max_escaped_len(utf16.len(), false);
+    escape_into(utf16.len(), out, false, |buf| escape_utf16_raw(utf16, buf));
+}
+
+#[cfg(feature = "sonic-writeext")]
+#[inline]
+fn write_with<W: WriteExt>(
+    writer: &mut W,
+    max_units: usize,
+    need_quote: bool,
+    escape: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize,
+) -> io::Result<()> {
+    let max_len = max_escaped_len(max_units, need_quote);
+    if max_len == 0 {
+        return Ok(());
+    }
+    let buf = writer.reserve_with(max_len)?;
+    let len = escape(buf);
+    // SAFETY: `escape` initialized the first `len` bytes in `buf`.
+    unsafe {
+        writer.flush_len(len)?;
+    }
+    Ok(())
+}
+
+#[inline]
+fn escape_into(
+    max_units: usize,
+    out: &mut Vec<u8>,
+    need_quote: bool,
+    escape: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize,
+) {
+    let needed = max_escaped_len(max_units, need_quote);
     let buf = prepare_output(out, needed);
-    let len = escape_utf16_raw(utf16, buf);
+    let len = escape(buf);
     out.truncate(len);
 }
 
