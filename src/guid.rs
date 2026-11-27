@@ -62,6 +62,69 @@ impl Guid {
         stream.read_exact(&mut bytes)?;
         Ok(Guid::from_bytes(bytes))
     }
+
+    /// Parses a GUID in standard `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` form,
+    /// with optional surrounding `{...}` braces and ASCII whitespace.
+    ///
+    /// Hex digits are matched case-insensitively. Returns `None` if the input
+    /// has invalid length, mismatched braces, missing hyphens, or non-hex bytes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use evtx::Guid;
+    /// let bare = Guid::parse("54849625-5478-4994-a5ba-3e3b0328c30d").unwrap();
+    /// let braced = Guid::parse(" {54849625-5478-4994-A5BA-3E3B0328C30D} ").unwrap();
+    /// assert_eq!(bare, braced);
+    /// assert_eq!(bare.to_string(), "54849625-5478-4994-A5BA-3E3B0328C30D");
+    /// assert!(Guid::parse("{54849625-5478-4994-a5ba-3e3b0328c30d").is_none());
+    /// ```
+    pub fn parse(s: &str) -> Option<Guid> {
+        let s = s.trim_ascii();
+        let s = match s.strip_prefix('{') {
+            Some(rest) => rest.strip_suffix('}')?,
+            None => s,
+        };
+        let bytes = s.as_bytes();
+        if bytes.len() != 36 {
+            return None;
+        }
+        if bytes[8] != b'-' || bytes[13] != b'-' || bytes[18] != b'-' || bytes[23] != b'-' {
+            return None;
+        }
+        let data1 = u32::from_be_bytes(parse_hex_bytes::<4>(&bytes[0..8])?);
+        let data2 = u16::from_be_bytes(parse_hex_bytes::<2>(&bytes[9..13])?);
+        let data3 = u16::from_be_bytes(parse_hex_bytes::<2>(&bytes[14..18])?);
+        let [d0, d1] = parse_hex_bytes::<2>(&bytes[19..23])?;
+        let [d2, d3, d4, d5, d6, d7] = parse_hex_bytes::<6>(&bytes[24..36])?;
+        Some(Guid::new(
+            data1,
+            data2,
+            data3,
+            [d0, d1, d2, d3, d4, d5, d6, d7],
+        ))
+    }
+}
+
+fn parse_hex_bytes<const N: usize>(bytes: &[u8]) -> Option<[u8; N]> {
+    let mut out = [0u8; N];
+    let (chunks, remainder) = bytes.as_chunks::<2>();
+    if !remainder.is_empty() || chunks.len() != N {
+        return None;
+    }
+    for (slot, &[hi, lo]) in out.iter_mut().zip(chunks) {
+        *slot = (hex_nibble(hi)? << 4) | hex_nibble(lo)?;
+    }
+    Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 impl Display for Guid {
@@ -95,5 +158,53 @@ mod tests {
             Guid::from_bytes(raw).to_string(),
             "03020100-0504-0706-0809-0A0B0C0D0E0F"
         );
+    }
+
+    #[test]
+    fn parse_valid_guids() {
+        let raw: [u8; 16] = [
+            0x25, 0x96, 0x84, 0x54, 0x78, 0x54, 0x94, 0x49, 0xa5, 0xba, 0x3e, 0x3b, 0x03, 0x28,
+            0xc3, 0x0d,
+        ];
+        let expected = Guid::from_bytes(raw);
+
+        for input in [
+            "54849625-5478-4994-A5BA-3E3B0328C30D",
+            "54849625-5478-4994-a5ba-3e3b0328c30d",
+            "54849625-5478-4994-a5Ba-3e3B0328c30D",
+            "{54849625-5478-4994-A5BA-3E3B0328C30D}",
+            " \t{54849625-5478-4994-a5ba-3e3b0328c30d}\r\n ",
+            "  54849625-5478-4994-a5ba-3e3b0328c30d  ",
+        ] {
+            assert_eq!(Guid::parse(input), Some(expected), "{input:?}");
+        }
+
+        // Round-trip through Display.
+        assert_eq!(Guid::parse(&expected.to_string()), Some(expected));
+    }
+
+    #[test]
+    fn parse_rejects_invalid_guids() {
+        for invalid in [
+            "",
+            "   ",
+            "{54849625-5478-4994-A5BA-3E3B0328C30D",
+            "54849625-5478-4994-A5BA-3E3B0328C30D}",
+            "{{54849625-5478-4994-A5BA-3E3B0328C30D}}",
+            "{ 54849625-5478-4994-A5BA-3E3B0328C30D }",
+            "54849625-5478-4994-A5BA-3E3B0328C30",
+            "54849625-5478-4994-A5BA-3E3B0328C30DD",
+            "54849625_5478-4994-A5BA-3E3B0328C30D",
+            "54849625-5478_4994-A5BA-3E3B0328C30D",
+            "54849625-5478-4994_A5BA-3E3B0328C30D",
+            "54849625-5478-4994-A5BA_3E3B0328C30D",
+            "54849625-5478-4994-A5BA-3E3B0328C30G",
+            "+4849625-5478-4994-A5BA-3E3B0328C30D",
+            "54849625-5478-4994-A5BA-3E3B0328\u{00e9}30D",
+            "\u{00a0}54849625-5478-4994-A5BA-3E3B0328C30D",
+            "54849625-5478-4994-A5BA-3E3B0328C30D\u{00a0}",
+        ] {
+            assert_eq!(Guid::parse(invalid), None, "{invalid:?}");
+        }
     }
 }
