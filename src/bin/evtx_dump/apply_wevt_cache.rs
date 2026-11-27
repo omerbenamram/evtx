@@ -216,9 +216,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     // Locate the template definition in one of the CRIM blobs.
     let tpl = manifests
         .iter()
-        .flat_map(|m| &m.providers)
-        .filter_map(|p| p.wevt.elements.templates.as_ref())
-        .flat_map(|ttbl| &ttbl.templates)
+        .flat_map(|m| m.templates())
         .find(|tpl| normalize_guid(&tpl.guid.to_string()) == template_guid)
         .ok_or_else(|| {
             format_err!(

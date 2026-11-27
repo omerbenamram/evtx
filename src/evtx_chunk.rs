@@ -16,7 +16,8 @@ use crate::{ParserSettings, checksum_ieee};
 use bumpalo::Bump;
 use std::sync::Arc;
 
-pub(crate) const EVTX_CHUNK_HEADER_SIZE: usize = 512;
+/// Size in bytes of an EVTX chunk header.
+pub const EVTX_CHUNK_HEADER_SIZE: usize = 512;
 
 bitflags! {
     #[derive(Debug)]

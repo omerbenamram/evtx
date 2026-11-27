@@ -1,6 +1,6 @@
 #![allow(clippy::upper_case_acronyms)]
 
-use anyhow::{Context, Result, bail, format_err};
+use anyhow::{Context, Result, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use dialoguer::Confirm;
 use indoc::indoc;
@@ -24,24 +24,6 @@ mod dump_template_instances;
 mod extract_wevt_templates;
 #[path = "evtx_dump/info.rs"]
 mod info;
-
-fn load_wevt_cache_from_wevtcache_file(
-    path: &Path,
-) -> Result<std::sync::Arc<evtx::wevt_templates::WevtCache>> {
-    use evtx::wevt_templates::wevtcache::{EntryKind, WevtCacheReader};
-
-    let mut cache = evtx::wevt_templates::WevtCache::new();
-    let mut reader = WevtCacheReader::open(path)?;
-    while let Some((kind, bytes)) = reader.next_entry()? {
-        match kind {
-            EntryKind::Crim => {
-                cache.add_wevt_blob(bytes).map_err(|e| format_err!("{e}"))?;
-            }
-        }
-    }
-
-    Ok(std::sync::Arc::new(cache))
-}
 
 #[cfg(all(not(target_env = "msvc"), feature = "fast-alloc"))]
 use tikv_jemallocator::Jemalloc;
@@ -173,7 +155,7 @@ impl EvtxDump {
         }
 
         let wevt_cache = wevt_cache_path
-            .map(load_wevt_cache_from_wevtcache_file)
+            .map(|path| evtx::wevt_templates::WevtCache::load(path).map(std::sync::Arc::new))
             .transpose()?;
 
         let mta = mta_path
