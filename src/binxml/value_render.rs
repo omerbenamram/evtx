@@ -54,7 +54,9 @@ macro_rules! render_array_arms {
                     if idx > 0 {
                         $self.write_byte($writer, b',')?;
                     }
-                    $self.write_scalar_item($writer, &BinXmlValue::$scalar(*item), $mode)?;
+                    $self
+                        .try_write_expandable_scalar($writer, &BinXmlValue::$scalar(*item), $mode)
+                        .expect("expandable array scalar item")?;
                 }
                 Ok(())
             })*
@@ -93,33 +95,13 @@ impl ValueRenderer {
         value: &BinXmlValue<'_>,
         string_mode: StringEscapeMode,
     ) -> Result<()> {
+        if let Some(res) = self.try_write_expandable_scalar(writer, value, string_mode) {
+            return res;
+        }
         match value {
             BinXmlValue::NullType => Ok(()),
-            BinXmlValue::StringType(s) => self.write_utf16_escaped(writer, *s, string_mode),
-            BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, s, string_mode),
-            BinXmlValue::Int8Type(v) => write_int!(self, writer, write_i8, *v),
-            BinXmlValue::UInt8Type(v) => write_int!(self, writer, write_u8, *v),
-            BinXmlValue::Int16Type(v) => write_int!(self, writer, write_i16, *v),
-            BinXmlValue::UInt16Type(v) => write_int!(self, writer, write_u16, *v),
-            BinXmlValue::Int32Type(v) => write_int!(self, writer, write_i32, *v),
-            BinXmlValue::UInt32Type(v) => write_int!(self, writer, write_u32, *v),
-            BinXmlValue::Int64Type(v) => write_int!(self, writer, write_i64, *v),
-            BinXmlValue::UInt64Type(v) => write_int!(self, writer, write_u64, *v),
-            BinXmlValue::Real32Type(v) => self.write_float(writer, *v),
-            BinXmlValue::Real64Type(v) => self.write_float(writer, *v),
-            BinXmlValue::BoolType(v) => {
-                self.write_bytes(writer, if *v { b"true" } else { b"false" })
-            }
             BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
-            BinXmlValue::GuidType(guid) => self.write_guid(writer, guid),
             BinXmlValue::SizeTType(v) => write_int!(self, writer, write_u64, *v as u64),
-            BinXmlValue::FileTimeType(ft) => self.write_datetime(writer, ft.fields()),
-            BinXmlValue::SysTimeType(st) => self.write_datetime(writer, st.fields()),
-            BinXmlValue::SidType(sid) => self.write_sid(writer, sid),
-            BinXmlValue::HexInt32Type(v) => {
-                self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
-            }
-            BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
             BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
                 EvtxError::FailedToCreateRecordModel("unsupported BinXML value in renderer"),
             ),
@@ -137,14 +119,16 @@ impl ValueRenderer {
         for_each_expandable_array!(render_array_arms(self, writer, value, string_mode))
     }
 
+    /// Format one of the 19 scalar variants that also have an expandable `*ArrayType` counterpart,
+    /// returning `None` for non-expandable or array variants.
     #[inline(always)]
-    fn write_scalar_item<W: WriteExt>(
+    fn try_write_expandable_scalar<W: WriteExt>(
         &mut self,
         writer: &mut W,
         value: &BinXmlValue<'_>,
         string_mode: StringEscapeMode,
-    ) -> Result<()> {
-        match value {
+    ) -> Option<Result<()>> {
+        Some(match value {
             BinXmlValue::StringType(s) => self.write_utf16_escaped(writer, *s, string_mode),
             BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, s, string_mode),
             BinXmlValue::Int8Type(v) => write_int!(self, writer, write_i8, *v),
@@ -168,8 +152,8 @@ impl ValueRenderer {
                 self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
             }
             BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
-            _ => unreachable!("write_scalar_item only receives expandable array item scalars"),
-        }
+            _ => return None,
+        })
     }
 
     /// Write a substitution value's text directly from its raw chunk bytes
