@@ -662,10 +662,12 @@ impl MessageCatalog {
 
     /// The manifest provider with GUID `guid` (in any case, with or without braces).
     fn provider(&self, guid: &str) -> Option<&ProviderMessages> {
+        fn trim_guid(s: &str) -> &str {
+            s.trim().trim_start_matches('{').trim_end_matches('}')
+        }
         if self.providers.is_empty() {
             return None;
         }
-        let trim_guid = |s: &str| s.trim().trim_start_matches('{').trim_end_matches('}');
         let guid = trim_guid(guid);
         let guid = if guid.len() == 36 {
             guid
