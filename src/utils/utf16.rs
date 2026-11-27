@@ -131,8 +131,6 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
 /// Decode a UTF-16LE byte slice up to the first NUL (`0x0000`), ignoring any trailing odd byte
 /// and replacing unpaired surrogates with `U+FFFD`.
 pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
-    const CHUNK_UNITS: usize = 1024;
-    let bytes = &bytes[..bytes.len() & !1];
     let units = bytes.as_chunks::<2>().0;
     // Strings usually end with their NUL; strip it before the single-pass ASCII check so
     // ordinary ASCII strings avoid scanning for NUL up front.
@@ -151,30 +149,14 @@ pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
         }
         return text;
     }
-
-    let slice = Utf16LeSlice::until_nul(&bytes[..units.len() * 2]);
-    let raw = slice.as_bytes();
-    let total_units = slice.num_chars();
-    if total_units == 0 {
-        return String::new();
-    }
-    let mut out = String::with_capacity(total_units);
-    let mut scratch = utf16_simd::Scratch::new();
-    let mut unit_idx = 0;
-    while unit_idx < total_units {
-        let mut chunk_units = (total_units - unit_idx).min(CHUNK_UNITS);
-        // Keep a trailing high surrogate paired with the next unit in the following chunk.
-        if unit_idx + chunk_units < total_units {
-            let last_off = (unit_idx + chunk_units - 1) * 2;
-            let last_unit = u16::from_le_bytes([raw[last_off], raw[last_off + 1]]);
-            if (0xD800..=0xDBFF).contains(&last_unit) {
-                chunk_units -= 1;
-            }
-        }
-        let chunk_bytes = &raw[unit_idx * 2..(unit_idx + chunk_units) * 2];
-        let utf8 = scratch.escape_utf16le_raw(chunk_bytes, chunk_units);
-        out.push_str(std::str::from_utf8(utf8).expect("utf16_simd raw emits valid UTF-8"));
-        unit_idx += chunk_units;
+    let len = units
+        .iter()
+        .position(|unit| *unit == [0, 0])
+        .unwrap_or(units.len());
+    let units = &units[..len];
+    let mut out = String::with_capacity(units.len());
+    for ch in char::decode_utf16(units.iter().map(|unit| u16::from_le_bytes(*unit))) {
+        out.push(ch.unwrap_or(char::REPLACEMENT_CHARACTER));
     }
     out
 }

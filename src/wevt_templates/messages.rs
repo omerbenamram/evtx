@@ -665,11 +665,13 @@ impl MessageCatalog {
         if self.providers.is_empty() {
             return None;
         }
-        let guid = guid
-            .trim()
-            .trim_start_matches('{')
-            .trim_end_matches('}')
-            .trim();
+        let trim_guid = |s: &str| s.trim().trim_start_matches('{').trim_end_matches('}');
+        let guid = trim_guid(guid);
+        let guid = if guid.len() == 36 {
+            guid
+        } else {
+            trim_guid(guid)
+        };
         if guid.len() != 36 {
             return None;
         }
@@ -1333,6 +1335,7 @@ mod tests {
             "\u{00a0}{54849625-5478-4994-a5ba-3e3b0328c30d}\u{00a0}",
             "{54849625-5478-4994-a5ba-3e3b0328c30d",
             "{ 54849625-5478-4994-a5ba-3e3b0328c30d }",
+            "{ {54849625-5478-4994-a5ba-3e3b0328c30d} }",
         ] {
             assert!(catalog.provider(spelling).is_some(), "{spelling}");
         }
