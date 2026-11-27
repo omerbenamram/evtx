@@ -83,6 +83,10 @@ and this project adheres to
 
 ### Fixed
 
+- `utf16-simd`: `Scratch::escape_*_utf16le`, `escape_*_utf16le_into` and
+  `escape_json_utf16le_to_vec` clamp `num_units` to the complete code units in the input slice
+  before sizing their output buffer, instead of panicking on capacity overflow when `num_units`
+  exceeds `utf16le.len() / 2`.
 - Web viewer (`evtx-wasm`): wrapped circular logs import starting at the chunk with the lowest
   record ID (matching `EvtxParser::chunks`) while still naming each chunk's physical slot in
   warnings, and a final chunk cut off after its 512-byte header imports the records that fit

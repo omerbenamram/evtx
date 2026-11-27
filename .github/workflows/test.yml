@@ -45,7 +45,7 @@ jobs:
       - name: Run tests
         run: cargo test
       - name: Run utf16-simd tests
-        run: cargo test --manifest-path utf16-simd/Cargo.toml
+        run: cargo test --manifest-path utf16-simd/Cargo.toml --all-features
       # The release builds evtx_dump with the allocator of each platform: jemalloc, or rpmalloc
       # on Windows, whose link failed only there (0.15.0).
       - name: Build evtx_dump with fast-alloc

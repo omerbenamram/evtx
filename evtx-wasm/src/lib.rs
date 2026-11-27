@@ -127,7 +127,16 @@ impl EvtxWasmParser {
         if bytes.len() < CHUNK_HEADER_SIZE {
             return Err(format!("incomplete chunk ({} bytes)", bytes.len()));
         }
-        let header = EvtxChunkHeader::from_bytes(bytes).map_err(|e| e.to_string())?;
+        let header = EvtxChunkHeader::from_bytes(bytes).map_err(|e| {
+            if bytes.len() < CHUNK_SIZE {
+                format!(
+                    "incomplete chunk ({} of {CHUNK_SIZE} bytes): {e}",
+                    bytes.len()
+                )
+            } else {
+                e.to_string()
+            }
+        })?;
         Ok((bytes, header))
     }
 
@@ -397,6 +406,23 @@ mod tests {
             .err()
             .unwrap()
             .contains("incomplete chunk"));
+
+        // Short trailing chunk (>= 512 bytes) with invalid magic reports both truncation and magic.
+        let mut short_bad_magic = sample.to_vec();
+        short_bad_magic.extend_from_slice(&damaged[..1024]);
+        let short_bad_err = EvtxWasmParser::from_data(short_bad_magic)
+            .unwrap()
+            .arrow_chunk(1)
+            .err()
+            .unwrap();
+        assert!(
+            short_bad_err.contains("incomplete chunk (1024 of 65536 bytes)"),
+            "{short_bad_err}"
+        );
+        assert!(
+            short_bad_err.contains("Invalid EVTX chunk header magic"),
+            "{short_bad_err}"
+        );
 
         // Trimmed after the last record (inside free space): rows survive AND truncation warns.
         let header = EvtxChunkHeader::from_bytes(chunk).unwrap();
