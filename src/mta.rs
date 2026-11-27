@@ -623,9 +623,10 @@ pub(crate) struct MaterializedEvent<'t> {
 impl<'t> MaterializedEvent<'t> {
     /// Reads the event fields from a materialized `IrTree`.
     ///
-    /// Returns `None` if the root isn't `Event`, if `RenderingInfo` already exists, or if there
-    /// is no `System` element. When `collect_data` is true, also collects `EventData` and
-    /// `UserData` element IDs.
+    /// Returns `None` if the root isn't `Event`, if `RenderingInfo` already exists, or (when
+    /// `collect_data` is `false`, for `.MTA` lookup) if there is no `System` element. When
+    /// `collect_data` is `true`, also collects `EventData` and `UserData` element IDs and returns
+    /// default `System` fields when `System` is absent so empty-name classic sources still match.
     pub(crate) fn of(tree: &'t IrTree<'_>, collect_data: bool) -> Option<Self> {
         let root = tree.root_element();
         if root.name.as_str() != "Event" {
@@ -642,10 +643,12 @@ impl<'t> MaterializedEvent<'t> {
                 _ => {}
             }
         }
-        let system = system?;
         let mut event = MaterializedEvent {
             data,
             ..MaterializedEvent::default()
+        };
+        let Some(system) = system else {
+            return collect_data.then_some(event);
         };
         let attr = |element, name| attribute(element, name).unwrap_or_default();
         for node in &tree.element(system).children {

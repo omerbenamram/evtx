@@ -1389,4 +1389,44 @@ mod tests {
         assert_eq!(info.opcode, Some("Start"));
         assert_eq!(info.keywords, vec!["", "NamedKeyword"]);
     }
+
+    #[test]
+    fn empty_name_classic_source_enriches_event_without_system() {
+        let mut catalog = MessageCatalog::new();
+        catalog.add_classic_source("", &[]);
+
+        let bump = Bump::new();
+        let mut arena = crate::model::ir::IrArena::new_in(&bump);
+        let root = arena.new_node(Element::new_in(crate::model::ir::Name::new("Event"), &bump));
+        let mut tree = IrTree::new(arena, root);
+
+        add_rendering_info(&mut tree, &catalog, &bump);
+
+        let children = &tree.root_element().children;
+        assert_eq!(children.len(), 1);
+        let Node::Element(ri_id) = children[0] else {
+            panic!("expected RenderingInfo element");
+        };
+        let ri = tree.element(ri_id);
+        assert_eq!(ri.name.as_str(), "RenderingInfo");
+        let fields: Vec<(&str, String)> = ri
+            .children
+            .iter()
+            .filter_map(|n| match n {
+                Node::Element(id) => {
+                    let el = tree.element(*id);
+                    Some((el.name.as_str(), text(&el.children).into_owned()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                ("Level", "Log Always".to_string()),
+                ("Task", "None".to_string()),
+                ("Opcode", "Info".to_string()),
+            ]
+        );
+    }
 }
