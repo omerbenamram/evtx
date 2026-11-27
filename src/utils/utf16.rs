@@ -139,6 +139,15 @@ pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
     if total_units == 0 {
         return String::new();
     }
+    // Most `.MTA` and message-table strings are ASCII: copy low bytes directly into `String`
+    // without allocating a scratch buffer.
+    let units = raw.as_chunks::<2>().0;
+    let bits = units
+        .iter()
+        .fold(0u16, |acc, unit| acc | u16::from_le_bytes(*unit));
+    if bits < 0x80 {
+        return String::from_utf8(units.iter().map(|&[low, _]| low).collect()).expect("ASCII");
+    }
     let mut out = String::with_capacity(total_units);
     let mut scratch = utf16_simd::Scratch::new();
     let mut unit_idx = 0;

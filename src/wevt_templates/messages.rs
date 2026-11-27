@@ -665,6 +665,10 @@ impl MessageCatalog {
         if self.providers.is_empty() {
             return None;
         }
+        let guid = guid.trim().trim_start_matches('{').trim_end_matches('}');
+        if guid.len() != 36 {
+            return None;
+        }
         self.providers.get(&Guid::parse(guid)?)
     }
 
@@ -1322,10 +1326,17 @@ mod tests {
             guid,
             "{54849625-5478-4994-A5BA-3E3B0328C30D}",
             " {54849625-5478-4994-a5ba-3e3b0328c30d} ",
+            "\u{00a0}{54849625-5478-4994-a5ba-3e3b0328c30d}\u{00a0}",
+            "{54849625-5478-4994-a5ba-3e3b0328c30d",
         ] {
             assert!(catalog.provider(spelling).is_some(), "{spelling}");
         }
         assert!(catalog.provider("").is_none());
+        assert!(
+            catalog
+                .provider("{ 54849625-5478-4994-a5ba-3e3b0328c30d }")
+                .is_none()
+        );
     }
 
     #[test]
