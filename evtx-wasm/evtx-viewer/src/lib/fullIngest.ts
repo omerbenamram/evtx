@@ -20,11 +20,12 @@ export async function startFullIngest(
     } catch (error) {
       signal.throwIfAborted();
       if (!(error instanceof EvtxChunkError)) throw error;
-      onWarning(`Chunk ${index + 1}: ${error.message}`);
+      onWarning(`Chunk ${error.chunkNumber ?? index + 1}: ${error.message}`);
     }
     signal.throwIfAborted();
     if (chunk) {
-      for (const warning of chunk.errors) onWarning(`Chunk ${index + 1}: ${warning}`);
+      const label = chunk.chunkNumber ?? index + 1;
+      for (const warning of chunk.errors) onWarning(`Chunk ${label}: ${warning}`);
       if (chunk.rows > 0) {
         await writeBatch(new Uint8Array(chunk.buffer));
         records += chunk.rows;

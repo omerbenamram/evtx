@@ -13,12 +13,25 @@ export const parserResponseSchema = z.discriminatedUnion("type", [
   z.object({
     id: z.number().int(),
     type: z.literal("chunk"),
+    chunkNumber: z.number().int().positive().optional(),
     buffer: z.instanceof(ArrayBuffer),
     rows: z.number().int().nonnegative(),
     errors: z.array(z.string()),
   }),
-  z.object({ id: z.number().int(), type: z.literal("chunk-error"), error: z.string() }),
+  z.object({
+    id: z.number().int(),
+    type: z.literal("chunk-error"),
+    chunkNumber: z.number().int().positive().optional(),
+    error: z.string(),
+  }),
   z.object({ id: z.number().int(), type: z.literal("error"), error: z.string() }),
 ]);
 export type ParserResponse = z.infer<typeof parserResponseSchema>;
-export class EvtxChunkError extends Error {}
+export class EvtxChunkError extends Error {
+  constructor(
+    message: string,
+    readonly chunkNumber?: number,
+  ) {
+    super(message);
+  }
+}
