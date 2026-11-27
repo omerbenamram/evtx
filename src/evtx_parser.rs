@@ -464,6 +464,9 @@ impl ParserSettings {
     /// Such records have `recovered` set; the record iterators skip ones that fail to parse
     /// or render. `evtx_dump --recover-records` marks them in its output.
     ///
+    /// A chunk whose header can't be read is carved too, after its error. Its records come
+    /// out when the templates they use are still in the chunk.
+    ///
     /// ```rust
     /// # use evtx::{EvtxParser, ParserSettings};
     /// # let fp = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/security.evtx");
@@ -621,11 +624,14 @@ impl<T: ReadSeek> EvtxParser<T> {
     /// shorter than a chunk, and the records that fit are read.
     /// If it is invalid (bad magic, bad checksum when `validate_checksum` is set to true), if
     /// it can't be read, or if the file ends before the end of its header, an `Err` is returned.
+    /// With `recover_headerless`, a whole chunk with a bad magic is `Ok` instead, to be carved
+    /// for records (see `EvtxChunkData::read`); its error then comes from its records iterator.
     /// If the chunk is empty, `Ok(None)` is returned.
     fn allocate_chunk(
         data: &mut T,
         chunk_number: u64,
         validate_checksum: bool,
+        recover_headerless: bool,
     ) -> Result<Option<EvtxChunkData>> {
         let mut chunk_data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         // No file reaches an offset that doesn't fit.
@@ -656,7 +662,9 @@ impl<T: ReadSeek> EvtxParser<T> {
             return Ok(None);
         }
 
-        let mut chunk = EvtxChunkData::new(chunk_data, validate_checksum)
+        // Bytes that end before a chunk does aren't a chunk without a header to say so.
+        let keep_headerless = recover_headerless && amount_read == EVTX_CHUNK_SIZE;
+        let mut chunk = EvtxChunkData::read(chunk_data, validate_checksum, keep_headerless)
             .map_err(|e| EvtxError::chunk(chunk_number, e))?;
         chunk.number = Some(chunk_number);
         if amount_read < EVTX_CHUNK_SIZE {
@@ -684,6 +692,8 @@ impl<T: ReadSeek> EvtxParser<T> {
                 &mut self.data,
                 chunk_number,
                 self.config.validate_checksums,
+                // Past the last whole chunk, bytes without a chunk header aren't a chunk.
+                self.config.should_recover_records() && chunk_number < self.calculated_chunk_count,
             ) {
                 Err(err) => {
                     // Past the last whole chunk there is a cut-off chunk, which is read like

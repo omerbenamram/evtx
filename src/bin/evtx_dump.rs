@@ -694,7 +694,7 @@ fn run_cli() -> Result<()> {
             Arg::new("recover-records")
                 .long("recover-records")
                 .action(ArgAction::SetTrue)
-                .help("Also carve deleted/stale records from unallocated chunk space (cleared chunks, chunk slack)."),
+                .help("Also carve deleted/stale records from unallocated chunk space (cleared chunks, chunk slack), and the records of chunks whose header can't be read."),
         )
         .arg(
             Arg::new("carve")

@@ -23,6 +23,14 @@ and this project adheres to
   hole ends at it. A source of which nothing can be read (a directory, a device that is
   gone) is an error, and so is one where `evtx_dump --carve` finds no chunks.
 
+- `ParserSettings::recover_records` / `evtx_dump --recover-records` also carve a chunk whose
+  header can't be read (a wrong magic). Such a chunk used to be an error and nothing else. The
+  error is still reported (and `evtx_dump` still exits with status 3), and the records found
+  in the chunk follow it as recovered: `security.evtx` with one chunk header overwritten gives
+  that chunk's 86 records back. A record comes out only when the template it uses is still in
+  the chunk, so a chunk that lost its first records along with its header (chunks 6 and 10 of
+  `sample_with_a_bad_chunk_magic.evtx`) usually gives none.
+
 ### Breaking changes
 
 - `EvtxError` has a new variant, `NotAnXmlName`, for a record with a name that can't be
