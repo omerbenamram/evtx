@@ -133,20 +133,30 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
 pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
     const CHUNK_UNITS: usize = 1024;
     let bytes = &bytes[..bytes.len() & !1];
-    let slice = Utf16LeSlice::until_nul(bytes);
-    let raw = slice.as_bytes();
-    let total_units = slice.num_chars();
-    if total_units == 0 {
+    let units = bytes.as_chunks::<2>().0;
+    // Strings usually end with their NUL; strip it before the single-pass ASCII check so
+    // ordinary ASCII strings avoid scanning for NUL up front.
+    let units = units.strip_suffix(&[[0, 0]]).unwrap_or(units);
+    if units.is_empty() {
         return String::new();
     }
-    // Most `.MTA` and message-table strings are ASCII: copy low bytes directly into `String`
-    // without allocating a scratch buffer.
-    let units = raw.as_chunks::<2>().0;
     let bits = units
         .iter()
         .fold(0u16, |acc, unit| acc | u16::from_le_bytes(*unit));
     if bits < 0x80 {
-        return String::from_utf8(units.iter().map(|&[low, _]| low).collect()).expect("ASCII");
+        let mut text =
+            String::from_utf8(units.iter().map(|&[low, _]| low).collect()).expect("ASCII");
+        if let Some(nul) = text.find('\0') {
+            text.truncate(nul);
+        }
+        return text;
+    }
+
+    let slice = Utf16LeSlice::until_nul(&bytes[..units.len() * 2]);
+    let raw = slice.as_bytes();
+    let total_units = slice.num_chars();
+    if total_units == 0 {
+        return String::new();
     }
     let mut out = String::with_capacity(total_units);
     let mut scratch = utf16_simd::Scratch::new();
