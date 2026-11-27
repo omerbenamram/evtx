@@ -4,10 +4,13 @@ use sonic_rs::format::{CompactFormatter, Formatter};
 
 use utf16_simd::{
     Scratch, escape_json_utf16, escape_json_utf16_scalar, escape_json_utf16le,
-    escape_json_utf16le_scalar, escape_utf16_raw, escape_utf16_raw_scalar, escape_utf16le_raw,
+    escape_json_utf16le_into, escape_json_utf16le_scalar, escape_json_utf16le_to_vec,
+    escape_utf16_raw, escape_utf16_raw_scalar, escape_utf16le_raw, escape_utf16le_raw_into,
     escape_utf16le_raw_scalar, escape_xml_utf16, escape_xml_utf16_scalar, escape_xml_utf16le,
-    escape_xml_utf16le_scalar, max_escaped_len,
+    escape_xml_utf16le_into, escape_xml_utf16le_scalar, max_escaped_len,
 };
+#[cfg(feature = "sonic-writeext")]
+use utf16_simd::{write_json_utf16le, write_utf16le_raw, write_xml_utf16le};
 
 fn utf16le_from_str(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len() * 2);
@@ -413,4 +416,77 @@ fn dirty_simd_block_optimization() {
     let s3 = "aa\"bb\"cc";
     let bytes3 = utf16le_from_str(s3);
     run_case_json(&bytes3, bytes3.len() / 2, true);
+}
+
+#[test]
+fn utf16le_clamps_oversized_num_units_before_allocating() {
+    let sample = utf16le_from_str("Hello &<>\"' \u{00E9}\u{1F600}");
+    let odd = [b'A', 0x00, 0xFF];
+
+    for bytes in [&sample[..], &odd[..], &[][..]] {
+        let exact = bytes.len() / 2;
+
+        for need_quote in [false, true] {
+            let expected = json_reference(bytes, exact, need_quote);
+            let mut scratch = Scratch::new();
+            assert_eq!(
+                scratch.escape_json_utf16le(bytes, usize::MAX, need_quote),
+                expected.as_slice()
+            );
+
+            let mut out = Vec::new();
+            escape_json_utf16le_into(bytes, usize::MAX, &mut out, need_quote);
+            assert_eq!(out, expected);
+
+            assert_eq!(
+                escape_json_utf16le_to_vec(bytes, usize::MAX, need_quote),
+                expected
+            );
+
+            #[cfg(feature = "sonic-writeext")]
+            {
+                let mut w = Vec::new();
+                write_json_utf16le(&mut w, bytes, usize::MAX, need_quote).unwrap();
+                assert_eq!(w, expected);
+            }
+        }
+
+        for in_attribute in [false, true] {
+            let expected = xml_reference(bytes, exact, in_attribute);
+            let mut scratch = Scratch::new();
+            assert_eq!(
+                scratch.escape_xml_utf16le(bytes, usize::MAX, in_attribute),
+                expected.as_slice()
+            );
+
+            let mut out = Vec::new();
+            escape_xml_utf16le_into(bytes, usize::MAX, &mut out, in_attribute);
+            assert_eq!(out, expected);
+
+            #[cfg(feature = "sonic-writeext")]
+            {
+                let mut w = Vec::new();
+                write_xml_utf16le(&mut w, bytes, usize::MAX, in_attribute).unwrap();
+                assert_eq!(w, expected);
+            }
+        }
+
+        let expected = raw_reference(bytes, exact);
+        let mut scratch = Scratch::new();
+        assert_eq!(
+            scratch.escape_utf16le_raw(bytes, usize::MAX),
+            expected.as_slice()
+        );
+
+        let mut out = Vec::new();
+        escape_utf16le_raw_into(bytes, usize::MAX, &mut out);
+        assert_eq!(out, expected);
+
+        #[cfg(feature = "sonic-writeext")]
+        {
+            let mut w = Vec::new();
+            write_utf16le_raw(&mut w, bytes, usize::MAX).unwrap();
+            assert_eq!(w, expected);
+        }
+    }
 }

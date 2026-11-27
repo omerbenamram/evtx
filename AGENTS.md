@@ -82,7 +82,7 @@ Use plain words and full sentences: short ones, one idea each, in the active voi
 
 - `git lfs pull`, once in each checkout. Without it the WEVT template tests fail on LFS pointer files. In a cloud session `.claude/hooks/cloud-setup.sh` does this at startup.
 - When you change Rust code, tests, samples or dependencies: `cargo test`. Run one test with `cargo test <name>`, and add `RUST_LOG=debug` for logs.
-- When you change `utf16-simd/`: `cargo test --manifest-path utf16-simd/Cargo.toml`
+- When you change `utf16-simd/`: `cargo test --manifest-path utf16-simd/Cargo.toml --all-features`
 - When you change dependencies or `src/bin/`: `cargo build --bin evtx_dump --features fast-alloc`. The release builds `evtx_dump` with a different allocator on each platform. The Windows link once failed only there, and only CI can show that.
 - When you change `include` in `Cargo.toml`, or make the build read a file outside `src/`: `cargo package --allow-dirty --config "patch.crates-io.utf16-simd.path=\"$PWD/utf16-simd\""`. Only the paths in `include` go to crates.io, and this builds the crate from them alone.
 - When you change `CHANGELOG.md` or `version` in `Cargo.toml`: `scripts/release-notes.sh <version in Cargo.toml>`. CI fails a pull request when the current version has no notes in `CHANGELOG.md`.
