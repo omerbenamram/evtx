@@ -131,14 +131,33 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
 /// Decode a UTF-16LE byte slice up to the first NUL (`0x0000`), ignoring any trailing odd byte
 /// and replacing unpaired surrogates with `U+FFFD`.
 pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
+    const CHUNK_UNITS: usize = 1024;
     let bytes = &bytes[..bytes.len() & !1];
     let slice = Utf16LeSlice::until_nul(bytes);
-    if slice.is_empty() {
+    let raw = slice.as_bytes();
+    let total_units = slice.num_chars();
+    if total_units == 0 {
         return String::new();
     }
-    let mut buf = Vec::new();
-    utf16_simd::escape_utf16le_raw_into(slice.as_bytes(), slice.num_chars(), &mut buf);
-    String::from_utf8(buf).expect("utf16_simd raw emits valid UTF-8")
+    let mut out = String::with_capacity(total_units);
+    let mut scratch = utf16_simd::Scratch::new();
+    let mut unit_idx = 0;
+    while unit_idx < total_units {
+        let mut chunk_units = (total_units - unit_idx).min(CHUNK_UNITS);
+        // Keep a trailing high surrogate paired with the next unit in the following chunk.
+        if unit_idx + chunk_units < total_units {
+            let last_off = (unit_idx + chunk_units - 1) * 2;
+            let last_unit = u16::from_le_bytes([raw[last_off], raw[last_off + 1]]);
+            if (0xD800..=0xDBFF).contains(&last_unit) {
+                chunk_units -= 1;
+            }
+        }
+        let chunk_bytes = &raw[unit_idx * 2..(unit_idx + chunk_units) * 2];
+        let utf8 = scratch.escape_utf16le_raw(chunk_bytes, chunk_units);
+        out.push_str(std::str::from_utf8(utf8).expect("utf16_simd raw emits valid UTF-8"));
+        unit_idx += chunk_units;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -167,6 +186,12 @@ mod tests {
         // Lone low surrogate and lone high surrogate at end.
         bytes = le(&[0xDC00, 0x61, 0xD800]);
         assert_eq!(decode_utf16le_lossy_z(&bytes), "\u{FFFD}a\u{FFFD}");
+        // Multi-chunk decode with a surrogate pair straddling the 1024-unit chunk boundary.
+        let mut units = vec![0x0061u16; 1023];
+        units.extend_from_slice(&[0xD83D, 0xDE00, 0x0062]);
+        let mut expected = "a".repeat(1023);
+        expected.push_str("\u{1F600}b");
+        assert_eq!(decode_utf16le_lossy_z(&le(&units)), expected);
     }
 
     #[test]

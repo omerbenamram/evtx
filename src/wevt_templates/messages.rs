@@ -50,8 +50,7 @@ use crate::binxml::compiled::MAX_RECORD_OUTPUT;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrTree, Node};
 use crate::mta::{
-    MaterializedEvent, RenderingInfo, append_rendering_info, resolve_keywords, resolve_opcode,
-    text, value_number,
+    MaterializedEvent, RenderingInfo, append_rendering_info, resolve_keywords, text, value_number,
 };
 use crate::utils::bytes::{read_u16_le, read_u32_le};
 use crate::utils::decode_utf16le_lossy_z;
@@ -718,16 +717,18 @@ impl MessageCatalog {
             .or_else(|| winmeta_level(event.level));
         let task = name(provider.and_then(|p| p.tasks.get(&u32::from(event.task))))
             .or_else(|| winmeta_task(event.task));
-        let opcode = resolve_opcode(
-            event.qualifiers,
-            event.opcode,
-            event.task,
-            |op, t| {
-                let key = (u32::from(op) << 16) | u32::from(t);
-                name(provider.and_then(|p| p.opcodes.get(&key)))
-            },
-            winmeta_opcode,
-        );
+        // As `MtaFile::rendering_info`: no opcode for events from classic event sources.
+        let opcode = (event.qualifiers == 0)
+            .then(|| {
+                let opcode = u32::from(event.opcode) << 16;
+                let id = provider.and_then(|p| {
+                    p.opcodes
+                        .get(&(opcode | u32::from(event.task)))
+                        .or_else(|| p.opcodes.get(&opcode))
+                });
+                name(id).or_else(|| winmeta_opcode(event.opcode))
+            })
+            .flatten();
         let keywords = resolve_keywords(event.keywords, |bit| {
             name(provider.and_then(|p| p.keywords.get(&(1u64 << bit))))
                 .or_else(|| winmeta_keyword(bit))
@@ -1325,5 +1326,51 @@ mod tests {
             assert!(catalog.provider(spelling).is_some(), "{spelling}");
         }
         assert!(catalog.provider("").is_none());
+    }
+
+    #[test]
+    fn preserves_task_opcode_precedence_and_empty_keyword_labels() {
+        let guid = Guid::parse("54849625-5478-4994-a5ba-3e3b0328c30d").unwrap();
+        let mut provider = ProviderMessages {
+            tables: vec![0],
+            ..ProviderMessages::default()
+        };
+        // Task-specific opcode (opcode=1, task=7 -> 100) has no string in the table;
+        // task-zero opcode (opcode=1, task=0 -> 101) has "WrongTaskZero".
+        provider.opcodes.insert((1u32 << 16) | 7, 100);
+        provider.opcodes.insert(1u32 << 16, 101);
+        // Bit 0 maps to a line-break-only entry (trims to ""); bit 1 maps to "NamedKeyword".
+        provider.keywords.insert(1, 200);
+        provider.keywords.insert(2, 201);
+
+        let mut messages = HashMap::new();
+        messages.insert(101, Box::from("WrongTaskZero"));
+        messages.insert(200, Box::from("\r\n"));
+        messages.insert(201, Box::from("NamedKeyword\r\n"));
+
+        let mut catalog = MessageCatalog::new();
+        catalog.tables.push(MessageTable { messages });
+        catalog.providers.insert(guid, provider);
+
+        let bump = Bump::new();
+        let tree_bump = Bump::new();
+        let mut arena = crate::model::ir::IrArena::new_in(&tree_bump);
+        let root = arena.new_node(Element::new_in(
+            crate::model::ir::Name::new("Event"),
+            &tree_bump,
+        ));
+        let tree = IrTree::new(arena, root);
+        let event = MaterializedEvent {
+            provider_guid: std::borrow::Cow::Owned(guid.to_string()),
+            opcode: 1,
+            task: 7,
+            keywords: 0b11,
+            ..MaterializedEvent::default()
+        };
+
+        let info = catalog.rendering_info(&event, &tree, &bump).unwrap();
+        // Task-specific definition wins over task-zero; missing translation falls back to winmeta (opcode 1 -> "Start").
+        assert_eq!(info.opcode, Some("Start"));
+        assert_eq!(info.keywords, vec!["", "NamedKeyword"]);
     }
 }

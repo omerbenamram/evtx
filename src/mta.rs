@@ -370,19 +370,19 @@ impl MtaFile {
         let find = |lookup: &dyn Fn(&MtaPublisher) -> Option<&str>| {
             lookup(publisher).or_else(|| default.and_then(lookup))
         };
-        let opcode = resolve_opcode(
-            event.qualifiers,
-            event.opcode,
-            event.task,
-            |op, t| find(&|p| p.opcode(op, t)),
-            |_| None,
-        );
-        let keywords = resolve_keywords(event.keywords, |bit| find(&|p| p.keyword(bit)));
+        let opcode = if event.qualifiers == 0 {
+            find(&|p| p.opcode(event.opcode, event.task))
+                .or_else(|| find(&|p| p.opcode(event.opcode, 0)))
+        } else {
+            // Windows names no opcode for events from classic event sources.
+            None
+        };
+        let keywords = resolve_keywords(event.keywords, |bit| non_empty(find(&|p| p.keyword(bit))));
         Some(RenderingInfo {
             message: self.message(event.record_number, event.event_record_id),
             level: non_empty(find(&|p| p.level(event.level))),
             task: non_empty(find(&|p| p.task(event.task))),
-            opcode,
+            opcode: non_empty(opcode),
             keywords,
         })
     }
@@ -425,27 +425,7 @@ fn non_empty(name: Option<&str>) -> Option<&str> {
     name.filter(|name| !name.is_empty())
 }
 
-/// Resolves an event's opcode name following Windows' rules: classic event sources
-/// (`qualifiers != 0`) get no opcode name; otherwise try `(opcode, task)`, then `(opcode, 0)`,
-/// then `fallback(opcode)`. Empty names are treated as absent.
-pub(crate) fn resolve_opcode<'a, 'f: 'a>(
-    qualifiers: u16,
-    opcode: u8,
-    task: u16,
-    mut lookup: impl FnMut(u8, u16) -> Option<&'a str>,
-    fallback: impl FnOnce(u8) -> Option<&'f str>,
-) -> Option<&'a str> {
-    if qualifiers != 0 {
-        // Windows names no opcode for events from classic event sources.
-        return None;
-    }
-    let name = lookup(opcode, task)
-        .or_else(|| lookup(opcode, 0))
-        .or_else(|| fallback(opcode));
-    non_empty(name)
-}
-
-/// Resolves an event's keyword names in bit order (lowest set bit first), skipping empty names.
+/// Resolves an event's keyword names in bit order (lowest set bit first).
 pub(crate) fn resolve_keywords<'a>(
     mut mask: u64,
     mut lookup: impl FnMut(u8) -> Option<&'a str>,
@@ -454,7 +434,7 @@ pub(crate) fn resolve_keywords<'a>(
     while mask != 0 {
         let bit = mask.trailing_zeros() as u8;
         mask &= mask - 1;
-        keywords.extend(non_empty(lookup(bit)));
+        keywords.extend(lookup(bit));
     }
     keywords
 }

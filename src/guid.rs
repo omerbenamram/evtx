@@ -80,7 +80,7 @@ impl Guid {
     /// assert!(Guid::parse("{54849625-5478-4994-a5ba-3e3b0328c30d").is_none());
     /// ```
     pub fn parse(s: &str) -> Option<Guid> {
-        let s = s.trim();
+        let s = s.trim_ascii();
         let s = match s.strip_prefix('{') {
             Some(rest) => rest.strip_suffix('}')?,
             None => s,
@@ -201,6 +201,8 @@ mod tests {
             "54849625-5478-4994-A5BA-3E3B0328C30G",
             "+4849625-5478-4994-A5BA-3E3B0328C30D",
             "54849625-5478-4994-A5BA-3E3B0328\u{00e9}30D",
+            "\u{00a0}54849625-5478-4994-A5BA-3E3B0328C30D",
+            "54849625-5478-4994-A5BA-3E3B0328C30D\u{00a0}",
         ] {
             assert_eq!(Guid::parse(invalid), None, "{invalid:?}");
         }
