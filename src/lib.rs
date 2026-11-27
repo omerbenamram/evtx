@@ -6,9 +6,13 @@
 #[macro_use]
 extern crate bitflags;
 
-pub use evtx_chunk::{ChunkFlags, EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords};
+pub use evtx_chunk::{
+    ChunkFlags, EVTX_CHUNK_HEADER_SIZE, EvtxChunk, EvtxChunkData, EvtxChunkHeader, IterChunkRecords,
+};
 pub use evtx_file_header::{EvtxFileHeader, HeaderFlags};
-pub use evtx_parser::{EvtxParser, IntoIterChunks, IterChunks, ParserSettings};
+pub use evtx_parser::{
+    EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE, EvtxParser, IntoIterChunks, IterChunks, ParserSettings,
+};
 #[doc(hidden)]
 pub use evtx_parser::{RenderedChunk, RenderedChunkItem};
 pub use evtx_record::{

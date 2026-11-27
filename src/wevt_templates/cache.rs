@@ -1,12 +1,14 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use bumpalo::Bump;
 use thiserror::Error;
 
 use super::TEMP_HEADER_SIZE;
 use super::manifest::{CrimManifest, WevtManifestError};
+use super::wevtcache::{WevtCacheFileError, for_each_crim_blob};
 
 #[derive(Debug, Error)]
 pub enum WevtCacheError {
@@ -73,6 +75,22 @@ impl WevtCache {
     /// Create an empty cache.
     pub fn new() -> Self {
         WevtCache::default()
+    }
+
+    /// Load a `.wevtcache` file and index all of its `CRIM` blobs into a [`WevtCache`].
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, WevtCacheFileError> {
+        let path = path.as_ref();
+        let mut cache = Self::new();
+        for_each_crim_blob(path, |bytes| {
+            cache
+                .add_wevt_blob(bytes)
+                .map_err(|source| WevtCacheFileError::InvalidEntry {
+                    path: path.to_path_buf(),
+                    source,
+                })?;
+            Ok(())
+        })?;
+        Ok(cache)
     }
 
     /// Insert a standalone TEMP blob (full TEMP bytes) into this cache.
@@ -174,4 +192,50 @@ pub fn normalize_guid(s: &str) -> String {
         .trim_start_matches('{')
         .trim_end_matches('}')
         .to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wevt_templates::wevtcache::WevtCacheWriter;
+
+    fn minimal_crim_blob() -> Vec<u8> {
+        let mut crim = Vec::with_capacity(16);
+        crim.extend_from_slice(b"CRIM");
+        crim.extend_from_slice(&16u32.to_le_bytes()); // size
+        crim.extend_from_slice(&1u16.to_le_bytes()); // major_version
+        crim.extend_from_slice(&0u16.to_le_bytes()); // minor_version
+        crim.extend_from_slice(&0u32.to_le_bytes()); // provider_count
+        crim
+    }
+
+    #[test]
+    fn load_valid_and_invalid_wevtcache() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid_path = dir.path().join("valid.wevtcache");
+        let mut writer = WevtCacheWriter::create(&valid_path, false).unwrap();
+        writer.write_crim_blob(&minimal_crim_blob()).unwrap();
+        writer.finish().unwrap();
+
+        let cache = WevtCache::load(&valid_path).unwrap();
+        assert_eq!(cache.crim_blobs.len(), 1);
+        assert!(cache.sources_by_guid.is_empty());
+
+        let invalid_path = dir.path().join("invalid.wevtcache");
+        let mut writer = WevtCacheWriter::create(&invalid_path, false).unwrap();
+        writer.write_crim_blob(b"not-a-crim-blob").unwrap();
+        writer.finish().unwrap();
+
+        let err = WevtCache::load(&invalid_path).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                WevtCacheFileError::InvalidEntry {
+                    source: WevtCacheError::CrimParse { .. },
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
 }

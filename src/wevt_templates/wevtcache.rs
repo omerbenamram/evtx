@@ -71,6 +71,13 @@ pub enum WevtCacheFileError {
 
     #[error("wevtcache entry count overflow for `{path}`")]
     EntryCountOverflow { path: PathBuf },
+
+    #[error("failed to index `.wevtcache` entry in `{path}`: {source}")]
+    InvalidEntry {
+        path: PathBuf,
+        #[source]
+        source: super::WevtCacheError,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, WevtCacheFileError>;
