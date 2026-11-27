@@ -5,7 +5,7 @@
 //! comma-delimited arrays, etc.). This module centralizes that logic so both
 //! renderers stay in sync and avoid allocating intermediate `String`s.
 
-use crate::binxml::value_variant::{BinXmlValue, SidRef, value_ty};
+use crate::binxml::value_variant::{BinXmlValue, SidRef, for_each_expandable_array, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
 use crate::utils::bytes::le;
@@ -46,6 +46,27 @@ macro_rules! write_int {
     };
 }
 
+macro_rules! render_array_arms {
+    ($self:ident, $writer:ident, $value:ident, $mode:ident ; $( $array:ident => $scalar:ident ),* $(,)?) => {
+        match $value {
+            $(BinXmlValue::$array(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    if idx > 0 {
+                        $self.write_byte($writer, b',')?;
+                    }
+                    $self
+                        .try_write_expandable_scalar($writer, &BinXmlValue::$scalar(*item), $mode)
+                        .expect("expandable array scalar item")?;
+                }
+                Ok(())
+            })*
+            other => Err(EvtxError::Unimplemented {
+                name: format!("value formatting for {:?}", other),
+            }),
+        }
+    };
+}
+
 impl ValueRenderer {
     pub(crate) fn new() -> Self {
         Self::default()
@@ -74,8 +95,40 @@ impl ValueRenderer {
         value: &BinXmlValue<'_>,
         string_mode: StringEscapeMode,
     ) -> Result<()> {
+        if let Some(res) = self.try_write_expandable_scalar(writer, value, string_mode) {
+            return res;
+        }
         match value {
             BinXmlValue::NullType => Ok(()),
+            BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
+            BinXmlValue::SizeTType(v) => write_int!(self, writer, write_u64, *v as u64),
+            BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
+                EvtxError::FailedToCreateRecordModel("unsupported BinXML value in renderer"),
+            ),
+            other => self.write_array_value(writer, other, string_mode),
+        }
+    }
+
+    #[cold]
+    fn write_array_value<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        value: &BinXmlValue<'_>,
+        string_mode: StringEscapeMode,
+    ) -> Result<()> {
+        for_each_expandable_array!(render_array_arms(self, writer, value, string_mode))
+    }
+
+    /// Format one of the 19 scalar variants that also have an expandable `*ArrayType` counterpart,
+    /// returning `None` for non-expandable or array variants.
+    #[inline(always)]
+    fn try_write_expandable_scalar<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        value: &BinXmlValue<'_>,
+        string_mode: StringEscapeMode,
+    ) -> Option<Result<()>> {
+        Some(match value {
             BinXmlValue::StringType(s) => self.write_utf16_escaped(writer, *s, string_mode),
             BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, s, string_mode),
             BinXmlValue::Int8Type(v) => write_int!(self, writer, write_i8, *v),
@@ -91,9 +144,7 @@ impl ValueRenderer {
             BinXmlValue::BoolType(v) => {
                 self.write_bytes(writer, if *v { b"true" } else { b"false" })
             }
-            BinXmlValue::BinaryType(bytes) => self.write_hex_bytes_upper(writer, bytes),
             BinXmlValue::GuidType(guid) => self.write_guid(writer, guid),
-            BinXmlValue::SizeTType(v) => write_int!(self, writer, write_u64, *v as u64),
             BinXmlValue::FileTimeType(ft) => self.write_datetime(writer, ft.fields()),
             BinXmlValue::SysTimeType(st) => self.write_datetime(writer, st.fields()),
             BinXmlValue::SidType(sid) => self.write_sid(writer, sid),
@@ -101,72 +152,8 @@ impl ValueRenderer {
                 self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
             }
             BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
-            BinXmlValue::StringArrayType(items) => self.write_list(writer, items, |s, w, item| {
-                s.write_utf16_escaped(w, *item, string_mode)
-            }),
-            BinXmlValue::AnsiStringArrayType(items) => {
-                self.write_list(writer, items, |s, w, item| {
-                    s.write_str_escaped(w, item, string_mode)
-                })
-            }
-            BinXmlValue::Int8ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i8, *v))
-            }
-            BinXmlValue::UInt8ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u8, *v))
-            }
-            BinXmlValue::Int16ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i16, *v))
-            }
-            BinXmlValue::UInt16ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u16, *v))
-            }
-            BinXmlValue::Int32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i32, *v))
-            }
-            BinXmlValue::UInt32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u32, *v))
-            }
-            BinXmlValue::Int64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i64, *v))
-            }
-            BinXmlValue::UInt64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u64, *v))
-            }
-            BinXmlValue::Real32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_float(w, *v))
-            }
-            BinXmlValue::Real64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_float(w, *v))
-            }
-            BinXmlValue::BoolArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_bytes(w, if *v { b"true" } else { b"false" })
-            }),
-            BinXmlValue::GuidArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_guid(w, v))
-            }
-            BinXmlValue::FileTimeArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v.fields()))
-            }
-            BinXmlValue::SysTimeArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v.fields()))
-            }
-            BinXmlValue::SidArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_sid(w, v))
-            }
-            BinXmlValue::HexInt32ArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_hex_prefixed_u64_lower(w, u64::from(*v))
-            }),
-            BinXmlValue::HexInt64ArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_hex_prefixed_u64_lower(w, *v)
-            }),
-            BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
-                EvtxError::FailedToCreateRecordModel("unsupported BinXML value in renderer"),
-            ),
-            other => Err(EvtxError::Unimplemented {
-                name: format!("value formatting for {:?}", other),
-            }),
-        }
+            _ => return None,
+        })
     }
 
     /// Write a substitution value's text directly from its raw chunk bytes
@@ -185,7 +172,9 @@ impl ValueRenderer {
         mode: StringEscapeMode,
     ) -> Result<()> {
         match ty {
-            value_ty::NULL => Ok(()),
+            // BIN_XML is only reachable for empty payloads (non-empty BinXml
+            // classifies as an element); mirrors the NullType conversion.
+            value_ty::NULL | value_ty::BIN_XML => Ok(()),
             // StringType: truncate at the first NUL unit (mirrors `utf16_by_char_count`).
             value_ty::UTF16_STRING => {
                 self.write_utf16_escaped(writer, Utf16LeSlice::until_nul(bytes), mode)
@@ -233,9 +222,6 @@ impl ValueRenderer {
             value_ty::HEX_INT64 => {
                 self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le(bytes)))
             }
-            // Only reachable for empty payloads (non-empty BinXml classifies
-            // as an element); mirrors the NullType conversion.
-            value_ty::BIN_XML => Ok(()),
             _ => Err(EvtxError::FailedToCreateRecordModel(
                 "unsupported raw value type in compiled renderer",
             )),
@@ -252,24 +238,6 @@ impl ValueRenderer {
 
     fn write_byte<W: WriteExt>(&mut self, writer: &mut W, byte: u8) -> Result<()> {
         writer.write_all(&[byte]).map_err(EvtxError::from)
-    }
-
-    /// Write `items` comma-delimited, formatting each via `f`.
-    fn write_list<W: WriteExt, T>(
-        &mut self,
-        writer: &mut W,
-        items: &[T],
-        mut f: impl FnMut(&mut Self, &mut W, &T) -> Result<()>,
-    ) -> Result<()> {
-        let mut first = true;
-        for item in items {
-            if !first {
-                self.write_byte(writer, b',')?;
-            }
-            first = false;
-            f(self, writer, item)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn write_utf16_escaped<W: WriteExt>(
