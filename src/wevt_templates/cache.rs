@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use super::TEMP_HEADER_SIZE;
 use super::manifest::{CrimManifest, WevtManifestError};
-use super::wevtcache::{WevtCacheFileError, for_each_crim_blob};
+use super::wevtcache::{ENTRY_HEADER_SIZE, HEADER_SIZE, WevtCacheFileError, for_each_crim_blob};
 
 #[derive(Debug, Error)]
 pub enum WevtCacheError {
@@ -81,11 +81,19 @@ impl WevtCache {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, WevtCacheFileError> {
         let path = path.as_ref();
         let mut cache = Self::new();
+        let mut index = 0u32;
+        let mut next_entry_offset = HEADER_SIZE as u64;
         for_each_crim_blob(path, |bytes| {
+            let offset = next_entry_offset + ENTRY_HEADER_SIZE as u64;
+            next_entry_offset = offset + bytes.len() as u64;
+            let cur_index = index;
+            index += 1;
             cache
                 .add_wevt_blob(bytes)
                 .map_err(|source| WevtCacheFileError::InvalidEntry {
                     path: path.to_path_buf(),
+                    index: cur_index,
+                    offset,
                     source,
                 })?;
             Ok(())
@@ -223,6 +231,10 @@ mod tests {
 
         let invalid_path = dir.path().join("invalid.wevtcache");
         let mut writer = WevtCacheWriter::create(&invalid_path, false).unwrap();
+        let first = minimal_crim_blob();
+        let expected_second_offset =
+            (HEADER_SIZE + ENTRY_HEADER_SIZE + first.len() + ENTRY_HEADER_SIZE) as u64;
+        writer.write_crim_blob(&first).unwrap();
         writer.write_crim_blob(b"not-a-crim-blob").unwrap();
         writer.finish().unwrap();
 
@@ -231,9 +243,11 @@ mod tests {
             matches!(
                 err,
                 WevtCacheFileError::InvalidEntry {
+                    index: 1,
+                    offset,
                     source: WevtCacheError::CrimParse { .. },
                     ..
-                }
+                } if offset == expected_second_offset
             ),
             "{err}"
         );

@@ -72,9 +72,13 @@ pub enum WevtCacheFileError {
     #[error("wevtcache entry count overflow for `{path}`")]
     EntryCountOverflow { path: PathBuf },
 
-    #[error("failed to index `.wevtcache` entry in `{path}`: {source}")]
+    #[error(
+        "failed to index `.wevtcache` entry {index} at offset {offset:#x} in `{path}`: {source}"
+    )]
     InvalidEntry {
         path: PathBuf,
+        index: u32,
+        offset: u64,
         #[source]
         source: super::WevtCacheError,
     },
@@ -92,10 +96,10 @@ fn io_err(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> WevtCa
 }
 
 /// Header layout: magic (8) + version (u32 LE) + entry_count (u32 LE).
-const HEADER_SIZE: usize = 16;
+pub(crate) const HEADER_SIZE: usize = 16;
 const ENTRY_COUNT_OFFSET: usize = 12;
 /// Entry header layout: kind (u8) + len (u64 LE).
-const ENTRY_HEADER_SIZE: usize = 9;
+pub(crate) const ENTRY_HEADER_SIZE: usize = 9;
 
 pub struct WevtCacheWriter {
     file: File,
