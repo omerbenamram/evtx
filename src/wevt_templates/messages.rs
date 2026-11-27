@@ -44,14 +44,17 @@ use thiserror::Error;
 use super::WevtTemplateExtractError;
 use super::extract::{RT_MESSAGETABLE, extract_resources, extract_wevt_template_resources};
 use super::manifest::{CrimManifest, Provider, WevtManifestError};
-use super::normalize_guid;
 use super::types::{PeResource, ResourceIdentifier};
+use crate::Guid;
 use crate::binxml::compiled::MAX_RECORD_OUTPUT;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrTree, Node};
-use crate::mta::RenderingInfo;
-use crate::mta::{attribute, decode_utf16, narrow, number_value, text, value_number};
+use crate::mta::{
+    MaterializedEvent, RenderingInfo, append_rendering_info, resolve_keywords, resolve_opcode,
+    text, value_number,
+};
 use crate::utils::bytes::{read_u16_le, read_u32_le};
+use crate::utils::decode_utf16le_lossy_z;
 
 /// The language id of `en-US`, preferred when a binary has message tables in several languages
 /// and none in the one asked for.
@@ -201,7 +204,7 @@ impl MessageTable {
                     .ok_or(malformed("entry text runs past the table"))?;
                 // `MESSAGE_RESOURCE_UNICODE`, then `MESSAGE_RESOURCE_UTF8`.
                 let text = if flags & 1 != 0 {
-                    decode_utf16(text)
+                    decode_utf16le_lossy_z(text)
                 } else if flags & 2 != 0 {
                     String::from_utf8_lossy(text).into_owned()
                 } else {
@@ -369,7 +372,7 @@ impl ProviderMessages {
     }
 
     /// The event a record is, by its whole descriptor, or the first with its id and version.
-    fn event(&self, event: &EventFields<'_>) -> Option<&EventMessage> {
+    fn event(&self, event: &MaterializedEvent<'_>) -> Option<&EventMessage> {
         let candidates = self.events.get(&(event.event_id, event.version))?;
         candidates
             .iter()
@@ -387,8 +390,8 @@ impl ProviderMessages {
 #[derive(Debug, Clone, Default)]
 pub struct MessageCatalog {
     tables: Vec<MessageTable>,
-    /// Manifest providers by normalized GUID.
-    providers: HashMap<String, ProviderMessages>,
+    /// Manifest providers by GUID.
+    providers: HashMap<Guid, ProviderMessages>,
     /// Classic event sources, by ASCII-lowercased name.
     sources: HashMap<String, Vec<usize>>,
     /// The tables that `%%<id>` parameters are looked up in, such as `msobjs.dll`'s for the
@@ -434,25 +437,24 @@ impl MessageCatalog {
             .collect()
     }
 
-    /// Whether the catalog takes the provider `guid` (normalized): it doesn't have it, or has
-    /// it with no strings, which a later copy then gives.
-    fn takes(&self, guid: &str) -> bool {
+    /// Whether the catalog takes the provider `guid`: it doesn't have it, or has it with no
+    /// strings, which a later copy then gives.
+    fn takes(&self, guid: Guid) -> bool {
         self.providers
-            .get(guid)
+            .get(&guid)
             .is_none_or(|provider| provider.tables.is_empty())
     }
 
-    /// The providers of `resource_file`'s manifests that the catalog takes, by normalized GUID.
+    /// The providers of `resource_file`'s manifests that the catalog takes, by GUID.
     fn new_providers(
         &self,
         resource_file: &[u8],
-    ) -> Result<Vec<(String, ProviderMessages)>, MessageCatalogError> {
+    ) -> Result<Vec<(Guid, ProviderMessages)>, MessageCatalogError> {
         let mut providers = Vec::new();
         for resource in extract_wevt_template_resources(resource_file)? {
             for provider in &CrimManifest::parse(&resource.data)?.providers {
-                let guid = normalize_guid(&provider.guid.to_string());
-                if self.takes(&guid) {
-                    providers.push((guid, ProviderMessages::of(provider)));
+                if self.takes(provider.guid) {
+                    providers.push((provider.guid, ProviderMessages::of(provider)));
                 }
             }
         }
@@ -463,13 +465,13 @@ impl MessageCatalog {
     /// returns how many it added.
     fn insert_providers(
         &mut self,
-        providers: Vec<(String, ProviderMessages)>,
+        providers: Vec<(Guid, ProviderMessages)>,
         tables: Vec<usize>,
     ) -> usize {
         let mut added = 0;
         for (guid, mut messages) in providers {
             // A manifest can repeat a provider.
-            if self.takes(&guid) {
+            if self.takes(guid) {
                 messages.tables = tables.clone();
                 self.providers.insert(guid, messages);
                 added += 1;
@@ -659,28 +661,19 @@ impl MessageCatalog {
         self.lookup(&self.parameter_tables, id).map(trim_message)
     }
 
-    /// The manifest provider with GUID `guid` (in any case, with or without braces), without
-    /// allocating for a GUID in the usual form.
+    /// The manifest provider with GUID `guid` (in any case, with or without braces).
     fn provider(&self, guid: &str) -> Option<&ProviderMessages> {
         if self.providers.is_empty() {
             return None;
         }
-        let guid = guid.trim().trim_start_matches('{').trim_end_matches('}');
-        let mut key = [0u8; 36];
-        if guid.len() != key.len() {
-            return self.providers.get(&normalize_guid(guid));
-        }
-        key.copy_from_slice(guid.as_bytes());
-        key.make_ascii_lowercase();
-        // Lowercasing ASCII bytes keeps UTF-8 valid.
-        self.providers.get(std::str::from_utf8(&key).ok()?)
+        self.providers.get(&Guid::parse(guid)?)
     }
 
     /// The strings of an event, or `None` when its provider isn't in the catalog. Allocates the
     /// formatted message in `bump`.
     fn rendering_info<'b>(
         &'b self,
-        event: &EventFields<'_>,
+        event: &MaterializedEvent<'_>,
         tree: &IrTree<'_>,
         bump: &'b Bump,
     ) -> Option<RenderingInfo<'b>> {
@@ -709,7 +702,7 @@ impl MessageCatalog {
         let message = message_id
             .and_then(|id| self.lookup(tables, id))
             .map(|template| {
-                let (inserts, flat) = event.inserts(tree);
+                let (inserts, flat) = inserts(&event.data, tree);
                 // Item types are by the template's item, which the inserts are only when they
                 // are the `Data` elements of one `EventData`, one for each item.
                 let item_types = if flat && inserts.len() == item_types.len() {
@@ -725,25 +718,20 @@ impl MessageCatalog {
             .or_else(|| winmeta_level(event.level));
         let task = name(provider.and_then(|p| p.tasks.get(&u32::from(event.task))))
             .or_else(|| winmeta_task(event.task));
-        // As `MtaFile::rendering_info`: no opcode for events from classic event sources.
-        let opcode = (event.qualifiers == 0)
-            .then(|| {
-                let opcode = u32::from(event.opcode) << 16;
-                let id = provider.and_then(|p| {
-                    p.opcodes
-                        .get(&(opcode | u32::from(event.task)))
-                        .or_else(|| p.opcodes.get(&opcode))
-                });
-                name(id).or_else(|| winmeta_opcode(event.opcode))
-            })
-            .flatten();
-        let keywords = (0..64)
-            .filter(|bit| event.keywords & (1 << bit) != 0)
-            .filter_map(|bit| {
-                name(provider.and_then(|p| p.keywords.get(&(1u64 << bit))))
-                    .or_else(|| winmeta_keyword(bit))
-            })
-            .collect();
+        let opcode = resolve_opcode(
+            event.qualifiers,
+            event.opcode,
+            event.task,
+            |op, t| {
+                let key = (u32::from(op) << 16) | u32::from(t);
+                name(provider.and_then(|p| p.opcodes.get(&key)))
+            },
+            winmeta_opcode,
+        );
+        let keywords = resolve_keywords(event.keywords, |bit| {
+            name(provider.and_then(|p| p.keywords.get(&(1u64 << bit))))
+                .or_else(|| winmeta_keyword(bit))
+        });
         Some(RenderingInfo {
             message,
             level,
@@ -941,7 +929,7 @@ fn winmeta_opcode(opcode: u8) -> Option<&'static str> {
     })
 }
 
-fn winmeta_keyword(bit: u32) -> Option<&'static str> {
+fn winmeta_keyword(bit: u8) -> Option<&'static str> {
     Some(match bit {
         48 => "Response Time",
         49 => "WDI Context",
@@ -968,91 +956,27 @@ struct Insert<'t> {
     number: Option<u64>,
 }
 
-/// The fields of a record's tree that select and fill its message.
-#[derive(Debug, Default)]
-struct EventFields<'t> {
-    provider_name: Cow<'t, str>,
-    /// Empty when the provider has none.
-    provider_guid: Cow<'t, str>,
-    event_id: u16,
-    qualifiers: u16,
-    version: u8,
-    level: u8,
-    task: u16,
-    opcode: u8,
-    keywords: u64,
-    /// The record's `EventData` and `UserData` elements, whose values fill the message.
-    data: Vec<ElementId>,
-}
-
-impl<'t> EventFields<'t> {
-    /// `None` when the record gets no `RenderingInfo`: its root isn't `Event`, or it has a
-    /// `RenderingInfo` already. As for an `.MTA` file, the first `System` holds the fields.
-    fn of(tree: &'t IrTree<'_>) -> Option<Self> {
-        let root = tree.root_element();
-        if root.name.as_str() != "Event" {
-            return None;
-        }
-        let mut fields = EventFields::default();
-        let mut system = None;
-        for node in &root.children {
-            let Node::Element(id) = node else { continue };
-            match tree.element(*id).name.as_str() {
-                "System" => system = system.or(Some(*id)),
-                "EventData" | "UserData" => fields.data.push(*id),
-                "RenderingInfo" => return None,
-                _ => {}
+/// The event's data values, in order: the `Data` elements of `EventData`, or the leaf
+/// elements under `UserData`, up to the [`MAX_INSERTS`] a message can use. Read only for a
+/// message the catalog has. With whether they are the children of one `EventData`, each a
+/// value of its own.
+fn inserts<'t, 'a>(data: &[ElementId], tree: &'t IrTree<'a>) -> (Vec<Insert<'a>>, bool) {
+    let mut inserts = Vec::new();
+    let mut flat = data.len() == 1;
+    for &id in data {
+        let element = tree.element(id);
+        if element.name.as_str() == "EventData" {
+            let room = MAX_INSERTS - inserts.len();
+            for child in element_children(tree, element).take(room) {
+                flat &= !child.has_element_child;
+                inserts.push(insert(&child.children));
             }
+        } else {
+            flat = false;
+            collect_leaves(tree, element, &mut inserts);
         }
-        let Some(system) = system else {
-            return Some(fields);
-        };
-        // A record's tree has no substitutions, so `attribute` gives the first one's value.
-        let attribute = |element, name| attribute(element, name).unwrap_or_default();
-        for child in element_children(tree, tree.element(system)) {
-            let number = || number_value(&child.children);
-            match child.name.as_str() {
-                "Provider" => {
-                    fields.provider_name = text(attribute(child, "Name"));
-                    fields.provider_guid = text(attribute(child, "Guid"));
-                }
-                "EventID" => {
-                    fields.event_id = narrow(number());
-                    fields.qualifiers = narrow(number_value(attribute(child, "Qualifiers")));
-                }
-                "Version" => fields.version = narrow(number()),
-                "Level" => fields.level = narrow(number()),
-                "Task" => fields.task = narrow(number()),
-                "Opcode" => fields.opcode = narrow(number()),
-                "Keywords" => fields.keywords = number().unwrap_or_default(),
-                _ => {}
-            }
-        }
-        Some(fields)
     }
-
-    /// The event's data values, in order: the `Data` elements of `EventData`, or the leaf
-    /// elements under `UserData`, up to the [`MAX_INSERTS`] a message can use. Read only for a
-    /// message the catalog has. With whether they are the children of one `EventData`, each a
-    /// value of its own.
-    fn inserts<'a>(&self, tree: &'t IrTree<'a>) -> (Vec<Insert<'a>>, bool) {
-        let mut inserts = Vec::new();
-        let mut flat = self.data.len() == 1;
-        for &id in &self.data {
-            let element = tree.element(id);
-            if element.name.as_str() == "EventData" {
-                let room = MAX_INSERTS - inserts.len();
-                for child in element_children(tree, element).take(room) {
-                    flat &= !child.has_element_child;
-                    inserts.push(insert(&child.children));
-                }
-            } else {
-                flat = false;
-                collect_leaves(tree, element, &mut inserts);
-            }
-        }
-        (inserts, flat)
-    }
+    (inserts, flat)
 }
 
 /// The most inserts a message can use: `FormatMessage` numbers them `%1` to `%99`.
@@ -1137,19 +1061,13 @@ pub(crate) fn add_rendering_info<'a>(
     if catalog.providers.is_empty() && catalog.sources.is_empty() {
         return;
     }
-    let Some(fields) = EventFields::of(tree) else {
+    let Some(event) = MaterializedEvent::of(tree, true) else {
         return;
     };
-    let Some(info) = catalog.rendering_info(&fields, tree, bump) else {
+    let Some(info) = catalog.rendering_info(&event, tree, bump) else {
         return;
     };
-    let root = tree.root();
-    let arena = tree.arena_mut();
-    let rendering_info = crate::mta::rendering_info_element(&info, arena, bump);
-    arena
-        .get_mut(root)
-        .expect("root is in the arena")
-        .push_child(Node::Element(rendering_info));
+    append_rendering_info(tree, &info, bump);
 }
 
 #[cfg(test)]
@@ -1398,7 +1316,7 @@ mod tests {
         let guid = "54849625-5478-4994-a5ba-3e3b0328c30d";
         catalog
             .providers
-            .insert(guid.to_string(), ProviderMessages::default());
+            .insert(Guid::parse(guid).unwrap(), ProviderMessages::default());
         for spelling in [
             guid,
             "{54849625-5478-4994-A5BA-3E3B0328C30D}",

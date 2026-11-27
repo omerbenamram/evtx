@@ -55,7 +55,7 @@ use thiserror::Error;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrArena, IrTree, Name, Node, Text};
 use crate::utils::bytes::{read_array, read_u32_le, read_u64_le};
-use crate::utils::heap_size;
+use crate::utils::{decode_utf16le_lossy_z, heap_size};
 
 const MAGIC: &[u8; 8] = b"MTAFile\0";
 const HEADER_SIZE: usize = 24;
@@ -281,7 +281,7 @@ impl MtaFile {
                 .get(4..)
                 .and_then(|text| text.get(..len))
                 .ok_or(corrupt("MSG entry", at))?;
-            messages.push((index, Arc::from(decode_utf16(text))));
+            messages.push((index, Arc::from(decode_utf16le_lossy_z(text))));
             Ok(())
         })?;
         sort_by_index(&mut messages, |(index, _)| *index);
@@ -370,25 +370,19 @@ impl MtaFile {
         let find = |lookup: &dyn Fn(&MtaPublisher) -> Option<&str>| {
             lookup(publisher).or_else(|| default.and_then(lookup))
         };
-        let opcode = if event.qualifiers == 0 {
-            find(&|p| p.opcode(event.opcode, event.task))
-                .or_else(|| find(&|p| p.opcode(event.opcode, 0)))
-        } else {
-            // Windows names no opcode for events from classic event sources.
-            None
-        };
-        let mut keywords = Vec::new();
-        let mut mask = event.keywords;
-        while mask != 0 {
-            let bit = mask.trailing_zeros() as u8;
-            mask &= mask - 1;
-            keywords.extend(non_empty(find(&|p| p.keyword(bit))));
-        }
+        let opcode = resolve_opcode(
+            event.qualifiers,
+            event.opcode,
+            event.task,
+            |op, t| find(&|p| p.opcode(op, t)),
+            |_| None,
+        );
+        let keywords = resolve_keywords(event.keywords, |bit| find(&|p| p.keyword(bit)));
         Some(RenderingInfo {
             message: self.message(event.record_number, event.event_record_id),
             level: non_empty(find(&|p| p.level(event.level))),
             task: non_empty(find(&|p| p.task(event.task))),
-            opcode: non_empty(opcode),
+            opcode,
             keywords,
         })
     }
@@ -429,6 +423,40 @@ fn by_index<T>(entries: &[T], index: u32, key: impl Fn(&T) -> u32) -> Option<&T>
 
 fn non_empty(name: Option<&str>) -> Option<&str> {
     name.filter(|name| !name.is_empty())
+}
+
+/// Resolves an event's opcode name following Windows' rules: classic event sources
+/// (`qualifiers != 0`) get no opcode name; otherwise try `(opcode, task)`, then `(opcode, 0)`,
+/// then `fallback(opcode)`. Empty names are treated as absent.
+pub(crate) fn resolve_opcode<'a, 'f: 'a>(
+    qualifiers: u16,
+    opcode: u8,
+    task: u16,
+    mut lookup: impl FnMut(u8, u16) -> Option<&'a str>,
+    fallback: impl FnOnce(u8) -> Option<&'f str>,
+) -> Option<&'a str> {
+    if qualifiers != 0 {
+        // Windows names no opcode for events from classic event sources.
+        return None;
+    }
+    let name = lookup(opcode, task)
+        .or_else(|| lookup(opcode, 0))
+        .or_else(|| fallback(opcode));
+    non_empty(name)
+}
+
+/// Resolves an event's keyword names in bit order (lowest set bit first), skipping empty names.
+pub(crate) fn resolve_keywords<'a>(
+    mut mask: u64,
+    mut lookup: impl FnMut(u8) -> Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut keywords = Vec::new();
+    while mask != 0 {
+        let bit = mask.trailing_zeros() as u8;
+        mask &= mask - 1;
+        keywords.extend(non_empty(lookup(bit)));
+    }
+    keywords
 }
 
 const SECTIONS: [&str; 3] = ["EVT", "MSG", "PUB"];
@@ -533,34 +561,12 @@ fn parse_publisher(payload: &[u8], messages: &[(u32, Arc<str>)]) -> Option<MtaPu
     let name_len = read_u32_le(payload, offset)? as usize;
     let name = payload.get(offset + 4..)?.get(..name_len)?;
     Some(MtaPublisher {
-        name: decode_utf16(name),
+        name: decode_utf16le_lossy_z(name),
         levels,
         tasks,
         opcodes,
         keywords,
     })
-}
-
-/// Decodes UTF-16LE text up to the first NUL, replacing unpaired surrogates.
-pub(crate) fn decode_utf16(bytes: &[u8]) -> String {
-    let units = bytes.as_chunks::<2>().0;
-    // Strings usually end with their NUL.
-    let units = units.strip_suffix(&[[0, 0]]).unwrap_or(units);
-    // Most strings are ASCII, which this decodes a lot faster than `char::decode_utf16` does.
-    let bits = units
-        .iter()
-        .fold(0, |bits, unit| bits | u16::from_le_bytes(*unit));
-    let mut text = if bits < 0x80 {
-        String::from_utf8(units.iter().map(|&[low, _]| low).collect()).expect("ASCII")
-    } else {
-        char::decode_utf16(units.iter().map(|unit| u16::from_le_bytes(*unit)))
-            .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
-            .collect()
-    };
-    if let Some(nul) = text.find('\0') {
-        text.truncate(nul);
-    }
-    text
 }
 
 fn utf16_eq(bytes: &[u8], ascii: &str) -> bool {
@@ -590,19 +596,117 @@ pub(crate) fn add_rendering_info<'a>(
     mta: &'a MtaFile,
     bump: &'a Bump,
 ) {
-    // A record's tree has no substitutions left.
-    let Some(info) = SystemFields::of(tree)
-        .and_then(|fields| fields.rendering_info(mta, record_number, |_| Value::None))
-    else {
+    let Some(event) = MaterializedEvent::of(tree, false) else {
         return;
     };
+    let Some(info) = mta.rendering_info(&event.mta_event(record_number)) else {
+        return;
+    };
+    append_rendering_info(tree, &info, bump);
+}
+
+/// Builds the `RenderingInfo` element for `info` and appends it to `tree`'s root element.
+pub(crate) fn append_rendering_info<'a>(
+    tree: &mut IrTree<'a>,
+    info: &RenderingInfo<'a>,
+    bump: &'a Bump,
+) {
     let root = tree.root();
     let arena = tree.arena_mut();
-    let rendering_info = rendering_info_element(&info, arena, bump);
+    let rendering_info = rendering_info_element(info, arena, bump);
     arena
         .get_mut(root)
         .expect("root is in the arena")
         .push_child(Node::Element(rendering_info));
+}
+
+/// The `System` fields (and optionally `EventData`/`UserData` element IDs) of a materialized
+/// record tree.
+#[derive(Debug, Default)]
+#[cfg_attr(not(feature = "wevt_templates"), allow(dead_code))]
+pub(crate) struct MaterializedEvent<'t> {
+    pub(crate) provider_name: Cow<'t, str>,
+    /// Empty when the provider has none.
+    pub(crate) provider_guid: Cow<'t, str>,
+    pub(crate) event_id: u16,
+    pub(crate) qualifiers: u16,
+    pub(crate) version: u8,
+    pub(crate) level: u8,
+    pub(crate) task: u16,
+    pub(crate) opcode: u8,
+    pub(crate) keywords: u64,
+    pub(crate) event_record_id: u64,
+    /// The record's `EventData` and `UserData` elements, when requested.
+    pub(crate) data: Vec<ElementId>,
+}
+
+impl<'t> MaterializedEvent<'t> {
+    /// Reads the event fields from a materialized `IrTree`.
+    ///
+    /// Returns `None` if the root isn't `Event`, if `RenderingInfo` already exists, or if there
+    /// is no `System` element. When `collect_data` is true, also collects `EventData` and
+    /// `UserData` element IDs.
+    pub(crate) fn of(tree: &'t IrTree<'_>, collect_data: bool) -> Option<Self> {
+        let root = tree.root_element();
+        if root.name.as_str() != "Event" {
+            return None;
+        }
+        let mut system = None;
+        let mut data = Vec::new();
+        for node in &root.children {
+            let Node::Element(id) = node else { continue };
+            match tree.element(*id).name.as_str() {
+                "System" => system = system.or(Some(*id)),
+                "EventData" | "UserData" if collect_data => data.push(*id),
+                "RenderingInfo" => return None,
+                _ => {}
+            }
+        }
+        let system = system?;
+        let mut event = MaterializedEvent {
+            data,
+            ..MaterializedEvent::default()
+        };
+        let attr = |element, name| attribute(element, name).unwrap_or_default();
+        for node in &tree.element(system).children {
+            let Node::Element(id) = node else { continue };
+            let child = tree.element(*id);
+            let number = || number_value(&child.children);
+            match child.name.as_str() {
+                "Provider" => {
+                    event.provider_name = text(attr(child, "Name"));
+                    if collect_data {
+                        event.provider_guid = text(attr(child, "Guid"));
+                    }
+                }
+                "EventID" => {
+                    event.event_id = narrow(number());
+                    event.qualifiers = narrow(number_value(attr(child, "Qualifiers")));
+                }
+                "Version" => event.version = narrow(number()),
+                "Level" => event.level = narrow(number()),
+                "Task" => event.task = narrow(number()),
+                "Opcode" => event.opcode = narrow(number()),
+                "Keywords" => event.keywords = number().unwrap_or_default(),
+                "EventRecordID" => event.event_record_id = number().unwrap_or_default(),
+                _ => {}
+            }
+        }
+        Some(event)
+    }
+
+    pub(crate) fn mta_event(&self, record_number: u64) -> MtaEvent<'_> {
+        MtaEvent {
+            provider: &self.provider_name,
+            record_number,
+            event_record_id: self.event_record_id,
+            qualifiers: self.qualifiers,
+            level: self.level,
+            task: self.task,
+            opcode: self.opcode,
+            keywords: self.keywords,
+        }
+    }
 }
 
 /// Builds the `RenderingInfo` element for `info` in `arena`.
@@ -883,7 +987,9 @@ pub(crate) fn text<'n>(nodes: &[Node<'n>]) -> Cow<'n, str> {
             | Node::Value(BinXmlValue::AnsiStringType(s)) => Cow::Borrowed(*s),
             Node::Text(Text::Utf16(s))
             | Node::CData(Text::Utf16(s))
-            | Node::Value(BinXmlValue::StringType(s)) => Cow::Owned(decode_utf16(s.as_bytes())),
+            | Node::Value(BinXmlValue::StringType(s)) => {
+                Cow::Owned(decode_utf16le_lossy_z(s.as_bytes()))
+            }
             Node::Value(value) => Cow::Owned(value.to_string()),
             Node::CharRef(c) => Cow::Owned(char::from_u32(u32::from(*c)).unwrap_or('_').into()),
             Node::EntityRef(name) => Cow::Borrowed(match name.as_str() {

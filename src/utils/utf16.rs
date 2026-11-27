@@ -128,9 +128,46 @@ pub(crate) fn decode_utf16le_bytes_z(bytes: &[u8]) -> Result<String, Utf16LeDeco
     Ok(out)
 }
 
+/// Decode a UTF-16LE byte slice up to the first NUL (`0x0000`), ignoring any trailing odd byte
+/// and replacing unpaired surrogates with `U+FFFD`.
+pub(crate) fn decode_utf16le_lossy_z(bytes: &[u8]) -> String {
+    let bytes = &bytes[..bytes.len() & !1];
+    let slice = Utf16LeSlice::until_nul(bytes);
+    if slice.is_empty() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    utf16_simd::escape_utf16le_raw_into(slice.as_bytes(), slice.num_chars(), &mut buf);
+    String::from_utf8(buf).expect("utf16_simd raw emits valid UTF-8")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Utf16LeDecodeError as E, Utf16LeSlice, decode_utf16le_bytes_to_bump_str};
+    use super::{
+        Utf16LeDecodeError as E, Utf16LeSlice, decode_utf16le_bytes_to_bump_str,
+        decode_utf16le_lossy_z,
+    };
+
+    #[test]
+    fn lossy_z_decodes_ascii_surrogates_nul_and_odd_tail() {
+        let le = |u: &[u16]| u.iter().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+        // Empty and odd single byte.
+        assert_eq!(decode_utf16le_lossy_z(&[]), "");
+        assert_eq!(decode_utf16le_lossy_z(&[0x61]), "");
+        // ASCII + surrogate pair (non-BMP) + lone surrogates -> U+FFFD + embedded NUL truncation.
+        let mut bytes = le(&[0x61, 0xD83D, 0xDE00, 0xD800, 0xDC00, 0xD800, 0, 0x62]);
+        assert_eq!(
+            decode_utf16le_lossy_z(&bytes),
+            "a\u{1F600}\u{10000}\u{FFFD}"
+        );
+        // Trailing odd byte after non-NUL content is ignored.
+        let mut odd = le(&[0x61, 0xD800, 0x62]);
+        odd.push(0x99);
+        assert_eq!(decode_utf16le_lossy_z(&odd), "a\u{FFFD}b");
+        // Lone low surrogate and lone high surrogate at end.
+        bytes = le(&[0xDC00, 0x61, 0xD800]);
+        assert_eq!(decode_utf16le_lossy_z(&bytes), "\u{FFFD}a\u{FFFD}");
+    }
 
     #[test]
     fn decode_rejects_unpaired_surrogates_and_stops_at_nul() {
