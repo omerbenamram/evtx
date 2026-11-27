@@ -2,16 +2,14 @@ use anyhow::{Context, Result};
 use bitflags::Flags;
 use bitflags::parser::WriteHex;
 use clap::{Arg, ArgMatches, Command};
-use evtx::{ChunkFlags, EvtxChunkData, EvtxFileHeader, HeaderFlags};
+use evtx::{
+    ChunkFlags, EVTX_CHUNK_HEADER_SIZE, EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE, EvtxChunkData,
+    EvtxFileHeader, HeaderFlags,
+};
 use indoc::indoc;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-
-/// Chunks start after the header block, at fixed offsets: where evtx reads them.
-const HEADER_BLOCK_SIZE: u64 = 4096;
-const CHUNK_SIZE: u64 = 65536;
-const CHUNK_HEADER_SIZE: u64 = 512;
 
 pub fn command() -> Command {
     Command::new("info")
@@ -69,8 +67,8 @@ fn write_info(file: &mut (impl Read + Seek), out: &mut impl Write) -> Result<()>
     let len = file.seek(SeekFrom::End(0))?;
     file.seek(SeekFrom::Start(0))?;
     let header = EvtxFileHeader::from_stream(file).context("Failed to read the file header")?;
-    let chunks = len.saturating_sub(HEADER_BLOCK_SIZE) / CHUNK_SIZE;
-    let trailing = len.saturating_sub(HEADER_BLOCK_SIZE) % CHUNK_SIZE;
+    let chunks = len.saturating_sub(EVTX_FILE_HEADER_SIZE as u64) / EVTX_CHUNK_SIZE as u64;
+    let trailing = len.saturating_sub(EVTX_FILE_HEADER_SIZE as u64) % EVTX_CHUNK_SIZE as u64;
 
     let header_crc = if header.flags.contains(HeaderFlags::NO_CRC32) {
         "none (NO_CRC32)".to_string()
@@ -105,7 +103,7 @@ fn write_info(file: &mut (impl Read + Seek), out: &mut impl Write) -> Result<()>
         ),
     ];
     // A last chunk that the end of the file cuts off is read too, when its header is whole.
-    let cut_off = trailing >= CHUNK_HEADER_SIZE;
+    let cut_off = trailing >= EVTX_CHUNK_HEADER_SIZE as u64;
     if trailing > 0 {
         let what = if cut_off {
             format!("read as chunk {chunks}, cut off by the end of the file")
@@ -123,11 +121,11 @@ fn write_info(file: &mut (impl Read + Seek), out: &mut impl Write) -> Result<()>
     let mut rows = vec![Row::Chunk(COLUMNS.map(String::from))];
     let (mut used, mut empty, mut failing, mut records) = (0_u64, 0_u64, 0_u64, 0_u64);
     for number in 0..chunks {
-        let offset = HEADER_BLOCK_SIZE + number * CHUNK_SIZE;
-        let mut data = Vec::with_capacity(CHUNK_SIZE as usize);
+        let offset = EVTX_FILE_HEADER_SIZE as u64 + number * EVTX_CHUNK_SIZE as u64;
+        let mut data = Vec::with_capacity(EVTX_CHUNK_SIZE);
         file.seek(SeekFrom::Start(offset))?;
         file.by_ref()
-            .take(CHUNK_SIZE)
+            .take(EVTX_CHUNK_SIZE as u64)
             .read_to_end(&mut data)
             .with_context(|| format!("Failed to read chunk {number}"))?;
         let (number, offset) = (number.to_string(), format!("{offset:#010x}"));

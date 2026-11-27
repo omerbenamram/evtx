@@ -53,7 +53,7 @@ impl<'a> CrimManifest<'a> {
     }
 
     /// All `TEMP` template definitions across every provider's `TTBL`.
-    pub(crate) fn templates(&self) -> impl Iterator<Item = &TemplateDefinition<'a>> {
+    pub fn templates(&self) -> impl Iterator<Item = &TemplateDefinition<'a>> {
         self.providers
             .iter()
             .filter_map(|p| p.wevt.elements.templates.as_ref())
@@ -540,20 +540,43 @@ fn parse_keywords(crim: &[u8], off: u32) -> Result<KeywordDefinitions> {
     })
 }
 
+fn parse_id_msg_name_table<T>(
+    crim: &[u8],
+    off: u32,
+    sig: &'static [u8; 4],
+    names: TableNames,
+    rec_names: [&'static str; 4],
+    build: impl Fn(u32, Option<u32>, u32, Option<String>) -> T,
+) -> Result<(u32, Vec<T>)> {
+    let [id_name, msg_name, offset_name, data_name] = rec_names;
+    parse_table(crim, off, sig, 12, names, |d_off| {
+        let identifier = read_u32_named(crim, d_off, id_name)?;
+        let message_identifier = opt_message_id(read_u32_named(crim, d_off + 4, msg_name)?);
+        let data_offset = read_u32_named(crim, d_off + 8, offset_name)?;
+        let name = read_opt_name(crim, data_offset, data_name)?;
+        Ok(build(identifier, message_identifier, data_offset, name))
+    })
+}
+
 fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
-    let (size, levels) = parse_table(crim, off, b"LEVL", 12, table_names!("LEVL"), |d_off| {
-        let identifier = read_u32_named(crim, d_off, "LEVL.identifier")?;
-        let message_identifier =
-            opt_message_id(read_u32_named(crim, d_off + 4, "LEVL.message_identifier")?);
-        let data_offset = read_u32_named(crim, d_off + 8, "LEVL.data_offset")?;
-        let name = read_opt_name(crim, data_offset, "LEVL data")?;
-        Ok(LevelDefinition {
+    let (size, levels) = parse_id_msg_name_table(
+        crim,
+        off,
+        b"LEVL",
+        table_names!("LEVL"),
+        [
+            "LEVL.identifier",
+            "LEVL.message_identifier",
+            "LEVL.data_offset",
+            "LEVL data",
+        ],
+        |identifier, message_identifier, data_offset, name| LevelDefinition {
             identifier,
             message_identifier,
             data_offset,
             name,
-        })
-    })?;
+        },
+    )?;
 
     Ok(LevelDefinitions {
         offset: off,
@@ -563,19 +586,24 @@ fn parse_levels(crim: &[u8], off: u32) -> Result<LevelDefinitions> {
 }
 
 fn parse_opcodes(crim: &[u8], off: u32) -> Result<OpcodeDefinitions> {
-    let (size, opcodes) = parse_table(crim, off, b"OPCO", 12, table_names!("OPCO"), |d_off| {
-        let identifier = read_u32_named(crim, d_off, "OPCO.identifier")?;
-        let message_identifier =
-            opt_message_id(read_u32_named(crim, d_off + 4, "OPCO.message_identifier")?);
-        let data_offset = read_u32_named(crim, d_off + 8, "OPCO.data_offset")?;
-        let name = read_opt_name(crim, data_offset, "OPCO data")?;
-        Ok(OpcodeDefinition {
+    let (size, opcodes) = parse_id_msg_name_table(
+        crim,
+        off,
+        b"OPCO",
+        table_names!("OPCO"),
+        [
+            "OPCO.identifier",
+            "OPCO.message_identifier",
+            "OPCO.data_offset",
+            "OPCO data",
+        ],
+        |identifier, message_identifier, data_offset, name| OpcodeDefinition {
             identifier,
             message_identifier,
             data_offset,
             name,
-        })
-    })?;
+        },
+    )?;
 
     Ok(OpcodeDefinitions {
         offset: off,

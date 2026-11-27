@@ -46,6 +46,8 @@ and this project adheres to
   `to_string()` must escape the text itself (or use `serde_json`).
 - `MtaError` has a new variant, `SharedRecord`, for an `.MTA` section whose records share
   bytes (see Fixed).
+- `WevtCacheFileError` has a new variant, `InvalidEntry`, for a `.wevtcache` entry whose `CRIM`
+  manifest does not parse.
 - `evtx_dump` exits with status 3 when records or chunks could not be read (or, with
   `--carve`, bytes of the source), after writing all it could read and saying how much is
   missing. It exited with 0, as for a log it read all of, so a script could not tell. Status 1
@@ -72,6 +74,10 @@ and this project adheres to
   the other 3 need `msobjs.dll`, which the samples don't have.
 - `wevt_templates::extract_resources` reads any PE resource type (as
   `PeResource`s), and `RT_MESSAGETABLE` names the message table type.
+- `wevt_templates::WevtCache::load` reads a `.wevtcache` file into a `WevtCache`,
+  `wevt_templates::manifest::CrimManifest::templates` iterates over all `TEMP` definitions across
+  a manifest's providers, and `EVTX_FILE_HEADER_SIZE`, `EVTX_CHUNK_SIZE` and
+  `EVTX_CHUNK_HEADER_SIZE` export the EVTX header and chunk byte sizes.
 
 ### Changed
 

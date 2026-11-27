@@ -71,6 +71,23 @@ pub enum WevtCacheFileError {
 
     #[error("wevtcache entry count overflow for `{path}`")]
     EntryCountOverflow { path: PathBuf },
+
+    /// A `CRIM` entry in the `.wevtcache` file failed to parse or index.
+    #[error(
+        "failed to index `.wevtcache` entry {index} at offset {offset:#x} in `{path}`: {source}"
+    )]
+    InvalidEntry {
+        /// Path of the `.wevtcache` file being loaded.
+        path: PathBuf,
+        /// Zero-based index of the `CRIM` entry in the `.wevtcache` file.
+        index: u32,
+        /// Byte offset from the start of the `.wevtcache` file to the first byte of the entry's
+        /// `CRIM` payload (past its 9-byte entry header).
+        offset: u64,
+        /// Underlying manifest or cache indexing error.
+        #[source]
+        source: super::WevtCacheError,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, WevtCacheFileError>;
@@ -85,10 +102,10 @@ fn io_err(action: &'static str, path: &Path) -> impl FnOnce(io::Error) -> WevtCa
 }
 
 /// Header layout: magic (8) + version (u32 LE) + entry_count (u32 LE).
-const HEADER_SIZE: usize = 16;
+pub(crate) const HEADER_SIZE: usize = 16;
 const ENTRY_COUNT_OFFSET: usize = 12;
 /// Entry header layout: kind (u8) + len (u64 LE).
-const ENTRY_HEADER_SIZE: usize = 9;
+pub(crate) const ENTRY_HEADER_SIZE: usize = 9;
 
 pub struct WevtCacheWriter {
     file: File,

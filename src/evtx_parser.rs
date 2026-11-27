@@ -32,8 +32,10 @@ fn spawn(f: impl FnOnce()) {
     f()
 }
 
-pub(crate) const EVTX_CHUNK_SIZE: usize = 65536;
-pub(crate) const EVTX_FILE_HEADER_SIZE: usize = 4096;
+/// Size in bytes of an EVTX chunk.
+pub const EVTX_CHUNK_SIZE: usize = 65536;
+/// Size in bytes of the EVTX file header block.
+pub const EVTX_FILE_HEADER_SIZE: usize = 4096;
 
 /// Where chunk `chunk_number` starts in the file, if that fits a `u64`.
 fn chunk_offset(chunk_number: u64) -> Option<u64> {
