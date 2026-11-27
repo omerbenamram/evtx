@@ -143,6 +143,40 @@ it("continues after a malformed chunk and reports recoverable record warnings", 
   expect(warnings).toEqual(["Chunk 1: bad chunk magic", "Chunk 2: one damaged record skipped"]);
 });
 
+it("labels warnings with physical chunk numbers while reporting logical progress", async () => {
+  const warnings: string[] = [];
+  const progressSteps: number[] = [];
+  const reader = {
+    getArrowIPCChunk: async (index: number) => {
+      if (index === 0) throw new EvtxChunkError("bad chunk magic", 9);
+      return {
+        ...chunk(index),
+        chunkNumber: 1,
+        errors: ["incomplete chunk (4096 of 65536 bytes)"],
+      };
+    },
+  };
+  await expect(
+    startFullIngest(
+      reader,
+      2,
+      new AbortController().signal,
+      (progress) => {
+        progressSteps.push(progress);
+      },
+      (warning) => {
+        warnings.push(warning);
+      },
+      async () => {},
+    ),
+  ).resolves.toBe(2);
+  expect(warnings).toEqual([
+    "Chunk 9: bad chunk magic",
+    "Chunk 1: incomplete chunk (4096 of 65536 bytes)",
+  ]);
+  expect(progressSteps).toEqual([0.5, 1, 1]);
+});
+
 it("propagates a fatal reader failure instead of reporting every remaining chunk as corrupt", async () => {
   let requested = 0;
   let written = 0;

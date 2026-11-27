@@ -31,7 +31,8 @@ export class EvtxWorkerReader {
         const error = new Error(data.error);
         request?.reject(error);
         this.close(error);
-      } else if (data.type === "chunk-error") request?.reject(new EvtxChunkError(data.error));
+      } else if (data.type === "chunk-error")
+        request?.reject(new EvtxChunkError(data.error, data.chunkNumber));
       else request?.resolve(data);
     });
     this.worker.addEventListener("error", (event) =>

@@ -19,13 +19,15 @@ self.addEventListener("message", async ({ data }: MessageEvent<ParserRequest>) =
       reply({ id: data.id, type: "open", info });
     } else {
       if (!parser) throw new Error("No file is open");
+      let chunkNumber: number | undefined;
       let chunk;
       try {
+        chunkNumber = parser.chunk_number(data.index);
         chunk = parser.chunk_arrow_ipc(data.index);
       } catch (error) {
         // A WASM trap invalidates the parser; a returned chunk error is recoverable.
         if (error instanceof WebAssembly.RuntimeError) throw error;
-        reply({ id: data.id, type: "chunk-error", error: errorMessage(error) });
+        reply({ id: data.id, type: "chunk-error", chunkNumber, error: errorMessage(error) });
         return;
       }
       try {
@@ -33,9 +35,17 @@ self.addEventListener("message", async ({ data }: MessageEvent<ParserRequest>) =
         const buffer = chunk.ipc.buffer;
         if (!(buffer instanceof ArrayBuffer))
           throw new Error("The parser returned an invalid Arrow buffer.");
-        reply({ id: data.id, type: "chunk", buffer, rows: chunk.rows, errors: chunk.errors }, [
-          buffer,
-        ]);
+        reply(
+          {
+            id: data.id,
+            type: "chunk",
+            chunkNumber,
+            buffer,
+            rows: chunk.rows,
+            errors: chunk.errors,
+          },
+          [buffer],
+        );
       } finally {
         chunk.free();
       }

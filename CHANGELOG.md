@@ -83,6 +83,10 @@ and this project adheres to
 
 ### Fixed
 
+- Web viewer (`evtx-wasm`): wrapped circular logs import starting at the chunk with the lowest
+  record ID (matching `EvtxParser::chunks`) while still naming each chunk's physical slot in
+  warnings, and a final chunk cut off after its 512-byte header imports the records that fit
+  alongside a truncation warning.
 - `evtx_dump --events 5-3`, a range that ends before it starts, is refused. It printed nothing
   and succeeded.
 - `evtx_dump --events` no longer prints the errors of records it leaves out, where the error
