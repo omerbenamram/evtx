@@ -4,7 +4,10 @@ use arrow2::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     io::ipc::write::{StreamWriter, WriteOptions},
 };
-use evtx::{EvtxChunk, EvtxChunkHeader, EvtxParser, Offset, ParserSettings};
+use evtx::{
+    EvtxChunk, EvtxChunkHeader, EvtxParser, Offset, ParserSettings, EVTX_CHUNK_HEADER_SIZE,
+    EVTX_CHUNK_SIZE, EVTX_FILE_HEADER_SIZE,
+};
 use serde_json::Value;
 use std::io::Cursor;
 use wasm_bindgen::prelude::*;
@@ -70,28 +73,24 @@ pub struct EvtxWasmParser {
     chunk_offsets: Vec<usize>,
 }
 
-const FILE_HEADER_SIZE: usize = 4096;
-const CHUNK_SIZE: usize = 65536;
-const CHUNK_HEADER_SIZE: usize = 512;
-
 impl EvtxWasmParser {
     fn from_data(data: Vec<u8>) -> Result<Self, String> {
         EvtxParser::from_read_seek(Cursor::new(&data))
             .map_err(|e| format!("Failed to create parser: {e}"))?;
         let chunks = data
-            .get(FILE_HEADER_SIZE..)
+            .get(EVTX_FILE_HEADER_SIZE..)
             .ok_or_else(|| "Incomplete EVTX file header".to_owned())?;
         let mut chunk_offsets: Vec<usize> = chunks
-            .chunks(CHUNK_SIZE)
+            .chunks(EVTX_CHUNK_SIZE)
             .enumerate()
             .filter(|(_, bytes)| bytes.iter().any(|byte| *byte != 0))
-            .map(|(index, _)| FILE_HEADER_SIZE + index * CHUNK_SIZE)
+            .map(|(index, _)| EVTX_FILE_HEADER_SIZE + index * EVTX_CHUNK_SIZE)
             .collect();
         // Start at the chunk holding the lowest record ID so wrapped logs read in record order,
         // matching `EvtxParser::oldest_chunk` (including its `< u64::MAX` sentinel).
         let mut oldest = (u64::MAX, 0usize);
         for (pos, &offset) in chunk_offsets.iter().enumerate() {
-            let Some(bytes) = data.get(offset..offset + CHUNK_HEADER_SIZE) else {
+            let Some(bytes) = data.get(offset..offset + EVTX_CHUNK_HEADER_SIZE) else {
                 continue;
             };
             if let Ok(header) = EvtxChunkHeader::from_bytes(bytes) {
@@ -115,7 +114,7 @@ impl EvtxWasmParser {
             .chunk_offsets
             .get(index)
             .ok_or_else(|| format!("Chunk index {index} out of range"))?;
-        Ok((offset - FILE_HEADER_SIZE) / CHUNK_SIZE + 1)
+        Ok((offset - EVTX_FILE_HEADER_SIZE) / EVTX_CHUNK_SIZE + 1)
     }
 
     fn chunk_data(&self, index: usize) -> Result<(&[u8], EvtxChunkHeader), String> {
@@ -123,14 +122,14 @@ impl EvtxWasmParser {
             .chunk_offsets
             .get(index)
             .ok_or_else(|| format!("Chunk index {index} out of range"))?;
-        let bytes = &self.data[offset..self.data.len().min(offset + CHUNK_SIZE)];
-        if bytes.len() < CHUNK_HEADER_SIZE {
+        let bytes = &self.data[offset..self.data.len().min(offset + EVTX_CHUNK_SIZE)];
+        if bytes.len() < EVTX_CHUNK_HEADER_SIZE {
             return Err(format!("incomplete chunk ({} bytes)", bytes.len()));
         }
         let header = EvtxChunkHeader::from_bytes(bytes).map_err(|e| {
-            if bytes.len() < CHUNK_SIZE {
+            if bytes.len() < EVTX_CHUNK_SIZE {
                 format!(
-                    "incomplete chunk ({} of {CHUNK_SIZE} bytes): {e}",
+                    "incomplete chunk ({} of {EVTX_CHUNK_SIZE} bytes): {e}",
                     bytes.len()
                 )
             } else {
@@ -158,9 +157,9 @@ impl EvtxWasmParser {
         let mut raw = MutableUtf8Array::<i32>::new();
         let mut raw_json = Vec::new();
         let mut errors = Vec::new();
-        if bytes.len() < CHUNK_SIZE {
+        if bytes.len() < EVTX_CHUNK_SIZE {
             errors.push(format!(
-                "incomplete chunk ({} of {CHUNK_SIZE} bytes)",
+                "incomplete chunk ({} of {EVTX_CHUNK_SIZE} bytes)",
                 bytes.len()
             ));
         }
@@ -380,12 +379,12 @@ mod tests {
         }
 
         let sample = include_bytes!("../../samples/Security_short_selected.evtx");
-        let chunk = &sample[FILE_HEADER_SIZE..FILE_HEADER_SIZE + CHUNK_SIZE];
+        let chunk = &sample[EVTX_FILE_HEADER_SIZE..EVTX_FILE_HEADER_SIZE + EVTX_CHUNK_SIZE];
         let mut damaged = chunk.to_vec();
         damaged[0] = 0;
-        let mut data = sample[..FILE_HEADER_SIZE].to_vec();
+        let mut data = sample[..EVTX_FILE_HEADER_SIZE].to_vec();
         data.extend_from_slice(chunk);
-        data.extend_from_slice(&vec![0; CHUNK_SIZE]);
+        data.extend_from_slice(&vec![0; EVTX_CHUNK_SIZE]);
         data.extend_from_slice(&damaged);
         data.extend_from_slice(chunk);
         let reader = EvtxWasmParser::from_data(data).unwrap();
@@ -406,7 +405,6 @@ mod tests {
             .err()
             .unwrap()
             .contains("incomplete chunk"));
-
         // Short trailing chunk (>= 512 bytes) with invalid magic reports both truncation and magic.
         let mut short_bad_magic = sample.to_vec();
         short_bad_magic.extend_from_slice(&damaged[..1024]);
@@ -426,7 +424,7 @@ mod tests {
 
         // Trimmed after the last record (inside free space): rows survive AND truncation warns.
         let header = EvtxChunkHeader::from_bytes(chunk).unwrap();
-        let cut_after_records = FILE_HEADER_SIZE + header.free_space_offset as usize;
+        let cut_after_records = EVTX_FILE_HEADER_SIZE + header.free_space_offset as usize;
         let short_valid = EvtxWasmParser::from_data(sample[..cut_after_records].to_vec()).unwrap();
         let full_valid = EvtxWasmParser::from_data(sample.to_vec()).unwrap();
         let short_ipc = short_valid.arrow_chunk(0).unwrap();
@@ -445,7 +443,7 @@ mod tests {
         let mut max_id_chunk = chunk.to_vec();
         max_id_chunk[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
         max_id_chunk[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
-        let mut sentinel_data = sample[..FILE_HEADER_SIZE].to_vec();
+        let mut sentinel_data = sample[..EVTX_FILE_HEADER_SIZE].to_vec();
         sentinel_data.extend_from_slice(&reversed_chunk);
         sentinel_data.extend_from_slice(&max_id_chunk);
         let sentinel_reader = EvtxWasmParser::from_data(sentinel_data).unwrap();
@@ -456,15 +454,15 @@ mod tests {
         let mut newer_chunk = chunk.to_vec();
         newer_chunk[24..32].copy_from_slice(&(header.first_event_record_id + 500).to_le_bytes());
         newer_chunk[32..40].copy_from_slice(&(header.last_event_record_id + 500).to_le_bytes());
-        let mut wrapped = sample[..FILE_HEADER_SIZE].to_vec();
+        let mut wrapped = sample[..EVTX_FILE_HEADER_SIZE].to_vec();
         wrapped.extend_from_slice(&newer_chunk); // physical slot 1
-        wrapped.extend_from_slice(&vec![0; CHUNK_SIZE]); // physical slot 2 (empty)
+        wrapped.extend_from_slice(&vec![0; EVTX_CHUNK_SIZE]); // physical slot 2 (empty)
         wrapped.extend_from_slice(chunk); // physical slot 3 (oldest)
         let wrapped_reader = EvtxWasmParser::from_data(wrapped).unwrap();
         assert_eq!(wrapped_reader.physical_chunk_number(0).unwrap(), 3);
         assert_eq!(wrapped_reader.physical_chunk_number(1).unwrap(), 1);
 
-        assert!(EvtxWasmParser::from_data(vec![0; FILE_HEADER_SIZE]).is_err());
+        assert!(EvtxWasmParser::from_data(vec![0; EVTX_FILE_HEADER_SIZE]).is_err());
         for time in ["2016-06-29T15:24:34Z", "2016-06-29T15:24:34.3Z"] {
             let expected = time.parse::<Timestamp>().unwrap().as_microsecond();
             assert_eq!(system_time_micros(time), Some(expected));
