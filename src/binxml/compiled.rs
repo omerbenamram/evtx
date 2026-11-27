@@ -396,19 +396,25 @@ fn suffix_digits(mut suffix: u32, buf: &mut [u8; 10]) -> &[u8] {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn push_suffix_digits(out: &mut Vec<u8>, suffix: u32) {
+    out.push(b'_');
+    let mut buf = [0u8; 10];
+    out.extend_from_slice(suffix_digits(suffix, &mut buf));
+}
+
 /// Write `[_<suffix>]":` after an already-written `"<name>`.
-#[inline]
+#[inline(always)]
 fn finish_json_key(out: &mut Vec<u8>, suffix: u32) {
     if suffix > 0 {
-        out.push(b'_');
-        let mut buf = [0u8; 10];
-        out.extend_from_slice(suffix_digits(suffix, &mut buf));
+        push_suffix_digits(out, suffix);
     }
     out.extend_from_slice(b"\":");
 }
 
 /// Write `"<name>[_<suffix>]":` to `out`.
-#[inline]
+#[inline(always)]
 fn write_json_key(out: &mut Vec<u8>, name: &[u8], suffix: u32) {
     out.push(b'"');
     out.extend_from_slice(name);
@@ -4307,7 +4313,9 @@ fn exec_json<'a, V: ValueSource<'a>>(
                                 return Err(unresolved_nested_json());
                             };
                             out.push(b'{');
-                            write_json_key(out, &progs.programs[inst.prog].root_name, 0);
+                            out.push(b'"');
+                            out.extend_from_slice(&progs.programs[inst.prog].root_name);
+                            out.extend_from_slice(b"\":");
                             exec_json(inst, progs, pf, vr, out)?;
                             out.push(b'}');
                         } else {
