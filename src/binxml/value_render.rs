@@ -101,72 +101,35 @@ impl ValueRenderer {
                 self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
             }
             BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
-            BinXmlValue::StringArrayType(items) => self.write_list(writer, items, |s, w, item| {
-                s.write_utf16_escaped(w, *item, string_mode)
-            }),
-            BinXmlValue::AnsiStringArrayType(items) => {
-                self.write_list(writer, items, |s, w, item| {
-                    s.write_str_escaped(w, item, string_mode)
-                })
-            }
-            BinXmlValue::Int8ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i8, *v))
-            }
-            BinXmlValue::UInt8ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u8, *v))
-            }
-            BinXmlValue::Int16ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i16, *v))
-            }
-            BinXmlValue::UInt16ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u16, *v))
-            }
-            BinXmlValue::Int32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i32, *v))
-            }
-            BinXmlValue::UInt32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u32, *v))
-            }
-            BinXmlValue::Int64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_i64, *v))
-            }
-            BinXmlValue::UInt64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| write_int!(s, w, write_u64, *v))
-            }
-            BinXmlValue::Real32ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_float(w, *v))
-            }
-            BinXmlValue::Real64ArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_float(w, *v))
-            }
-            BinXmlValue::BoolArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_bytes(w, if *v { b"true" } else { b"false" })
-            }),
-            BinXmlValue::GuidArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_guid(w, v))
-            }
-            BinXmlValue::FileTimeArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v.fields()))
-            }
-            BinXmlValue::SysTimeArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_datetime(w, v.fields()))
-            }
-            BinXmlValue::SidArrayType(items) => {
-                self.write_list(writer, items, |s, w, v| s.write_sid(w, v))
-            }
-            BinXmlValue::HexInt32ArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_hex_prefixed_u64_lower(w, u64::from(*v))
-            }),
-            BinXmlValue::HexInt64ArrayType(items) => self.write_list(writer, items, |s, w, v| {
-                s.write_hex_prefixed_u64_lower(w, *v)
-            }),
             BinXmlValue::EvtHandle | BinXmlValue::BinXmlType(_) | BinXmlValue::EvtXml => Err(
                 EvtxError::FailedToCreateRecordModel("unsupported BinXML value in renderer"),
             ),
-            other => Err(EvtxError::Unimplemented {
-                name: format!("value formatting for {:?}", other),
-            }),
+            other => self.write_array_value(writer, other, string_mode),
         }
+    }
+
+    #[cold]
+    fn write_array_value<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        value: &BinXmlValue<'_>,
+        string_mode: StringEscapeMode,
+    ) -> Result<()> {
+        let Some(len) = value.expandable_array_len() else {
+            return Err(EvtxError::Unimplemented {
+                name: format!("value formatting for {:?}", value),
+            });
+        };
+        for idx in 0..len {
+            if idx > 0 {
+                self.write_byte(writer, b',')?;
+            }
+            let item = value
+                .array_item_as_value(idx)
+                .expect("index < expandable_array_len");
+            self.write_value_text(writer, &item, string_mode)?;
+        }
+        Ok(())
     }
 
     /// Write a substitution value's text directly from its raw chunk bytes
@@ -185,7 +148,9 @@ impl ValueRenderer {
         mode: StringEscapeMode,
     ) -> Result<()> {
         match ty {
-            value_ty::NULL => Ok(()),
+            // BIN_XML is only reachable for empty payloads (non-empty BinXml
+            // classifies as an element); mirrors the NullType conversion.
+            value_ty::NULL | value_ty::BIN_XML => Ok(()),
             // StringType: truncate at the first NUL unit (mirrors `utf16_by_char_count`).
             value_ty::UTF16_STRING => {
                 self.write_utf16_escaped(writer, Utf16LeSlice::until_nul(bytes), mode)
@@ -233,9 +198,6 @@ impl ValueRenderer {
             value_ty::HEX_INT64 => {
                 self.write_hex_prefixed_u64_lower(writer, u64::from_le_bytes(le(bytes)))
             }
-            // Only reachable for empty payloads (non-empty BinXml classifies
-            // as an element); mirrors the NullType conversion.
-            value_ty::BIN_XML => Ok(()),
             _ => Err(EvtxError::FailedToCreateRecordModel(
                 "unsupported raw value type in compiled renderer",
             )),
@@ -252,24 +214,6 @@ impl ValueRenderer {
 
     fn write_byte<W: WriteExt>(&mut self, writer: &mut W, byte: u8) -> Result<()> {
         writer.write_all(&[byte]).map_err(EvtxError::from)
-    }
-
-    /// Write `items` comma-delimited, formatting each via `f`.
-    fn write_list<W: WriteExt, T>(
-        &mut self,
-        writer: &mut W,
-        items: &[T],
-        mut f: impl FnMut(&mut Self, &mut W, &T) -> Result<()>,
-    ) -> Result<()> {
-        let mut first = true;
-        for item in items {
-            if !first {
-                self.write_byte(writer, b',')?;
-            }
-            first = false;
-            f(self, writer, item)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn write_utf16_escaped<W: WriteExt>(
