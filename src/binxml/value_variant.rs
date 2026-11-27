@@ -640,6 +640,35 @@ mod error_tests {
     }
 }
 
+macro_rules! for_each_expandable_array {
+    ($m:ident $( ( $($arg:tt)* ) )?) => {
+        $m! {
+            $($($arg)* ;)?
+            StringArrayType => StringType,
+            AnsiStringArrayType => AnsiStringType,
+            Int8ArrayType => Int8Type,
+            UInt8ArrayType => UInt8Type,
+            Int16ArrayType => Int16Type,
+            UInt16ArrayType => UInt16Type,
+            Int32ArrayType => Int32Type,
+            UInt32ArrayType => UInt32Type,
+            Int64ArrayType => Int64Type,
+            UInt64ArrayType => UInt64Type,
+            Real32ArrayType => Real32Type,
+            Real64ArrayType => Real64Type,
+            BoolArrayType => BoolType,
+            GuidArrayType => GuidType,
+            FileTimeArrayType => FileTimeType,
+            SysTimeArrayType => SysTimeType,
+            SidArrayType => SidType,
+            HexInt32ArrayType => HexInt32Type,
+            HexInt64ArrayType => HexInt64Type,
+        }
+    };
+}
+
+pub(crate) use for_each_expandable_array;
+
 macro_rules! expandable_array_methods {
     ($( $array:ident => $scalar:ident ),* $(,)?) => {
         /// Return `Some(len)` when this value is one of the array types we support for
@@ -667,27 +696,7 @@ macro_rules! expandable_array_methods {
 }
 
 impl<'a> BinXmlValue<'a> {
-    expandable_array_methods! {
-        StringArrayType => StringType,
-        AnsiStringArrayType => AnsiStringType,
-        Int8ArrayType => Int8Type,
-        UInt8ArrayType => UInt8Type,
-        Int16ArrayType => Int16Type,
-        UInt16ArrayType => UInt16Type,
-        Int32ArrayType => Int32Type,
-        UInt32ArrayType => UInt32Type,
-        Int64ArrayType => Int64Type,
-        UInt64ArrayType => UInt64Type,
-        Real32ArrayType => Real32Type,
-        Real64ArrayType => Real64Type,
-        BoolArrayType => BoolType,
-        GuidArrayType => GuidType,
-        FileTimeArrayType => FileTimeType,
-        SysTimeArrayType => SysTimeType,
-        SidArrayType => SidType,
-        HexInt32ArrayType => HexInt32Type,
-        HexInt64ArrayType => HexInt64Type,
-    }
+    for_each_expandable_array!(expandable_array_methods);
 }
 
 #[cfg(test)]

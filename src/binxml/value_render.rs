@@ -5,7 +5,7 @@
 //! comma-delimited arrays, etc.). This module centralizes that logic so both
 //! renderers stay in sync and avoid allocating intermediate `String`s.
 
-use crate::binxml::value_variant::{BinXmlValue, SidRef, value_ty};
+use crate::binxml::value_variant::{BinXmlValue, SidRef, for_each_expandable_array, value_ty};
 use crate::err::{EvtxError, Result};
 use crate::utils::Utf16LeSlice;
 use crate::utils::bytes::le;
@@ -43,6 +43,25 @@ impl Default for ValueRenderer {
 macro_rules! write_int {
     ($self:ident, $writer:ident, $m:ident, $v:expr) => {
         $self.formatter.$m($writer, $v).map_err(EvtxError::from)
+    };
+}
+
+macro_rules! render_array_arms {
+    ($self:ident, $writer:ident, $value:ident, $mode:ident ; $( $array:ident => $scalar:ident ),* $(,)?) => {
+        match $value {
+            $(BinXmlValue::$array(items) => {
+                for (idx, item) in items.iter().enumerate() {
+                    if idx > 0 {
+                        $self.write_byte($writer, b',')?;
+                    }
+                    $self.write_scalar_item($writer, &BinXmlValue::$scalar(*item), $mode)?;
+                }
+                Ok(())
+            })*
+            other => Err(EvtxError::Unimplemented {
+                name: format!("value formatting for {:?}", other),
+            }),
+        }
     };
 }
 
@@ -115,21 +134,42 @@ impl ValueRenderer {
         value: &BinXmlValue<'_>,
         string_mode: StringEscapeMode,
     ) -> Result<()> {
-        let Some(len) = value.expandable_array_len() else {
-            return Err(EvtxError::Unimplemented {
-                name: format!("value formatting for {:?}", value),
-            });
-        };
-        for idx in 0..len {
-            if idx > 0 {
-                self.write_byte(writer, b',')?;
+        for_each_expandable_array!(render_array_arms(self, writer, value, string_mode))
+    }
+
+    #[inline(always)]
+    fn write_scalar_item<W: WriteExt>(
+        &mut self,
+        writer: &mut W,
+        value: &BinXmlValue<'_>,
+        string_mode: StringEscapeMode,
+    ) -> Result<()> {
+        match value {
+            BinXmlValue::StringType(s) => self.write_utf16_escaped(writer, *s, string_mode),
+            BinXmlValue::AnsiStringType(s) => self.write_str_escaped(writer, s, string_mode),
+            BinXmlValue::Int8Type(v) => write_int!(self, writer, write_i8, *v),
+            BinXmlValue::UInt8Type(v) => write_int!(self, writer, write_u8, *v),
+            BinXmlValue::Int16Type(v) => write_int!(self, writer, write_i16, *v),
+            BinXmlValue::UInt16Type(v) => write_int!(self, writer, write_u16, *v),
+            BinXmlValue::Int32Type(v) => write_int!(self, writer, write_i32, *v),
+            BinXmlValue::UInt32Type(v) => write_int!(self, writer, write_u32, *v),
+            BinXmlValue::Int64Type(v) => write_int!(self, writer, write_i64, *v),
+            BinXmlValue::UInt64Type(v) => write_int!(self, writer, write_u64, *v),
+            BinXmlValue::Real32Type(v) => self.write_float(writer, *v),
+            BinXmlValue::Real64Type(v) => self.write_float(writer, *v),
+            BinXmlValue::BoolType(v) => {
+                self.write_bytes(writer, if *v { b"true" } else { b"false" })
             }
-            let item = value
-                .array_item_as_value(idx)
-                .expect("index < expandable_array_len");
-            self.write_value_text(writer, &item, string_mode)?;
+            BinXmlValue::GuidType(guid) => self.write_guid(writer, guid),
+            BinXmlValue::FileTimeType(ft) => self.write_datetime(writer, ft.fields()),
+            BinXmlValue::SysTimeType(st) => self.write_datetime(writer, st.fields()),
+            BinXmlValue::SidType(sid) => self.write_sid(writer, sid),
+            BinXmlValue::HexInt32Type(v) => {
+                self.write_hex_prefixed_u64_lower(writer, u64::from(*v))
+            }
+            BinXmlValue::HexInt64Type(v) => self.write_hex_prefixed_u64_lower(writer, *v),
+            _ => unreachable!("write_scalar_item only receives expandable array item scalars"),
         }
-        Ok(())
     }
 
     /// Write a substitution value's text directly from its raw chunk bytes
