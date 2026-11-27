@@ -50,7 +50,8 @@ use crate::binxml::compiled::MAX_RECORD_OUTPUT;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrTree, Node};
 use crate::mta::{
-    MaterializedEvent, RenderingInfo, append_rendering_info, resolve_keywords, text, value_number,
+    MaterializedEvent, ProviderGuid, RenderingInfo, append_rendering_info, resolve_keywords, text,
+    value_number,
 };
 use crate::utils::bytes::{read_u16_le, read_u32_le};
 use crate::utils::decode_utf16le_lossy_z;
@@ -688,7 +689,11 @@ impl MessageCatalog {
         tree: &IrTree<'_>,
         bump: &'b Bump,
     ) -> Option<RenderingInfo<'b>> {
-        let provider = self.provider(&event.provider_guid);
+        let provider = match &event.provider_guid {
+            ProviderGuid::Binary(guid) => self.providers.get(guid),
+            ProviderGuid::Text(guid) => self.provider(guid),
+            ProviderGuid::None => None,
+        };
         // The tables, the event's message id, and its template's item types.
         let (tables, message_id, item_types) = match provider {
             Some(provider) => {
@@ -1377,7 +1382,7 @@ mod tests {
         ));
         let tree = IrTree::new(arena, root);
         let event = MaterializedEvent {
-            provider_guid: std::borrow::Cow::Owned(guid.to_string()),
+            provider_guid: ProviderGuid::Binary(guid),
             opcode: 1,
             task: 7,
             keywords: 0b11,

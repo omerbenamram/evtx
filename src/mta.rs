@@ -52,6 +52,7 @@ use ahash::AHashMap as HashMap;
 use bumpalo::Bump;
 use thiserror::Error;
 
+use crate::Guid;
 use crate::binxml::value_variant::BinXmlValue;
 use crate::model::ir::{Element, ElementId, IrArena, IrTree, Name, Node, Text};
 use crate::utils::bytes::{read_array, read_u32_le, read_u64_le};
@@ -600,14 +601,24 @@ pub(crate) fn append_rendering_info<'a>(
         .push_child(Node::Element(rendering_info));
 }
 
+/// A `Provider/@Guid` attribute from a materialized record tree, kept binary when stored as a
+/// typed BinXML GUID so catalog lookup avoids formatting and re-parsing 36-byte strings.
+#[derive(Debug, Default)]
+#[cfg_attr(not(feature = "wevt_templates"), allow(dead_code))]
+pub(crate) enum ProviderGuid<'t> {
+    #[default]
+    None,
+    Binary(Guid),
+    Text(Cow<'t, str>),
+}
+
 /// The `System` fields (and optionally `EventData`/`UserData` element IDs) of a materialized
 /// record tree.
 #[derive(Debug, Default)]
 #[cfg_attr(not(feature = "wevt_templates"), allow(dead_code))]
 pub(crate) struct MaterializedEvent<'t> {
     pub(crate) provider_name: Cow<'t, str>,
-    /// Empty when the provider has none.
-    pub(crate) provider_guid: Cow<'t, str>,
+    pub(crate) provider_guid: ProviderGuid<'t>,
     pub(crate) event_id: u16,
     pub(crate) qualifiers: u16,
     pub(crate) version: u8,
@@ -659,7 +670,13 @@ impl<'t> MaterializedEvent<'t> {
                 "Provider" => {
                     event.provider_name = text(attr(child, "Name"));
                     if collect_data {
-                        event.provider_guid = text(attr(child, "Guid"));
+                        event.provider_guid = match attr(child, "Guid") {
+                            [] => ProviderGuid::None,
+                            [Node::Value(BinXmlValue::GuidType(bytes))] => {
+                                ProviderGuid::Binary(Guid::from_bytes(*bytes))
+                            }
+                            nodes => ProviderGuid::Text(text(nodes)),
+                        };
                     }
                 }
                 "EventID" => {
