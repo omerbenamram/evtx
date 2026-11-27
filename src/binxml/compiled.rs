@@ -23,7 +23,8 @@ use crate::binxml::ir::{
 };
 use crate::binxml::name::read_name_link;
 use crate::binxml::tokens::{
-    Stream, TokenSink, ends_stream, single_instance_offset, starts_with_element, walk_tokens,
+    Stream, TokenSink, ends_stream, read_template_instance_header, single_instance_offset,
+    starts_with_element, walk_tokens,
 };
 use crate::binxml::value_render::{StringEscapeMode, ValueRenderer};
 use crate::binxml::value_variant::{BinXmlValue, BinXmlValueType, decode_ansi_value, value_ty};
@@ -381,6 +382,39 @@ struct KeptKeys {
     seen: NameCounts<u64>,
 }
 
+/// Format `suffix` into `buf` and return the ASCII digit slice.
+#[inline]
+fn suffix_digits(mut suffix: u32, buf: &mut [u8; 10]) -> &[u8] {
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (suffix % 10) as u8;
+        suffix /= 10;
+        if suffix == 0 {
+            return &buf[at..];
+        }
+    }
+}
+
+/// Write `[_<suffix>]":` after an already-written `"<name>`.
+#[inline]
+fn finish_json_key(out: &mut Vec<u8>, suffix: u32) {
+    if suffix > 0 {
+        out.push(b'_');
+        let mut buf = [0u8; 10];
+        out.extend_from_slice(suffix_digits(suffix, &mut buf));
+    }
+    out.extend_from_slice(b"\":");
+}
+
+/// Write `"<name>[_<suffix>]":` to `out`.
+#[inline]
+fn write_json_key(out: &mut Vec<u8>, name: &[u8], suffix: u32) {
+    out.push(b'"');
+    out.extend_from_slice(name);
+    finish_json_key(out, suffix);
+}
+
 impl KeptKeys {
     const EMPTY: u64 = 0xcbf2_9ce4_8422_2325;
 
@@ -400,14 +434,7 @@ impl KeptKeys {
                 0 => name,
                 _ => {
                     let mut digits = [0; 10];
-                    let mut at = digits.len();
-                    let mut left = number;
-                    while left > 0 {
-                        at -= 1;
-                        digits[at] = b'0' + (left % 10) as u8;
-                        left /= 10;
-                    }
-                    Self::hash(Self::hash(name, b"_"), &digits[at..])
+                    Self::hash(Self::hash(name, b"_"), suffix_digits(number, &mut digits))
                 }
             };
             let attributes = attributes.then(|| Self::hash(key, b"_attributes"));
@@ -623,12 +650,18 @@ enum XOp {
     /// dispatch), then the single placeholder content, branching on the runtime slot class:
     /// Skip -> `tail_text`, so the element is `<Tag></Tag>`; text-ish -> text + `tail_text`;
     /// element -> newline + nested/frag at `indent + 2` + `tail_elem`.
+    ///
+    /// When `expand` is true (an attribute-less `<Data>` element), `prefix` holds only the
+    /// element's own open tag so a string-array slot can repeat `prefix + item + tail_text` per
+    /// item (mirroring `array_expand` over the materialized tree).
     Body {
         slot: u16,
         optional: bool,
         /// The element depends on its own value: left out, `prefix` and all, when that value
         /// is NULL. `prefix` is then the element's own.
         dependent: bool,
+        /// Attribute-less `<Data>` array-expansion site (`prefix` is solely `<indent><Data>`).
+        expand: bool,
         indent: u16,
         prefix: LitRange,
         tail_text: LitRange,
@@ -643,21 +676,6 @@ enum XOp {
         indent: u16,
         ind: LitRange,
     },
-    /// An attribute-less `<Data>` element whose entire content is one hole
-    /// (MS-EVEN6 array expansion site). Scalar values follow `Body`
-    /// semantics with `open` spliced first; a string array repeats the
-    /// element per item, an empty item as `<Data></Data>`. Mirrors
-    /// `array_expand` over the materialized tree.
-    Expand {
-        slot: u16,
-        optional: bool,
-        /// The element depends on its own value: left out when that value is NULL.
-        dependent: bool,
-        indent: u16,
-        open: LitRange,
-        tail_text: LitRange,
-        tail_elem: LitRange,
-    },
 }
 
 impl XOp {
@@ -669,19 +687,30 @@ impl XOp {
             XOp::Val { slot, .. }
             | XOp::AttrVal { slot, .. }
             | XOp::Body { slot, .. }
-            | XOp::ChildSlot { slot, .. }
-            | XOp::Expand { slot, .. } => Some(*slot),
+            | XOp::ChildSlot { slot, .. } => Some(*slot),
+        }
+    }
+}
+
+impl CompiledOp for XOp {
+    fn lit(r: LitRange) -> Self {
+        XOp::Lit(r)
+    }
+
+    fn as_lit(&self) -> Option<LitRange> {
+        match self {
+            XOp::Lit(r) => Some(*r),
+            _ => None,
         }
     }
 
-    /// Makes this op leave itself out when the value at `dependency` is NULL, if it can: an
-    /// element that holds that value. Whether it did.
+    fn depends(slot: u16, len: u32, open: LitRange) -> Self {
+        XOp::Depends { slot, len, open }
+    }
+
     fn depend_on(&mut self, dependency: u16) -> bool {
         match self {
             XOp::Body {
-                slot, dependent, ..
-            }
-            | XOp::Expand {
                 slot, dependent, ..
             } if *slot == dependency => {
                 *dependent = true;
@@ -702,7 +731,7 @@ pub(crate) struct XmlProgram {
     /// `(slot, child_indent)` for every slot rendered in element position;
     /// the pre-flight uses this to resolve nested-instance programs up front.
     elem_slots: Vec<(u16, u16)>,
-    /// Slots compiled as `XOp::Expand` (string arrays allowed).
+    /// Slots compiled as expandable `XOp::Body` (string arrays allowed).
     expand_slots: Vec<u16>,
     /// Slots whose ops a guard op skips when it leaves their element out, sorted.
     guarded_slots: Vec<u16>,
@@ -1022,7 +1051,7 @@ impl StoredProgram for JsonProgram {
             Budget::new(start),
         );
         let rendered = c.render_member_plain();
-        *out = c.lits;
+        *out = c.core.lits;
         out.extend_from_slice(b"}}");
         rendered.is_ok()
     }
@@ -1216,85 +1245,153 @@ impl TemplateProgram for XmlProgram {
 // Compilation (template definition IR -> program)
 // ---------------------------------------------------------------------------
 
-/// `flush_lit_run`/`side_range` for a compiler with `lits`, `ops: Vec<$op>`
-/// and `run_start` fields.
-macro_rules! lit_run_methods {
-    ($op:ident) => {
-        fn flush_lit_run(&mut self) {
-            let end = self.lits.len();
-            if end > self.run_start {
-                self.ops
-                    .push($op::Lit(LitRange(self.run_start as u32, end as u32)));
+/// Ops emitted by [`CompilerCore`]: literal runs and `Depends` guards.
+trait CompiledOp: Sized {
+    fn lit(r: LitRange) -> Self;
+    fn as_lit(&self) -> Option<LitRange>;
+    fn dummy_depends() -> Self {
+        Self::depends(0, 0, LitRange(0, 0))
+    }
+    fn depends(slot: u16, len: u32, open: LitRange) -> Self;
+    fn depend_on(&mut self, slot: u16) -> bool;
+}
+
+/// Shared literal buffer, op buffer, guard helpers, and budget tracking for
+/// [`XmlCompiler`] and [`JsonCompiler`].
+struct CompilerCore<Op> {
+    lits: Vec<u8>,
+    ops: Vec<Op>,
+    deps: Vec<u16>,
+    /// Start of the not-yet-flushed literal run (`lits[run_start..]`).
+    run_start: usize,
+    elem_slots: Vec<(u16, u16)>,
+    expand_slots: Vec<u16>,
+    vr: ValueRenderer,
+    /// What the walk may still spend: how long `lits` may grow, and the nodes it may visit.
+    budget: Budget,
+    /// Whether the tree shares elements, so that the walk counts the nodes it visits (see
+    /// [`MAX_RENDER_NODES`]).
+    shared: bool,
+}
+
+impl<Op: CompiledOp> CompilerCore<Op> {
+    fn new(lits: Vec<u8>, budget: Budget, shared: bool) -> Self {
+        CompilerCore {
+            lits,
+            ops: Vec::new(),
+            deps: Vec::new(),
+            run_start: 0,
+            elem_slots: Vec::new(),
+            expand_slots: Vec::new(),
+            vr: ValueRenderer::new(),
+            budget,
+            shared,
+        }
+    }
+
+    /// Fails once `lits` has grown past the budget. Checked before each element, after each one
+    /// with element children (their closing tags would add up), before each attribute and each
+    /// node of a value or of content, and once the walk is done: one name or node renders to a
+    /// few hundred KiB at most, but a materialized tree shares a value's elements among the
+    /// places it is used in, and a template can give one element thousands of attributes that
+    /// share a long name, or use a long value thousands of times.
+    fn check_size(&self) -> Result<()> {
+        self.budget.check(self.lits.len())
+    }
+
+    /// Charges a visit of `element` on a tree that shares elements, then checks the size.
+    fn visit(&mut self, element: &Element<'_>) -> Result<()> {
+        if self.shared {
+            self.budget.visit(element)?;
+        }
+        self.check_size()
+    }
+
+    fn flush_lit_run(&mut self) {
+        let end = self.lits.len();
+        if end > self.run_start {
+            self.ops
+                .push(Op::lit(LitRange(self.run_start as u32, end as u32)));
+        }
+        self.run_start = end;
+    }
+
+    /// End the literal run and return it, for an op that writes it itself.
+    fn take_lit_run(&mut self) -> LitRange {
+        let run = LitRange(self.run_start as u32, self.lits.len() as u32);
+        self.run_start = self.lits.len();
+        run
+    }
+
+    /// Emit bytes via `f` as a side range (not part of any literal run).
+    /// The current run must be flushed first.
+    fn side_range(&mut self, f: impl FnOnce(&mut Vec<u8>)) -> LitRange {
+        debug_assert_eq!(self.run_start, self.lits.len(), "unflushed lit run");
+        f(&mut self.lits);
+        self.take_lit_run()
+    }
+
+    /// Start ops that a guard op will skip: flush the literal run, so that they start an
+    /// op of their own, and hold the guard's place, which this returns.
+    fn open_guard(&mut self) -> usize {
+        self.flush_lit_run();
+        // Skips nothing until `close_guard` replaces it.
+        self.ops.push(Op::dummy_depends());
+        self.ops.len() - 1
+    }
+
+    /// End the ops that the guard at `at` skips, and put it there: `guard` makes it from
+    /// their number and the literal they start with, which the guard writes itself to save
+    /// a dispatch.
+    fn close_guard(&mut self, at: usize, guard: impl FnOnce(u32, LitRange) -> Op) {
+        self.flush_lit_run();
+        let open = match self.ops.get(at + 1).and_then(Op::as_lit) {
+            Some(open) => {
+                self.ops.remove(at + 1);
+                open
             }
-            self.run_start = end;
-        }
+            None => LitRange(0, 0),
+        };
+        let len = (self.ops.len() - at - 1) as u32;
+        self.ops[at] = guard(len, open);
+    }
 
-        /// Emit bytes via `f` as a side range (not part of any literal run).
-        /// The current run must be flushed first.
-        fn side_range(&mut self, f: impl FnOnce(&mut Self)) -> LitRange {
-            debug_assert_eq!(self.run_start, self.lits.len(), "unflushed lit run");
-            let start = self.lits.len() as u32;
-            f(self);
-            self.run_start = self.lits.len();
-            LitRange(start, self.lits.len() as u32)
+    /// End the ops that the guard at `at` leaves out when the value at `slot` is NULL. A
+    /// lone op that can leave itself out takes the guard's place instead.
+    fn close_depends(&mut self, at: usize, slot: u16) {
+        self.flush_lit_run();
+        if let [op] = &mut self.ops[at + 1..]
+            && op.depend_on(slot)
+        {
+            self.ops.remove(at);
+        } else {
+            self.close_guard(at, |len, open| Op::depends(slot, len, open));
         }
+    }
 
-        /// Start ops that a guard op will skip: flush the literal run, so that they start an
-        /// op of their own, and hold the guard's place, which this returns.
-        fn open_guard(&mut self) -> usize {
-            self.flush_lit_run();
-            // Skips nothing until `close_guard` replaces it.
-            self.ops.push($op::Depends {
-                slot: 0,
-                len: 0,
-                open: LitRange(0, 0),
-            });
-            self.ops.len() - 1
-        }
-
-        /// End the ops that the guard at `at` skips, and put it there: `guard` makes it from
-        /// their number and the literal they start with, which the guard writes itself to save
-        /// a dispatch.
-        fn close_guard(&mut self, at: usize, guard: impl FnOnce(u32, LitRange) -> $op) {
-            self.flush_lit_run();
-            let open = match self.ops.get(at + 1) {
-                Some($op::Lit(open)) => {
-                    let open = *open;
-                    self.ops.remove(at + 1);
-                    open
-                }
-                _ => LitRange(0, 0),
-            };
-            let len = (self.ops.len() - at - 1) as u32;
-            self.ops[at] = guard(len, open);
-        }
-
-        /// End the ops that the guard at `at` leaves out when the value at `slot` is NULL. A
-        /// lone op that can leave itself out takes the guard's place instead.
-        fn close_depends(&mut self, at: usize, slot: u16) {
-            self.flush_lit_run();
-            if let [op] = &mut self.ops[at + 1..]
-                && op.depend_on(slot)
+    /// Push the dependencies of `element`'s children to `deps`, and return their range.
+    fn children_deps(&mut self, arena: &IrArena<'_>, element: &Element<'_>) -> LitRange {
+        let start = self.deps.len() as u32;
+        for node in &element.children {
+            if let Node::Element(id) = node
+                && let Some(dependency) = arena.get(*id).and_then(|e| e.dependency)
             {
-                self.ops.remove(at);
-            } else {
-                self.close_guard(at, |len, open| $op::Depends { slot, len, open });
+                self.deps.push(dependency);
             }
         }
+        LitRange(start, self.deps.len() as u32)
+    }
 
-        /// Push the dependencies of `element`'s children to `deps`, and return their range.
-        fn children_deps(&mut self, element: &Element<'_>) -> LitRange {
-            let start = self.deps.len() as u32;
-            for node in &element.children {
-                if let Node::Element(id) = node
-                    && let Some(dependency) = self.element_ref(*id).dependency
-                {
-                    self.deps.push(dependency);
-                }
-            }
-            LitRange(start, self.deps.len() as u32)
-        }
-    };
+    /// Flush any pending literal run and drop spare capacity before storing a program.
+    fn shrink_to_fit(&mut self) {
+        self.flush_lit_run();
+        // Programs live as long as their chunk or the parse: no spare capacity.
+        self.lits.shrink_to_fit();
+        self.ops.shrink_to_fit();
+        self.deps.shrink_to_fit();
+        self.elem_slots.shrink_to_fit();
+        self.expand_slots.shrink_to_fit();
+    }
 }
 
 /// Whether every element child of `element` depends on a value (and it has one), so that an
@@ -1330,24 +1427,12 @@ struct OpenElement {
 
 struct XmlCompiler<'t, 'a> {
     arena: &'t IrArena<'a>,
-    lits: Vec<u8>,
-    ops: Vec<XOp>,
-    deps: Vec<u16>,
-    /// Start of the not-yet-flushed literal run (`lits[run_start..]`).
-    run_start: usize,
-    elem_slots: Vec<(u16, u16)>,
-    expand_slots: Vec<u16>,
+    core: CompilerCore<XOp>,
     indent_on: bool,
-    vr: ValueRenderer,
     /// Walking a fully materialized tree (slow lane / fragments): placeholder
     /// sites are errors instead of ops, and any error is a real record error.
     /// When false (template compilation), any error just means "not cacheable".
     materialized: bool,
-    /// What the walk may still spend: how long `lits` may grow, and the nodes it may visit.
-    budget: Budget,
-    /// Whether the tree shares elements, so that the walk counts the nodes it visits (see
-    /// [`MAX_RENDER_NODES`]).
-    shared: bool,
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
@@ -1360,16 +1445,8 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     ) -> Self {
         XmlCompiler {
             arena,
-            budget,
-            shared: arena.shared(),
-            lits,
-            ops: Vec::new(),
-            deps: Vec::new(),
-            run_start: 0,
-            elem_slots: Vec::new(),
-            expand_slots: Vec::new(),
+            core: CompilerCore::new(lits, budget, arena.shared()),
             indent_on,
-            vr: ValueRenderer::new(),
             materialized,
         }
     }
@@ -1450,28 +1527,22 @@ fn compile_xml_template(
         false,
         Budget::program(),
     );
-    c.ops.reserve(32);
+    c.core.ops.reserve(32);
     if is_root {
-        c.lits.extend_from_slice(XML_DECL);
+        c.core.lits.extend_from_slice(XML_DECL);
     }
     let compiled = c.compile_element(tree.root(), base_indent);
-    let written = c.lits.len() + std::mem::size_of_val(c.ops.as_slice());
+    let written = c.core.lits.len() + std::mem::size_of_val(c.core.ops.as_slice());
     let program = match compiled {
         Ok(())
-            if c.check_size().is_ok()
-                && each_slot_once(c.ops.iter().filter_map(XOp::slot).collect()) =>
+            if c.core.check_size().is_ok()
+                && each_slot_once(c.core.ops.iter().filter_map(XOp::slot).collect()) =>
         {
-            c.flush_lit_run();
-            // Programs live as long as their chunk or the parse: no spare capacity.
-            c.lits.shrink_to_fit();
-            c.ops.shrink_to_fit();
-            c.deps.shrink_to_fit();
-            c.elem_slots.shrink_to_fit();
-            c.expand_slots.shrink_to_fit();
+            c.core.shrink_to_fit();
             let mut guarded_slots = Vec::new();
-            for (at, op) in c.ops.iter().enumerate() {
+            for (at, op) in c.core.ops.iter().enumerate() {
                 if let XOp::Depends { len, .. } | XOp::LeftOut { len, .. } = op {
-                    let skipped = &c.ops[at + 1..][..*len as usize];
+                    let skipped = &c.core.ops[at + 1..][..*len as usize];
                     guarded_slots.extend(skipped.iter().filter_map(XOp::slot));
                 }
             }
@@ -1479,12 +1550,12 @@ fn compile_xml_template(
             guarded_slots.dedup();
             guarded_slots.shrink_to_fit();
             Some(XmlProgram {
-                lits: c.lits,
-                ops: c.ops,
-                deps: c.deps,
+                lits: c.core.lits,
+                ops: c.core.ops,
+                deps: c.core.deps,
                 indent_on: c.indent_on,
-                elem_slots: c.elem_slots,
-                expand_slots: c.expand_slots,
+                elem_slots: c.core.elem_slots,
+                expand_slots: c.core.expand_slots,
                 guarded_slots,
                 root_name: tree.root_element().name.as_str().as_bytes().to_vec(),
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
@@ -1535,11 +1606,33 @@ fn render_fragment_xml(
     let res = roots
         .iter()
         .try_for_each(|&root| c.compile_element(root, indent))
-        .and_then(|()| c.check_size());
-    debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
-    budget.nodes.set(c.budget.nodes.get());
-    *out = c.lits;
+        .and_then(|()| c.core.check_size());
+    debug_assert!(c.core.ops.is_empty(), "materialized walk produced ops");
+    budget.nodes.set(c.core.budget.nodes.get());
+    *out = c.core.lits;
     res
+}
+
+#[inline(always)]
+fn write_indent(out: &mut Vec<u8>, indent_on: bool, level: u16) {
+    if indent_on {
+        out.extend(std::iter::repeat_n(b' ', level as usize));
+    }
+}
+
+#[inline(always)]
+fn write_newline(out: &mut Vec<u8>, indent_on: bool) {
+    if indent_on {
+        out.push(b'\n');
+    }
+}
+
+#[inline(always)]
+fn write_close_tag(out: &mut Vec<u8>, name: &[u8], indent_on: bool) {
+    out.extend_from_slice(b"</");
+    out.extend_from_slice(name);
+    out.push(b'>');
+    write_newline(out, indent_on);
 }
 
 impl<'t, 'a> XmlCompiler<'t, 'a> {
@@ -1547,44 +1640,13 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         self.arena.get(id).expect("invalid element id")
     }
 
-    lit_run_methods!(XOp);
-
-    /// End the literal run and return it, for an op that writes it itself.
-    fn take_lit_run(&mut self) -> LitRange {
-        let run = LitRange(self.run_start as u32, self.lits.len() as u32);
-        self.run_start = self.lits.len();
-        run
-    }
-
     #[inline(always)]
     fn indent_str(&mut self, level: u16) {
-        if self.indent_on {
-            self.lits.extend(std::iter::repeat_n(b' ', level as usize));
-        }
+        write_indent(&mut self.core.lits, self.indent_on, level);
     }
 
     fn newline(&mut self) {
-        if self.indent_on {
-            self.lits.push(b'\n');
-        }
-    }
-
-    /// Fails once `lits` has grown past the budget. Checked before each element, after each one
-    /// with element children (their closing tags would add up), before each attribute and each
-    /// node of a value or of content, and once the walk is done: one name or node renders to a
-    /// few hundred KiB at most, but a materialized tree shares a value's elements among the
-    /// places it is used in, and a template can give one element thousands of attributes that
-    /// share a long name, or use a long value thousands of times.
-    fn check_size(&self) -> Result<()> {
-        self.budget.check(self.lits.len())
-    }
-
-    /// Charges a visit of `element` on a tree that shares elements, then checks the size.
-    fn visit(&mut self, element: &Element<'_>) -> Result<()> {
-        if self.shared {
-            self.budget.visit(element)?;
-        }
-        self.check_size()
+        write_newline(&mut self.core.lits, self.indent_on);
     }
 
     /// Compiles an element. Each level of a deep tree keeps this frame on the stack, and a debug
@@ -1611,24 +1673,24 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         element: &'t Element<'a>,
         indent: u16,
     ) -> Result<Option<OpenElement>> {
-        self.visit(element)?;
+        self.core.visit(element)?;
 
         // Attribute-less single-hole `<Data>` elements are the array
-        // expansion sites: compile them as self-contained `Expand` ops (the
-        // open tag must be able to repeat per array item).
-        if !self.materialized
+        // expansion sites: flush before the open tag so `Body::prefix` holds
+        // only `<indent><Data>` and can repeat per array item.
+        let expand = !self.materialized
             && element.attrs.is_empty()
             && is_data_element_name(element.name.as_str())
-            && let ChildrenKind::SinglePlaceholder(ph) = classify_children(element)
-        {
-            self.compile_expand(element, ph, indent)?;
-            return Ok(None);
-        }
+            && matches!(
+                classify_children(element),
+                ChildrenKind::SinglePlaceholder(_)
+            );
 
         // Children that each depend on a value can all be left out, which leaves the element
         // empty: `XOp::LeftOut` then writes it so, as the tree walker does. It copies the open
         // tag for that, which therefore can't hold values.
         let left_out = if !self.materialized
+            && !expand
             && children_all_depend(self.arena, element).map_err(|Bail| bail_err())?
         {
             if element
@@ -1638,22 +1700,27 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             {
                 return Err(bail_err());
             }
-            Some((self.open_guard(), self.lits.len()))
+            Some((self.core.open_guard(), self.core.lits.len()))
         } else {
             None
         };
+
+        if expand {
+            self.core.flush_lit_run();
+        }
 
         // Note: even placeholder-free subtrees are walked here (not delegated
         // to the materialized emitter): template-scope layout classification
         // (scan rule) differs from the materialized rule for present-but-empty
         // literal children, and this walk is the template-lane source of truth.
         self.indent_str(indent);
-        self.lits.push(b'<');
-        self.lits
+        self.core.lits.push(b'<');
+        self.core
+            .lits
             .extend_from_slice(element.name.as_str().as_bytes());
 
         for attr in &element.attrs {
-            self.check_size()?;
+            self.core.check_size()?;
             self.compile_attr(attr)?;
         }
 
@@ -1663,26 +1730,25 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     return Err(unresolved_placeholder());
                 }
                 let name = element.name.as_str().as_bytes();
-                self.lits.push(b'>');
-                let prefix = self.take_lit_run();
-                let tail_text = self.side_range(|c| {
-                    c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(name);
-                    c.lits.push(b'>');
-                    c.newline();
+                self.core.lits.push(b'>');
+                let prefix = self.core.take_lit_run();
+                let indent_on = self.indent_on;
+                let tail_text = self
+                    .core
+                    .side_range(|lits| write_close_tag(lits, name, indent_on));
+                let tail_elem = self.core.side_range(|lits| {
+                    write_indent(lits, indent_on, indent);
+                    write_close_tag(lits, name, indent_on);
                 });
-                let tail_elem = self.side_range(|c| {
-                    c.indent_str(indent);
-                    c.lits.extend_from_slice(b"</");
-                    c.lits.extend_from_slice(name);
-                    c.lits.push(b'>');
-                    c.newline();
-                });
-                self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
-                self.ops.push(XOp::Body {
+                self.core.elem_slots.push((ph.id, indent + INDENT_WIDTH));
+                if expand {
+                    self.core.expand_slots.push(ph.id);
+                }
+                self.core.ops.push(XOp::Body {
                     slot: ph.id,
                     optional: ph.optional,
                     dependent: false,
+                    expand,
                     indent,
                     prefix,
                     tail_text,
@@ -1692,19 +1758,19 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             // Windows writes `<X/>` for an element the BinXML closed as empty, and `<X></X>` for
             // one whose content is empty. Neither gets whitespace inside when indenting.
             ChildrenKind::Empty if element.self_closing => {
-                self.lits.extend_from_slice(b"/>");
+                self.core.lits.extend_from_slice(b"/>");
                 self.newline();
             }
             ChildrenKind::Empty => {
-                self.lits.push(b'>');
+                self.core.lits.push(b'>');
                 self.close_tag_inline(element);
             }
             ChildrenKind::StaticInline => {
-                self.lits.push(b'>');
+                self.core.lits.push(b'>');
                 let nodes = &element.children;
                 let mut idx = 0;
                 while idx < nodes.len() {
-                    self.check_size()?;
+                    self.core.check_size()?;
                     match &nodes[idx] {
                         // Mirror `render_nodes`' processing-instruction
                         // pairing: `<?target data?>` / `<?target?>`.
@@ -1714,29 +1780,29 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                                     "a processing instruction named `xml`, which XML reserves",
                                 ));
                             }
-                            self.lits.extend_from_slice(b"<?");
-                            self.lits.extend_from_slice(name.as_str().as_bytes());
+                            self.core.lits.extend_from_slice(b"<?");
+                            self.core.lits.extend_from_slice(name.as_str().as_bytes());
                             if let Some(Node::PIData(data)) = nodes.get(idx + 1) {
-                                self.lits.push(b' ');
-                                let start = self.lits.len();
+                                self.core.lits.push(b' ');
+                                let start = self.core.lits.len();
                                 self.compile_raw_text(data);
                                 // A `?>` in the data would end the instruction early.
                                 let ends = |bytes: &[u8]| bytes.windows(2).position(|w| w == b"?>");
-                                if ends(&self.lits[start..]).is_some() {
-                                    let body = self.lits.split_off(start);
+                                if ends(&self.core.lits[start..]).is_some() {
+                                    let body = self.core.lits.split_off(start);
                                     let mut rest = &body[..];
                                     while let Some(at) = ends(rest) {
-                                        self.lits.extend_from_slice(&rest[..=at]);
-                                        self.lits.push(b' ');
+                                        self.core.lits.extend_from_slice(&rest[..=at]);
+                                        self.core.lits.push(b' ');
                                         rest = &rest[at + 1..];
                                     }
-                                    self.lits.extend_from_slice(rest);
+                                    self.core.lits.extend_from_slice(rest);
                                 }
-                                self.lits.extend_from_slice(b"?>");
+                                self.core.lits.extend_from_slice(b"?>");
                                 idx += 2;
                                 continue;
                             }
-                            self.lits.extend_from_slice(b"?>");
+                            self.core.lits.extend_from_slice(b"?>");
                         }
                         Node::PIData(_) => {
                             return Err(model_err("PIData without PITarget"));
@@ -1752,8 +1818,8 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 if self.materialized && indent / INDENT_WIDTH >= MAX_RENDER_DEPTH {
                     return Err(nested_too_deeply());
                 }
-                self.lits.push(b'>');
-                let open_end = self.lits.len();
+                self.core.lits.push(b'>');
+                let open_end = self.core.lits.len();
                 self.newline();
                 return Ok(Some(OpenElement { open_end, left_out }));
             }
@@ -1776,18 +1842,21 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             if self.materialized {
                 return Err(unresolved_placeholder());
             }
-            self.check_size()?;
-            self.flush_lit_run();
-            let ind = self.side_range(|c| c.indent_str(indent));
-            self.elem_slots.push((ph.id, indent));
-            self.ops.push(XOp::ChildSlot {
+            self.core.check_size()?;
+            self.core.flush_lit_run();
+            let indent_on = self.indent_on;
+            let ind = self
+                .core
+                .side_range(|lits| write_indent(lits, indent_on, indent));
+            self.core.elem_slots.push((ph.id, indent));
+            self.core.ops.push(XOp::ChildSlot {
                 slot: ph.id,
                 optional: ph.optional,
                 indent,
                 ind,
             });
         } else {
-            self.check_size()?;
+            self.core.check_size()?;
             self.indent_str(indent);
             self.compile_literal_content_node(node, false)?;
             self.newline();
@@ -1799,15 +1868,16 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     fn compile_end(&mut self, element: &Element<'_>, indent: u16, open: OpenElement) -> Result<()> {
         self.indent_str(indent);
         self.close_tag_inline(element);
-        self.check_size()?;
+        self.core.check_size()?;
         if let Some((at, start)) = open.left_out {
-            self.flush_lit_run();
-            let empty = self.side_range(|c| {
-                c.lits.extend_from_within(start..open.open_end);
-                c.close_tag_inline(element);
+            self.core.flush_lit_run();
+            let indent_on = self.indent_on;
+            let empty = self.core.side_range(|lits| {
+                lits.extend_from_within(start..open.open_end);
+                write_close_tag(lits, element.name.as_str().as_bytes(), indent_on);
             });
-            let deps = self.children_deps(element);
-            self.close_guard(at, |len, open| XOp::LeftOut {
+            let deps = self.core.children_deps(self.arena, element);
+            self.core.close_guard(at, |len, open| XOp::LeftOut {
                 deps,
                 len,
                 empty,
@@ -1819,13 +1889,13 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
 
     /// A child element. One that depends on a value (its DependencyId) compiles behind an
     /// `XOp::Depends`, which leaves it out when that value is NULL, as the tree walker does, or
-    /// as a dependent `XOp::Body` or `XOp::Expand` when it holds that value.
+    /// as a dependent `XOp::Body` when it holds that value.
     fn compile_child(&mut self, id: ElementId, indent: u16) -> Result<()> {
         match self.element_ref(id).dependency {
             Some(slot) if !self.materialized => {
-                let at = self.open_guard();
+                let at = self.core.open_guard();
                 self.compile_element(id, indent)?;
-                self.close_depends(at, slot);
+                self.core.close_depends(at, slot);
                 Ok(())
             }
             _ => self.compile_element(id, indent),
@@ -1833,16 +1903,16 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     }
 
     fn close_tag_inline(&mut self, element: &Element<'_>) {
-        self.lits.extend_from_slice(b"</");
-        self.lits
-            .extend_from_slice(element.name.as_str().as_bytes());
-        self.lits.push(b'>');
-        self.newline();
+        write_close_tag(
+            &mut self.core.lits,
+            element.name.as_str().as_bytes(),
+            self.indent_on,
+        );
     }
 
     fn compile_attr(&mut self, attr: &Attr<'a>) -> Result<()> {
-        if self.shared {
-            self.budget.charge(attr.value.len());
+        if self.core.shared {
+            self.core.budget.charge(attr.value.len());
         }
         // Placeholders are dynamic; everything else is compile-time constant.
         // Mirrors `attribute_value_is_empty` + `render_nodes`.
@@ -1884,28 +1954,32 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             if !has_nonempty_const {
                 return Ok(()); // statically empty attribute: omitted
             }
-            self.lits.push(b' ');
-            self.lits.extend_from_slice(attr.name.as_str().as_bytes());
-            self.lits.extend_from_slice(b"=\"");
+            self.core.lits.push(b' ');
+            self.core
+                .lits
+                .extend_from_slice(attr.name.as_str().as_bytes());
+            self.core.lits.extend_from_slice(b"=\"");
             for node in attr.value.iter() {
-                self.check_size()?;
+                self.core.check_size()?;
                 self.compile_literal_content_node(node, true)?;
             }
-            self.lits.push(b'"');
+            self.core.lits.push(b'"');
             return Ok(());
         }
 
         if has_nonempty_const {
             // Attribute is always emitted; placeholders write inline.
-            self.lits.push(b' ');
-            self.lits.extend_from_slice(attr.name.as_str().as_bytes());
-            self.lits.extend_from_slice(b"=\"");
+            self.core.lits.push(b' ');
+            self.core
+                .lits
+                .extend_from_slice(attr.name.as_str().as_bytes());
+            self.core.lits.extend_from_slice(b"=\"");
             for node in attr.value.iter() {
-                self.check_size()?;
+                self.core.check_size()?;
                 match node {
                     Node::Placeholder(ph) => {
-                        self.flush_lit_run();
-                        self.ops.push(XOp::Val {
+                        self.core.flush_lit_run();
+                        self.core.ops.push(XOp::Val {
                             slot: ph.id,
                             in_attr: true,
                         });
@@ -1913,7 +1987,7 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                     other => self.compile_literal_content_node(other, true)?,
                 }
             }
-            self.lits.push(b'"');
+            self.core.lits.push(b'"');
             return Ok(());
         }
 
@@ -1933,57 +2007,13 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
             })
             .expect("counted placeholder");
         let name = attr.name.as_str().as_bytes();
-        self.flush_lit_run();
-        let pre = self.side_range(|c| {
-            c.lits.push(b' ');
-            c.lits.extend_from_slice(name);
-            c.lits.extend_from_slice(b"=\"");
+        self.core.flush_lit_run();
+        let pre = self.core.side_range(|lits| {
+            lits.push(b' ');
+            lits.extend_from_slice(name);
+            lits.extend_from_slice(b"=\"");
         });
-        self.ops.push(XOp::AttrVal { slot: ph.id, pre });
-        Ok(())
-    }
-
-    /// Compile an array-expansion site (`<Data>%n</Data>`, no attributes)
-    /// into a self-contained `XOp::Expand`: the open tag lives in the op so
-    /// the executor can repeat the whole element per array item.
-    fn compile_expand(
-        &mut self,
-        element: &'t Element<'a>,
-        ph: &Placeholder,
-        indent: u16,
-    ) -> Result<()> {
-        let name = element.name.as_str().as_bytes();
-        self.flush_lit_run();
-        let open = self.side_range(|c| {
-            c.indent_str(indent);
-            c.lits.push(b'<');
-            c.lits.extend_from_slice(name);
-            c.lits.push(b'>');
-        });
-        let tail_text = self.side_range(|c| {
-            c.lits.extend_from_slice(b"</");
-            c.lits.extend_from_slice(name);
-            c.lits.push(b'>');
-            c.newline();
-        });
-        let tail_elem = self.side_range(|c| {
-            c.indent_str(indent);
-            c.lits.extend_from_slice(b"</");
-            c.lits.extend_from_slice(name);
-            c.lits.push(b'>');
-            c.newline();
-        });
-        self.elem_slots.push((ph.id, indent + INDENT_WIDTH));
-        self.expand_slots.push(ph.id);
-        self.ops.push(XOp::Expand {
-            slot: ph.id,
-            optional: ph.optional,
-            dependent: false,
-            indent,
-            open,
-            tail_text,
-            tail_elem,
-        });
+        self.core.ops.push(XOp::AttrVal { slot: ph.id, pre });
         Ok(())
     }
 
@@ -1993,9 +2023,12 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
         match node {
             Node::Text(text) => self.compile_literal_text(text, in_attribute),
             Node::Value(value) => {
-                let mut sink = std::mem::take(&mut self.lits);
-                let res = self.vr.write_xml_value_text(&mut sink, value, in_attribute);
-                self.lits = sink;
+                let mut sink = std::mem::take(&mut self.core.lits);
+                let res = self
+                    .core
+                    .vr
+                    .write_xml_value_text(&mut sink, value, in_attribute);
+                self.core.lits = sink;
                 res
             }
             Node::EntityRef(name) => {
@@ -2003,10 +2036,11 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 // to one is its text, `&name;`, as in JSON.
                 let name = name.as_str();
                 let defined = predefined_entity(name).is_some();
-                self.lits
+                self.core
+                    .lits
                     .extend_from_slice(if defined { b"&" } else { b"&amp;" });
-                self.lits.extend_from_slice(name.as_bytes());
-                self.lits.push(b';');
+                self.core.lits.extend_from_slice(name.as_bytes());
+                self.core.lits.push(b';');
                 Ok(())
             }
             Node::CharRef(ch) => {
@@ -2014,9 +2048,11 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 // character: `_`, as for one in text.
                 match ch {
                     0x09 | 0x0A | 0x0D | 0x20..=0xD7FF | 0xE000..=0xFFFD => {
-                        self.lits.extend_from_slice(format!("&#{};", ch).as_bytes())
+                        self.core
+                            .lits
+                            .extend_from_slice(format!("&#{};", ch).as_bytes());
                     }
-                    _ => self.lits.push(b'_'),
+                    _ => self.core.lits.push(b'_'),
                 }
                 Ok(())
             }
@@ -2024,19 +2060,19 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 if in_attribute {
                     self.compile_literal_text(text, true)
                 } else {
-                    let start = self.lits.len();
+                    let start = self.core.lits.len();
                     self.compile_raw_text(text);
-                    let body = self.lits.split_off(start);
-                    self.lits.extend_from_slice(b"<![CDATA[");
+                    let body = self.core.lits.split_off(start);
+                    self.core.lits.extend_from_slice(b"<![CDATA[");
                     // A `]]>` in the text would end the section early: split it across two.
                     let mut rest = &body[..];
                     while let Some(at) = rest.windows(3).position(|w| w == b"]]>") {
-                        self.lits.extend_from_slice(&rest[..at + 2]);
-                        self.lits.extend_from_slice(b"]]><![CDATA[");
+                        self.core.lits.extend_from_slice(&rest[..at + 2]);
+                        self.core.lits.extend_from_slice(b"]]><![CDATA[");
                         rest = &rest[at + 2..];
                     }
-                    self.lits.extend_from_slice(rest);
-                    self.lits.extend_from_slice(b"]]>");
+                    self.core.lits.extend_from_slice(rest);
+                    self.core.lits.extend_from_slice(b"]]>");
                     Ok(())
                 }
             }
@@ -2050,8 +2086,15 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
     fn compile_literal_text(&mut self, text: &Text<'a>, in_attribute: bool) -> Result<()> {
         let mode = StringEscapeMode::Xml { in_attribute };
         match text {
-            Text::Utf16(value) => self.vr.write_utf16_escaped(&mut self.lits, *value, mode),
-            Text::Utf8(value) => self.vr.write_str_escaped(&mut self.lits, value, mode),
+            Text::Utf16(value) => {
+                self.core
+                    .vr
+                    .write_utf16_escaped(&mut self.core.lits, *value, mode)
+            }
+            Text::Utf8(value) => self
+                .core
+                .vr
+                .write_str_escaped(&mut self.core.lits, value, mode),
         }
     }
 
@@ -2070,22 +2113,22 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 _ => 0,
             }
         }
-        let start = self.lits.len();
+        let start = self.core.lits.len();
         self.write_raw_text(text);
-        let written = &self.lits[start..];
+        let written = &self.core.lits[start..];
         if (0..written.len()).all(|at| not_allowed(written, at) == 0) {
             return;
         }
-        let written = self.lits.split_off(start);
+        let written = self.core.lits.split_off(start);
         let mut at = 0;
         while at < written.len() {
             match not_allowed(&written, at) {
                 0 => {
-                    self.lits.push(written[at]);
+                    self.core.lits.push(written[at]);
                     at += 1;
                 }
                 len => {
-                    self.lits.push(b'_');
+                    self.core.lits.push(b'_');
                     at += len;
                 }
             }
@@ -2098,12 +2141,12 @@ impl<'t, 'a> XmlCompiler<'t, 'a> {
                 let bytes = value.as_bytes();
                 let units = bytes.len() / 2;
                 if units > 0 {
-                    let mut sink = std::mem::take(&mut self.lits);
+                    let mut sink = std::mem::take(&mut self.core.lits);
                     let _ = utf16_simd::write_utf16le_raw(&mut sink, bytes, units);
-                    self.lits = sink;
+                    self.core.lits = sink;
                 }
             }
-            Text::Utf8(value) => self.lits.extend_from_slice(value.as_bytes()),
+            Text::Utf8(value) => self.core.lits.extend_from_slice(value.as_bytes()),
         }
     }
 }
@@ -2419,20 +2462,9 @@ impl Preflight {
 
         // Instance header (mirrors `read_template_values_cursor`).
         let mut cur = ByteCursor::with_pos(data, pos)?;
-        cur.u8()?; // unknown byte
-        let _template_id = cur.u32()?;
-        let def_offset = cur.u32()?;
-        if cur.position() as u32 == def_offset {
-            // Inline definition: skip its header + payload.
-            let header = read_template_definition_header_at(data, def_offset)?;
-            cur.set_pos_u64(
-                cur.position()
-                    + (TEMPLATE_DEFINITION_HEADER_SIZE as u64)
-                    + u64::from(header.data_size),
-                "skip inline template definition",
-            )?;
-        }
-        let n = cur.u32()? as usize;
+        let header = read_template_instance_header(&mut cur)?;
+        let def_offset = header.def_offset;
+        let n = header.num_substitutions as usize;
         if n > MAX_SUBSTITUTIONS {
             return Err(PreflightBail);
         }
@@ -2925,43 +2957,64 @@ fn exec<'a, V: ValueSource<'a>>(
                 slot,
                 optional,
                 dependent,
+                expand,
                 indent,
                 prefix,
                 tail_text,
                 tail_elem,
-            } => match classify(*slot, *optional, *dependent) {
-                SlotClass::LeftOut => {}
-                SlotClass::Skip => {
-                    write_lit!(*prefix);
-                    write_lit!(*tail_text);
-                }
-                SlotClass::TextLike => {
-                    write_lit!(*prefix);
-                    if let Some(s) = slot_at(*slot) {
-                        write_val!(s, false);
+            } => {
+                // An array isn't NULL, so it is never left out.
+                if *expand && let Some(items) = slot_at(*slot).and_then(|s| pf.array(s)) {
+                    // Array: the element repeats per item.
+                    for item in items {
+                        // Each item repeats the element's indentation.
+                        pf.budget().check(out.len())?;
+                        write_lit!(*prefix);
+                        vr.write_value_text(
+                            out,
+                            &BinXmlValue::StringType(item),
+                            StringEscapeMode::Xml {
+                                in_attribute: false,
+                            },
+                        )?;
+                        write_lit!(*tail_text);
                     }
-                    write_lit!(*tail_text);
-                }
-                SlotClass::Element => {
-                    write_lit!(*prefix);
-                    let s = slot_at(*slot).expect("element class implies present");
-                    if prog.indent_on {
-                        out.push(b'\n');
+                } else {
+                    match classify(*slot, *optional, *dependent) {
+                        SlotClass::LeftOut => {}
+                        SlotClass::Skip => {
+                            write_lit!(*prefix);
+                            write_lit!(*tail_text);
+                        }
+                        SlotClass::TextLike => {
+                            write_lit!(*prefix);
+                            if let Some(s) = slot_at(*slot) {
+                                write_val!(s, false);
+                            }
+                            write_lit!(*tail_text);
+                        }
+                        SlotClass::Element => {
+                            write_lit!(*prefix);
+                            let s = slot_at(*slot).expect("element class implies present");
+                            if prog.indent_on {
+                                out.push(b'\n');
+                            }
+                            render_element_slot(
+                                s,
+                                progs,
+                                pf,
+                                chunk,
+                                cache.as_deref_mut(),
+                                vr,
+                                *indent + INDENT_WIDTH,
+                                prog.indent_on,
+                                out,
+                            )?;
+                            write_lit!(*tail_elem);
+                        }
                     }
-                    render_element_slot(
-                        s,
-                        progs,
-                        pf,
-                        chunk,
-                        cache.as_deref_mut(),
-                        vr,
-                        *indent + INDENT_WIDTH,
-                        prog.indent_on,
-                        out,
-                    )?;
-                    write_lit!(*tail_elem);
                 }
-            },
+            }
             XOp::ChildSlot {
                 slot,
                 optional,
@@ -2993,68 +3046,6 @@ fn exec<'a, V: ValueSource<'a>>(
                     )?;
                 }
             },
-            XOp::Expand {
-                slot,
-                optional,
-                dependent,
-                indent,
-                open,
-                tail_text,
-                tail_elem,
-            } => {
-                // An array isn't NULL, so it is never left out.
-                if let Some(items) = slot_at(*slot).and_then(|s| pf.array(s)) {
-                    // Array: the element repeats per item.
-                    for item in items {
-                        // Each item repeats the element's indentation.
-                        pf.budget().check(out.len())?;
-                        write_lit!(*open);
-                        vr.write_value_text(
-                            out,
-                            &BinXmlValue::StringType(item),
-                            StringEscapeMode::Xml {
-                                in_attribute: false,
-                            },
-                        )?;
-                        write_lit!(*tail_text);
-                    }
-                } else {
-                    // Scalar: `Body` semantics with the open tag spliced in.
-                    match classify(*slot, *optional, *dependent) {
-                        SlotClass::LeftOut => {}
-                        SlotClass::Skip => {
-                            write_lit!(*open);
-                            write_lit!(*tail_text);
-                        }
-                        SlotClass::TextLike => {
-                            write_lit!(*open);
-                            if let Some(s) = slot_at(*slot) {
-                                write_val!(s, false);
-                            }
-                            write_lit!(*tail_text);
-                        }
-                        SlotClass::Element => {
-                            write_lit!(*open);
-                            let s = slot_at(*slot).expect("element class implies present");
-                            if prog.indent_on {
-                                out.push(b'\n');
-                            }
-                            render_element_slot(
-                                s,
-                                progs,
-                                pf,
-                                chunk,
-                                cache.as_deref_mut(),
-                                vr,
-                                *indent + INDENT_WIDTH,
-                                prog.indent_on,
-                                out,
-                            )?;
-                            write_lit!(*tail_elem);
-                        }
-                    }
-                }
-            }
         }
     }
     Ok(())
@@ -3173,8 +3164,24 @@ impl JOp {
         }
         slots
     }
+}
 
-    /// As `XOp::depend_on`.
+impl CompiledOp for JOp {
+    fn lit(r: LitRange) -> Self {
+        JOp::Lit(r)
+    }
+
+    fn as_lit(&self) -> Option<LitRange> {
+        match self {
+            JOp::Lit(r) => Some(*r),
+            _ => None,
+        }
+    }
+
+    fn depends(slot: u16, len: u32, open: LitRange) -> Self {
+        JOp::Depends { slot, len, open }
+    }
+
     fn depend_on(&mut self, dependency: u16) -> bool {
         match self {
             JOp::LeafVal {
@@ -3267,9 +3274,9 @@ impl TemplateProgram for JsonProgram {
             budget.clone(),
         );
         let res = c.render_root_plain();
-        debug_assert!(c.ops.is_empty(), "materialized walk produced ops");
-        budget.nodes.set(c.budget.nodes.get());
-        *out = c.lits;
+        debug_assert!(c.core.ops.is_empty(), "materialized walk produced ops");
+        budget.nodes.set(c.core.budget.nodes.get());
+        *out = c.core.lits;
         res
     }
 }
@@ -3285,20 +3292,10 @@ struct Members {
 
 struct JsonCompiler<'t, 'a> {
     tree: Option<&'t IrTree<'a>>,
-    lits: Vec<u8>,
-    ops: Vec<JOp>,
-    deps: Vec<u16>,
-    run_start: usize,
-    elem_slots: Vec<(u16, u16)>,
+    core: CompilerCore<JOp>,
     constraints: Vec<SlotConstraint>,
-    expand_slots: Vec<u16>,
-    vr: ValueRenderer,
     /// `--separate-json-attributes` (slow lane only; such templates bail).
     separate: bool,
-    /// As in `XmlCompiler`.
-    budget: Budget,
-    /// As in `XmlCompiler`.
-    shared: bool,
     /// Whether to number the `Data` names that repeat in a container, and put runs of one in an
     /// array: when compiling, and for trees whose names may repeat.
     data_names: bool,
@@ -3308,20 +3305,13 @@ struct JsonCompiler<'t, 'a> {
 
 impl<'t, 'a> JsonCompiler<'t, 'a> {
     fn new(tree: Option<&'t IrTree<'a>>, lits: Vec<u8>, separate: bool, budget: Budget) -> Self {
+        let shared = tree.is_some_and(|tree| tree.arena().shared());
         JsonCompiler {
             tree,
-            budget,
-            shared: tree.is_some_and(|tree| tree.arena().shared()),
-            data_names: tree.is_some_and(|tree| tree.arena().repeated_names()),
-            lits,
-            ops: Vec::new(),
-            deps: Vec::new(),
-            run_start: 0,
-            elem_slots: Vec::new(),
+            core: CompilerCore::new(lits, budget, shared),
             constraints: Vec::new(),
-            expand_slots: Vec::new(),
-            vr: ValueRenderer::new(),
             separate,
+            data_names: tree.is_some_and(|tree| tree.arena().repeated_names()),
             depth: 0,
         }
     }
@@ -3347,33 +3337,27 @@ fn compile_json_template(
     );
     // Template stats aren't at hand, and compiling happens once.
     c.data_names = true;
-    c.ops.reserve(32);
+    c.core.ops.reserve(32);
     if is_root {
-        c.lits.push(b'{');
+        c.core.lits.push(b'{');
         c.key_with_suffix_plain(root.name.as_str(), 0);
     }
     let compiled = c.compile_element_value(tree.root(), root_container);
-    let written = c.lits.len() + std::mem::size_of_val(c.ops.as_slice());
+    let written = c.core.lits.len() + std::mem::size_of_val(c.core.ops.as_slice());
     let program = match compiled {
-        Ok(()) if c.check_size().is_ok() && each_slot_once(JOp::slots(&c.ops)) => {
+        Ok(()) if c.core.check_size().is_ok() && each_slot_once(JOp::slots(&c.core.ops)) => {
             if is_root {
-                c.lits.push(b'}');
+                c.core.lits.push(b'}');
             }
-            c.flush_lit_run();
-            // As in `compile_xml_template`.
-            c.lits.shrink_to_fit();
-            c.ops.shrink_to_fit();
-            c.deps.shrink_to_fit();
-            c.elem_slots.shrink_to_fit();
+            c.core.shrink_to_fit();
             c.constraints.shrink_to_fit();
-            c.expand_slots.shrink_to_fit();
             Some(JsonProgram {
-                lits: c.lits,
-                ops: c.ops,
-                deps: c.deps,
-                elem_slots: c.elem_slots,
+                lits: c.core.lits,
+                ops: c.core.ops,
+                deps: c.core.deps,
+                elem_slots: c.core.elem_slots,
                 constraints: c.constraints,
-                expand_slots: c.expand_slots,
+                expand_slots: c.core.expand_slots,
                 root_name: root.name.as_str().as_bytes().to_vec(),
                 system_fields: settings.get_mta().and_then(|_| SystemFields::of(tree)),
             })
@@ -3414,8 +3398,6 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         self.tree.expect("tree-bound walk")
     }
 
-    lit_run_methods!(JOp);
-
     /// `write_element_value` equivalent: emits the VALUE of `element` (the
     /// member key is the caller's responsibility).
     fn compile_element_value(
@@ -3429,7 +3411,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         // same implementation the slow lane uses).
         if !subtree_varies(self.tree(), element) {
             return self
-                .write_element_value_plain(element, container)
+                .write_element_value_with(element, container, false, false)
                 .map_err(|_| Bail);
         }
 
@@ -3468,14 +3450,14 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
     // Fuse the literal prefix with its value to avoid a second dispatch per field.
     fn push_leaf_val(&mut self, slot: u16, empty: LitRange) {
-        let prefix = if let Some(JOp::Lit(prefix)) = self.ops.last() {
+        let prefix = if let Some(JOp::Lit(prefix)) = self.core.ops.last() {
             let prefix = *prefix;
-            self.ops.pop();
+            self.core.ops.pop();
             prefix
         } else {
             LitRange(0, 0)
         };
-        self.ops.push(JOp::LeafVal {
+        self.core.ops.push(JOp::LeafVal {
             prefix,
             slot,
             empty,
@@ -3495,9 +3477,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if container {
             return Err(Bail);
         }
-        self.flush_lit_run();
-        let empty = self.side_range(|c| c.lits.extend_from_slice(empty_form));
-        self.elem_slots.push((slot, 0));
+        self.core.flush_lit_run();
+        let empty = self
+            .core
+            .side_range(|lits| lits.extend_from_slice(empty_form));
+        self.core.elem_slots.push((slot, 0));
         self.push_leaf_val(slot, empty);
         Ok(())
     }
@@ -3513,9 +3497,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         content: Option<u16>,
     ) -> std::result::Result<(), Bail> {
         let mut parts: Vec<JAttrPart> = Vec::with_capacity(element.attrs.len());
-        self.flush_lit_run();
+        self.core.flush_lit_run();
         for attr in &element.attrs {
-            self.check_size().map_err(|_| Bail)?;
+            self.core.check_size().map_err(|_| Bail)?;
             let n_ph = attr
                 .value
                 .iter()
@@ -3527,21 +3511,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         continue; // statically empty: never a member
                     }
                     // Pre-render `"name":value` via the materialized layer.
-                    let start = self.lits.len() as u32;
-                    self.lits.push(b'"');
-                    self.lits.extend_from_slice(attr.name.as_str().as_bytes());
-                    self.lits.extend_from_slice(b"\":");
+                    write_json_key(&mut self.core.lits, attr.name.as_str().as_bytes(), 0);
                     let number = self
                         .try_as_number_plain(&attr.value, false)
                         .map_err(|_| Bail)?;
                     if !number {
-                        self.lits.push(b'"');
+                        self.core.lits.push(b'"');
                         self.text_content_plain(&attr.value, false)
                             .map_err(|_| Bail)?;
-                        self.lits.push(b'"');
+                        self.core.lits.push(b'"');
                     }
-                    let lit_member = LitRange(start, self.lits.len() as u32);
-                    self.run_start = self.lits.len();
+                    let lit_member = self.core.take_lit_run();
                     parts.push(JAttrPart::Literal(lit_member));
                 }
                 1 if attr.value.len() == 1 => {
@@ -3549,11 +3529,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         return Err(Bail);
                     };
                     let name = attr.name.as_str().as_bytes();
-                    let key = self.side_range(|c| {
-                        c.lits.push(b'"');
-                        c.lits.extend_from_slice(name);
-                        c.lits.extend_from_slice(b"\":");
-                    });
+                    let key = self.core.side_range(|lits| write_json_key(lits, name, 0));
                     self.constraints.push(SlotConstraint::ForbidElem(ph.id));
                     parts.push(JAttrPart::Placeholder { key, slot: ph.id });
                 }
@@ -3563,8 +3539,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if let Some(slot) = content {
             self.constraints.push(SlotConstraint::ForbidElem(slot));
         }
-        let empty = self.side_range(|c| c.lits.extend_from_slice(b"null"));
-        self.ops.push(JOp::Elem {
+        let empty = self.core.side_range(|lits| lits.extend_from_slice(b"null"));
+        self.core.ops.push(JOp::Elem {
             attrs: parts.into_boxed_slice(),
             content,
             empty,
@@ -3592,8 +3568,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         // without attributes `null`: `JOp::LeftOut` writes that then.
         let attrs_text = self.attr_flags_plain(&element.attrs).1;
         let left_out = (children_all_depend(self.tree().arena(), element)? && !attrs_text)
-            .then(|| self.open_guard());
-        self.lits.push(b'{');
+            .then(|| self.core.open_guard());
+        self.core.lits.push(b'{');
         let mut members = Members::default();
 
         // `#attributes` for literal attrs (static decision + static bytes).
@@ -3662,7 +3638,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         let mut seen_slot_child = false;
         for (index, node) in element.children.iter().enumerate() {
-            self.check_size().map_err(|_| Bail)?;
+            self.core.check_size().map_err(|_| Bail)?;
             match node {
                 Node::Element(id) => {
                     if seen_slot_child {
@@ -3700,24 +3676,24 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                             positional_emitted = true;
                             // A dependent Data is the only one (above).
                             self.compile_member(&mut members, dependency, |c| {
-                                c.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                                c.core.lits.extend_from_slice(b"\"Data\":{\"#text\":");
                                 if positional_data.len() == 1 {
                                     // Sole positional Data: a string array here
                                     // aggregates into a JSON array value, so the
                                     // slot is expandable.
                                     c.compile_data_value(positional_data[0], true)?;
                                 } else {
-                                    c.lits.push(b'[');
+                                    c.core.lits.push(b'[');
                                     for (i, did) in positional_data.iter().enumerate() {
-                                        c.check_size().map_err(|_| Bail)?;
+                                        c.core.check_size().map_err(|_| Bail)?;
                                         if i > 0 {
-                                            c.lits.push(b',');
+                                            c.core.lits.push(b',');
                                         }
                                         c.compile_data_value(*did, false)?;
                                     }
-                                    c.lits.push(b']');
+                                    c.core.lits.push(b']');
                                 }
-                                c.lits.push(b'}');
+                                c.core.lits.push(b'}');
                                 Ok(())
                             })?;
                         }
@@ -3740,13 +3716,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         return Err(Bail);
                     }
                     self.compile_member(&mut members, dependency, |c| {
-                        c.lits.push(b'"');
-                        c.lits.extend_from_slice(cname.as_bytes());
-                        if suffix > 0 {
-                            c.lits.push(b'_');
-                            c.lits.extend_from_slice(suffix.to_string().as_bytes());
-                        }
-                        c.lits.extend_from_slice(b"\":");
+                        write_json_key(&mut c.core.lits, cname.as_bytes(), suffix);
                         c.compile_element_value(*id, is_data_container_name(cname))
                     })?;
                 }
@@ -3770,17 +3740,17 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                         return Err(Bail);
                     }
                     // Dynamic member: nested-instance value (or absent).
-                    self.flush_lit_run();
+                    self.core.flush_lit_run();
                     let name_ranges: Vec<(LitRange, u32)> = static_names
                         .iter()
                         .map(|(n, c)| {
-                            let r = self.side_range(|cc| cc.lits.extend_from_slice(n));
+                            let r = self.core.side_range(|lits| lits.extend_from_slice(n));
                             (r, c)
                         })
                         .collect();
                     self.constraints.push(SlotConstraint::ElemOrEmpty(ph.id));
-                    self.elem_slots.push((ph.id, 0));
-                    self.ops.push(JOp::SlotChild {
+                    self.core.elem_slots.push((ph.id, 0));
+                    self.core.ops.push(JOp::SlotChild {
                         slot: ph.id,
                         static_names: name_ranges.into_boxed_slice(),
                         lead_comma: members.certain,
@@ -3794,12 +3764,12 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 }
             }
         }
-        self.lits.push(b'}');
+        self.core.lits.push(b'}');
         if let Some(at) = left_out {
-            self.flush_lit_run();
-            let empty = self.side_range(|c| c.lits.extend_from_slice(b"null"));
-            let deps = self.children_deps(element);
-            self.close_guard(at, |len, open| JOp::LeftOut {
+            self.core.flush_lit_run();
+            let empty = self.core.side_range(|lits| lits.extend_from_slice(b"null"));
+            let deps = self.core.children_deps(self.tree().arena(), element);
+            self.core.close_guard(at, |len, open| JOp::LeftOut {
                 deps,
                 len,
                 empty,
@@ -3814,10 +3784,10 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// `dependent`: whether an instance can leave this member out.
     fn member_comma(&mut self, members: &mut Members, dependent: bool) {
         if members.certain {
-            self.lits.push(b',');
+            self.core.lits.push(b',');
         } else if members.possible {
-            self.flush_lit_run();
-            self.ops.push(JOp::Comma);
+            self.core.flush_lit_run();
+            self.core.ops.push(JOp::Comma);
         }
         if dependent {
             members.possible = true;
@@ -3835,11 +3805,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         dependency: Option<u16>,
         write: impl FnOnce(&mut Self) -> std::result::Result<(), Bail>,
     ) -> std::result::Result<(), Bail> {
-        let guard = dependency.map(|slot| (self.open_guard(), slot));
+        let guard = dependency.map(|slot| (self.core.open_guard(), slot));
         self.member_comma(members, dependency.is_some());
         write(self)?;
         if let Some((at, slot)) = guard {
-            self.close_depends(at, slot);
+            self.core.close_depends(at, slot);
         }
         Ok(())
     }
@@ -3859,11 +3829,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if element.children.len() == 1
             && let Node::Placeholder(ph) = &element.children[0]
         {
-            self.flush_lit_run();
-            let empty = self.side_range(|c| c.lits.extend_from_slice(b"\"\""));
-            self.elem_slots.push((ph.id, 0));
+            self.core.flush_lit_run();
+            let empty = self.core.side_range(|lits| lits.extend_from_slice(b"\"\""));
+            self.core.elem_slots.push((ph.id, 0));
             if expandable {
-                self.expand_slots.push(ph.id);
+                self.core.expand_slots.push(ph.id);
             }
             self.push_leaf_val(ph.id, empty);
             return Ok(());
@@ -4337,9 +4307,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
                                 return Err(unresolved_nested_json());
                             };
                             out.push(b'{');
-                            out.push(b'"');
-                            out.extend_from_slice(&progs.programs[inst.prog].root_name);
-                            out.extend_from_slice(b"\":");
+                            write_json_key(out, &progs.programs[inst.prog].root_name, 0);
                             exec_json(inst, progs, pf, vr, out)?;
                             out.push(b'}');
                         } else {
@@ -4425,13 +4393,7 @@ fn exec_json<'a, V: ValueSource<'a>>(
                 if *lead_comma {
                     out.push(b',');
                 }
-                out.push(b'"');
-                out.extend_from_slice(name);
-                if count > 0 {
-                    out.push(b'_');
-                    out.extend_from_slice(count.to_string().as_bytes());
-                }
-                out.extend_from_slice(b"\":");
+                write_json_key(out, name, count);
                 exec_json(inst, progs, pf, vr, out)?;
             }
         }
@@ -4445,7 +4407,7 @@ pub(crate) fn bench_json_text_content(out: &mut Vec<u8>, nodes: &[Node<'_>]) -> 
     let budget = Budget::new(out.len());
     let mut c = JsonCompiler::new(None, std::mem::take(out), false, budget);
     let res = c.text_content_plain(nodes, false);
-    *out = c.lits;
+    *out = c.core.lits;
     res
 }
 
@@ -4467,75 +4429,54 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// `,"<root>":<value>`: the root as one more member of an enclosing object.
     fn render_member_plain(&mut self) -> Result<()> {
         let root = self.tree().root_element();
-        self.visit(root)?;
-        self.lits.push(b',');
+        self.core.visit(root)?;
+        self.core.lits.push(b',');
         self.key_with_suffix_plain(root.name.as_str(), 0);
-        self.write_element_value_plain(root, false)?;
-        self.check_size()
+        self.write_element_value_with(root, false, false, false)?;
+        self.core.check_size()
     }
 
     /// Mirrors `render_json_with_scope` for a materialized tree.
     fn render_root_plain(&mut self) -> Result<()> {
         let root = self.tree().root_element();
-        self.visit(root)?;
-        self.lits.push(b'{');
+        self.core.visit(root)?;
+        self.core.lits.push(b'{');
         if self.separate {
             let has_text = self.attr_flags_plain(&root.attrs).1;
             if self.render_separate_attrs_plain(root, 0, has_text)? {
-                self.lits.push(b',');
+                self.core.lits.push(b',');
             }
             self.key_with_suffix_plain(root.name.as_str(), 0);
-            self.write_element_value_no_attrs_plain(root, false)?;
+            self.write_element_value_with(root, false, true, false)?;
         } else {
             self.key_with_suffix_plain(root.name.as_str(), 0);
-            self.write_element_value_plain(root, false)?;
+            self.write_element_value_with(root, false, false, false)?;
         }
-        self.lits.push(b'}');
-        self.check_size()
+        self.core.lits.push(b'}');
+        self.core.check_size()
     }
 
     fn element_ref(&self, id: ElementId) -> &'t Element<'a> {
         self.tree().arena().get(id).expect("invalid element id")
     }
 
-    /// As `XmlCompiler::check_size`.
-    fn check_size(&self) -> Result<()> {
-        self.budget.check(self.lits.len())
-    }
-
-    /// As `XmlCompiler::visit`.
-    fn visit(&mut self, element: &Element<'_>) -> Result<()> {
-        if self.shared {
-            self.budget.visit(element)?;
-        }
-        self.check_size()
-    }
-
     // --- small writers ---
 
     fn key_with_suffix_plain(&mut self, name: &str, suffix: u32) {
-        self.lits.push(b'"');
-        self.lits.extend_from_slice(name.as_bytes());
-        if suffix > 0 {
-            self.lits.push(b'_');
-            self.lits.extend_from_slice(suffix.to_string().as_bytes());
-        }
-        self.lits.extend_from_slice(b"\":");
+        write_json_key(&mut self.core.lits, name.as_bytes(), suffix);
     }
 
     /// A named `Data` member's key: its escaped name, numbered as `key_with_suffix_plain` numbers
     /// elements when `keys` are the object's, and that number. Without them the name is known
     /// to be the only member of that name (see [`data_names_may_repeat`]).
     fn data_key_plain(&mut self, name: &[Node<'a>], keys: Option<&mut Keys<'_>>) -> Result<u32> {
-        self.lits.push(b'"');
-        let start = self.lits.len();
+        self.core.lits.push(b'"');
+        let start = self.core.lits.len();
         self.text_content_plain(name, false)?;
-        let suffix = keys.map_or(0, |keys| keys.suffix_of_any(&self.lits[start..], false));
-        if suffix > 0 {
-            self.lits.push(b'_');
-            self.lits.extend_from_slice(suffix.to_string().as_bytes());
-        }
-        self.lits.extend_from_slice(b"\":");
+        let suffix = keys.map_or(0, |keys| {
+            keys.suffix_of_any(&self.core.lits[start..], false)
+        });
+        finish_json_key(&mut self.core.lits, suffix);
         Ok(suffix)
     }
 
@@ -4581,8 +4522,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     }
 
     fn json_escaped_str_plain(&mut self, s: &str) -> Result<()> {
-        self.vr
-            .write_str_escaped(&mut self.lits, s, StringEscapeMode::Json)
+        self.core
+            .vr
+            .write_str_escaped(&mut self.core.lits, s, StringEscapeMode::Json)
     }
 
     fn json_text_plain(&mut self, text: &Text<'_>) -> Result<()> {
@@ -4590,10 +4532,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             return Ok(());
         }
         match text {
-            Text::Utf16(value) => {
-                self.vr
-                    .write_utf16_escaped(&mut self.lits, *value, StringEscapeMode::Json)
-            }
+            Text::Utf16(value) => self.core.vr.write_utf16_escaped(
+                &mut self.core.lits,
+                *value,
+                StringEscapeMode::Json,
+            ),
             Text::Utf8(value) => self.json_escaped_str_plain(value),
         }
     }
@@ -4603,7 +4546,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if !json_bare_value(value) {
             return Ok(false);
         }
-        self.vr.write_json_value_text(&mut self.lits, value)?;
+        self.core
+            .vr
+            .write_json_value_text(&mut self.core.lits, value)?;
         Ok(true)
     }
 
@@ -4626,8 +4571,8 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Whether `nodes` has text. Every scan of an attribute's value starts here, so it charges
     /// the value's nodes on a tree that shares elements.
     fn has_text_content_plain(&mut self, nodes: &[Node<'_>]) -> bool {
-        if self.shared {
-            self.budget.charge(nodes.len());
+        if self.core.shared {
+            self.core.budget.charge(nodes.len());
         }
         nodes.iter().any(Self::node_is_content_plain)
     }
@@ -4667,13 +4612,13 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
     /// Mirrors `write_json_text_content` (no surrounding quotes).
     fn text_content_plain(&mut self, nodes: &[Node<'a>], skip_elements: bool) -> Result<()> {
         for node in nodes {
-            self.check_size()?;
+            self.core.check_size()?;
             match node {
                 Node::Text(text) | Node::CData(text) => self.json_text_plain(text)?,
                 Node::Value(value) => {
-                    let mut sink = std::mem::take(&mut self.lits);
-                    let res = self.vr.write_json_value_text(&mut sink, value);
-                    self.lits = sink;
+                    let mut sink = std::mem::take(&mut self.core.lits);
+                    let res = self.core.vr.write_json_value_text(&mut sink, value);
+                    self.core.lits = sink;
                     res?;
                 }
                 Node::CharRef(ch) => {
@@ -4687,9 +4632,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 Node::EntityRef(name) => match predefined_entity(name.as_str()) {
                     Some(s) => self.json_escaped_str_plain(s)?,
                     None => {
-                        self.lits.push(b'&');
-                        self.lits.extend_from_slice(name.as_str().as_bytes());
-                        self.lits.push(b';');
+                        self.core.lits.push(b'&');
+                        self.core.lits.extend_from_slice(name.as_str().as_bytes());
+                        self.core.lits.push(b';');
                     }
                 },
                 Node::PITarget(_) | Node::PIData(_) => {}
@@ -4770,9 +4715,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if self.try_as_number_plain(nodes, skip_elements)? {
             return Ok(());
         }
-        self.lits.push(b'"');
+        self.core.lits.push(b'"');
         self.text_content_plain(nodes, skip_elements)?;
-        self.lits.push(b'"');
+        self.core.lits.push(b'"');
         Ok(())
     }
 
@@ -4787,20 +4732,18 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                 continue;
             }
             if !first {
-                self.check_size()?;
-                self.lits.push(b',');
+                self.core.check_size()?;
+                self.core.lits.push(b',');
             }
             first = false;
             wrote_any = true;
-            self.lits.push(b'"');
-            self.lits.extend_from_slice(attr.name.as_str().as_bytes());
-            self.lits.extend_from_slice(b"\":");
+            write_json_key(&mut self.core.lits, attr.name.as_str().as_bytes(), 0);
             if self.try_as_number_plain(&attr.value, false)? {
                 continue;
             }
-            self.lits.push(b'"');
+            self.core.lits.push(b'"');
             self.text_content_plain(&attr.value, false)?;
-            self.lits.push(b'"');
+            self.core.lits.push(b'"');
         }
         Ok(wrote_any)
     }
@@ -4811,9 +4754,9 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if !has_text {
             return Ok(false);
         }
-        self.lits.extend_from_slice(b"\"#attributes\":{");
+        self.core.lits.extend_from_slice(b"\"#attributes\":{");
         let wrote_any = self.attrs_object_body_plain(attrs)?;
-        self.lits.push(b'}');
+        self.core.lits.push(b'}');
         Ok(wrote_any)
     }
 
@@ -4828,16 +4771,19 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if !has_text {
             return Ok(false);
         }
-        self.lits.push(b'"');
-        self.lits
+        self.core.lits.push(b'"');
+        self.core
+            .lits
             .extend_from_slice(element.name.as_str().as_bytes());
         if suffix > 0 {
-            self.lits.push(b'_');
-            self.vr.write_u64(&mut self.lits, u64::from(suffix))?;
+            self.core.lits.push(b'_');
+            self.core
+                .vr
+                .write_u64(&mut self.core.lits, u64::from(suffix))?;
         }
-        self.lits.extend_from_slice(b"_attributes\":{");
+        self.core.lits.extend_from_slice(b"_attributes\":{");
         let wrote_any = self.attrs_object_body_plain(&element.attrs)?;
-        self.lits.push(b'}');
+        self.core.lits.push(b'}');
         Ok(wrote_any)
     }
 
@@ -4856,91 +4802,68 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         match &element.children[0] {
             Node::Text(text) => {
                 if text.is_empty() {
-                    self.lits.extend_from_slice(empty);
+                    self.core.lits.extend_from_slice(empty);
                 } else {
-                    self.lits.push(b'"');
+                    self.core.lits.push(b'"');
                     self.json_text_plain(text)?;
-                    self.lits.push(b'"');
+                    self.core.lits.push(b'"');
                 }
                 Ok(true)
             }
             Node::Value(value) => {
                 if crate::model::ir::is_optional_empty(value) {
-                    self.lits.extend_from_slice(empty);
+                    self.core.lits.extend_from_slice(empty);
                     return Ok(true);
                 }
                 if self.value_as_number_plain(value)? {
                     return Ok(true);
                 }
-                self.lits.push(b'"');
-                let mut sink = std::mem::take(&mut self.lits);
-                let res = self.vr.write_json_value_text(&mut sink, value);
-                self.lits = sink;
+                self.core.lits.push(b'"');
+                let mut sink = std::mem::take(&mut self.core.lits);
+                let res = self.core.vr.write_json_value_text(&mut sink, value);
+                self.core.lits = sink;
                 res?;
-                self.lits.push(b'"');
+                self.core.lits.push(b'"');
                 Ok(true)
             }
             _ => Ok(false),
         }
     }
 
-    /// Mirrors `render_data_element_value` (`""` for the empty case).
-    fn data_element_value_plain(&mut self, element: &Element<'a>) -> Result<()> {
-        if self.try_leaf_value_plain(element, true)? {
-            return Ok(());
-        }
-        let (has_text, has_element_child) = Self::content_layout_plain(element);
-        if !has_text && !has_element_child {
-            self.lits.extend_from_slice(b"\"\"");
-            return Ok(());
-        }
-        if has_element_child {
-            self.element_body_plain(element, false, true, has_text)
-        } else {
-            self.content_as_json_value_plain(&element.children, false)
-        }
-    }
-
-    /// Mirrors `write_element_value_no_attrs` (separate-attrs mode).
-    fn write_element_value_no_attrs_plain(
+    /// Write an element's JSON value (after its key).
+    ///
+    /// `omit_attributes` ignores element attributes (`<Data>` in flattened form or
+    /// `--separate-json-attributes`); `empty_as_string` emits `""` instead of `null` when empty.
+    fn write_element_value_with(
         &mut self,
         element: &Element<'a>,
         child_is_container: bool,
+        omit_attributes: bool,
+        empty_as_string: bool,
     ) -> Result<()> {
-        if self.try_leaf_value_plain(element, false)? {
+        if (omit_attributes || element.attrs.is_empty())
+            && self.try_leaf_value_plain(element, empty_as_string)?
+        {
             return Ok(());
         }
         let (has_text, has_element_child) = Self::content_layout_plain(element);
-        if !has_element_child && !has_text {
-            self.lits.extend_from_slice(b"null");
-            Ok(())
-        } else if !has_element_child {
-            self.content_as_json_value_plain(&element.children, false)
-        } else {
-            self.element_body_plain(element, child_is_container, true, has_text)
-        }
-    }
-
-    /// Mirrors `write_element_value` (default mode).
-    fn write_element_value_plain(
-        &mut self,
-        element: &Element<'a>,
-        child_is_container: bool,
-    ) -> Result<()> {
-        if element.attrs.is_empty() && self.try_leaf_value_plain(element, false)? {
-            return Ok(());
-        }
-        let (has_text, has_element_child) = Self::content_layout_plain(element);
-        let (_has_attrs_any, has_attrs_text) = self.attr_flags_plain(&element.attrs);
+        let has_attrs_text = !omit_attributes && self.attr_flags_plain(&element.attrs).1;
 
         if !has_element_child && !has_text && !has_attrs_text {
-            self.lits.extend_from_slice(b"null");
+            self.core
+                .lits
+                .extend_from_slice(if empty_as_string { b"\"\"" } else { b"null" });
             Ok(())
         } else if !has_element_child && !has_attrs_text {
             self.content_as_json_value_plain(&element.children, false)
         } else {
-            self.element_body_plain(element, child_is_container, false, has_text)
+            self.element_body_plain(element, child_is_container, omit_attributes, has_text)
         }
+    }
+
+    /// Mirrors `render_data_element_value` (`""` for the empty case).
+    fn data_element_value_plain(&mut self, element: &Element<'a>) -> Result<()> {
+        self.write_element_value_with(element, false, true, true)
     }
 
     /// Mirrors `write_element_body_json` (materialized: no array expansion). Each level of a deep
@@ -4964,7 +4887,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             let member = self.member_key_plain(child, following, &mut body)?;
             self.member_value_plain(element, child, following, member)?;
         }
-        self.lits.push(b'}');
+        self.core.lits.push(b'}');
         self.depth -= 1;
         Ok(())
     }
@@ -5012,7 +4935,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             }
         }
 
-        self.lits.push(b'{');
+        self.core.lits.push(b'{');
         let mut wrote_any = false;
         let mut keys = Keys::new();
         // A `Data` can be named anything, these keys too. No element can.
@@ -5030,13 +4953,13 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
 
         if has_text {
             if wrote_any {
-                self.lits.push(b',');
+                self.core.lits.push(b',');
             }
             wrote_any = true;
             if data_keys {
                 keys.reserve(b"#text");
             }
-            self.lits.extend_from_slice(b"\"#text\":");
+            self.core.lits.extend_from_slice(b"\"#text\":");
             self.content_as_json_value_plain(&element.children, true)?;
         }
 
@@ -5071,7 +4994,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         following: &[Node<'a>],
         body: &mut BodyPlain<'t>,
     ) -> Result<MemberPlain> {
-        self.visit(child)?;
+        self.core.visit(child)?;
         if body.skip > 0 {
             body.skip -= 1;
             return Ok(MemberPlain::None);
@@ -5083,18 +5006,18 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
                     return Ok(MemberPlain::None);
                 }
                 if body.wrote_any {
-                    self.lits.push(b',');
+                    self.core.lits.push(b',');
                 }
                 body.wrote_any = true;
                 body.positional_data_emitted = true;
-                self.lits.extend_from_slice(b"\"Data\":{\"#text\":");
+                self.core.lits.extend_from_slice(b"\"Data\":{\"#text\":");
                 return Ok(MemberPlain::PositionalData(body.positional_data_count));
             }
             match self.named_data_plain(child) {
                 NamedData::Nothing => return Ok(MemberPlain::None),
                 NamedData::Named(name) => {
                     if body.wrote_any {
-                        self.lits.push(b',');
+                        self.core.lits.push(b',');
                     }
                     body.wrote_any = true;
                     let (run, keys) = if self.data_names {
@@ -5120,7 +5043,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         let suffix = body.keys.suffix(cname.as_bytes(), attributes);
 
         if body.wrote_any {
-            self.lits.push(b',');
+            self.core.lits.push(b',');
         }
         body.wrote_any = true;
 
@@ -5131,7 +5054,7 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             let child_has_value = child_elem || child_text;
             let write_value = child_has_value || !wrote_attrs;
             if wrote_attrs && write_value {
-                self.lits.push(b',');
+                self.core.lits.push(b',');
             }
             if !write_value {
                 return Ok(MemberPlain::None);
@@ -5157,9 +5080,11 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
             MemberPlain::Data { run: 1 } => self.data_element_value_plain(child),
             MemberPlain::Data { run } => self.data_run_plain(child, following, run),
             MemberPlain::PositionalData(count) => self.positional_data_plain(element, child, count),
-            MemberPlain::Element { container } => self.write_element_value_plain(child, container),
+            MemberPlain::Element { container } => {
+                self.write_element_value_with(child, container, false, false)
+            }
             MemberPlain::ElementNoAttrs { container } => {
-                self.write_element_value_no_attrs_plain(child, container)
+                self.write_element_value_with(child, container, true, false)
             }
         }
     }
@@ -5172,19 +5097,19 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         following: &[Node<'a>],
         run: usize,
     ) -> Result<()> {
-        self.lits.push(b'[');
+        self.core.lits.push(b'[');
         self.data_element_value_plain(first)?;
         let rest = following.iter().filter_map(|node| match node {
             Node::Element(id) => Some(*id),
             _ => None,
         });
         for id in rest.take(run - 1) {
-            self.check_size()?;
-            self.lits.push(b',');
+            self.core.check_size()?;
+            self.core.lits.push(b',');
             let element = self.element_ref(id);
             self.data_element_value_plain(element)?;
         }
-        self.lits.push(b']');
+        self.core.lits.push(b']');
         Ok(())
     }
 
@@ -5199,24 +5124,24 @@ impl<'t, 'a> JsonCompiler<'t, 'a> {
         if count == 1 {
             self.data_element_value_plain(first)?;
         } else {
-            self.lits.push(b'[');
+            self.core.lits.push(b'[');
             let mut first = true;
             for node in &element.children {
                 let Node::Element(id) = node else { continue };
-                self.check_size()?;
+                self.core.check_size()?;
                 let candidate = self.element_ref(*id);
                 if !is_data_element_name(candidate.name.as_str()) {
                     continue;
                 }
                 if !first {
-                    self.lits.push(b',');
+                    self.core.lits.push(b',');
                 }
                 first = false;
                 self.data_element_value_plain(candidate)?;
             }
-            self.lits.push(b']');
+            self.core.lits.push(b']');
         }
-        self.lits.push(b'}');
+        self.core.lits.push(b'}');
         Ok(())
     }
 }
